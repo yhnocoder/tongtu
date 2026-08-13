@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "description": "documentclass 适配表（架构 §3 compile 行、决策 13、PHASE0 §2.1 inject_cjk 行）。inject_cjk 的三分支主逻辑（已有 xeCJK/ctex → 原样通过；CJKutf8 系 → 替换为 xeCJK；纯英文导言区 → \\documentclass 后注入）写在 tongtu/stages/inject_cjk.py 里，本表只是**叠加层**：按 documentclass 名（或导言区里出现的包）追加前导区补丁、调整注入位置、删包、剥环境。本表为空不影响主逻辑——它存在的意义是让关节⑥（适配与修复会话）把一次「成功适配」按促升规则（架构 §2 原则 3）沉淀成纯数据条目，而不是往编排器里塞一次性 hack。新增条目请填进 adaptations 数组，并在 notes 里写清楚是在哪篇论文上实测通过的。",
+  "fields": {
+    "name": "条目名，唯一。进 report 的 adaptations 列表，也是覆盖内建条目的键（同名即覆盖，见 inject_cjk.BUILTIN_ADAPTATIONS）。",
+    "documentclass": "命中的 \\documentclass 名列表，**任一命中即匹配**（精确匹配，不做前缀/子串匹配——'ctexart' 子串判断在 v2 里会误伤正文与注释）。省略 = 不限文档类。",
+    "packages": "命中的导言区包名列表，**任一命中即匹配**（\\usepackage / \\RequirePackage，含逗号列表里的名字）。省略 = 不限包。",
+    "actions": "命中后依次执行的动作，见 ops。多条条目命中时按数组顺序叠加，注入位置后者覆盖前者。",
+    "notes": "为什么需要这条适配、在哪篇论文上实测通过。",
+    "source": "可选：来源（arxiv id / issue 链接）。"
+  },
+  "match": "documentclass 与 packages 同时给出时须**都**命中；两者都省略的条目非法（防止误写成全局条目）。",
+  "ops": {
+    "insert_at": "调整 xeCJK 注入块的位置：{\"op\":\"insert_at\",\"position\":\"before_begin_document\"}；position 取值见 positions，after_package 需另给 \"package\" 字段。",
+    "preamble_patch": "在注入块内追加额外前导区代码：{\"op\":\"preamble_patch\",\"where\":\"after_block\",\"tex\":\"\\\\usepackage{...}\"}；where 取 before_block（块首，xeCJK 之前）或 after_block（块尾，默认）。tex 按字面插入——实现用字符串拼接而非 re.sub 模板，故其中的 \\g<1>、\\1 等序列不会被当成反向引用（v2 的 XECJK_BLOCK.replace(\"\\\\\",\"\\\\\\\\\") 就是在给 re.sub 模板打补丁）。",
+    "remove_package": "删掉导言区里的包：{\"op\":\"remove_package\",\"packages\":[\"CJKutf8\"]}；逗号列表里只删命中的那个名字，整条命令只在其全部包都被删时才整条删除。",
+    "strip_environment": "剥掉环境的 \\begin/\\end 包裹但保留环境体：{\"op\":\"strip_environment\",\"environments\":[{\"name\":\"CJK\",\"args\":2,\"starred\":true}]}；args = \\begin{X} 之后要一并吃掉的必选参数个数（CJK 环境是 {UTF8}{gbsn} 两个），starred = 同时匹配 X*。词法扫描，注释与 verbatim 体内的同名环境不受影响。"
+  },
+  "positions": {
+    "after_documentclass": "默认：\\documentclass[…]{…} 之后（词法定位，注释掉的那个不算）。",
+    "before_begin_document": "导言区末尾、\\begin{document} 之前——文档类自己要在导言区里改字体/版式时（xeCJK 须最后加载）用这个。",
+    "after_last_usepackage": "导言区里最后一条 \\usepackage/\\RequirePackage 之后。",
+    "after_package": "指定包之后（需 \"package\" 字段），如 hyperref 之类对加载次序敏感的包。",
+    "at_removed_package": "被 remove_package 删掉的第一个包原来所在的位置（CJKutf8 系替换即用此位置，与 v2 的 re.sub 就地替换等效）。"
+  },
+  "adaptations": [],
+  "examples": [
+    {
+      "name": "cjkutf8-to-xecjk",
+      "packages": ["CJKutf8", "CJK"],
+      "actions": [
+        {
+          "op": "remove_package",
+          "packages": ["CJKutf8", "CJK", "CJKspace", "CJKpunct"]
+        },
+        {
+          "op": "strip_environment",
+          "environments": [{ "name": "CJK", "args": 2, "starred": true }]
+        },
+        { "op": "insert_at", "position": "at_removed_package" }
+      ],
+      "notes": "示例（不参与匹配）：三分支里的 CJKutf8 分支写成数据就是这一条——它证明本表的动作集足以表达真实适配。因是主逻辑第二分支，实际以 inject_cjk.BUILTIN_ADAPTATIONS 内建，表为空时照样生效；要改它（比如追加要删的 CJK 子包）就把这条拷进 adaptations，同名覆盖内建。CJKutf8 默认的 gbsn 是文鼎简报宋，无真粗体、行距过密，故整体换成 xeCJK + 霞鹜文楷。",
+      "source": "v2 scripts/inject_cjk.py（DeepSeek 系列论文）"
+    },
+    {
+      "name": "revtex-inject-late",
+      "documentclass": ["revtex4-2", "revtex4-1", "revtex4"],
+      "actions": [
+        { "op": "insert_at", "position": "before_begin_document" },
+        {
+          "op": "preamble_patch",
+          "where": "after_block",
+          "tex": "% revtex 自己排版摘要与作者块，中文行距在这里再压一次\n\\linespread{1.3}"
+        }
+      ],
+      "notes": "模板（不参与匹配）：演示「注入位置调整 + 额外前导区补丁」的写法。REVTeX 在导言区做大量字体与版式设置，把 xeCJK 推到 \\begin{document} 之前可避开先后次序冲突——但**本条尚未在真实论文上实测**，故只放在 examples 里；关节⑥实测通过后再拷进 adaptations 并把实测论文写进 source。"
+    }
+  ]
+}

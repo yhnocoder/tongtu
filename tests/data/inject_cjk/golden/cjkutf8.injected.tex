@@ -1,0 +1,35 @@
+\documentclass{article}
+
+% ---- injected by tongtu (inject_cjk) ----
+\usepackage{xeCJK}
+\setCJKmainfont[
+  Path = {fonts/},
+  BoldFont = LXGWWenKai-Medium.ttf
+]{LXGWWenKai-Light.ttf}
+% 无衬线取平台上第一个存在的黑体：mac → Hiragino，Linux 容器 → Noto；
+% 都没有则退回仓库字体（非黑体，但保证不炸、不出豆腐）
+\IfFontExistsTF{Hiragino Sans GB}
+  {\setCJKsansfont{Hiragino Sans GB}}
+  {\IfFontExistsTF{Noto Sans CJK SC}
+    {\setCJKsansfont{Noto Sans CJK SC}}
+    {\setCJKsansfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}}}
+\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Light.ttf}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip = 0pt plus 1pt
+\linespread{1.4}
+% ---- end tongtu (inject_cjk) ----
+
+\usepackage{graphicx}
+\newcommand{\g}[1]{\mathrm{#1}}
+
+\begin{document}
+
+\section{引言}
+中文段落，含 \\ 强制换行、行内公式 $\g{x}\backslash y$ 与 \emph{强调}。
+
+\begin{verbatim}
+\begin{CJK*}{UTF8}{gbsn}   % verbatim 里的包裹不剥
+\end{CJK*}
+\end{verbatim}
+
+\end{document}

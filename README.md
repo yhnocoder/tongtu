@@ -12,6 +12,7 @@
 tongtu/     Python 包：确定性流水线各阶段（fetch / flatten / baseline / mask / survey / chunk /
             translate / compile / figures / export）+ agent 运行时适配层子模块 tongtu/agent/
             （Claude Code / Codex CLI / opencode / 自建循环，可插拔）
+fonts/      随仓库分发的中文字体（霞鹜文楷 Light/Medium，OFL-1.1），inject_cjk 以相对路径引用
 skill/      翻译 playbook（给 coding agent 的操作手册与文风规则）
 docker/     执行环境镜像（TeX Live full + 通途 + agent 运行时）
 fallback/   非 arXiv PDF 的降级流水线（doc2x → markdown）
