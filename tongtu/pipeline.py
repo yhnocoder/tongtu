@@ -4,10 +4,10 @@
 的驱动器自己在需要时拉起有界的 agent 调用（两原语之一），拿回结果后仍由脚本校验推进。
 阶段图对所有论文不变——PDF-only 也只是顶层分支到降级路线，不是动态重排。
 
-    fetch → flatten → baseline → mask → (survey) → chunk → translate → compile
-                                                          → (figures) → (export)
+    fetch → flatten → baseline → mask → survey → chunk → translate → compile
+                                                        → (figures) → (export)
 
-括号里的三个阶段本期占位跳过（survey 属 M3，figures / export 属 M4），事件流里如实记
+括号里的两个阶段本期占位跳过（figures / export 属 M4），事件流里如实记
 `status="skipped"`，不假装做过。
 
 ## 阶段级增量（架构 §4）
@@ -18,8 +18,9 @@
 不需要任何显式的依赖声明。
 
 跳过的阶段仍要把状态**从盘上装回内存**（`load`），否则下游拿不到 `MaskResult`、块清单
-这些对象。装载走的是已经落盘的契约文件（`masked.tex` + `blocks.json` + `chunks.json`），
-这也顺带把「产物包自足、可在新环境续跑」这条（架构 §2 原则 4）在零期就走通了一遍。
+这些对象。装载走的是已经落盘的契约文件（`masked.tex` + `blocks.json` + `brief.json` +
+`glossary.json` + `chunks.json`），这也顺带把「产物包自足、可在新环境续跑」这条
+（架构 §2 原则 4）在零期就走通了一遍。
 
 ## 失败语义（架构 §6）
 
@@ -48,8 +49,11 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence, TextIO
 
 from . import CONTRACT_VERSION, __version__
+from . import glossary as glossary_module
 from .agent.mock import MockAgent, identity
 from .compiler import DEFAULT_TIMEOUT, Compiler
+from .glossary import Glossary, GlossaryError
+from .prompts import PromptError
 from .stages import STAGES
 from .stages import baseline as baseline_stage
 from .stages import chunk as chunk_stage
@@ -57,15 +61,18 @@ from .stages import compile as compile_stage
 from .stages import fetch as fetch_stage
 from .stages import flatten as flatten_stage
 from .stages import mask as mask_stage
+from .stages import survey as survey_stage
 from .stages import translate as translate_stage
 from .stages.mask import Block, Caption, MaskResult
 from .workdir import Workdir, open_workdir
 
 __all__ = [
     "BLOCKS_NAME",
+    "BRIEF_NAME",
     "CHUNKS_DIRNAME",
     "CHUNKS_NAME",
     "Events",
+    "GLOSSARY_NAME",
     "MANIFEST_VERSION",
     "MASKED_NAME",
     "PipelineError",
@@ -96,13 +103,16 @@ BLOCKS_NAME = "blocks.json"
 CHUNKS_DIRNAME = "chunks"
 ZH_CHUNKS_DIRNAME = "zh-chunks"
 
+#: survey 的两份产物（形状即产物契约的 `brief.json` / `glossary.json`，export 直接搬）。
+BRIEF_NAME = survey_stage.BRIEF_NAME
+GLOSSARY_NAME = survey_stage.GLOSSARY_NAME
+
 #: 块清单 / 翻译记忆的文件名。后者与产物契约 `chunks.json` 同形（`docs/schemas/`），
 #: export（M4）直接搬过去即可，不需要二次组装。
 CHUNKS_NAME = "chunks.json"
 
 #: 本期占位跳过的阶段 → 落地里程碑。
 SKIPPED_STAGES: dict[str, str] = {
-    "survey": "M3（通读 + 术语预扫，关节④）",
     "figures": "M4（EPS/PDF/位图 → PNG 预渲染）",
     "export": "M4（产物包组装 + anchors 合成 + 检验页）",
 }
@@ -480,6 +490,11 @@ class Pipeline:
         # 跨阶段状态（跳过的阶段由 load 从盘上装回来）
         self.flat_text: str = ""
         self.mask_result: MaskResult | None = None
+        self.brief: dict = {}
+        self.decisions: Glossary = glossary_module.empty()
+        """survey 产出的术语**决策表**（三层输入表 + agent 新决策）。"""
+
+        self._layers: tuple[glossary_module.Layer, ...] | None = None
         self.plan: chunk_stage.ChunkPlan | None = None
         self.units: tuple[compile_stage.TranslatedChunk, ...] = ()
         self.chunks_total = 0
@@ -500,6 +515,14 @@ class Pipeline:
     @property
     def blocks_path(self) -> Path:
         return self.workdir.build / BLOCKS_NAME
+
+    @property
+    def brief_path(self) -> Path:
+        return self.workdir.build / BRIEF_NAME
+
+    @property
+    def glossary_path(self) -> Path:
+        return self.workdir.build / GLOSSARY_NAME
 
     @property
     def chunks_dir(self) -> Path:
@@ -619,6 +642,7 @@ class Pipeline:
             "flatten": _Spec(self._flatten_inputs, self._flatten_compute, self._flatten_load),
             "baseline": _Spec(self._baseline_inputs, self._baseline_compute, self._baseline_load),
             "mask": _Spec(self._mask_inputs, self._mask_compute, self._mask_load),
+            "survey": _Spec(self._survey_inputs, self._survey_compute, self._survey_load),
             "chunk": _Spec(self._chunk_inputs, self._chunk_compute, self._chunk_load),
             "translate": _Spec(
                 self._translate_inputs, self._translate_compute, self._translate_load
@@ -785,6 +809,77 @@ class Pipeline:
         manifest = read_manifest(self.workdir, "mask") or {}
         return _Work(detail=manifest.get("result", {}))
 
+    # ------------------------------------------------------------ survey
+
+    def glossary_layers(self) -> tuple[glossary_module.Layer, ...]:
+        """三层输入表（全局 XDG → 论文目录 → `--glossary`），本次运行内只读一次。
+
+        术语表读不出来 / 不合 schema 是**用户输入错误**，结构化成阶段失败并说清是哪个
+        文件——不静默吞掉（吞掉的后果是译文里悄悄少了一堆术语约束）。
+        """
+        if self._layers is None:
+            try:
+                self._layers = glossary_module.load_layers(
+                    workdir=self.workdir, cli=self.glossary
+                )
+            except GlossaryError as exc:
+                raise PipelineError(str(exc)) from exc
+        return self._layers
+
+    def _survey_inputs(self) -> dict[str, str]:
+        if self.mask_result is None:
+            raise PipelineError("没有掩码流（先跑 mask）")
+        layers = self.glossary_layers()
+        return {
+            "masked": sha256_text(self.mask_result.masked),
+            "blocks": sha256_file(self.blocks_path),
+            # 术语表按**内容**参与（换个路径、同样的内容不该重跑通读）
+            "glossary": sha256_text(
+                "\x1e".join(
+                    f"{layer.layer}\t{glossary_module.content_hash(layer.glossary)}"
+                    for layer in layers
+                )
+            ),
+            "agent": type(self.agent).__name__,
+            "model": self.model,
+            "prompt_version": survey_stage.PROMPT_VERSION,
+            "prompt": _prompt_hash(),
+        }
+
+    def _survey_compute(self) -> _Work:
+        assert self.mask_result is not None
+        merged = glossary_module.merge(self.glossary_layers())
+        result = survey_stage.survey(
+            self.mask_result.masked,
+            self.mask_result,
+            complete=getattr(self.agent, "complete", None),
+            glossary=merged,
+            model=self.model,
+            arxiv_id=self.workdir.arxiv_id,
+        )
+        detail = result.to_json()
+        if not result.ok:
+            return _Work(ok=False, error=result.message or "survey 失败", detail=detail)
+        self.brief = result.brief
+        self.decisions = result.glossary
+        _write_json(self.brief_path, result.brief)
+        _write_json(self.glossary_path, result.glossary.to_json())
+        for warning in result.warnings:
+            self.events.note(f"    survey：{warning}")
+        return _Work(outputs=(self.brief_path, self.glossary_path), detail=detail)
+
+    def _survey_load(self) -> _Work:
+        if not (self.brief_path.is_file() and self.glossary_path.is_file()):
+            return _Work(
+                ok=False, error=f"没有 {self.brief_path} / {self.glossary_path}（先跑 survey）"
+            )
+        self.brief = json.loads(self.brief_path.read_text(encoding="utf-8"))
+        self.decisions = Glossary.from_json(
+            json.loads(self.glossary_path.read_text(encoding="utf-8"))
+        )
+        manifest = read_manifest(self.workdir, "survey") or {}
+        return _Work(detail=manifest.get("result", {}))
+
     # ------------------------------------------------------------- chunk
 
     def _chunk_inputs(self) -> dict[str, str]:
@@ -846,9 +941,13 @@ class Pipeline:
             "agent": type(self.agent).__name__,
             "model": self.model,
             "prompt_version": translate_stage.PROMPT_VERSION,
-            "style_version": translate_stage.STYLE_VERSION,
+            # 文风规则版本号来自术语表第三段（架构 §8）：bump 即全量重翻。
+            "style_version": self.decisions.style_version,
             "max_retries": str(self.max_retries),
-            "glossary": _files_hash(self.glossary),
+            # 术语**决策表**的内容（不含 merged_from 与决策时间戳）与 brief 的内容 hash：
+            # 两者都是 survey 的产物，也都直接进块级缓存 key（架构 §4）。
+            "glossary": glossary_module.content_hash(self.decisions),
+            "brief": survey_stage.brief_hash(self.brief) if self.brief else "",
         }
 
     def _translate_compute(self) -> _Work:
@@ -861,6 +960,10 @@ class Pipeline:
             self.plan,
             complete=complete,
             model=self.model,
+            brief=survey_stage.render_brief(self.brief) if self.brief else None,
+            brief_hash=survey_stage.brief_hash(self.brief) if self.brief else "",
+            glossary=glossary_module.term_map(self.decisions),
+            style_version=self.decisions.style_version,
             max_retries=self.max_retries,
             progress=self.events.chunk_progress,
         )
@@ -968,16 +1071,24 @@ def _read_tex(path: Path) -> str:
     return Path(path).read_text(encoding="utf-8", errors="replace")
 
 
-def _files_hash(paths: Sequence[str]) -> str:
-    """一组文件（术语表）的内容 hash；不存在的按空内容计。"""
-    if not paths:
+def _write_json(path: Path, payload: dict) -> Path:
+    """写一份 JSON 产物（UTF-8、缩进 2、末尾换行——与其余产物落盘风格一致）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return path
+
+
+def _prompt_hash() -> str:
+    """通读 prompt 资产的内容 hash——改 `skill/survey.md` 即失效 survey（架构 §4）。
+
+    `prompt_version` 是人工 bump 的，忘了 bump 也不该让缓存说谎；内容 hash 是兜底。
+    """
+    try:
+        return sha256_text(survey_stage.load_prompt())
+    except PromptError:
         return ""
-    digest = hashlib.sha256()
-    for item in paths:
-        digest.update(str(item).encode("utf-8"))
-        digest.update(sha256_file(Path(item)).encode("ascii"))
-        digest.update(b"\x1e")
-    return digest.hexdigest()
 
 
 def _plan_from_manifest(data: dict, masked: str) -> chunk_stage.ChunkPlan:
@@ -1076,8 +1187,9 @@ def run_stage(
 
     可单跑的阶段 = 上游产物已经在工作目录里的任何阶段：`flatten`（要 `src/`）、
     `baseline` / `mask`（要 `build/flat.tex`）、`chunk`（要 `masked.tex` + `blocks.json`）、
-    `translate`（要 `build/chunks/`）、`compile`（要译块 + `blocks.json`）。`fetch` 只在
-    给的是 arXiv id 或本地目录时能单跑。三个占位阶段（survey / figures / export）不可跑。
+    `survey`（要 `masked.tex` + `blocks.json`）、`translate`（要 `build/chunks/`）、
+    `compile`（要译块 + `blocks.json`）。`fetch` 只在给的是 arXiv id 或本地目录时能单跑。
+    两个占位阶段（figures / export）不可跑。
     """
     if name not in STAGES:
         raise ValueError(f"未知阶段：{name}（可选 {', '.join(STAGES)}）")

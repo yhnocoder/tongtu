@@ -67,7 +67,10 @@ from ..texlex import (
     find_env_end,
     line_number,
     line_starts,
+    read_group,
     skip_comment,
+    skip_optionals,
+    skip_spaces,
     strip_comments_inline,
 )
 
@@ -271,37 +274,6 @@ def enumerate_environments(
     return counts
 
 
-def _skip_spaces(s: str, i: int) -> int:
-    while i < len(s) and s[i] in " \t\r\n":
-        i += 1
-    return i
-
-
-def _skip_optionals(s: str, i: int) -> int:
-    """跳过零个或多个可选参数 `[...]`（含其间空白）。"""
-    while True:
-        j = _skip_spaces(s, i)
-        if j < len(s) and s[j] == "[":
-            try:
-                i = find_bracket_arg(s, j) + 1
-            except TexLexError:
-                return i
-        else:
-            return i
-
-
-def _read_group(s: str, i: int) -> tuple[str, int] | None:
-    """读一个必选参数 `{...}`，返回 (内容, 之后的位置)；不是 `{` 或不配平则 None。"""
-    j = _skip_spaces(s, i)
-    if j >= len(s) or s[j] != "{":
-        return None
-    try:
-        close = find_balanced(s, j)
-    except TexLexError:
-        return None
-    return s[j + 1 : close], close + 1
-
-
 def parse_environment_declarations(
     src: str, table: EnvironmentTable
 ) -> dict[str, tuple[str, str | None, str]]:
@@ -329,8 +301,8 @@ def parse_environment_declarations(
         i = tok.end
         if src[i : i + 1] == "*":
             i += 1
-        i = _skip_optionals(src, i)
-        head = _read_group(src, i)
+        i = skip_optionals(src, i)
+        head = read_group(src, i)
         if head is None:
             continue
         name, i = head
@@ -342,13 +314,13 @@ def parse_environment_declarations(
             lexer.pos = i
             continue
         if cs in _XPARSE_ENV_DECLS:
-            spec = _read_group(src, i)  # 参数规格，跳过
+            spec = read_group(src, i)  # 参数规格，跳过
             if spec is None:
                 continue
             i = spec[1]
         else:
-            i = _skip_optionals(src, i)
-        body = _read_group(src, i)
+            i = skip_optionals(src, i)
+        body = read_group(src, i)
         if body is None:
             continue
         begin_code, i = body
@@ -669,8 +641,8 @@ class _Masker:
             if tok.kind == "control" and not seen_title:
                 if preamble[tok.start : tok.end] != "\\title":
                     continue
-                i = _skip_optionals(preamble, tok.end)
-                group = _read_group(preamble, i)
+                i = skip_optionals(preamble, tok.end)
+                group = read_group(preamble, i)
                 if group is None:
                     continue
                 text, after = group
@@ -787,12 +759,12 @@ class _Masker:
             if raw[i : i + 1] == "*":
                 i += 1
             if kind == "captionof":
-                group = _read_group(raw, i)  # {figure} —— 浮动体类型，不翻译
+                group = read_group(raw, i)  # {figure} —— 浮动体类型，不翻译
                 if group is None:
                     continue
                 i = group[1]
             slots: list[tuple[int, int]] = []
-            j = _skip_spaces(raw, i)
+            j = skip_spaces(raw, i)
             if raw[j : j + 1] == "[":
                 try:
                     close = find_bracket_arg(raw, j)
@@ -800,7 +772,7 @@ class _Masker:
                     self._warn(f"caption 可选参数不配平（{exc}）", offset + j)
                     continue
                 slots.append((j + 1, close))
-                j = _skip_spaces(raw, close + 1)
+                j = skip_spaces(raw, close + 1)
             if raw[j : j + 1] != "{":
                 continue
             try:
@@ -866,7 +838,7 @@ def _find_label(raw: str, verbatim_envs: frozenset[str]) -> str | None:
     for tok in lexer:
         if tok.kind != "control" or raw[tok.start : tok.end] != "\\label":
             continue
-        group = _read_group(raw, tok.end)
+        group = read_group(raw, tok.end)
         if group is not None:
             return group[0].strip()
     return None

@@ -134,7 +134,7 @@ tongtu preview <id>               # 打开检验页
 ## 8. 术语表
 
 - **预扫、合并与新词决策统一发生在 survey 阶段**（§3），与全文纲要在同一次通读中完成。
-- **三层合并**，后者覆盖前者：全局 `~/.config/tongtu/glossary.json`（XDG）→ 论文目录内输入表 → `--glossary` 命令行（可多次）。
+- **三层合并**，后者覆盖前者：全局 `~/.config/tongtu/glossary.json`（XDG，`$XDG_CONFIG_HOME` 覆盖）→ 论文目录内输入表 `<workdir>/glossary.json`（与 `src/`/`build/`/`out/`/`logs/` 同级，**不放进 `src/`**——那是只读的 e-print 树，混入会污染 fetch 的树 hash）→ `--glossary` 命令行（可多次，靠后的优先）。合并语义：`terms` 条目级覆盖（同名后者胜）、`do_not_translate` 取并集、`style` 逐字段覆盖。
 - **输入表**（用户可编辑）与**决策表**（产物 `glossary.json`，本篇实际生效决策）分离；用户条目优先于 agent 决策。
 - 结构三段：不译清单 / 术语唯一译法 / 文风约定（`style_version` 所在，含译者注开关）。
 - 云上传入：wenshu 把 R2 中的表落成文件递给容器——仍是「文件 + CLI」，不新增接口形态。

@@ -69,8 +69,7 @@ def test_bare_invocation_prints_help(capsys):
     [
         ["retranslate", "2401.01234", "--all"],
         ["preview", "2401.01234"],
-        ["stage", "survey", "2401.01234"],  # 阶段名合法但本期占位跳过
-        ["stage", "figures", "2401.01234"],
+        ["stage", "figures", "2401.01234"],  # 阶段名合法但本期占位跳过
         ["stage", "export", "2401.01234"],
     ],
 )

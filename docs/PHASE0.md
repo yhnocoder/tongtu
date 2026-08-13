@@ -63,9 +63,9 @@
 - [x] **flatten**〔迁〕：latexpand 展开 + `--expand-bbl`；主文件歧义 → 关节①
 - [x] **baseline**〔新〕：latexmk 原样编译原文，隔离环境问题；失败 → 关节②（workdir 内修构建环境），仍失败终止——这是最早的编译门控，编译不过的论文不花一分钱 LLM
 - [x] **mask**〔迁 + 扩展〕：见 §2.1 映射行；分类表数据文件 + 关节③ + 保守默认 + 往返自检
-- [ ] **survey**〔新〕：masked.tex 选择性回填视图（剔除附录与参考文献）一次通读 → `brief.json`（abstract 照录 + 章节树 + 记号约定 + 文风基调）+ 术语预扫决策（关节④）；术语表三层合并（全局 XDG → 论文目录 → `--glossary`）；产物 schema 校验
+- [x] **survey**〔新〕：masked.tex 选择性回填视图（剔除附录与参考文献）一次通读 → `brief.json`（abstract 照录 + 章节树 + 记号约定 + 文风基调）+ 术语预扫决策（关节④）；术语表三层合并（全局 XDG → 论文目录内 `<workdir>/glossary.json` → `--glossary`，`tongtu/glossary.py`）；产物过 schema 校验（`tongtu/schema_check.py`，与 e2e 共用同一校验器）。模型输出防御性解析、失败重试一次、再失败降级为确定性骨架（章节树 + 原文摘要 + 零术语增补）——**survey 失败不阻塞流水线**，brief 是增益不是门禁
 - [x] **chunk**〔重写〕：章节树优先分块，软目标 / 硬上限以 token 计，绝不切入环境或段落
-- [ ] **translate**〔新驱动 + 迁校验〕（M2 已落块循环 + validate 内环 + 邻域/术语命中 + cache_key 公式；brief 上下文与缓存存取待 M3）：块循环、上下文组装（brief + 命中术语 + 邻域原文，刻意不传前块译文）、缓存查询、validate 内环重试、关节⑤（`complete` 原语）
+- [ ] **translate**〔新驱动 + 迁校验〕（M2 已落块循环 + validate 内环 + 邻域/术语命中 + cache_key 公式；M3 已接上 survey 的 brief 上下文、术语决策表与 `style_version`；`chunks.json` 翻译记忆的缓存存取待补）：块循环、上下文组装（brief + 命中术语 + 邻域原文，刻意不传前块译文）、缓存查询、validate 内环重试、关节⑤（`complete` 原语）
 - [x] **compile**〔重写〕：unmask 回填 → inject_cjk（查适配表）→ latexmk -xelatex 回环；失败分诊、块 → 段落二分、坏段重译一次再回退原文（保证永远出 PDF）、关节⑥
 - [ ] **figures**〔新〕：EPS/PDF/位图 → PNG 预渲染（长边 ≈1568px 定 DPI，位图只缩不放）、caption 与引用段落收集；仅依赖 `src/`，与翻译轨并行，逐图 hash 缓存
 - [ ] **export**〔新，吸收 v2 package.py〕：产物包组装（zh.tex 自包含）、anchors 三来源合成、检验页生成、契约 schema 自校验
@@ -75,13 +75,13 @@
 
 - [x] 两原语接口〔新〕：`complete(prompt, text, model)` / `session(prompt, workdir, model, budget)`；`session` 的 done 不作裁决依据，转录一律落 `logs/`
 - [x] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 的钥匙
-- [ ] **Codex CLI 适配器**〔新，选型已决〕：headless 拉起、圈权限（继承 v2 run.sh 的 allowlist 思路）、指定模型；`complete` 首发同走运行时
+- [x] **Codex CLI 适配器**〔新，选型已决〕（`tongtu/agent/codex.py`）：`codex exec` headless 拉起、`--sandbox` + `-C` 圈权限（继承 v2 run.sh 的 allowlist 思路）、指定模型、超时、转录落 `logs/`；`complete` 首发同走运行时（read-only 沙箱 + 输出清洗）；argv 段模板可覆盖、runner 可注入；`get_agent(name)` 工厂 + `tongtu run --agent`
 - [ ] 六关节接线：①主文件 ②构建环境 ③环境分类 ④通读与术语 ⑤翻译 ⑥适配与修复
 
 ### 3.4 prompt 资产（`skill/`）
 
-- [ ] SKILL 瘦身迁移〔迁〕：删编排，留翻译规则 / 占位符纪律 / 术语与文风 / 常见坑；拆分为逐块翻译（⑤）、通读（④）、修复会话（⑥）等按关节组织的 prompt
-- [ ] `prompt_version` / `style_version` 版本化，进缓存 key
+- [x] SKILL 瘦身迁移〔迁〕：删编排，留翻译规则 / 占位符纪律 / 术语与文风 / 常见坑；按关节拆成 `skill/translate.md`（⑤）、`skill/repair.md`（②/⑥，含适配表沉淀指引）、`skill/classify.md`（③）、`skill/survey.md`（④）
+- [x] `prompt_version` / `style_version` 版本化，进缓存 key（单一来源 `tongtu/prompts.py`，装载 + wheel 打包链）
 
 ### 3.5 产物契约与 schemas（`docs/schemas/`）〔新〕
 

@@ -32,6 +32,9 @@ __all__ = [
     "find_balanced",
     "find_bracket_arg",
     "find_env_end",
+    "read_group",
+    "skip_optionals",
+    "skip_spaces",
     "strip_comments_inline",
     "line_starts",
     "line_number",
@@ -111,6 +114,38 @@ def find_balanced(s: str, i: int) -> int:
                 return j
         j += 1
     raise TexLexError(f"花括号不配平：起于位置 {i}")
+
+
+def skip_spaces(s: str, i: int) -> int:
+    """跳过空白（含换行），返回第一个非空白字符的下标。"""
+    while i < len(s) and s[i] in " \t\r\n":
+        i += 1
+    return i
+
+
+def skip_optionals(s: str, i: int) -> int:
+    """跳过零个或多个可选参数 `[...]`（含其间空白）；不配平则原位返回。"""
+    while True:
+        j = skip_spaces(s, i)
+        if j < len(s) and s[j] == "[":
+            try:
+                i = find_bracket_arg(s, j) + 1
+            except TexLexError:
+                return i
+        else:
+            return i
+
+
+def read_group(s: str, i: int) -> tuple[str, int] | None:
+    """读一个必选参数 `{...}`，返回 `(内容, 之后的位置)`；不是 `{` 或不配平则 None。"""
+    j = skip_spaces(s, i)
+    if j >= len(s) or s[j] != "{":
+        return None
+    try:
+        close = find_balanced(s, j)
+    except TexLexError:
+        return None
+    return s[j + 1 : close], close + 1
 
 
 def find_bracket_arg(s: str, i: int) -> int:

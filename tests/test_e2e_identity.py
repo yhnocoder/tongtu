@@ -21,9 +21,9 @@ compile 有意加的），故 `zh.tex` 去掉 tongtu 标记之间的那一段之
 
 ## 零第三方依赖的 schema 校验
 
-仓库运行时与 dev 都不引 jsonschema（架构 §13），故本文件自带一个**够用子集**的校验器
-（`validate_schema`）：type / required / properties / additionalProperties / oneOf /
-$ref / const / enum / pattern / items / minimum。它只用来卡自家产物，不追求完备。
+仓库运行时与 dev 都不引 jsonschema（架构 §13），校验器是自家的**够用子集**
+（`tongtu.schema_check`）。它原本住在本文件里，M3 起 survey 阶段要在运行时校验
+`brief.json` / `glossary.json`，于是抽进运行时包——测试与生产用同一把尺子。
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
 import shutil
 import stat
 from pathlib import Path
@@ -40,6 +39,7 @@ import pytest
 
 from tongtu import CONTRACT_VERSION
 from tongtu.pipeline import Pipeline, run_pipeline, run_stage
+from tongtu.schema_check import load_schema, validate_schema
 from tongtu.stages.inject_cjk import BEGIN_MARK, END_MARK, inject
 from tongtu.workdir import Workdir
 
@@ -50,9 +50,11 @@ SCHEMAS = ROOT / "docs" / "schemas"
 #: 三篇 fixture（PHASE0 §3.7）。
 FIXTURES = ("article", "revtex", "conference")
 
-#: 编排器实际会跑的阶段（survey / figures / export 本期占位跳过）。
-RUN_STAGES = ("fetch", "flatten", "baseline", "mask", "chunk", "translate", "compile")
-SKIPPED = ("survey", "figures", "export")
+#: 编排器实际会跑的阶段（figures / export 本期占位跳过）。
+RUN_STAGES = (
+    "fetch", "flatten", "baseline", "mask", "survey", "chunk", "translate", "compile",
+)
+SKIPPED = ("figures", "export")
 
 HAS_TEX = shutil.which("latexmk") is not None and shutil.which("latexpand") is not None
 
@@ -67,87 +69,6 @@ MODES = [
         ],
     ),
 ]
-
-
-# --------------------------------------------------------------------------- #
-# 够用子集的 JSON Schema 校验器（零第三方依赖）
-# --------------------------------------------------------------------------- #
-
-_TYPES: dict[str, type | tuple[type, ...]] = {
-    "object": dict,
-    "array": list,
-    "string": str,
-    "number": (int, float),
-    "integer": int,
-    "boolean": bool,
-    "null": type(None),
-}
-
-
-def _type_ok(value, name: str) -> bool:
-    expected = _TYPES[name]
-    if name in ("integer", "number") and isinstance(value, bool):
-        return False
-    return isinstance(value, expected)
-
-
-def validate_schema(instance, schema: dict, root: dict | None = None, path: str = "$") -> list[str]:
-    """返回不合规之处（空列表 = 通过）。支持自家 schema 用到的那些关键字。"""
-    root = schema if root is None else root
-    errors: list[str] = []
-
-    ref = schema.get("$ref")
-    if ref is not None:
-        target = root
-        for part in ref.removeprefix("#/").split("/"):
-            target = target[part]
-        return validate_schema(instance, target, root, path)
-
-    if "type" in schema:
-        names = schema["type"]
-        names = [names] if isinstance(names, str) else names
-        if not any(_type_ok(instance, name) for name in names):
-            return [f"{path}: 类型应为 {names}，实际 {type(instance).__name__}"]
-
-    if "const" in schema and instance != schema["const"]:
-        errors.append(f"{path}: 应为常量 {schema['const']!r}，实际 {instance!r}")
-    if "enum" in schema and instance not in schema["enum"]:
-        errors.append(f"{path}: 应属枚举 {schema['enum']}，实际 {instance!r}")
-    if "pattern" in schema and isinstance(instance, str):
-        if re.search(schema["pattern"], instance) is None:
-            errors.append(f"{path}: {instance!r} 不匹配 {schema['pattern']}")
-    if "minimum" in schema and isinstance(instance, (int, float)) and instance < schema["minimum"]:
-        errors.append(f"{path}: {instance} 小于下界 {schema['minimum']}")
-
-    if isinstance(instance, dict):
-        for key in schema.get("required", ()):
-            if key not in instance:
-                errors.append(f"{path}: 缺必填字段 {key!r}")
-        properties = schema.get("properties", {})
-        for key, value in instance.items():
-            if key in properties:
-                errors.extend(validate_schema(value, properties[key], root, f"{path}.{key}"))
-            elif schema.get("additionalProperties") is False:
-                errors.append(f"{path}: 不认识的字段 {key!r}")
-
-    if isinstance(instance, list) and "items" in schema:
-        for i, item in enumerate(instance):
-            errors.extend(validate_schema(item, schema["items"], root, f"{path}[{i}]"))
-
-    if "oneOf" in schema:
-        passed = [
-            branch
-            for branch in schema["oneOf"]
-            if not validate_schema(instance, branch, root, path)
-        ]
-        if len(passed) != 1:
-            errors.append(f"{path}: oneOf 命中 {len(passed)} 个分支（应恰为 1）")
-
-    return errors
-
-
-def load_schema(name: str) -> dict:
-    return json.loads((SCHEMAS / f"{name}.schema.json").read_text(encoding="utf-8"))
 
 
 def test_the_schema_checker_actually_rejects():
@@ -294,9 +215,7 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
 
     # --- 阶段账 ---------------------------------------------------------
     statuses = {s.stage: s.status for s in result.stages}
-    assert [s.stage for s in result.stages] == list(RUN_STAGES[:4]) + ["survey"] + list(
-        RUN_STAGES[4:]
-    ) + ["figures", "export"]
+    assert [s.stage for s in result.stages] == list(RUN_STAGES) + list(SKIPPED)
     assert all(statuses[name] == "ok" for name in RUN_STAGES), statuses
     assert all(statuses[name] == "skipped" for name in SKIPPED), statuses
 
@@ -319,6 +238,18 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     blocks = json.loads((paper_dir.build / "blocks.json").read_text(encoding="utf-8"))
     assert blocks["roundtrip_ok"] is True
     assert blocks["blocks"], "一篇论文不可能一个掩码块都没有"
+
+    # --- survey 的两份产物（MockAgent 恒等返回 → 降级骨架路径）-----------
+    survey_result = json.loads(paper_dir.manifest_path("survey").read_text(encoding="utf-8"))[
+        "result"
+    ]
+    assert survey_result["degraded"] is True, "恒等 mock 返回的不是 JSON，只能走确定性骨架"
+    brief = json.loads((paper_dir.build / "brief.json").read_text(encoding="utf-8"))
+    decided = json.loads((paper_dir.build / "glossary.json").read_text(encoding="utf-8"))
+    assert validate_schema(brief, load_schema("brief")) == []
+    assert validate_schema(decided, load_schema("glossary")) == []
+    assert brief["abstract"], "摘要是程序从源码照录的，降级也不该丢"
+    assert brief["sections"], "章节树是确定性扫出来的，降级也该在"
 
     # --- 恒等译文过 validate 全绿 ---------------------------------------
     translate_result = json.loads(
@@ -386,8 +317,8 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
         assert validate_schema(event, schema) == []
 
 
-#: 阶段序里出现在事件流中的全部阶段（含占位跳过的三个）。
-STAGES_TOTAL = RUN_STAGES[:4] + SKIPPED[:1] + RUN_STAGES[4:] + SKIPPED[1:]
+#: 阶段序里出现在事件流中的全部阶段（含占位跳过的两个）。
+STAGES_TOTAL = RUN_STAGES + SKIPPED
 
 
 def test_force_recomputes_everything(tools, tmp_path):
@@ -520,12 +451,27 @@ def test_stage_entrypoint_loads_upstream_and_recomputes_one(tools, tmp_path):
         "flatten": "cached",
         "baseline": "cached",
         "mask": "cached",
-        "survey": "skipped",
+        "survey": "cached",
         "chunk": "ok",
     }
     assert (workdir / "build" / "masked.tex").stat().st_mtime_ns == before, "上游不该被重写"
     for line in stream.getvalue().splitlines():
         assert validate_schema(json.loads(line), load_schema("events")) == []
+
+
+def test_stage_entrypoint_can_rerun_survey(tools, tmp_path):
+    """`tongtu stage survey`：M3 起是真阶段（曾经的占位跳过），单跑即重算通读。"""
+    workdir = tmp_path / "work" / "article"
+    assert run("article", workdir)[0].exit_code == 0
+    brief = workdir / "build" / "brief.json"
+    before = brief.read_text(encoding="utf-8")
+
+    result = run_stage("survey", str(PAPERS / "article"), workdir=workdir, out=io.StringIO())
+
+    assert {s.stage: s.status for s in result.stages}["survey"] == "ok"
+    assert json.loads(brief.read_text(encoding="utf-8"))["sections"] == json.loads(before)[
+        "sections"
+    ], "同一篇论文重跑通读，章节树不该漂"
 
 
 def test_stage_entrypoint_reports_missing_upstream(tools, tmp_path):

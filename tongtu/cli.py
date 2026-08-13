@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -158,6 +159,18 @@ def _not_implemented(command: str) -> int:
 # ------------------------------------------------------------------- run / stage
 
 
+def _agent(args: argparse.Namespace) -> dict:
+    """`--agent` 透传给 `Pipeline(agent=...)`；没给就让编排器用它的默认（MockAgent）。
+
+    名字解析（显式 → `$TONGTU_AGENT` → mock）在 :func:`tongtu.agent.get_agent` 里，这里
+    不重复一套口径。
+    """
+    from .agent import AGENT_ENV, get_agent
+
+    name = getattr(args, "agent", None) or os.environ.get(AGENT_ENV)
+    return {"agent": get_agent(name)} if name else {}
+
+
 def run_run(args: argparse.Namespace) -> int:
     """`tongtu run`：跑完整流水线，退出码即 `PipelineResult.exit_code`（架构 §6）。"""
     from .pipeline import run_pipeline
@@ -170,8 +183,12 @@ def run_run(args: argparse.Namespace) -> int:
             force=args.force,
             json_events=args.json,
             glossary=tuple(args.glossary or ()),
+            **_agent(args),
         )
     except WorkdirError as exc:
+        print(f"tongtu run：{exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:  # 未知 agent 名 = 用法错误
         print(f"tongtu run：{exc}", file=sys.stderr)
         return 2
     return result.exit_code
@@ -180,8 +197,8 @@ def run_run(args: argparse.Namespace) -> int:
 def run_stage_cmd(args: argparse.Namespace) -> int:
     """`tongtu stage <name> <id>`：单阶段调试入口。
 
-    上游阶段一律**从工作目录装载**（不重算），目标阶段无视 manifest 必算。三个占位阶段
-    （survey / figures / export）尚未实现，退 2。
+    上游阶段一律**从工作目录装载**（不重算），目标阶段无视 manifest 必算。两个占位阶段
+    （figures / export）尚未实现，退 2。
     """
     from .pipeline import SKIPPED_STAGES, run_stage
     from .workdir import WorkdirError
@@ -198,8 +215,12 @@ def run_stage_cmd(args: argparse.Namespace) -> int:
             args.id,
             workdir=args.workdir,
             json_events=args.json,
+            **_agent(args),
         )
     except WorkdirError as exc:
+        print(f"tongtu stage {args.name}：{exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:  # 未知 agent 名 = 用法错误
         print(f"tongtu stage {args.name}：{exc}", file=sys.stderr)
         return 2
     outcome = result.stage(args.name)
@@ -225,6 +246,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="论文工作目录（默认 $TONGTU_HOME/<id> 或 ~/.local/share/tongtu/<id>）",
     )
 
+    # agent 运行时（架构 §9/§13）。默认 mock 是有意的：真运行时要花钱、要拉外部进程，
+    # 必须显式选择。choices 直接取自适配层的注册表，不在此另抄一份。
+    from .agent import AGENT_ENV, DEFAULT_AGENT, agent_names
+
+    agent_opts = argparse.ArgumentParser(add_help=False)
+    agent_opts.add_argument(
+        "--agent",
+        metavar="NAME",
+        choices=list(agent_names()),
+        default=None,
+        help=(
+            f"agent 运行时：{' / '.join(agent_names())}"
+            f"（默认 {DEFAULT_AGENT}；也可用 ${AGENT_ENV}）"
+        ),
+    )
+
     parser = argparse.ArgumentParser(
         prog="tongtu",
         parents=[global_opts],
@@ -236,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser(
         "run",
-        parents=[global_opts, workdir_opts],
+        parents=[global_opts, workdir_opts, agent_opts],
         help="跑完整流水线（幂等：按 manifest 与翻译缓存跳过已完成部分）",
     )
     p_run.add_argument("target", metavar="<arxiv-id | dir>", help="arXiv id 或本地源码目录")
@@ -262,13 +299,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_stage = sub.add_parser(
         "stage",
-        parents=[global_opts, workdir_opts],
+        parents=[global_opts, workdir_opts, agent_opts],
         help="单阶段入口，调试用（上游从工作目录装载，目标阶段必算）",
         description=(
             "只跑一个阶段：上游阶段一律从工作目录装载已有产物，不重算；目标阶段无视 "
             "manifest 必算。可单跑的阶段 = 上游产物已在工作目录里的阶段"
-            "（flatten / baseline / mask / chunk / translate / compile；"
-            "fetch 需要 arXiv id 或本地目录）；survey / figures / export 尚未实现。"
+            "（flatten / baseline / mask / survey / chunk / translate / compile；"
+            "fetch 需要 arXiv id 或本地目录）；figures / export 尚未实现。"
         ),
     )
     p_stage.add_argument("name", metavar="<name>", choices=list(STAGES), help="阶段名：" + " / ".join(STAGES))

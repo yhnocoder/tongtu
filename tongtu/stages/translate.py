@@ -22,16 +22,18 @@
 于是「译块拼接 == 掩码流的形状」由代码保证，而不是指望模型不动空白。validate 也只比对
 body 与译文 body——空白不参与判断，段落数这一层才不会被首尾换行搅混。
 
-## 本期（M2）留的接口占位
+## 上下文从哪来
 
-零期 M2 只要求「MockAgent 恒等翻译能跑通全流水线」，故与 survey（M3）耦合的部分留成
-**参数存在但可 None** 的占位，M3 填：
+`brief` / `glossary` / `style_version` 都是 **survey 阶段**的产物（架构 §3 survey 行）：
 
-* `brief`——survey 产出的全文纲要，M3 起进提示词与 cache key（当前只取其内容 hash）；
-* `glossary`——术语决策表；本模块已实现「块内命中子集」的扫描与快照（架构 §4 的
-  `relevant_terms(chunk)`），M3 只需把真表递进来；
-* `cache`——块级翻译缓存（`{cache_key: 译文}` 形状的可变映射）。key 的构成已按架构 §4
-  算全（见 :func:`cache_key`），M3 把它接到 `out/chunks.json` 这份权威翻译记忆上即可。
+* `brief`——全文纲要的渲染文本（`tongtu.stages.survey.render_brief`），进提示词；它的内容
+  hash（`brief_hash`）进 cache key；
+* `glossary`——术语决策表的 `{可命中写法: 译法}` 映射（`tongtu.glossary.term_map`）。命中
+  判定用的是 `tongtu.glossary.hit_terms`——与 `relevant_terms` 同一份实现，两处各写一遍
+  必然漂，而漂了就意味着缓存 key 与提示词不是一回事；
+* `style_version`——术语表第三段的文风规则版本号（架构 §8），bump 即全量重翻；
+* `cache`——块级翻译缓存（`{cache_key: 译文}` 形状的可变映射）。key 的构成按架构 §4 算全
+  （见 :func:`cache_key`），接到 `out/chunks.json` 这份权威翻译记忆上即可（M3 收尾项）。
 
 **刻意不传前块译文**（架构 §3 末）：邻域上下文只用原文，否则缓存失效沿块链级联、并行
 翻译退化为串行。
@@ -45,7 +47,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Iterable, Mapping, MutableMapping, Sequence
 
-from .. import CONTRACT_VERSION
+from .. import CONTRACT_VERSION, prompts
+from ..glossary import hit_terms
 from ..validate import Error, check, format_errors, summarize
 from .chunk import Chunk, ChunkPlan
 from .compile import TranslatedChunk
@@ -60,6 +63,7 @@ __all__ = [
     "JOINT",
     "OK",
     "OK_WITH_FALLBACK",
+    "PROMPT_TAIL",
     "PROMPT_VERSION",
     "Progress",
     "STATUSES",
@@ -71,6 +75,7 @@ __all__ = [
     "build_prompt",
     "cache_key",
     "normalize_source",
+    "prompt_rules",
     "split_affixes",
     "translate",
 ]
@@ -86,11 +91,11 @@ DEFAULT_MAX_RETRIES = 3
 #: 邻域原文的段数（前节末段 / 后节首段各取几段）。附录 B 开放问题 5：M3 用 fixture 校准。
 DEFAULT_NEIGHBOR_PARAGRAPHS = 1
 
-#: prompt 资产版本号。M3 的 `skill/` 落地后改为从 prompt 资产读取（PHASE0 §3.4）。
-PROMPT_VERSION = "m2-minimal"
+#: prompt 资产版本号。**单一来源在 `tongtu.prompts`**（规则住在 `skill/`，版本号跟规则走）。
+PROMPT_VERSION = prompts.PROMPT_VERSION
 
-#: 全局文风规则版本号（架构 §4：bump 即全量重翻，是显式有意的行为）。
-STYLE_VERSION = "m2-minimal"
+#: 全局文风规则版本号（架构 §4：bump 即全量重翻，是显式有意的行为）。同上，单一来源。
+STYLE_VERSION = prompts.STYLE_VERSION
 
 # 阶段状态。
 OK = "ok"
@@ -149,7 +154,7 @@ class Context:
     """本块命中的术语条目（已排序），进 cache key。"""
 
     brief: str = ""
-    """全文纲要的渲染文本（M3 由 survey 提供；本期恒为空）。"""
+    """全文纲要的渲染文本（由 survey 阶段提供，见 `tongtu.stages.survey.render_brief`）。"""
 
     @property
     def neighbor_src(self) -> str:
@@ -180,6 +185,9 @@ class ChunkTranslation:
 
     status: str = TRANSLATED
     section_path: tuple[str, ...] = ()
+    style_version: str = STYLE_VERSION
+    """生效的文风规则版本号（来自术语表第三段，架构 §8）——它进了本块的 cache_key。"""
+
     section: str | None = None
     attempts: int = 1
     cached: bool = False
@@ -222,7 +230,7 @@ class ChunkTranslation:
             "attempts": self.attempts,
             "paragraph_count": self.paragraph_count,
             "prompt_version": PROMPT_VERSION,
-            "style_version": STYLE_VERSION,
+            "style_version": self.style_version,
         }
         if self.section_path:
             data["section_path"] = list(self.section_path)
@@ -247,6 +255,7 @@ class TranslateResult:
     chunks: tuple[ChunkTranslation, ...] = ()
     model: str = ""
     brief_hash: str = ""
+    style_version: str = STYLE_VERSION
     failures_by_check: Mapping[str, int] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     message: str = ""
@@ -276,7 +285,7 @@ class TranslateResult:
         """按 `docs/schemas/chunks.schema.json` 组装翻译记忆（export 阶段照此落盘）。"""
         data: dict = {
             "contract_version": CONTRACT_VERSION,
-            "style_version": STYLE_VERSION,
+            "style_version": self.style_version,
             "prompt_version": PROMPT_VERSION,
             "chunks": [c.to_json() for c in self.chunks],
         }
@@ -297,7 +306,7 @@ class TranslateResult:
             "attempts": sum(c.attempts for c in self.chunks),
             "model": self.model,
             "prompt_version": PROMPT_VERSION,
-            "style_version": STYLE_VERSION,
+            "style_version": self.style_version,
         }
         if self.failures_by_check:
             data["failures_by_check"] = dict(self.failures_by_check)
@@ -361,20 +370,6 @@ def cache_key(
     return digest.hexdigest()
 
 
-def _hit_terms(body: str, glossary: Mapping[str, str] | None) -> tuple[tuple[str, str], ...]:
-    """块内命中的术语子集（架构 §4 的 `relevant_terms(chunk)`），按术语名排序。"""
-    if not glossary:
-        return ()
-    lowered = body.lower()
-    return tuple(
-        sorted(
-            (term, str(value))
-            for term, value in glossary.items()
-            if term and term.lower() in lowered
-        )
-    )
-
-
 def assemble_context(
     chunk: Chunk,
     plan: ChunkPlan | None = None,
@@ -402,29 +397,30 @@ def assemble_context(
     return Context(
         before=before,
         after=after,
-        terms=_hit_terms(chunk.body, glossary),
+        terms=hit_terms(chunk.body, glossary),
         brief=brief or "",
     )
 
 
-#: 逐块翻译的提示词骨架。M3 起由 `skill/` 的 prompt 资产提供（PHASE0 §3.4），届时
-#: `prompt_version` 也从那里读——本期只保证「规则写全、占位符纪律说清」，够 MockAgent
-#: 与早期真 agent 跑通。
-PROMPT_TEMPLATE = """把下面这段 LaTeX 论文正文从英文翻译成中文。
+def prompt_rules() -> str:
+    """关节⑤的规则正文 = `skill/translate.md`（PHASE0 §3.4，经 :mod:`tongtu.prompts` 装载）。
 
-纪律（机械校验会逐条比对，不满足一律打回重译）：
-1. `⟦BLK-3⟧` `⟦CAP-2⟧` 这类占位符**原样逐个保留**，不得增删改、不得调整顺序；
-2. LaTeX 命令、数学、括号原样保留（含 `\\section*` 这类星号变体）；
-3. 段落数必须与原文一致：空行分段，不合并、不拆分、不跳过；
-4. 只输出译文本身，不要解释、不要包裹代码块。
-{context}
-待翻译正文：
-"""
+    资产缺失时抛 :class:`tongtu.prompts.PromptError`——**故意让它响**：没有规则的「翻译」
+    就是拿默认文风乱译一通，而缓存 key 里的 `prompt_version` 还写着规则已经生效。
+    """
+    return prompts.load(prompts.TRANSLATE)
+
+
+#: 待翻译正文的引导行（`complete` 的 `text` 参数接在提示词之后）。
+PROMPT_TAIL = "待翻译正文："
 
 
 def build_prompt(context: Context, errors: Iterable[Error] = ()) -> str:
-    """组装提示词。`errors` 非空时把 :func:`~tongtu.validate.format_errors` 喂回去。"""
-    blocks: list[str] = []
+    """组装提示词：`skill/translate.md` 的规则 + 本块上下文 + 上一轮的校验错误。
+
+    **拼接而非 format**：规则里全是 `\\section{...}`、`⟦BLK-n⟧` 这类字面量，模板替换会炸。
+    """
+    blocks: list[str] = [prompt_rules()]
     if context.brief:
         blocks.append(f"全文纲要：\n{context.brief}")
     if context.terms:
@@ -436,16 +432,14 @@ def build_prompt(context: Context, errors: Iterable[Error] = ()) -> str:
         blocks.append(f"上文原文（仅供参考，不要翻译）：\n{context.before}")
     if context.after:
         blocks.append(f"下文原文（仅供参考，不要翻译）：\n{context.after}")
-    rendered = "\n\n" + "\n\n".join(blocks) + "\n" if blocks else "\n"
-    prompt = PROMPT_TEMPLATE.format(context=rendered)
     errors = tuple(errors)
     if errors:
-        prompt += (
-            "\n上一版译文没通过机械校验，请修正后重译（不要解释，直接给译文）：\n"
+        blocks.append(
+            "上一版译文没通过机械校验，请修正后重译（不要解释，直接给译文）：\n"
             + format_errors(errors)
-            + "\n"
         )
-    return prompt
+    blocks.append(PROMPT_TAIL)
+    return "\n\n".join(blocks) + "\n"
 
 
 # ------------------------------------------------------------------ 阶段入口
@@ -459,6 +453,7 @@ def translate(
     brief: str | None = None,
     brief_hash: str = "",
     glossary: Mapping[str, str] | None = None,
+    style_version: str = STYLE_VERSION,
     cache: MutableMapping[str, str] | None = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
     neighbor_paragraphs: int = DEFAULT_NEIGHBOR_PARAGRAPHS,
@@ -471,7 +466,8 @@ def translate(
     :param model: 模型标识，进 cache key 与 chunks.json。
     :param brief: survey 的全文纲要渲染文本（M3；本期传 None）。
     :param brief_hash: 纲要内容 hash，进 cache key（M3；本期传空）。
-    :param glossary: 术语决策表 `{术语: 译法}`（M3；本期传 None）。
+    :param glossary: 术语决策表 `{可命中写法: 译法}`（`tongtu.glossary.term_map`）。
+    :param style_version: 生效的文风规则版本号（术语表第三段）；bump 即全量重翻。
     :param cache: 块级翻译缓存 `{cache_key: 译文}`（M3 接到 chunks.json 上；本期传 None）。
     :param max_retries: validate 失败后的重试上限；总调用数 = 1 + `max_retries`。
     :param progress: 块进度回调，编排器用它发 `chunk_progress` 事件。
@@ -515,6 +511,7 @@ def translate(
             neighbor_src=context.neighbor_src,
             terms=context.terms,
             brief_hash=brief_hash,
+            style_version=style_version,
             model=model,
         )
         base = dict(
@@ -529,6 +526,7 @@ def translate(
             terms=context.terms,
             paragraph_count=chunk.paragraph_count,
             model=model,
+            style_version=style_version,
             translated_at=_now(),
         )
 
@@ -618,6 +616,7 @@ def translate(
         chunks=tuple(results),
         model=model,
         brief_hash=brief_hash,
+        style_version=style_version,
         failures_by_check=failures,
         warnings=tuple(warnings),
         message=(
