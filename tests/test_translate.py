@@ -8,8 +8,9 @@ e2e（`tests/test_e2e_identity.py`）只走恒等译文这条happy path——内
 
 from __future__ import annotations
 
+from tongtu import validate
 from tongtu.agent import SessionOutcome
-from tongtu.agent.mock import MockAgent
+from tongtu.agent.mock import PSEUDO_PREFIX, MockAgent, PseudoAgent, pseudo_translate
 from tongtu.stages.chunk import chunk_masked
 from tongtu.stages import translate as tr
 
@@ -66,6 +67,48 @@ def test_mock_transform_enables_a_pseudo_translation_variant():
     """伪翻译变体（附录 B 开放问题 2）：换个 transform 即可，零 LLM、零随机。"""
     agent = MockAgent(transform=lambda text: "【译】" + text)
     assert agent.complete("p", "abc") == "【译】abc"
+
+
+# --------------------------------------------------------------------------- #
+# PseudoAgent（伪翻译变体：中文路径的覆盖点，见 tests/test_e2e_pseudo.py）
+# --------------------------------------------------------------------------- #
+
+
+def test_pseudo_translation_passes_all_four_validate_layers():
+    """前缀句不含 `\\` `{` `}` `$` `⟦` `⟧`，故四层校验逐项不变——变体的立身之本。"""
+    translated = pseudo_translate(MASKED)
+
+    assert validate.check(MASKED, translated) == [], "伪翻译必须自带 validate 全绿"
+    assert PSEUDO_PREFIX in translated
+    assert translated.replace(PSEUDO_PREFIX, "") == MASKED, "删掉前缀句即逐字节回到原文"
+
+
+def test_pseudo_translation_skips_structural_paragraphs():
+    """结构行开头的段一律不加前缀：中文落在 `\\documentclass` 前或首个 `\\item` 前是真编译错。"""
+    stream = "⟦BLK-0⟧\n\\section{First}\n\n\\begin{itemize}\n\\item one\n\\end{itemize}\n\nProse.\n"
+
+    translated = pseudo_translate(stream)
+
+    paragraphs = translated.split("\n\n")
+    assert paragraphs[0] == "⟦BLK-0⟧\n\\section{First}", "前导区块那一段一个字也不许动"
+    assert paragraphs[1].startswith("\\begin{itemize}")
+    assert paragraphs[2] == PSEUDO_PREFIX + "Prose.\n"
+
+
+def test_pseudo_translation_is_deterministic_and_leaves_blank_text_alone():
+    assert pseudo_translate("") == ""
+    assert pseudo_translate("\n\n  \n") == "\n\n  \n"
+    assert pseudo_translate("Hi") == pseudo_translate("Hi") == PSEUDO_PREFIX + "Hi"
+    assert validate.paragraph_count(pseudo_translate(MASKED)) == validate.paragraph_count(MASKED)
+
+
+def test_pseudo_agent_is_a_mock_with_a_transform_and_its_own_model():
+    agent = PseudoAgent()
+
+    assert isinstance(agent, MockAgent)
+    assert agent.model == "pseudo" != MockAgent().model, "两个变体的翻译记忆必须分家"
+    assert agent.complete("任意提示词", "Prose.") == PSEUDO_PREFIX + "Prose."
+    assert agent.session("修一下").done is True, "session 仍是 no-op：变体只改译文"
 
 
 def test_mock_session_is_a_noop_and_records(tmp_path):

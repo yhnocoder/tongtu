@@ -30,7 +30,7 @@ from tongtu.agent.codex import (
     render_argv,
     subprocess_runner,
 )
-from tongtu.agent.mock import MockAgent
+from tongtu.agent.mock import MockAgent, PseudoAgent
 from tongtu.workdir import Workdir
 
 ANSWER = "第一段译文 ⟦BLK-1⟧"
@@ -344,7 +344,7 @@ def test_get_agent_defaults_to_mock(monkeypatch):
 
     assert isinstance(get_agent(), MockAgent), "真运行时必须是显式选择"
     assert resolve_agent_name() == DEFAULT_AGENT == "mock"
-    assert set(agent_names()) == {"mock", "codex"}
+    assert set(agent_names()) == {"mock", "pseudo", "codex"}
 
 
 def test_get_agent_by_name_and_env(monkeypatch):
@@ -353,6 +353,15 @@ def test_get_agent_by_name_and_env(monkeypatch):
     monkeypatch.setenv("TONGTU_AGENT", "codex")
     assert isinstance(get_agent(), CodexAgent)
     assert isinstance(get_agent("mock"), MockAgent), "显式参数压过环境变量"
+
+
+def test_get_agent_pseudo_is_the_chinese_path_variant(monkeypatch):
+    """`pseudo` 与 `mock` 同族但分家：译文带中文、模型标识不同（tests/test_e2e_pseudo.py）。"""
+    monkeypatch.delenv("TONGTU_AGENT", raising=False)
+    agent = get_agent("pseudo")
+
+    assert isinstance(agent, PseudoAgent) and isinstance(agent, MockAgent)
+    assert agent.model == "pseudo" != get_agent("mock").model
 
 
 def test_get_agent_passes_kwargs_and_rejects_unknown_names(monkeypatch):

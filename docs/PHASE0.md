@@ -98,7 +98,12 @@
 
 - [x] fixtures：自造最小模板论文三篇（article / revtex / 双栏会议）入仓库
 - [x] 文本层：golden-file + 往返恒等性质测试（PR 门禁）
-- [ ] 编译层：MockAgent 恒等翻译 e2e（M2 已落双形态：本机假工具 + CI texlive 镜像 pytest -m compile，PR 门禁；M4 补齐产物包断言——契约文件齐全 + 全部过 schema + anchors 页级降级路径 + 检验页含 vendor 引用；伪翻译变体待补，M5 切自建镜像）
+- [x] 编译层：MockAgent 恒等翻译 e2e（M2 已落双形态：本机假工具 + CI texlive 镜像 pytest -m compile，PR 门禁；M4 补齐产物包断言——契约文件齐全 + 全部过 schema + anchors 页级降级路径 + 检验页含 vendor 引用）
+  ——**伪翻译变体已补齐**（零期收尾）：`get_agent("pseudo")` 给每个散文段前缀一句固定中文
+  （零 LLM、零随机，删掉前缀即逐字节回到原文，validate 四层一层不动），
+  `tests/test_e2e_pseudo.py` 与恒等 e2e 同参数化跑三篇 fixture；**真 TeX 形态即 xeCJK 断行
+  与 CJK 字体链的覆盖点**（日志里出现 `There is no 以 in font` 即豆腐，当场红）。附录 B
+  开放问题 2 就此落定为「伪翻译变体」而非另造中文 fixture。CI 镜像切换见下一条
 - [x] LLM 层：手动触发 workflow，真模型 1–3 篇，report.json 入质量看板（监控不门禁）——
   `.github/workflows/llm-quality.yml`：只绑 `workflow_dispatch`（不绑 PR 事件，**结构上**
   不可能标红 PR）、最多 3 篇的预算闸、单篇失败不 fail job；输入 = arXiv id 列表 / 模型 /
@@ -154,4 +159,4 @@ M1 与 M2 之间可并行推进 fixtures 制作；figures（M4）只依赖 `src/
 
 ## 6. 开放问题（实测校准，非设计阻塞）
 
-同 [ARCHITECTURE.md](ARCHITECTURE.md) 附录 B：chunk 软/硬上限数值（M2–M3 用 fixture 校准）、恒等翻译的中文路径覆盖方式（倾向伪翻译变体）、`--json` schema、anchors 叠加次序与热区容差（M4 拿真实论文实测）、brief 字段粒度与邻域段数。
+同 [ARCHITECTURE.md](ARCHITECTURE.md) 附录 B：chunk 软/硬上限数值（M2–M3 用 fixture 校准）、`--json` schema、anchors 叠加次序与热区容差（M4 拿真实论文实测）、brief 字段粒度与邻域段数。恒等翻译的中文路径覆盖方式已落定为**伪翻译变体**（零期收尾，见 §3.7 编译层）。

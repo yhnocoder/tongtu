@@ -13,6 +13,8 @@
 - `session` 的 `done` 只表示会话结束，**裁决权在事后的校验脚本与编译**，永不信 agent 自述。
 - 所有会话转录落 `logs/`——既是审计，也是促升规则的数据来源（report.json 的干预统计）。
 - MockAgent（M2）：`complete` 恒等返回、`session` no-op——编译层 CI（恒等翻译 e2e）的钥匙。
+- PseudoAgent（`mock.py`）：同一把钥匙的伪翻译变体，每段前缀一句固定中文——恒等译文
+  不含中文，xeCJK 断行与字体那条路只有它盖得到（架构附录 B 开放问题 2）。
 - CodexAgent（M3，`codex.py`）：Codex CLI headless 拉起；`complete` 首发同走运行时。
 
 运行时用 :func:`get_agent` 选：`get_agent("codex")` / `$TONGTU_AGENT` / 默认 `mock`。
@@ -106,6 +108,12 @@ def _mock_agent(**kwargs) -> object:
     return MockAgent(**kwargs)
 
 
+def _pseudo_agent(**kwargs) -> object:
+    from .mock import PseudoAgent
+
+    return PseudoAgent(**kwargs)
+
+
 def _codex_agent(**kwargs) -> object:
     from .codex import CodexAgent
 
@@ -113,6 +121,7 @@ def _codex_agent(**kwargs) -> object:
 
 
 AGENTS["mock"] = _mock_agent
+AGENTS["pseudo"] = _pseudo_agent
 AGENTS["codex"] = _codex_agent
 
 
@@ -141,6 +150,7 @@ def get_agent(
     """按名字造一个 agent 运行时（两原语的实现），关键字参数直通构造器。
 
         get_agent()          -> MockAgent（默认，零成本）
+        get_agent("pseudo")  -> PseudoAgent（伪翻译：每段前缀固定中文，同样零成本）
         get_agent("codex")   -> CodexAgent（架构 §13 选型：首发 Codex CLI）
 
     名字未知时抛 `ValueError`（用法错误，不是运行期故障——CLI 会把它变成退出码 2）。
