@@ -1,0 +1,55 @@
+\documentclass{article}
+\usepackage{amsthm}
+\usepackage{tikz}
+\newtheorem{lemma}{Lemma}
+\newtheorem*{remark}{Remark}
+\newenvironment{highlight}{\begingroup\bfseries}{\endgroup}
+\newenvironment{myfigure}[1]{\begin{figure}[#1]}{\end{figure}}
+\NewDocumentEnvironment{fancybox}{m}{\begin{tcolorbox}[title=#1]}{\end{tcolorbox}}
+\begin{document}
+
+\begin{lemma}[Masking]
+\label{lem:mask}
+Declared theorem environments are prose: the wrapper is kept and the body is
+translated.
+\end{lemma}
+
+\begin{remark}
+Starred declarations count too.
+\end{remark}
+
+\begin{highlight}
+A \verb|\newenvironment| that decorates prose stays translatable.
+\end{highlight}
+
+\begin{myfigure}{t}
+  \includegraphics{a.pdf}
+  \caption{A delegating environment inherits the figure classification.}
+\end{myfigure}
+
+\begin{fancybox}{Title}
+Delegating to a heavy environment through xparse.
+\end{fancybox}
+
+Nested heavy environments are masked as one block:
+\begin{figure*}[t]
+  \begin{minipage}{0.45\linewidth}
+    \begin{tikzpicture}
+      \draw (0,0) -- (1,1);
+    \end{tikzpicture}
+  \end{minipage}
+  \begin{minipage}{0.45\linewidth}
+    \begin{tabular}{cc}
+      a & b \\
+    \end{tabular}
+  \end{minipage}
+  \caption{Two panels, one block.}
+  \label{fig:panels}
+\end{figure*}
+
+\begin{cosmoplot}
+An environment nobody has ever heard of: no table entry, no declaration, no
+agent to ask.  Conservative default masks it whole.
+\end{cosmoplot}
+
+\end{document}

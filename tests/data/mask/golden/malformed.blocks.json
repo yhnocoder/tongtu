@@ -1,0 +1,62 @@
+{
+ "contract_version": "0.1",
+ "source": {
+  "path": "tests/data/mask/malformed.tex",
+  "sha256": "ac8b68f0eadfad91b0651de502612e39d096523107c860fb9391c449b270aaed",
+  "chars": 368
+ },
+ "blocks": [
+  {
+   "id": "BLK-0",
+   "placeholder": "⟦BLK-0⟧",
+   "category": "preamble",
+   "tex": "\\documentclass{article}\n\\begin{document}",
+   "span": {
+    "start": 0,
+    "end": 40,
+    "line_start": 1,
+    "line_end": 2
+   },
+   "survey_restore": false
+  },
+  {
+   "id": "BLK-1",
+   "placeholder": "⟦BLK-1⟧",
+   "category": "table",
+   "tex": "\\begin{table}\n  \\caption{Costs {per stage\n  \\label{tab:broken}\n\\end{table}",
+   "span": {
+    "start": 209,
+    "end": 283,
+    "line_start": 9,
+    "line_end": 12
+   },
+   "survey_restore": false,
+   "environment": "table",
+   "label": "tab:broken"
+  }
+ ],
+ "captions": [],
+ "environments": [
+  {
+   "name": "document",
+   "classification": "prose",
+   "decided_by": "table",
+   "count": 1
+  },
+  {
+   "name": "figure",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "figure"
+  },
+  {
+   "name": "table",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "table"
+  }
+ ],
+ "roundtrip_ok": true
+}

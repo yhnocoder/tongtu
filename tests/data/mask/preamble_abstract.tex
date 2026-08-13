@@ -1,0 +1,35 @@
+\documentclass{deepseek}
+\usepackage{subcaption}
+% \title{An old title left in a comment must not be extracted}
+\title[Short title]{Masking, Unmasking and the Round Trip}
+\begin{abstract}
+Papers whose document class wants the abstract in the preamble would otherwise
+never get their abstract translated.
+
+The second paragraph is joined with a \verb|\par| marker in the caption line.
+\end{abstract}
+\begin{document}
+
+\section{Figures with several captions}
+\begin{figure}[t]
+  \begin{subfigure}{0.45\linewidth}
+    \includegraphics{a.pdf}
+    \caption{Left panel.}
+  \end{subfigure}
+  \begin{subfigure}{0.45\linewidth}
+    \includegraphics{b.pdf}
+    \caption*{Right panel, unnumbered.}
+  \end{subfigure}
+  \caption[Both panels]{The outer caption of a figure holding two subfigures.}
+  \label{fig:both}
+\end{figure}
+
+\begin{table}[h]
+  \begin{tabular}{c}
+    x \\
+  \end{tabular}
+  \captionof{table}[Short table caption]{A \verb|\captionof| inside a masked
+  block is a slot too.}
+\end{table}
+
+\end{document}

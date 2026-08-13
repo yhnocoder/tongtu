@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yhnocoder.github.io/tongtu/schemas/blocks.schema.json",
   "title": "blocks.json",
-  "description": "掩码块清单（mask 阶段产出，架构 §3.1/§7）：每个重环境的类型、label、原始 TeX 与源码位置，外加从块内抽出的可翻译 caption 槽位。unmask 按此文件回填；survey 的选择性回填视图由 category/survey_restore 字段驱动。草案级，字段随 M1 mask 迁移审计校准。",
+  "description": "掩码块清单（mask 阶段产出，架构 §3.1/§7）：每个重环境的类型、label、原始 TeX 与源码位置，外加从块内抽出的可翻译 caption 槽位。unmask 按此文件回填；survey 的选择性回填视图由 category/survey_restore 字段驱动。**掩码无损**是硬约束：掩码流是给 LLM 看的投影（重环境与散文注释都成了 ⟦BLK-n⟧、caption 被单行化摘成 ⟦CAP-k⟧ 行），凡从流里消失的内容都在本文件里留有逐字节原文，故 unmask(mask(x)) == x 逐字节成立。",
   "type": "object",
   "required": ["contract_version", "source", "blocks"],
   "additionalProperties": false,
@@ -59,11 +59,15 @@
           },
           "classification": {
             "enum": ["prose", "heavy"],
-            "description": "散文（进翻译流）或重环境（整块掩码）。"
+            "description": "散文（进翻译流）或重环境（整块掩码）。未知环境按保守默认归入 heavy，其块 category 为 unknown。"
           },
           "decided_by": {
-            "enum": ["table", "newtheorem", "agent", "default"],
-            "description": "分类来源：分类表 / \\newtheorem 声明自动归类 / 关节③ agent 判断 / 保守默认。"
+            "enum": ["table", "newtheorem", "newenvironment", "agent", "default"],
+            "description": "分类来源：分类表 / \\newtheorem 声明自动归类 / \\newenvironment 声明按其委托的环境归类 / 关节③ agent 判断 / 保守默认。"
+          },
+          "category": {
+            "type": "string",
+            "description": "heavy 环境对应的块分类（取值同 block.category）；prose 环境无此字段。"
           },
           "count": {
             "type": "integer",
@@ -125,9 +129,11 @@
             "code",
             "tikz",
             "theorem",
-            "other"
+            "comment",
+            "other",
+            "unknown"
           ],
-          "description": "块分类，驱动 unmask 的参数化回填与 survey 的选择性回填视图。"
+          "description": "块分类，驱动 unmask 的参数化回填与 survey 的选择性回填视图。comment = 散文里被掩掉的注释段（掩码无损的前提，见 tongtu/stages/mask.py 模块文档）；unknown = 分类表与关节③都没给出结论、按保守默认整块掩码的环境，供 report 统计覆盖率。"
         },
         "environment": {
           "type": "string",
@@ -139,7 +145,7 @@
         },
         "tex": {
           "type": "string",
-          "description": "原始 TeX 全文（含 \\begin/\\end），caption 已替换为 ⟦CAP-k⟧ 槽位。回填即用此串。"
+          "description": "原始 TeX 全文（含 \\begin/\\end），caption 已替换为 ⟦CAP-k⟧ 槽位。回填即用此串。带 CAP 行的块会把紧随其后的那个换行一并吸收进来（span 同步 +1），使掩码流里的 CAP 行不额外增加空行——故本串可能以换行结尾。"
         },
         "span": { "$ref": "#/$defs/span" },
         "survey_restore": {
@@ -155,7 +161,7 @@
     },
     "caption": {
       "type": "object",
-      "required": ["id", "placeholder", "text"],
+      "required": ["id", "placeholder", "text", "stream_text"],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -177,7 +183,11 @@
         },
         "text": {
           "type": "string",
-          "description": "槽位原文（进翻译流的可译文本）。"
+          "description": "槽位**逐字节原文**（含换行与注释）。回填的权威来源，也是往返自检恒等的依据。"
+        },
+        "stream_text": {
+          "type": "string",
+          "description": "该槽位在掩码流 ⟦CAP-k⟧ 行里的单行化展示文本（剥注释、折叠空白；abstract 的段落以 \\par 相连）。unmask 据此判定「未改动 ⇒ 回填原文」：流中该行文本与本字段相同或为空即视为未翻译，回填 text 原文，否则当作译文。"
         }
       }
     }

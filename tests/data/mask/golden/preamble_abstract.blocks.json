@@ -1,0 +1,176 @@
+{
+ "contract_version": "0.1",
+ "source": {
+  "path": "tests/data/mask/preamble_abstract.tex",
+  "sha256": "b04324a7f0b05a2c440cd13abd04c32074f5ab4364a916f206431e99f5b9c34c",
+  "chars": 1008
+ },
+ "blocks": [
+  {
+   "id": "BLK-0",
+   "placeholder": "⟦BLK-0⟧",
+   "category": "preamble",
+   "tex": "\\documentclass{deepseek}\n\\usepackage{subcaption}\n% \\title{An old title left in a comment must not be extracted}\n\\title[Short title]{⟦CAP-0⟧}\n\\begin{abstract}⟦CAP-1⟧\\end{abstract}\n\\begin{document}\n",
+   "span": {
+    "start": 0,
+    "end": 415,
+    "line_start": 1,
+    "line_end": 11
+   },
+   "survey_restore": false,
+   "caption_ids": [
+    "CAP-0",
+    "CAP-1"
+   ]
+  },
+  {
+   "id": "BLK-1",
+   "placeholder": "⟦BLK-1⟧",
+   "category": "figure",
+   "tex": "\\begin{figure}[t]\n  \\begin{subfigure}{0.45\\linewidth}\n    \\includegraphics{a.pdf}\n    \\caption{⟦CAP-2⟧}\n  \\end{subfigure}\n  \\begin{subfigure}{0.45\\linewidth}\n    \\includegraphics{b.pdf}\n    \\caption*{⟦CAP-3⟧}\n  \\end{subfigure}\n  \\caption[⟦CAP-4⟧]{⟦CAP-5⟧}\n  \\label{fig:both}\n\\end{figure}\n",
+   "span": {
+    "start": 456,
+    "end": 815,
+    "line_start": 14,
+    "line_end": 25
+   },
+   "survey_restore": false,
+   "environment": "figure",
+   "label": "fig:both",
+   "caption_ids": [
+    "CAP-2",
+    "CAP-3",
+    "CAP-4",
+    "CAP-5"
+   ]
+  },
+  {
+   "id": "BLK-2",
+   "placeholder": "⟦BLK-2⟧",
+   "category": "table",
+   "tex": "\\begin{table}[h]\n  \\begin{tabular}{c}\n    x \\\\\n  \\end{tabular}\n  \\captionof{table}[⟦CAP-6⟧]{⟦CAP-7⟧}\n\\end{table}\n",
+   "span": {
+    "start": 816,
+    "end": 992,
+    "line_start": 27,
+    "line_end": 33
+   },
+   "survey_restore": false,
+   "environment": "table",
+   "label": null,
+   "caption_ids": [
+    "CAP-6",
+    "CAP-7"
+   ]
+  }
+ ],
+ "captions": [
+  {
+   "id": "CAP-0",
+   "placeholder": "⟦CAP-0⟧",
+   "block_id": "BLK-0",
+   "kind": "title",
+   "text": "Masking, Unmasking and the Round Trip",
+   "stream_text": "Masking, Unmasking and the Round Trip"
+  },
+  {
+   "id": "CAP-1",
+   "placeholder": "⟦CAP-1⟧",
+   "block_id": "BLK-0",
+   "kind": "abstract",
+   "text": "\nPapers whose document class wants the abstract in the preamble would otherwise\nnever get their abstract translated.\n\nThe second paragraph is joined with a \\verb|\\par| marker in the caption line.\n",
+   "stream_text": "Papers whose document class wants the abstract in the preamble would otherwise never get their abstract translated. \\par The second paragraph is joined with a \\verb|\\par| marker in the caption line."
+  },
+  {
+   "id": "CAP-2",
+   "placeholder": "⟦CAP-2⟧",
+   "block_id": "BLK-1",
+   "kind": "caption",
+   "text": "Left panel.",
+   "stream_text": "Left panel."
+  },
+  {
+   "id": "CAP-3",
+   "placeholder": "⟦CAP-3⟧",
+   "block_id": "BLK-1",
+   "kind": "caption",
+   "text": "Right panel, unnumbered.",
+   "stream_text": "Right panel, unnumbered."
+  },
+  {
+   "id": "CAP-4",
+   "placeholder": "⟦CAP-4⟧",
+   "block_id": "BLK-1",
+   "kind": "caption",
+   "text": "Both panels",
+   "stream_text": "Both panels"
+  },
+  {
+   "id": "CAP-5",
+   "placeholder": "⟦CAP-5⟧",
+   "block_id": "BLK-1",
+   "kind": "caption",
+   "text": "The outer caption of a figure holding two subfigures.",
+   "stream_text": "The outer caption of a figure holding two subfigures."
+  },
+  {
+   "id": "CAP-6",
+   "placeholder": "⟦CAP-6⟧",
+   "block_id": "BLK-2",
+   "kind": "captionof",
+   "text": "Short table caption",
+   "stream_text": "Short table caption"
+  },
+  {
+   "id": "CAP-7",
+   "placeholder": "⟦CAP-7⟧",
+   "block_id": "BLK-2",
+   "kind": "captionof",
+   "text": "A \\verb|\\captionof| inside a masked\n  block is a slot too.",
+   "stream_text": "A \\verb|\\captionof| inside a masked block is a slot too."
+  }
+ ],
+ "environments": [
+  {
+   "name": "subfigure",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 2,
+   "category": "figure"
+  },
+  {
+   "name": "abstract",
+   "classification": "prose",
+   "decided_by": "table",
+   "count": 1
+  },
+  {
+   "name": "document",
+   "classification": "prose",
+   "decided_by": "table",
+   "count": 1
+  },
+  {
+   "name": "figure",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "figure"
+  },
+  {
+   "name": "table",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "table"
+  },
+  {
+   "name": "tabular",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "table"
+  }
+ ],
+ "roundtrip_ok": true
+}
