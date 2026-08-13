@@ -53,9 +53,9 @@
 
 ### 3.1 工程骨架〔新〕
 
-- [ ] Python 3 + uv 项目骨架（v2 零第三方依赖传统尽量保持），`tongtu` 入口
-- [ ] 目录落地：`scripts/` `skill/` `agent/` `docker/` `fallback/`（占位）`docs/schemas/`
-- [ ] 工作目录解析：`$TONGTU_HOME` / `--workdir` / 默认 `~/.local/share/tongtu/<arxiv_id>/`，四区布局 `src/ build/ out/ logs/`
+- [x] Python 3 + uv 项目骨架（v2 零第三方依赖传统尽量保持），`tongtu` 入口
+- [x] 目录落地：`tongtu/`（含 `stages/` 与 `agent/` 子模块）`skill/` `docker/` `fallback/`（占位）`docs/schemas/`——流水线代码落 Python 包 `tongtu/` 而非 `scripts/`，README 规划结构已同步
+- [x] 工作目录解析：`$TONGTU_HOME` / `--workdir` / 默认 `~/.local/share/tongtu/<arxiv_id>/`，四区布局 `src/ build/ out/ logs/`
 
 ### 3.2 确定性流水线（`scripts/`，按阶段）
 
@@ -85,9 +85,9 @@
 
 ### 3.5 产物契约与 schemas（`docs/schemas/`）〔新〕
 
-- [ ] 逐文件 schema：`blocks.json` `anchors.json` `chunks.json` `brief.json` `glossary.json` `report.json` + figures 元数据；`contract_version` 字段与变更流程（先改 schema 再改码）
-- [ ] `report.json` 含 agent 关节干预统计——促升规则（复发问题固化为代码 / 分类表 / 适配表条目）的数据来源
-- [ ] `--json` 事件流 schema 草案（阶段起止、块进度、最终结果）
+- [x] 逐文件 schema 草案：`blocks.json` `anchors.json` `chunks.json` `brief.json` `glossary.json` `report.json` + figures 元数据；`contract_version` 字段与变更流程（先改 schema 再改码）
+- [x] `report.json` 含 agent 关节干预统计（六关节 enum + promotable 标记）——促升规则的数据来源
+- [x] `--json` 事件流 schema 草案（阶段起止、块进度、最终结果）
 
 ### 3.6 静态检验页（`report.html`）〔新〕
 

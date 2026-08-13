@@ -1,0 +1,33 @@
+[project]
+name = "tongtu"
+description = "基于 LaTeX 源码的 arXiv 论文英译中引擎"
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["version"]
+
+# 运行时零第三方依赖（架构 §13：保持 v2 传统）。
+# 新增运行时依赖需要在 PR 里给出理由——这一行留空是有意的。
+dependencies = []
+
+[project.scripts]
+tongtu = "tongtu.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yhnocoder/tongtu"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "tongtu/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tongtu"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

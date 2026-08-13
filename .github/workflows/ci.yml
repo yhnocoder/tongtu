@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 层 1 文本层（架构 §12）：秒级、无 TeX、无 LLM。PR 门禁。
+  text:
+    name: 文本层（pytest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest
+
+  # 层 2 编译层（架构 §12）：分钟级、有 TeX、无 LLM——MockAgent 恒等翻译 e2e，
+  # 三篇 fixture 全流水线跑到底，产出 PDF + anchors 并通过 schema 校验。PR 门禁。
+  # 零期 M2 落地（见 docs/PHASE0.md §4），一律跑参考镜像（docker/ 双层构建，M5）。
+  #
+  # compile:
+  #   name: 编译层（恒等翻译 e2e）
+  #   runs-on: ubuntu-latest
+  #   container: ghcr.io/yhnocoder/tongtu:latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: uv sync
+  #     - run: uv run pytest -m compile
+  #
+  # 层 3 LLM 层为手动触发的独立 workflow（限预算，是质量监控不是门禁），M5 落地。

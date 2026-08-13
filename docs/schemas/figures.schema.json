@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yhnocoder.github.io/tongtu/schemas/figures.schema.json",
+  "title": "figures.json",
+  "description": "图片元数据（figures 阶段产出，架构 §3/§7，决策 9/14）：源码包内 EPS/PDF/位图 预渲染 PNG 的清单，含 caption 与全文引用段落。长边按视觉模型有效上限（≈1568px）逐图定 DPI，位图源只缩不放大；format 字段为 WebP 等扩展预留。本阶段仅依赖 src/，逐图以源文件 hash 缓存——翻译侧任何返工都不触发重渲染。",
+  "type": "object",
+  "required": ["contract_version", "figures"],
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": { "$ref": "#/$defs/contract_version" },
+    "max_long_edge_px": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "预渲染长边上限，默认 1568（视觉模型有效上限，超出纯属浪费）。"
+    },
+    "figures": {
+      "type": "array",
+      "description": "逐图元数据，按源码中出现顺序排列。",
+      "items": { "$ref": "#/$defs/figure" }
+    }
+  },
+  "$defs": {
+    "contract_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+      "description": "产物契约版本号（当前草案 0.1）。"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "小写十六进制 SHA-256。"
+    },
+    "figure": {
+      "type": "object",
+      "required": ["id", "source", "render"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "description": "图 id，如 fig-003。" },
+        "label": { "type": ["string", "null"], "description": "LaTeX \\label 值，anchors 交叉引用键。" },
+        "number": { "type": ["string", "null"], "description": "排版后编号，如 Figure 3。" },
+        "block_id": { "type": ["string", "null"], "description": "所属 figure 环境在 blocks.json 中的块 id。" },
+        "caption": {
+          "type": "object",
+          "description": "caption 原文与译文（译文来自 CAP 槽位的翻译结果）。",
+          "additionalProperties": false,
+          "properties": {
+            "source": { "type": "string" },
+            "translation": { "type": "string" }
+          }
+        },
+        "source": {
+          "type": "object",
+          "description": "源图文件（src/ 内，只读）。",
+          "required": ["path", "format"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string", "description": "相对 src/ 的路径。" },
+            "format": {
+              "enum": ["pdf", "eps", "ps", "png", "jpg", "gif", "svg", "other"],
+              "description": "源图格式。PDF 对 xelatex 是原生输入，EPS 走 epstopdf 链，编译侧零处理——预渲染只服务 AI 读图与检验页。"
+            },
+            "sha256": { "$ref": "#/$defs/sha256", "description": "逐图缓存 key。" },
+            "width_pt": { "type": "number", "exclusiveMinimum": 0 },
+            "height_pt": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "render": {
+          "type": "object",
+          "description": "预渲染产物。",
+          "required": ["path", "format", "width_px", "height_px"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string", "description": "产物包内相对路径，如 figures/fig-003.png。" },
+            "format": {
+              "enum": ["png", "webp"],
+              "description": "当前只产 png；webp 为后续体积优化预留。"
+            },
+            "width_px": { "type": "integer", "minimum": 1 },
+            "height_px": { "type": "integer", "minimum": 1 },
+            "dpi": { "type": "number", "exclusiveMinimum": 0, "description": "矢量源按长边上限反算的 DPI。" },
+            "upscaled": {
+              "type": "boolean",
+              "description": "位图源是否被放大——恒应为 false（只缩不放大）。"
+            },
+            "bytes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "referenced_in": {
+          "type": "array",
+          "description": "全文引用该图的位置（\\ref 命中），供检验页与索引跳转。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "chunk_id": { "type": "string" },
+              "paragraph": { "type": "integer", "minimum": 0 },
+              "section": { "type": "string" },
+              "text": { "type": "string", "description": "引用所在段落原文片段。" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

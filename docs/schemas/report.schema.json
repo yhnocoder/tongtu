@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yhnocoder.github.io/tongtu/schemas/report.schema.json",
+  "title": "report.json",
+  "description": "运行报告（export 阶段产出，架构 §7）：回退块、校验统计、编译警告、agent 关节干预记录与契约版本号。干预统计是**促升规则**的数据来源——复发问题据此固化为确定性代码 / 分类表 / 适配表条目，一次性问题只记在此不进编排器。静态检验页的侧栏直接消费本文件。",
+  "type": "object",
+  "required": ["contract_version", "paper", "status", "validation", "compile"],
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": { "$ref": "#/$defs/contract_version" },
+    "tongtu_version": { "type": "string", "description": "产生本包的通途版本。" },
+    "paper": {
+      "type": "object",
+      "required": ["arxiv_id"],
+      "additionalProperties": false,
+      "properties": {
+        "arxiv_id": { "type": "string" },
+        "title": { "type": "string", "description": "原文标题。" },
+        "source": { "type": "string", "description": "源码来源：arxiv e-print 或本地目录。" }
+      }
+    },
+    "status": {
+      "enum": ["ok", "ok_with_fallback", "failed"],
+      "description": "总体结果。ok_with_fallback = 出包但有回退块（退出码仍为 0）；failed = 未能出包。"
+    },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" },
+    "stages": {
+      "type": "array",
+      "description": "逐阶段执行记录（增量构建：输入未变则 cached）。",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "description": "阶段名，见 tongtu.stages.STAGES。" },
+          "status": { "enum": ["ok", "cached", "skipped", "failed"] },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "description": "机械校验统计（占位符 multiset / 控制序列 multiset / 括号与 $ 计数 / 段落数四层）。",
+      "required": ["chunks_total"],
+      "additionalProperties": false,
+      "properties": {
+        "chunks_total": { "type": "integer", "minimum": 0 },
+        "translated": { "type": "integer", "minimum": 0 },
+        "cached": { "type": "integer", "minimum": 0, "description": "缓存命中、未重新调用模型的块数。" },
+        "fallback": { "type": "integer", "minimum": 0 },
+        "retries": { "type": "integer", "minimum": 0, "description": "translate 内环重试总次数。" },
+        "failures_by_check": {
+          "type": "object",
+          "description": "各校验项的失败计数。",
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "properties": {
+            "placeholders": { "type": "integer", "minimum": 0 },
+            "control_sequences": { "type": "integer", "minimum": 0 },
+            "braces_and_math": { "type": "integer", "minimum": 0 },
+            "paragraph_count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "mask_roundtrip_ok": {
+          "type": "boolean",
+          "description": "mask 往返自检结果（unmask(mask(x)) == x）；false 时流水线不放行。"
+        }
+      }
+    },
+    "fallbacks": {
+      "type": "array",
+      "description": "回退清单：保底用原文的块与段落（保证永远出 PDF）。",
+      "items": {
+        "type": "object",
+        "required": ["chunk_id", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "chunk_id": { "type": "string" },
+          "paragraphs": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0 },
+            "description": "回退的段落序号；缺省表示整块回退。"
+          },
+          "reason": {
+            "enum": ["validate_failed", "compile_failed", "agent_error", "agent_unavailable", "other"],
+            "description": "回退原因。"
+          },
+          "detail": { "type": "string" },
+          "section": { "type": "string", "description": "所在章节，便于人工复核定位。" }
+        }
+      }
+    },
+    "compile": {
+      "type": "object",
+      "description": "编译回环结果（裁决者，agent 自述无效力）。",
+      "required": ["passed"],
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "engine": { "type": "string", "description": "恒为 xelatex（latexmk -xelatex）。" },
+        "passes": { "type": "integer", "minimum": 0, "description": "回环编译次数（含失败分诊后的重编译）。" },
+        "baseline_passed": { "type": "boolean", "description": "原文 baseline 编译是否通过（环境问题的隔离判据）。" },
+        "warnings": {
+          "type": "array",
+          "description": "编译警告（overfull hbox、缺字、未定义引用等）。",
+          "items": {
+            "type": "object",
+            "required": ["kind", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "type": "string", "description": "如 overfull_hbox / missing_character / undefined_reference。" },
+              "message": { "type": "string" },
+              "page": { "type": ["integer", "null"], "minimum": 1 },
+              "count": { "type": "integer", "minimum": 1, "description": "同类警告合并计数。" }
+            }
+          }
+        },
+        "log_path": { "type": "string", "description": "编译日志相对路径（logs/ 内）。" }
+      }
+    },
+    "agent_interventions": {
+      "type": "array",
+      "description": "agent 关节干预记录——促升规则的判据来源。每次有界拉起记一条，转录一律落 logs/。",
+      "items": {
+        "type": "object",
+        "required": ["joint", "primitive", "outcome"],
+        "additionalProperties": false,
+        "properties": {
+          "joint": {
+            "enum": ["main_file", "build_env", "env_classify", "survey", "translate", "fixup"],
+            "description": "六关节之一（①主文件 ②构建环境 ③环境分类 ④通读与术语 ⑤翻译 ⑥适配与修复）。"
+          },
+          "stage": { "type": "string", "description": "触发所在阶段。" },
+          "primitive": { "enum": ["complete", "session"], "description": "使用的适配层原语。" },
+          "trigger": { "type": "string", "description": "触发条件，如「未知环境 theorem*」「documentclass 未在适配表中」。" },
+          "outcome": {
+            "enum": ["resolved", "unresolved", "fallback"],
+            "description": "**由事后的校验脚本与编译裁决**，不是 agent 自述。"
+          },
+          "action": { "type": "string", "description": "agent 实际做了什么（一句话）。" },
+          "model_id": { "type": "string" },
+          "prompt_version": { "type": "string" },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "transcript_path": { "type": "string", "description": "logs/ 内的会话转录路径。" },
+          "promotable": {
+            "type": "boolean",
+            "description": "人工标记：该干预是否值得促升为确定性代码 / 分类表 / 适配表条目。"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "产物包文件清单及其 schema 自校验结果。",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "schema_valid": { "type": ["boolean", "null"], "description": "非 JSON 产物为 null。" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "contract_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+      "description": "产物契约版本号（当前草案 0.1）。"
+    }
+  }
+}
