@@ -1,0 +1,43 @@
+\documentclass[11pt]{article}
+\usepackage{pdfpages}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{geometry}
+\geometry{letterpaper,margin=1in}
+
+% 这是 arXiv 上常见的 pdfpages 套壳「源码」：作者只上传了编译好的 PDF，外面裹一个
+% wrapper（v2 在 1412.6980 上踩到过，见 scripts/fetch.py 尾部注释）。这类源码没有
+% 任何可翻译的正文，等同 PDF-only，必须走降级路线。
+% 套壳往往从投稿模板抄来一整套导言区，因此体量未必小到触发「无实质内容」那一条，
+% 真正的判据是「有 \includepdf 且正文体量小」——本 fixture 正是为这一条准备的。
+
+% 下面这套宏也是从投稿模板整段抄来的，是套壳文件常见的「体量来源」之一。
+
+\newcommand{\ie}{\emph{i.e.}\xspace}
+\newcommand{\eg}{\emph{e.g.}\xspace}
+\newcommand{\etal}{\emph{et al.}\xspace}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{remark}[theorem]{Remark}
+\setlength{\parskip}{0.3\baselineskip}
+\setlength{\abovedisplayskip}{6pt}
+\setlength{\belowdisplayskip}{6pt}
+
+\title{Camera Ready Version}
+\author{Anonymous}
+\date{}
+
+\begin{document}
+\includepdf[pages=-,fitpaper=true]{camera-ready.pdf}
+\end{document}
