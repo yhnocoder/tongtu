@@ -1,5 +1,5 @@
 {
- "contract_version": "0.1",
+ "contract_version": "0.2",
  "source": {
   "path": "tests/data/mask/theorem_unknown.tex",
   "sha256": "d2bd0a5b725698f926b9a0ed01f04dda2115e33518fc90fc673c0c6d89d9a910",

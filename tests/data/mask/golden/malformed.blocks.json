@@ -1,5 +1,5 @@
 {
- "contract_version": "0.1",
+ "contract_version": "0.2",
  "source": {
   "path": "tests/data/mask/malformed.tex",
   "sha256": "ac8b68f0eadfad91b0651de502612e39d096523107c860fb9391c449b270aaed",

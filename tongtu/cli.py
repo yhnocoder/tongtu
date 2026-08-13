@@ -6,10 +6,10 @@
     tongtu doctor                     # 检查 xelatex/latexmk/latexpand/字体，缺啥说啥
     tongtu preview <id>               # 打开检验页
 
-零期状态：`doctor`（M0）、`run` 与 `stage`（M2）、`retranslate`（M3）已实现；
-`preview` 属 M4，执行时退出 2 并指向 docs/PHASE0.md。
-退出码约定：0 = 成功（`doctor` 全部命中 / `run` 产物包完整产出，含有回退块的情形）；
-1 = 检查未通过或运行失败；2 = 用法错误或功能尚未实现。
+零期状态：`doctor`（M0）、`run` 与 `stage`（M2）、`retranslate`（M3）、`preview`（M4）
+全部已实现。
+退出码约定：0 = 成功（`doctor` 全部命中 / `run` 产物包完整产出，含有回退块的情形；
+`preview` 打不开浏览器但打印了路径也算成功）；1 = 检查未通过或运行失败；2 = 用法错误。
 """
 
 from __future__ import annotations
@@ -229,8 +229,8 @@ def run_retranslate(args: argparse.Namespace) -> int:
 def run_stage_cmd(args: argparse.Namespace) -> int:
     """`tongtu stage <name> <id>`：单阶段调试入口。
 
-    上游阶段一律**从工作目录装载**（不重算），目标阶段无视 manifest 必算。两个占位阶段
-    （figures / export）尚未实现，退 2。
+    上游阶段一律**从工作目录装载**（不重算），目标阶段无视 manifest 必算。占位跳过的阶段
+    （`SKIPPED_STAGES`，M4 起为空）退 2。
     """
     from .pipeline import SKIPPED_STAGES, run_stage
     from .workdir import WorkdirError
@@ -257,6 +257,77 @@ def run_stage_cmd(args: argparse.Namespace) -> int:
         return 2
     outcome = result.stage(args.name)
     return 0 if outcome is not None and outcome.ok else 1
+
+
+# ------------------------------------------------------------------------ preview
+
+
+def run_preview(args: argparse.Namespace, opener=None, server=None) -> int:
+    """`tongtu preview <id>`：打开产物包里的静态检验页（架构 §11、PHASE0 §1 第 4 条）。
+
+    退出码语义刻意宽松：**打不开浏览器不算失败**。headless 容器、SSH 会话里
+    `webbrowser.open` 必然返回 False，此时打印路径并退 0——用户拿着路径照样能开，
+    而把它判成错误只会让脚本化调用平添一个要特判的非零退出码。真正的失败只有一种：
+    产物包里没有 `report.html`（还没跑过 `tongtu run`）。
+
+    `--serve` 起一个本地 http.server：`file://` 下 PDF 走内嵌 base64，而 http 下页面会
+    走相对路径 fetch 那条快路（省掉 33% 体积的解码），大包用它更跟手。
+    """
+    import webbrowser
+
+    from .report_page import PAGE_NAME
+    from .workdir import WorkdirError, open_workdir
+
+    try:
+        paper = open_workdir(arxiv_id=args.id, workdir=args.workdir, create=False)
+    except WorkdirError as exc:
+        print(f"tongtu preview：{exc}", file=sys.stderr)
+        return 2
+    page = paper.out / PAGE_NAME
+    if not page.is_file():
+        print(
+            f"tongtu preview：没有 {page}——先跑 `tongtu run {args.id}` 出产物包",
+            file=sys.stderr,
+        )
+        return 1
+
+    if getattr(args, "serve", False):
+        return _serve(page, opener=opener, server=server)
+
+    url = page.resolve().as_uri()
+    opened = False
+    try:
+        opened = (opener or webbrowser.open)(url)
+    except Exception:  # noqa: BLE001 —— 没有浏览器不是错误
+        opened = False
+    print(url if opened else f"打不开浏览器，检验页在：{page}")
+    return 0
+
+
+def _serve(page, *, opener=None, server=None) -> int:
+    """在产物包目录上起一个本地 http.server，打开检验页（Ctrl-C 退出）。"""
+    import functools
+    import http.server
+    import webbrowser
+
+    directory = str(page.parent)
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+    factory = server or (lambda: http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler))
+    httpd = factory()
+    host, port = httpd.server_address[0], httpd.server_address[1]
+    url = f"http://{host}:{port}/{page.name}"
+    print(f"检验页：{url}（Ctrl-C 退出）")
+    try:
+        (opener or webbrowser.open)(url)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print()
+    finally:
+        httpd.server_close()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -364,8 +435,17 @@ def build_parser() -> argparse.ArgumentParser:
         "preview",
         parents=[global_opts, workdir_opts],
         help="打开静态检验页 report.html",
+        description=(
+            "打开产物包里的 out/report.html（PDF.js 渲染 zh.pdf、anchors 热区可点）。"
+            "页面完全静态自包含，双击也能开；headless 环境打不开浏览器时打印路径并退 0。"
+        ),
     )
-    p_preview.add_argument("id", metavar="<id>", help="arXiv id")
+    p_preview.add_argument("id", metavar="<id>", help="arXiv id（或本地源码目录名）")
+    p_preview.add_argument(
+        "--serve",
+        action="store_true",
+        help="起一个本地 http.server 打开（http 下页面走相对路径读 zh.pdf，大包更跟手）",
+    )
 
     return parser
 
@@ -391,6 +471,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_retranslate(args)
     if args.command == "stage":
         return run_stage_cmd(args)
+    if args.command == "preview":
+        return run_preview(args)
     return _not_implemented(args.command)
 
 

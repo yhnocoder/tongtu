@@ -116,7 +116,38 @@
             }
           }
         },
-        "log_path": { "type": "string", "description": "编译日志相对路径（logs/ 内）。" }
+        "log_path": { "type": "string", "description": "编译日志相对路径（logs/ 内）。" },
+        "inject": {
+          "type": "object",
+          "description": "xeCJK 注入与 documentclass 适配的结果（inject_cjk 的结构化摘要，决策 13：assemble 已并入 compile）。branch 说明走了哪条注入分支，adaptations 是命中的适配表条目——促升规则据此判断某类 documentclass 是否该固化进适配表。",
+          "additionalProperties": false,
+          "properties": {
+            "engine": { "type": "string", "description": "注入后的编译引擎，恒为 xelatex。" },
+            "branch": { "type": "string", "description": "注入分支：inject / already_cjk / no_documentclass 等。" },
+            "changed": { "type": "boolean", "description": "是否真改动了源码。" },
+            "documentclass": { "type": ["string", "null"], "description": "识别出的 documentclass。" },
+            "position": {
+              "type": ["string", "null"],
+              "description": "注入位置名（after_documentclass / before_begin_document / after_package …，见 tongtu/data/documentclass.json 的 positions 段）。"
+            },
+            "adaptations": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "命中的 documentclass 适配表条目。"
+            },
+            "removed_packages": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "为让 xeCJK 生效而删掉的宏包（如 CJKutf8）。"
+            },
+            "stripped_environments": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "被剥掉的环境（如原文自带的 CJK 环境）。"
+            },
+            "warnings": { "type": "array", "items": { "type": "string" } }
+          }
+        }
       }
     },
     "agent_interventions": {
@@ -169,7 +200,7 @@
     "contract_version": {
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
-      "description": "产物契约版本号（当前草案 0.1）。"
+      "description": "产物契约版本号（当前草案 0.2）。"
     }
   }
 }

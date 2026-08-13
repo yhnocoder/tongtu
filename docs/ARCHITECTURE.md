@@ -231,5 +231,5 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 1. **chunk 软目标 / 硬上限的具体数值**（掩码后散文 token 计）：软 ~4k、硬 ~8k 起步，三篇 fixture 校准（观测指标：validate 重试率、长生成漂移、术语一致性）。
 2. **恒等翻译的中文路径覆盖**：伪翻译变体（每块前缀固定中文句，零 LLM、零随机，倾向此项）vs 专门的中文 fixture。
 3. **`--json` 事件流 schema**：一期容器调度前冻结，零期先出草案。
-4. **anchors 三来源叠加的实现次序与热区容差**：零期拿真实论文实测后定。
+4. **anchors 三来源叠加的实现次序与热区容差**：零期拿真实论文实测后定。M4 已把它们收成 `tongtu/anchors.py` 的模块级常量（`SOURCE_PRIORITY` / `RECT_PADDING_PT` / `BAND_MERGE_TOLERANCE_PT` / `SYNCTEX_SCALE` 与页级降级的页码估计），改一个数即可重新校准；synctex 缺席时一律退化为页级锚点并如实标注 `source` 与 `confidence`，不伪造精确矩形。
 5. **brief 各字段粒度与邻域原文段数**：三篇 fixture 校准。

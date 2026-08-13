@@ -1,5 +1,5 @@
 {
- "contract_version": "0.1",
+ "contract_version": "0.2",
  "source": {
   "path": "tests/data/mask/verbatim_verb.tex",
   "sha256": "bf28f3d1d3f0868ad266e033c7bce9b6a3ba5572077a02af11f07320d10c5dd4",

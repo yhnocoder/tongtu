@@ -67,8 +67,8 @@
 - [x] **chunk**〔重写〕：章节树优先分块，软目标 / 硬上限以 token 计，绝不切入环境或段落
 - [x] **translate**〔新驱动 + 迁校验〕：块循环、上下文组装（brief + 命中术语 + 邻域原文，刻意不传前块译文）、缓存查询（`tongtu/memory.py` 的翻译记忆，命中即免调用）、validate 内环重试、关节⑤（`complete` 原语）；内环抽成 `translate_body`，compile 的坏段重译（`retranslate_segment`）复用同一份 validate 出口判据
 - [x] **compile**〔重写〕：unmask 回填 → inject_cjk（查适配表）→ latexmk -xelatex 回环；失败分诊、块 → 段落二分、坏段重译一次再回退原文（保证永远出 PDF）、关节⑥
-- [ ] **figures**〔新〕：EPS/PDF/位图 → PNG 预渲染（长边 ≈1568px 定 DPI，位图只缩不放）、caption 与引用段落收集；仅依赖 `src/`，与翻译轨并行，逐图 hash 缓存
-- [ ] **export**〔新，吸收 v2 package.py〕：产物包组装（zh.tex 自包含）、anchors 三来源合成、检验页生成、契约 schema 自校验
+- [x] **figures**〔新〕：EPS/PDF/位图 → PNG 预渲染（长边 ≈1568px 定 DPI，位图只缩不放）、caption 与引用段落收集；仅依赖 `src/`，与翻译轨并行，逐图 hash 缓存（渲染器可注入，本机无 pdftocairo / ImageMagick 时如实记 `skipped` 降级，少一张图从不拦流水线）
+- [x] **export**〔新，吸收 v2 package.py〕：产物包组装（`out/` 契约文件 + `zh-pack/` 自包含编译包，资产取自编译目录、不猜名字）、anchors 三来源合成（`tongtu/anchors.py`：零依赖 synctex 解析 + blocks 行号映射 + PDF 页面扫描；无 synctex 即退化为页级锚点并如实标注来源）、`report.json` 落盘（含新加的 `compile.inject` 段，契约 bump 至 0.2）、检验页生成、**契约 schema 自校验即出口判据**（任一不过判 failed）
 - [x] **增量模型**〔新〕：阶段级 `build/manifests/<stage>.json`（输入 hash → 跳过）；块级翻译缓存（key = 块源码 + 邻域 + 命中术语 + brief_hash + style_version + prompt_version + model_id），权威翻译记忆落产物 `chunks.json`——`tongtu/memory.py` 负责装载（`out/` 权威 + `build/` 工作副本）、写回与失效，`build/` 整体删除后仍能从 `out/chunks.json` 全量命中；`--force` 连块级缓存一起无视
 
 ### 3.3 agent 适配层（`agent/`）
@@ -91,14 +91,14 @@
 
 ### 3.6 静态检验页（`report.html`）〔新〕
 
-- [ ] PDF.js vendor 随包渲染 `zh.pdf`；anchors 热区半透明覆盖，点击显示原始 TeX；侧栏回退块与校验统计；figures 索引
-- [ ] 红线：无网络可开，永不加需要 server / LLM 的功能
+- [x] PDF.js vendor 随包渲染 `zh.pdf`（pdfjs-dist 3.11.174 legacy 经典构建，1.5 MB，落 `tongtu/data/report_page/vendor/pdfjs/`）；anchors 热区半透明覆盖（页级降级画虚线），点击显示原始 TeX；侧栏回退块与校验统计、agent 干预、figures 索引；数据走 data-as-JS（`report-data.js` 内嵌 zh.pdf 的 base64），file:// 双击可开，http(s) 下走相对路径 fetch 快路
+- [x] 红线：无网络可开（零外链有测试扫描把关），永不加需要 server / LLM 的功能——写进模板注释与 `app.js` 抬头
 
 ### 3.7 测试与 CI〔新〕
 
 - [x] fixtures：自造最小模板论文三篇（article / revtex / 双栏会议）入仓库
 - [x] 文本层：golden-file + 往返恒等性质测试（PR 门禁）
-- [ ] 编译层：MockAgent 恒等翻译 e2e（M2 已落双形态：本机假工具 + CI texlive 镜像 pytest -m compile，PR 门禁；anchors 断言待 M4，伪翻译变体待补，M5 切自建镜像）
+- [ ] 编译层：MockAgent 恒等翻译 e2e（M2 已落双形态：本机假工具 + CI texlive 镜像 pytest -m compile，PR 门禁；M4 补齐产物包断言——契约文件齐全 + 全部过 schema + anchors 页级降级路径 + 检验页含 vendor 引用；伪翻译变体待补，M5 切自建镜像）
 - [x] LLM 层：手动触发 workflow，真模型 1–3 篇，report.json 入质量看板（监控不门禁）——
   `.github/workflows/llm-quality.yml`：只绑 `workflow_dispatch`（不绑 PR 事件，**结构上**
   不可能标红 PR）、最多 3 篇的预算闸、单篇失败不 fail job；输入 = arXiv id 列表 / 模型 /
@@ -126,7 +126,7 @@
 
 - [x] `tongtu run`（幂等，`--force` / `--json` / `--glossary` / `--workdir`；退出码 0 = 出包）
 - [x] `tongtu retranslate`（`--chunks` / `--term` / `--all`，走块级失效重算：删缓存条目 → translate 必算 → compile 及下游按 manifest 判；上游一律装载不重算；退出码语义同 `run`）
-- [ ] `tongtu stage`（单阶段调试入口）、`tongtu doctor`（探测 xelatex / latexmk / latexpand / 字体）、`tongtu preview`
+- [x] `tongtu stage`（单阶段调试入口）、`tongtu doctor`（探测 xelatex / latexmk / latexpand / 字体）、`tongtu preview`（定位 `out/report.html` 并用 `webbrowser` 打开；`--serve` 起本地 http.server；headless 打不开浏览器则打印路径退 0）
 
 ## 4. 建议施工顺序
 

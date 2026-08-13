@@ -84,7 +84,16 @@ LATEXMK = "latexmk"
 
 #: 固定 flag（迁 v2 compile.sh）：非交互、出错继续（`-f`，要的是**尽量出 PDF** 与完整
 #: 日志，而不是第一个错就停）、安静输出（错误仍进 `.log`）。
-LATEXMK_FLAGS: tuple[str, ...] = ("-interaction=nonstopmode", "-f", "-quiet")
+#:
+#: `-synctex=1` 是通途新加的：`zh.synctex.gz` 本身就是产物契约的一份（架构 §7），也是
+#: anchors 三来源里**唯一给得出精确矩形**的那一个（`tongtu.anchors`）。不开它，检验页的
+#: 热区只能退化成页级方框——代价却只是编译时多写一个几百 KB 的映射文件。
+LATEXMK_FLAGS: tuple[str, ...] = (
+    "-interaction=nonstopmode",
+    "-f",
+    "-quiet",
+    "-synctex=1",
+)
 
 #: 引擎名 → latexmk flag。译文恒走 xelatex（架构 §13），baseline 按原文探测。
 ENGINE_FLAGS: dict[str, str] = {
@@ -554,7 +563,7 @@ def latexmk_compiler(
         （见 compile 阶段的「不比原文更糟」）。
     :param extra_args: 追加 flag（调试用，如 `-pv`）。
 
-    命令固定为 ``latexmk <engine flag> -interaction=nonstopmode -f -quiet <tex>``，
+    命令固定为 ``latexmk <engine flag> -interaction=nonstopmode -f -quiet -synctex=1 <tex>``，
     在 `build_dir` 里执行，日志取同名 `.log`。
     """
 

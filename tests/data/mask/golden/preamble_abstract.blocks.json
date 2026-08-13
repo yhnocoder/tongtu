@@ -1,5 +1,5 @@
 {
- "contract_version": "0.1",
+ "contract_version": "0.2",
  "source": {
   "path": "tests/data/mask/preamble_abstract.tex",
   "sha256": "b04324a7f0b05a2c440cd13abd04c32074f5ab4364a916f206431e99f5b9c34c",

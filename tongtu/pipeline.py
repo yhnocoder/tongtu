@@ -5,10 +5,11 @@
 阶段图对所有论文不变——PDF-only 也只是顶层分支到降级路线，不是动态重排。
 
     fetch → flatten → baseline → mask → survey → chunk → translate → compile
-                                                        → (figures) → (export)
+                                                        → figures → export
 
-括号里的两个阶段本期占位跳过（figures / export 属 M4），事件流里如实记
-`status="skipped"`，不假装做过。
+末两个阶段 M4 起转正：figures 只依赖 `src/`（与翻译轨解耦，架构 §3 / 决策 9），export
+把 `build/` 里的东西组装成 `out/` 产物包并做**契约自校验**——它的出口判据就是
+`docs/schemas/` 全绿，不绿即失败，绝不交付一个不合契约的包。
 
 ## 阶段级增量（架构 §4）
 
@@ -27,7 +28,7 @@
 * `fetch` 判 PDF-only、`baseline` 判 env_failed 等 → **结构化终止**：该阶段
   `stage_end.status="failed"`，`result.status="failed"`，退出码非 0，不往下走；
 * `compile` 带回退块仍算**成功**：退出码 0，`result.status="ok_with_fallback"`，
-  详情进 report（M4）——保证永远出 PDF 是 compile 的出口判据。
+  详情进 `out/report.json`（export 落盘）——保证永远出 PDF 是 compile 的出口判据。
 
 ## 块级增量：翻译记忆（架构 §4、决策 3）
 
@@ -53,7 +54,7 @@
 
 每次拉起记一条 :class:`Intervention`（形状对齐 `report.schema.json` 的
 `agent_interventions`），攒在 :attr:`PipelineResult.interventions`——**outcome 一律由事后
-的校验脚本与编译裁决**，不信 agent 自述（架构 §9）。report 落盘是 M4 的活。
+的校验脚本与编译裁决**，不信 agent 自述（架构 §9）。落盘由 export 完成。
 
 ## 注入点
 
@@ -79,6 +80,7 @@ from . import CONTRACT_VERSION, __version__
 from . import glossary as glossary_module
 from . import memory as memory_module
 from . import prompts
+from . import report_page
 from .agent.mock import MockAgent, identity
 from .compiler import DEFAULT_TIMEOUT, Compiler
 from .glossary import Glossary, GlossaryError
@@ -88,7 +90,9 @@ from .stages import STAGES
 from .stages import baseline as baseline_stage
 from .stages import chunk as chunk_stage
 from .stages import compile as compile_stage
+from .stages import export as export_stage
 from .stages import fetch as fetch_stage
+from .stages import figures as figures_stage
 from .stages import flatten as flatten_stage
 from .stages import mask as mask_stage
 from .stages import survey as survey_stage
@@ -130,7 +134,7 @@ class PipelineError(RuntimeError):
 
 # --------------------------------------------------------------------- 布局
 
-#: build 区里的中间产物名（`out/` 是 export 阶段的活，M4）。
+#: build 区里的中间产物名（`out/` 是 export 阶段的活）。
 MASKED_NAME = "masked.tex"
 BLOCKS_NAME = "blocks.json"
 CHUNKS_DIRNAME = "chunks"
@@ -142,11 +146,10 @@ CHUNKS_DIRNAME = "chunks"
 BRIEF_NAME = survey_stage.BRIEF_NAME
 GLOSSARY_NAME = survey_stage.GLOSSARY_NAME
 
-#: 本期占位跳过的阶段 → 落地里程碑。
-SKIPPED_STAGES: dict[str, str] = {
-    "figures": "M4（EPS/PDF/位图 → PNG 预渲染）",
-    "export": "M4（产物包组装 + anchors 合成 + 检验页）",
-}
+#: 占位跳过的阶段 → 落地里程碑。**M4 起为空**：figures 与 export 已转正，十个阶段全部
+#: 真跑。留着这张表不是为了将来再往里塞阶段（阶段图对所有论文不变，架构 §3），而是因为
+#: 「跳过」是事件流与 CLI 都认得的一个状态，删掉这条通路等于把它的语义也一并删掉。
+SKIPPED_STAGES: dict[str, str] = {}
 
 #: 阶段状态（= `events.schema.json` 的 `stage_end.status` 枚举）。
 STAGE_STATUSES: tuple[str, ...] = ("ok", "cached", "skipped", "failed")
@@ -383,7 +386,7 @@ class Events:
                 "exit_code": result.exit_code,
                 "out_dir": str(result.workdir.out),
                 "pdf": None if result.pdf is None else str(result.pdf),
-                "report": None,  # M4 export 落 out/report.json
+                "report": None if result.report is None else str(result.report),
                 "chunks_total": result.chunks_total,
                 "fallback_chunks": result.fallback_chunks,
                 "duration_ms": result.duration_ms,
@@ -434,7 +437,7 @@ OUTCOMES: tuple[str, ...] = (RESOLVED, UNRESOLVED, FELL_BACK)
 @dataclass
 class Intervention:
     """一次 agent 关节干预的记录，字段与 `report.schema.json` 的 `agent_interventions[]`
-    一一对应（M4 的 export 直接把它们摆进 report.json）。
+    一一对应（export 直接把它们摆进 report.json）。
 
     **可变**是有意的：`outcome` 在拉起的当下填不出来——裁决权在事后的校验脚本与编译
     （架构 §9），故先记 `unresolved`，等阶段结果回来再改判。agent 自述的「我修好了」
@@ -489,11 +492,14 @@ class PipelineResult:
     duration_ms: int = 0
     message: str = ""
     interventions: tuple[Intervention, ...] = ()
-    """六关节的干预记录（report.json 的 `agent_interventions`，落盘属 M4）。"""
+    """六关节的干预记录（由 export 落进 report.json 的 `agent_interventions`）。"""
 
     cache_hits: int = 0
     cache_misses: int = 0
     """翻译记忆的命中 / 未命中块数（架构 §4 块级缓存）。"""
+
+    report: Path | None = None
+    """`out/report.json`（export 产出）。未跑到 export 则为 None。"""
 
     @property
     def ok(self) -> bool:
@@ -508,6 +514,7 @@ class PipelineResult:
             "exit_code": self.exit_code,
             "workdir": str(self.workdir.path),
             "pdf": None if self.pdf is None else str(self.pdf),
+            "report": None if self.report is None else str(self.report),
             "chunks_total": self.chunks_total,
             "fallback_chunks": self.fallback_chunks,
             "cache_hits": self.cache_hits,
@@ -562,6 +569,8 @@ class Pipeline:
         soft_target: int = chunk_stage.SOFT_TARGET_TOKENS,
         hard_limit: int = chunk_stage.HARD_LIMIT_TOKENS,
         cache: MutableMapping[str, str] | None = None,
+        renderer: figures_stage.Renderer | None = None,
+        max_long_edge: int = figures_stage.DEFAULT_MAX_LONG_EDGE,
     ) -> None:
         self.workdir = workdir
         self.target = target
@@ -579,6 +588,9 @@ class Pipeline:
         self.timeout = timeout
         self.soft_target = soft_target
         self.hard_limit = hard_limit
+        self.renderer = renderer
+        self.max_long_edge = max_long_edge
+        self.started_at = _now()
 
         # 跨阶段状态（跳过的阶段由 load 从盘上装回来）
         self.flat_text: str = ""
@@ -595,9 +607,12 @@ class Pipeline:
         self.cache_hits = 0
         self.cache_misses = 0
         self.pdf: Path | None = None
+        self.figures: figures_stage.FiguresResult | None = None
+        self.export: export_stage.ExportResult | None = None
+        self.report_path: Path | None = None
         self.outcomes: list[StageOutcome] = []
 
-        # 六关节的干预记录（形状对齐 report.schema.json；落盘属 M4）
+        # 六关节的干预记录（形状对齐 report.schema.json；由 export 落进 report.json）
         self.interventions: list[Intervention] = []
         self._pending: dict[str, Intervention] = {}
         """还等着被事后裁决改判 outcome 的记录（键：阶段名 / 坏段标识）。"""
@@ -634,6 +649,14 @@ class Pipeline:
     @property
     def zh_chunks_dir(self) -> Path:
         return self.workdir.build / ZH_CHUNKS_DIRNAME
+
+    @property
+    def zh_dir(self) -> Path:
+        return self.workdir.build / compile_stage.ZH_DIRNAME
+
+    @property
+    def figures_dir(self) -> Path:
+        return self.workdir.build / figures_stage.FIGURES_DIRNAME
 
     # -- 翻译记忆 -----------------------------------------------------------
 
@@ -927,6 +950,7 @@ class Pipeline:
             interventions=tuple(self.interventions),
             cache_hits=self.cache_hits,
             cache_misses=self.cache_misses,
+            report=self.report_path,
         )
         self.events.result(result)
         return result
@@ -997,6 +1021,8 @@ class Pipeline:
                 self._translate_inputs, self._translate_compute, self._translate_load
             ),
             "compile": _Spec(self._compile_inputs, self._compile_compute, self._compile_load),
+            "figures": _Spec(self._figures_inputs, self._figures_compute, self._figures_load),
+            "export": _Spec(self._export_inputs, self._export_compute, self._export_load),
         }
 
     # ------------------------------------------------------------- fetch
@@ -1367,7 +1393,7 @@ class Pipeline:
             (self.zh_chunks_dir / f"{item.id}{chunk_stage.CHUNK_SUFFIX}").write_text(
                 item.translation, encoding="utf-8"
             )
-        # 翻译记忆写回 build 侧（权威副本随产物包走，export（M4）搬进 `out/`）。
+        # 翻译记忆写回 build 侧（权威副本随产物包走，export 搬进 `out/`）。
         memory_module.write_chunks(
             self.zh_chunks_dir / CHUNKS_NAME, result.to_chunks_json()
         )
@@ -1450,7 +1476,7 @@ class Pipeline:
         return _Work(outputs=outputs, detail=detail)
 
     def _compile_load(self) -> _Work:
-        pdf = self.workdir.build / compile_stage.ZH_DIRNAME / "zh.pdf"
+        pdf = self.zh_dir / "zh.pdf"
         if not pdf.is_file():
             return _Work(ok=False, error=f"没有 {pdf}（先跑 compile）")
         self.pdf = pdf
@@ -1458,6 +1484,221 @@ class Pipeline:
         detail = manifest.get("result", {})
         self.fallback_chunks += len(detail.get("fallbacks", ()))
         return _Work(detail=detail)
+
+    # ----------------------------------------------------------- figures
+
+    def _figures_inputs(self) -> dict[str, str]:
+        """figures 只依赖 `src/` 与掩码侧产物——**译文一律不进输入 hash**。
+
+        这正是架构 §3 / 决策 9 那句「与翻译轨并行」的可执行含义：重译一块、换个模型、
+        改术语表都不会让任何一张图重渲染。阶段序里它排在 compile 之后只是因为零期不做
+        并行执行（阶段图对所有论文不变，位置固定在 `STAGES` 里）。
+        """
+        blocks = sha256_file(self.blocks_path)
+        if not blocks:
+            raise PipelineError(f"没有 {self.blocks_path}（先跑 mask）")
+        return {
+            "src": hash_tree(self.workdir.src),
+            "blocks": blocks,
+            "chunks": sha256_file(self.chunks_dir / CHUNKS_NAME),
+            "max_long_edge": str(self.max_long_edge),
+        }
+
+    def _figures_compute(self) -> _Work:
+        if self.mask_result is None:
+            return _Work(ok=False, error="没有块清单（先跑 mask）")
+        result = figures_stage.figures(
+            self.workdir,
+            self.mask_result,
+            masked=self.mask_result.masked,
+            plan=self.plan,
+            renderer=self.renderer,
+            max_long_edge=self.max_long_edge,
+            force=self.force,
+        )
+        self.figures = result
+        for warning in result.warnings:
+            self.events.note(f"    figures：{warning}")
+        detail = result.to_json()
+        if not result.ok:
+            return _Work(ok=False, error=result.message or "figures 失败", detail=detail)
+        outputs = (result.out_dir,) if result.out_dir is not None else ()
+        return _Work(outputs=outputs, detail=detail)
+
+    def _figures_load(self) -> _Work:
+        path = self.figures_dir / figures_stage.FIGURES_JSON
+        if not path.is_file():
+            return _Work(ok=False, error=f"没有 {path}（先跑 figures）")
+        manifest = read_manifest(self.workdir, "figures") or {}
+        return _Work(detail=manifest.get("result", {}))
+
+    # ------------------------------------------------------------ export
+
+    def _export_inputs(self) -> dict[str, str]:
+        """输入 = 要装进包里的每一份东西 + 检验页模板资产。
+
+        **刻意不含**运行过程本身（阶段耗时、干预记录）：那些每跑一次都不同，塞进 hash 等于
+        取消这一阶段的缓存。于是「原样重跑」时 `out/` 一个字节都不动，report.json 描述的
+        始终是**产出这批产物的那次构建**——这正是增量构建模型该有的语义。
+        """
+        pdf = sha256_file(self.zh_dir / export_stage.ZH_PDF)
+        if not pdf:
+            raise PipelineError(f"没有 {self.zh_dir / export_stage.ZH_PDF}（先跑 compile）")
+        return {
+            "zh_tex": sha256_file(self.zh_dir / compile_stage.ZH_TEX),
+            "pdf": pdf,
+            "synctex": sha256_file(self.zh_dir / export_stage.SYNCTEX_NAME),
+            "blocks": sha256_file(self.blocks_path),
+            "chunks": sha256_file(self.zh_chunks_dir / CHUNKS_NAME),
+            "brief": sha256_file(self.brief_path),
+            "glossary": sha256_file(self.glossary_path),
+            "figures": sha256_file(self.figures_dir / figures_stage.FIGURES_JSON),
+            "page_assets": report_page.assets_hash(),
+        }
+
+    def _export_compute(self) -> _Work:
+        result = export_stage.export(
+            self.workdir,
+            report=self.report_body(),
+            title=self.workdir.arxiv_id or "",
+        )
+        self.export = result
+        for warning in result.warnings:
+            self.events.note(f"    export：{warning}")
+        detail = result.to_json()
+        if not result.ok:
+            return _Work(
+                ok=False,
+                error=result.message or "产物包不通过契约自校验",
+                detail=detail,
+            )
+        # 交付路径从此指向产物包：build/ 随时可丢，out/ 才是给人与文枢的那一份。
+        self.pdf = result.out_dir / export_stage.ZH_PDF
+        self.report_path = result.report_path
+        return _Work(outputs=result.outputs(), detail=detail)
+
+    def _export_load(self) -> _Work:
+        report = self.workdir.out / export_stage.REPORT_NAME
+        pdf = self.workdir.out / export_stage.ZH_PDF
+        if not (report.is_file() and pdf.is_file()):
+            return _Work(ok=False, error=f"产物包不完整：{self.workdir.out}（先跑 export）")
+        self.pdf = pdf
+        self.report_path = report
+        manifest = read_manifest(self.workdir, "export") or {}
+        return _Work(detail=manifest.get("result", {}))
+
+    # -------------------------------------------------- report.json 主体
+
+    def _detail(self, stage: str) -> dict:
+        outcome = next((s for s in self.outcomes if s.stage == stage), None)
+        return outcome.detail if outcome is not None and outcome.detail else {}
+
+    def report_body(self) -> dict:
+        """把这一次运行摊成 `report.schema.json` 的形状（`artifacts` 由 export 补）。
+
+        数据来源是各阶段的 `detail`——**同一份 detail 既进 manifest 也进 report**，故
+        「命中缓存的阶段」照样有账可报（`_x_load` 把 manifest 里的 result 读回来）。
+
+        `stages` 里没有 export 自己：一个阶段不为自己的成败作证（那是「我检查过了」的
+        变体，架构 §2 原则 1）。export 的成败在事件流、manifest 与退出码里，由 schema
+        校验裁决。
+        """
+        translate = self._detail("translate")
+        compiled = self._detail("compile")
+        masked = self._detail("mask")
+        baseline = self._detail("baseline")
+        fetched = self._detail("fetch")
+
+        validation: dict = {
+            "chunks_total": int(translate.get("chunk_count", self.chunks_total)),
+            "translated": int(translate.get("translated", 0)),
+            "cached": int(translate.get("cache_hits", self.cache_hits)),
+            "fallback": int(translate.get("fallback", 0)),
+            "retries": max(
+                0, int(translate.get("attempts", 0)) - int(translate.get("chunk_count", 0))
+            ),
+        }
+        if translate.get("failures_by_check"):
+            validation["failures_by_check"] = dict(translate["failures_by_check"])
+        if "roundtrip_ok" in masked:
+            validation["mask_roundtrip_ok"] = bool(masked["roundtrip_ok"])
+
+        compile_section: dict = {
+            "passed": bool(compiled.get("passed", self.pdf is not None)),
+            "engine": str(compiled.get("engine", "")),
+            "passes": int(compiled.get("passes", 0)),
+        }
+        if "passed" in baseline:
+            compile_section["baseline_passed"] = bool(baseline["passed"])
+        if compiled.get("inject"):
+            compile_section["inject"] = dict(compiled["inject"])
+        warnings = [
+            {"kind": "compile", "message": str(text)}
+            for text in compiled.get("warnings", ())
+        ]
+        if warnings:
+            compile_section["warnings"] = warnings
+        if compiled.get("log_path"):
+            compile_section["log_path"] = f"logs/{compiled['log_path']}"
+
+        paper: dict = {"arxiv_id": self.workdir.arxiv_id or ""}
+        title = ((self.brief or {}).get("paper") or {}).get("title")
+        if title:
+            paper["title"] = str(title)
+        if fetched.get("kind"):
+            paper["source"] = str(fetched["kind"])
+
+        status = "ok_with_fallback" if self.fallback_chunks else "ok"
+        body: dict = {
+            "contract_version": CONTRACT_VERSION,
+            "tongtu_version": __version__,
+            "paper": paper,
+            "status": status,
+            "started_at": self.started_at,
+            "finished_at": _now(),
+            "stages": [
+                {
+                    "name": outcome.stage,
+                    "status": outcome.status,
+                    "duration_ms": max(0, outcome.duration_ms),
+                    **({"message": outcome.error} if outcome.error else {}),
+                }
+                for outcome in self.outcomes
+            ],
+            "validation": validation,
+            "compile": compile_section,
+            "agent_interventions": [i.to_json() for i in self.interventions],
+        }
+        fallbacks = self._fallbacks(compiled)
+        if fallbacks:
+            body["fallbacks"] = fallbacks
+        return body
+
+    def _fallbacks(self, compiled: dict) -> list[dict]:
+        """回退清单：compile 的坏段 + translate 重试用尽的块（后者从翻译记忆里读）。
+
+        两条来源不重叠：compile 记的是「编译不过的段」，translate 记的是「校验过不了的
+        块」。同一个块两样都占时以 compile 的记录为准（它更具体，带段落号）。
+        """
+        entries = [dict(f) for f in compiled.get("fallbacks", ()) if isinstance(f, dict)]
+        seen = {f.get("chunk_id") for f in entries}
+        record = memory_module.read_chunks(self.zh_chunks_dir / CHUNKS_NAME)
+        for item in memory_module.entries(record):
+            if item.get("status") != translate_stage.FALLBACK:
+                continue
+            chunk_id = str(item.get("id") or "")
+            if not chunk_id or chunk_id in seen:
+                continue
+            entry: dict = {
+                "chunk_id": chunk_id,
+                "reason": str(item.get("fallback_reason") or "other"),
+            }
+            paragraphs = item.get("fallback_paragraphs")
+            if isinstance(paragraphs, (list, tuple)) and paragraphs:
+                entry["paragraphs"] = [int(p) for p in paragraphs]
+            entries.append(entry)
+            seen.add(chunk_id)
+        return entries
 
 
 # ------------------------------------------------------------------ 辅助
@@ -1643,7 +1884,8 @@ def run_stage(
     `baseline` / `mask`（要 `build/flat.tex`）、`chunk`（要 `masked.tex` + `blocks.json`）、
     `survey`（要 `masked.tex` + `blocks.json`）、`translate`（要 `build/chunks/`）、
     `compile`（要译块 + `blocks.json`）。`fetch` 只在给的是 arXiv id 或本地目录时能单跑。
-    两个占位阶段（figures / export）不可跑。
+    `figures`（要 `src/` + `blocks.json`）与 `export`（要 compile 与 figures 的产物）
+    同样可单跑。
     """
     if name not in STAGES:
         raise ValueError(f"未知阶段：{name}（可选 {', '.join(STAGES)}）")

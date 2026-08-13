@@ -97,9 +97,8 @@ def test_memory_survives_deleting_the_whole_build_directory(tools, tmp_path):
     agent = Counting()
     first = run(workdir, agent)
     spent = agent.translate_calls
-    out_path, build_path = mem.memory_paths(Workdir(path=workdir, arxiv_id="article"))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(build_path, out_path)  # export（M4）的活，本期手工搬一次
+    out_path, _ = mem.memory_paths(Workdir(path=workdir, arxiv_id="article"))
+    assert out_path.is_file(), "export 该把权威记忆写进 out/"
 
     shutil.rmtree(workdir / "build")
     rebuilt = run(workdir, agent)
@@ -188,19 +187,29 @@ def test_retranslate_all_redoes_everything(tools, tmp_path):
 
 
 def test_retranslate_also_forgets_the_authoritative_memory(tools, tmp_path):
-    """光删内存里的不算数：`out/chunks.json` 不抹，下一次 run 会把它原样装回来。"""
+    """光删内存里的那份不算数：`out/chunks.json` 不抹，下一次 run 会把它原样装回来。
+
+    M4 起 export 会在重翻之后把权威记忆**重新写回** `out/`，故事后去看那份文件必然是齐
+    的——判据因此落在过程上：失效那一步确实抹到了 `out/chunks.json`（进度行如实记账），
+    且失效的那一块确实重新翻了一遍（关节⑤被拉起恰好一次）。
+    """
     workdir = tmp_path / "work"
     agent = Counting()
     run(workdir, agent)
-    paper = Workdir(path=workdir, arxiv_id="article")
-    out_path, build_path = mem.memory_paths(paper)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(build_path, out_path)
+    spent = agent.translate_calls
+    out_path, _ = mem.memory_paths(Workdir(path=workdir, arxiv_id="article"))
     ids = [c["id"] for c in memory_file(workdir)["chunks"]]
+    assert mem.chunk_ids(mem.read_chunks(out_path)) == tuple(ids)
 
-    assert redo(workdir, agent, chunks=[ids[0]]).exit_code == 0
+    stream = io.StringIO()
+    result = retranslate(
+        "article", workdir=workdir, agent=agent, out=stream, chunks=[ids[0]]
+    )
 
-    assert mem.chunk_ids(mem.read_chunks(out_path)) == tuple(ids[1:])
+    assert result.exit_code == 0
+    assert f"来自 {out_path.name}" in stream.getvalue(), "权威记忆没被抹到"
+    assert agent.translate_calls == spent + 1
+    assert mem.chunk_ids(mem.read_chunks(out_path)) == tuple(ids), "重翻后权威记忆写回齐了"
 
 
 def test_retranslate_rejects_an_unknown_chunk_id(tools, tmp_path):

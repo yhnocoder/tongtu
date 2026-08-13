@@ -64,17 +64,27 @@ def test_bare_invocation_prints_help(capsys):
     assert "usage: tongtu" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["preview", "2401.01234"],
-        ["stage", "figures", "2401.01234"],  # 阶段名合法但本期占位跳过
-        ["stage", "export", "2401.01234"],
-    ],
-)
-def test_unimplemented_commands_exit_2(argv, capsys):
-    assert cli.main(argv) == 2
-    assert "零期施工中" in capsys.readouterr().err
+@pytest.mark.parametrize("name", ["figures", "export"])
+def test_the_last_two_stages_are_no_longer_placeholders(name, tmp_path, capsys):
+    """M4 起 figures / export 转正：`tongtu stage` 不再退 2「尚未实现」，而是照常跑。
+
+    这里给的是空工作目录，故结果是结构化失败（退 1，说清先跑哪个阶段）——**不是** 2。
+    """
+    from tongtu.pipeline import SKIPPED_STAGES
+
+    assert SKIPPED_STAGES == {}, "十个阶段全部真跑（架构 §3：阶段图对所有论文不变）"
+    code = cli.main(["stage", name, "2401.01234", "--workdir", str(tmp_path / "empty")])
+
+    assert code == 1
+    assert "先跑" in capsys.readouterr().out
+
+
+def test_preview_without_a_package_exits_1(tmp_path, capsys):
+    """`tongtu preview`：产物包里没有检验页 → 退 1 并指向 `tongtu run`（不是用法错误）。"""
+    code = cli.main(["preview", "2401.01234", "--workdir", str(tmp_path / "empty")])
+
+    assert code == 1
+    assert "tongtu run" in capsys.readouterr().err
 
 
 def test_run_and_stage_are_wired_to_the_pipeline(tmp_path, capsys):

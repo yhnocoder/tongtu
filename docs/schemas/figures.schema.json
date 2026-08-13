@@ -23,7 +23,7 @@
     "contract_version": {
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
-      "description": "产物契约版本号（当前草案 0.1）。"
+      "description": "产物契约版本号（当前草案 0.2）。"
     },
     "sha256": {
       "type": "string",

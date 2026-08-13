@@ -48,11 +48,30 @@ SCHEMAS = ROOT / "docs" / "schemas"
 #: 三篇 fixture（PHASE0 §3.7）。
 FIXTURES = ("article", "revtex", "conference")
 
-#: 编排器实际会跑的阶段（figures / export 本期占位跳过）。
+#: 编排器实际会跑的阶段——M4 起十个全跑，一个不跳。
 RUN_STAGES = (
     "fetch", "flatten", "baseline", "mask", "survey", "chunk", "translate", "compile",
+    "figures", "export",
 )
-SKIPPED = ("figures", "export")
+SKIPPED: tuple[str, ...] = ()
+
+#: 产物包顶层的契约文件（架构 §7 那张表）。`zh.synctex.gz` 不在其列——它要真 xelatex
+#: 才有，假编译器路径下缺席是**预期内**的，anchors 因此走页级降级。
+CONTRACT_FILES = (
+    "zh.tex", "zh.pdf", "blocks.json", "chunks.json", "brief.json", "glossary.json",
+    "anchors.json", "report.json", "report.html",
+)
+
+#: 过 schema 的那几份（名字 → schema 名）。
+CONTRACT_SCHEMAS = {
+    "blocks.json": "blocks",
+    "chunks.json": "chunks",
+    "brief.json": "brief",
+    "glossary.json": "glossary",
+    "anchors.json": "anchors",
+    "report.json": "report",
+    "figures/figures.json": "figures",
+}
 
 HAS_TEX = shutil.which("latexmk") is not None and shutil.which("latexpand") is not None
 
@@ -134,9 +153,8 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
 
     # --- 阶段账 ---------------------------------------------------------
     statuses = {s.stage: s.status for s in result.stages}
-    assert [s.stage for s in result.stages] == list(RUN_STAGES) + list(SKIPPED)
+    assert [s.stage for s in result.stages] == list(RUN_STAGES)
     assert all(statuses[name] == "ok" for name in RUN_STAGES), statuses
-    assert all(statuses[name] == "skipped" for name in SKIPPED), statuses
 
     # --- 阶段 manifest 落盘（架构 §4）-----------------------------------
     for name in RUN_STAGES:
@@ -148,8 +166,6 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
         assert manifest["contract_version"] == CONTRACT_VERSION
         for entry in manifest["outputs"]:
             assert (workdir / entry["path"]).exists(), f"{name} 的输出 {entry['path']} 不见了"
-    for name in SKIPPED:
-        assert not paper_dir.manifest_path(name).exists(), f"{name} 没实现却落了 manifest"
 
     # --- 掩码往返自检（架构 §3.1 第 3 条）-------------------------------
     mask_manifest = json.loads(paper_dir.manifest_path("mask").read_text(encoding="utf-8"))
@@ -207,11 +223,69 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
 
     # --- PDF ------------------------------------------------------------
     pdf = paper_dir.build / "zh" / "zh.pdf"
-    assert pdf.is_file() and result.pdf == pdf
+    assert pdf.is_file()
     assert pdf.read_bytes().startswith(b"%PDF")
     if tools == "real":
         assert pdf.stat().st_size > 1000, "真 PDF 不该这么小"
         assert (paper_dir.build / "baseline" / "flat.pdf").stat().st_size > 1000
+
+    # --- 产物包（零期验收判据：契约齐全 + 全部过 schema）------------------
+    out = paper_dir.out
+    assert result.pdf == out / "zh.pdf", "交付路径指向产物包，不是 build/"
+    assert result.report == out / "report.json"
+    for name in CONTRACT_FILES:
+        assert (out / name).is_file(), f"产物包缺契约文件 {name}"
+    assert (out / "zh.tex").read_text("utf-8") == zh_tex, "顶层 zh.tex 就是编译的那一份"
+    assert (out / "zh.pdf").read_bytes() == pdf.read_bytes()
+    for name, schema_name in CONTRACT_SCHEMAS.items():
+        document = json.loads((out / name).read_text(encoding="utf-8"))
+        errors = validate_schema(document, load_schema(schema_name))
+        assert errors == [], (name, errors)
+        assert document["contract_version"] == CONTRACT_VERSION
+
+    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "ok" and report["compile"]["passed"] is True
+    assert report["validation"]["chunks_total"] == result.chunks_total
+    assert report["validation"]["mask_roundtrip_ok"] is True
+    assert report["compile"]["inject"]["branch"] == "inject"  # 契约新加的 inject 段
+    assert [s["name"] for s in report["stages"]] == [n for n in RUN_STAGES if n != "export"]
+    assert {a["path"] for a in report["artifacts"]} >= {"zh.tex", "zh.pdf", "anchors.json"}
+    assert all(a["schema_valid"] is not False for a in report["artifacts"])
+
+    # --- 自包含 pack：解包即可 latexmk 一条命令 --------------------------
+    pack = out / "zh-pack"
+    assert (pack / "zh.tex").read_text("utf-8") == zh_tex, "包里那份与顶层逐字节相同"
+    assert (pack / "README.md").is_file()
+    assert (pack / "fonts").is_dir(), "缺字体的包在别人机器上编出来全是豆腐"
+    assert not (pack / "zh.pdf").exists(), "编译产物不进包（顶层已有一份）"
+    for asset in (paper_dir.src).iterdir():
+        if asset.is_dir() and asset.name != "__MACOSX":
+            assert (pack / asset.name).is_dir(), f"包里缺源码资产目录 {asset.name}"
+
+    # --- anchors：假编译器没有 synctex → 页级降级路径 --------------------
+    anchors = json.loads((out / "anchors.json").read_text(encoding="utf-8"))
+    assert anchors["anchors"], "一篇论文不可能一个锚点都没有"
+    assert anchors["coordinate_system"] == {"origin": "top-left", "unit": "pt"}
+    if tools == "fake":
+        assert not (out / "zh.synctex.gz").exists()
+        assert {a["source"] for a in anchors["anchors"]} == {"blocks"}, "没有 synctex 就该降级"
+        assert all(a["confidence"] < 0.5 for a in anchors["anchors"])
+        assert all(a["rects"] for a in anchors["anchors"])
+    elif (out / "zh.synctex.gz").is_file():
+        # 真 latexmk 带 `-synctex=1`（compiler.LATEXMK_FLAGS），于是这一路该出精确矩形。
+        # 写成条件断言而非硬断言：某些 TeX 发行版会把映射文件清掉，那时降级路径照样成立。
+        assert "synctex" in {a["source"] for a in anchors["anchors"]}
+    assert any(a["type"] == "section" for a in anchors["anchors"]), "章节锚点是导航的主力"
+    assert {a["id"] for a in anchors["anchors"]}.__len__() == len(anchors["anchors"])
+
+    # --- 检验页 ----------------------------------------------------------
+    page = (out / "report.html").read_text(encoding="utf-8")
+    assert 'src="vendor/pdfjs/pdf.min.js"' in page
+    assert 'src="report-data.js"' in page
+    assert (out / "vendor" / "pdfjs" / "pdf.min.js").is_file()
+    assert (out / "vendor" / "pdfjs" / "pdf.worker.min.js").is_file()
+    data = (out / "report-data.js").read_text(encoding="utf-8")
+    assert data.startswith("/*") and "window.TONGTU_REPORT = {" in data
 
     # --- 事件流过 schema ------------------------------------------------
     schema = load_schema("events")
@@ -226,6 +300,8 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     assert {e["arxiv_id"] for e in events} == {paper}
     final = events[-1]
     assert final["status"] == "ok" and final["exit_code"] == 0
+    assert final["report"] == str(out / "report.json")
+    assert final["out_dir"] == str(out)
     assert final["chunks_total"] == translate_result["chunk_count"] > 0
     assert final["fallback_chunks"] == 0
     progress = [e for e in events if e["event"] == "chunk_progress"]
@@ -236,17 +312,16 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     again, again_events = run(paper, workdir)
     assert again.exit_code == 0
     assert {s.stage: s.status for s in again.stages} == {
-        **{name: "cached" for name in RUN_STAGES},
-        **{name: "skipped" for name in SKIPPED},
+        name: "cached" for name in RUN_STAGES
     }
-    assert again.pdf == pdf and again.chunks_total == result.chunks_total
+    assert again.pdf == out / "zh.pdf" and again.chunks_total == result.chunks_total
     assert [e["event"] for e in again_events if e["event"] == "chunk_progress"] == []
     for event in again_events:
         assert validate_schema(event, schema) == []
 
 
-#: 阶段序里出现在事件流中的全部阶段（含占位跳过的两个）。
-STAGES_TOTAL = RUN_STAGES + SKIPPED
+#: 阶段序里出现在事件流中的全部阶段。
+STAGES_TOTAL = RUN_STAGES
 
 
 def test_force_recomputes_everything(tools, tmp_path):
@@ -260,10 +335,7 @@ def test_force_recomputes_everything(tools, tmp_path):
     forced, events = run("article", workdir, force=True)
 
     assert forced.exit_code == 0
-    assert {s.stage: s.status for s in forced.stages} == {
-        **{name: "ok" for name in RUN_STAGES},
-        **{name: "skipped" for name in SKIPPED},
-    }
+    assert {s.stage: s.status for s in forced.stages} == {name: "ok" for name in RUN_STAGES}
     assert [e for e in events if e["event"] == "chunk_progress"], "重算就该重新逐块翻译"
     # `--force` 连块级缓存一起无视：全量重翻，一条都不许命中（架构 §6）
     assert forced.cache_hits == 0 and forced.cache_misses == forced.chunks_total

@@ -8,6 +8,6 @@ __version__ = "0.0.1"
 
 # 产物契约版本号。所有 JSON 产物（out/*.json）与 --json 事件流均携带此值；
 # 字段级定义见 docs/schemas/*.schema.json。契约变更流程：先改 schema 再 bump 此处。
-CONTRACT_VERSION = "0.1"
+CONTRACT_VERSION = "0.2"
 
 __all__ = ["__version__", "CONTRACT_VERSION"]

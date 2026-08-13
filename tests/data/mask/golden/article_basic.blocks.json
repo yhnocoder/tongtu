@@ -1,5 +1,5 @@
 {
- "contract_version": "0.1",
+ "contract_version": "0.2",
  "source": {
   "path": "tests/data/mask/article_basic.tex",
   "sha256": "37217a89c5c5ac23428436c9b5084db4499b47e1782e80922ef9b5cc4817a318",
