@@ -652,3 +652,53 @@ def test_latexmk_compiler_reports_missing_tool(tmp_path):
 
     assert not result.ok and result.missing_tool
     assert "tongtu doctor" in result.message
+
+
+# --------------------------------------------------------------------------- #
+# 字体查找链（wheel 打包缺口，M2 收口）
+# --------------------------------------------------------------------------- #
+
+
+def test_find_fonts_locates_the_repo_copy():
+    """源码树 / editable 安装态：从包文件逐级向上找到仓库 fonts/。"""
+    from tongtu.compiler import FONT_FILES, find_fonts
+
+    fonts = find_fonts()
+
+    assert fonts.is_dir() and all((fonts / name).is_file() for name in FONT_FILES)
+
+
+def test_find_fonts_honours_explicit_and_env(tmp_path, monkeypatch):
+    from tongtu.compiler import AssetError, FONTS_ENV, FONT_FILES, find_fonts
+
+    fake = tmp_path / "fonts"
+    fake.mkdir()
+    (fake / FONT_FILES[0]).write_bytes(b"not really a font")
+
+    assert find_fonts(fake) == fake.absolute()
+    monkeypatch.setenv(FONTS_ENV, str(fake))
+    assert find_fonts() == fake.absolute()
+
+    monkeypatch.setenv(FONTS_ENV, str(tmp_path / "nope"))
+    with pytest.raises(AssetError) as exc:
+        find_fonts()
+    assert exc.value.kind == "missing_fonts"
+
+
+def test_packaged_fonts_are_declared_for_the_wheel():
+    """pyproject 必须把仓库 fonts/ force-include 进 wheel。
+
+    wheel 安装态里没有仓库根，查找链的最后一环是包内 `tongtu/data/fonts/`——这一条只能
+    在打包配置里保证，故直接盯住配置本身（真打包验证在 CI 的构建 job / 手工 uv build）。
+    """
+    import tomllib
+    from pathlib import Path
+
+    from tongtu.compiler import PACKAGED_FONTS
+
+    root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    include = config["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+
+    assert include["fonts"] == f"tongtu/{PACKAGED_FONTS}"
+    assert (root / "fonts").is_dir()
