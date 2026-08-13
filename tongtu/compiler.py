@@ -39,6 +39,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
+from importlib.resources import files
 from pathlib import Path
 from typing import Callable, Container, Iterable, Protocol
 
@@ -456,14 +457,15 @@ def _fonts_ok(path: Path) -> bool:
 
 
 def find_fonts(fonts: str | os.PathLike[str] | None = None) -> Path:
-    """定位随仓库分发的 `fonts/`（霞鹜文楷）。
+    """定位随包分发的 `fonts/`（霞鹜文楷）。
 
     解析顺序：显式参数 → `$TONGTU_FONTS` → **相对本包文件逐级向上找**（源码树 / editable
-    安装态：`tongtu/compiler.py` → 仓库根 `fonts/`）。
+    安装态：`tongtu/compiler.py` → 仓库根 `fonts/`）→ **包内 `tongtu/data/fonts/`**
+    （wheel 安装态；由 pyproject 的 `force-include` 把仓库 `fonts/` 打进去）。
 
-    找不到抛 :class:`AssetError`——**已知缺口**：wheel 安装态里仓库根不存在，字体没被打进
-    包，此路必然走空。零期不解决打包（见报告的「口径外决定」），但错误必须结构化：调用方
-    据此记警告并继续（编译才是裁决者），而不是抛出一个看不懂的 FileNotFoundError。
+    源码树优先于包内路径：开发时改仓库 `fonts/` 立即生效，而 editable 安装的包内路径本就
+    不存在，两条链互不干扰。找不到时抛 :class:`AssetError`（结构化到 `kind`）——调用方据此
+    记警告并继续（编译才是裁决者），而不是抛出一个看不懂的 FileNotFoundError。
     """
     if fonts is not None:
         path = Path(fonts).expanduser()
@@ -491,13 +493,31 @@ def find_fonts(fonts: str | os.PathLike[str] | None = None) -> Path:
         candidate = parent / FONTS_DIRNAME
         if _fonts_ok(candidate):
             return candidate
+
+    packaged = _packaged_fonts()
+    if packaged is not None:
+        return packaged
+
     raise AssetError(
-        "找不到仓库 fonts/（霞鹜文楷）——inject_cjk 注入的是相对路径 Path={fonts/}，"
-        "缺它则中文全是豆腐。源码树 / editable 安装应能自动找到；wheel 安装态请用 "
-        f"${FONTS_ENV} 或 compile_zh(fonts=...) 显式指定",
+        "找不到 fonts/（霞鹜文楷）——inject_cjk 注入的是相对路径 Path={fonts/}，"
+        "缺它则中文全是豆腐。源码树 / editable 安装从仓库根找，wheel 安装态从包内 "
+        f"{PACKAGED_FONTS} 找；都没有时请用 ${FONTS_ENV} 或 compile_zh(fonts=...) 显式指定",
         kind="missing_fonts",
         detail=str(here.parent),
     )
+
+
+#: wheel 里字体的落点（pyproject 的 `[tool.hatch.build.targets.wheel.force-include]`）。
+PACKAGED_FONTS = "data/fonts"
+
+
+def _packaged_fonts() -> Path | None:
+    """包内字体目录（wheel 安装态）。取不到真实文件系统路径（zip 导入等）则 None。"""
+    try:
+        path = Path(str(files("tongtu").joinpath(PACKAGED_FONTS)))
+    except (ModuleNotFoundError, TypeError, OSError):
+        return None
+    return path.absolute() if _fonts_ok(path) else None
 
 
 def link_fonts(build_dir: Path, fonts: str | os.PathLike[str] | None = None) -> Path:

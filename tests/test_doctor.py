@@ -67,15 +67,27 @@ def test_bare_invocation_prints_help(capsys):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["run", "2401.01234"],
         ["retranslate", "2401.01234", "--all"],
-        ["stage", "mask", "2401.01234"],
         ["preview", "2401.01234"],
+        ["stage", "survey", "2401.01234"],  # 阶段名合法但本期占位跳过
+        ["stage", "figures", "2401.01234"],
+        ["stage", "export", "2401.01234"],
     ],
 )
 def test_unimplemented_commands_exit_2(argv, capsys):
     assert cli.main(argv) == 2
     assert "零期施工中" in capsys.readouterr().err
+
+
+def test_run_and_stage_are_wired_to_the_pipeline(tmp_path, capsys):
+    """`run` / `stage` 已接线（M2）：失败走结构化退出码 1，不再是「尚未实现」的 2。
+
+    工作目录一律指到 tmp_path——测试绝不在仓库里、也不在用户默认目录下建论文目录。
+    """
+    empty = tmp_path / "nothing-here"
+    assert cli.main(["stage", "mask", "2401.01234", "--workdir", str(empty)]) == 1
+    out = capsys.readouterr().out
+    assert "先跑 fetch" in out and "failed" in out
 
 
 def test_retranslate_requires_a_scope():

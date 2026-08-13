@@ -6,8 +6,9 @@
     tongtu doctor                     # 检查 xelatex/latexmk/latexpand/字体，缺啥说啥
     tongtu preview <id>               # 打开检验页
 
-零期状态：`doctor` 已实现；其余子命令建好签名骨架，执行时退出 2 并指向 docs/PHASE0.md。
-退出码约定：0 = 成功（`doctor` 全部命中 / `run` 产物包完整产出）；
+零期状态：`doctor`（M0）、`run` 与 `stage`（M2）已实现；`retranslate` 属 M3、
+`preview` 属 M4，执行时退出 2 并指向 docs/PHASE0.md。
+退出码约定：0 = 成功（`doctor` 全部命中 / `run` 产物包完整产出，含有回退块的情形）；
 1 = 检查未通过或运行失败；2 = 用法错误或功能尚未实现。
 """
 
@@ -154,6 +155,47 @@ def _not_implemented(command: str) -> int:
     return 2
 
 
+# ------------------------------------------------------------------- run / stage
+
+
+def run_run(args: argparse.Namespace) -> int:
+    """`tongtu run`：跑完整流水线，退出码即 `PipelineResult.exit_code`（架构 §6）。"""
+    from .pipeline import run_pipeline
+
+    result = run_pipeline(
+        args.target,
+        workdir=args.workdir,
+        force=args.force,
+        json_events=args.json,
+        glossary=tuple(args.glossary or ()),
+    )
+    return result.exit_code
+
+
+def run_stage_cmd(args: argparse.Namespace) -> int:
+    """`tongtu stage <name> <id>`：单阶段调试入口。
+
+    上游阶段一律**从工作目录装载**（不重算），目标阶段无视 manifest 必算。三个占位阶段
+    （survey / figures / export）尚未实现，退 2。
+    """
+    from .pipeline import SKIPPED_STAGES, run_stage
+
+    if args.name in SKIPPED_STAGES:
+        print(
+            f"tongtu stage {args.name}：{_NOT_IMPLEMENTED}（{SKIPPED_STAGES[args.name]}）",
+            file=sys.stderr,
+        )
+        return 2
+    result = run_stage(
+        args.name,
+        args.id,
+        workdir=args.workdir,
+        json_events=args.json,
+    )
+    outcome = result.stage(args.name)
+    return 0 if outcome is not None and outcome.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     # --json 既可放在子命令前也可放在其后。默认值统一为 SUPPRESS：子命令与主 parser 共享
     # 同一个 action 对象，任何一侧设了真实默认值都会把另一侧已解析的 True 覆盖回去。
@@ -211,10 +253,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_stage = sub.add_parser(
         "stage",
         parents=[global_opts, workdir_opts],
-        help="单阶段入口，调试用",
+        help="单阶段入口，调试用（上游从工作目录装载，目标阶段必算）",
+        description=(
+            "只跑一个阶段：上游阶段一律从工作目录装载已有产物，不重算；目标阶段无视 "
+            "manifest 必算。可单跑的阶段 = 上游产物已在工作目录里的阶段"
+            "（flatten / baseline / mask / chunk / translate / compile；"
+            "fetch 需要 arXiv id 或本地目录）；survey / figures / export 尚未实现。"
+        ),
     )
     p_stage.add_argument("name", metavar="<name>", choices=list(STAGES), help="阶段名：" + " / ".join(STAGES))
-    p_stage.add_argument("id", metavar="<id>", help="arXiv id")
+    p_stage.add_argument("id", metavar="<id>", help="arXiv id（或本地源码目录，供 fetch 用）")
 
     sub.add_parser(
         "doctor",
@@ -247,6 +295,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.command == "doctor":
         return run_doctor()
+    if args.command == "run":
+        return run_run(args)
+    if args.command == "stage":
+        return run_stage_cmd(args)
     return _not_implemented(args.command)
 
 

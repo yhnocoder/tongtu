@@ -28,6 +28,16 @@ path = "tongtu/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["tongtu"]
 
+# 随仓库分发的中文字体（霞鹜文楷 Light/Medium，OFL-1.1）打进 wheel：inject_cjk 注入的是
+# 相对路径 `Path={fonts/}`，compile 把字体目录链进 build 目录，缺它则中文全是豆腐。
+# 源码树里 `fonts/` 在仓库根（README 的规划结构），wheel 里落到包内 `tongtu/data/fonts/`，
+# 查找链见 `tongtu.compiler.find_fonts`。
+[tool.hatch.build.targets.wheel.force-include]
+"fonts" = "tongtu/data/fonts"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "compile: 编译层 e2e（架构 §12 层 2）——需要真 latexmk / latexpand，本机没装即 skip，CI 在参考镜像里跑 `pytest -m compile`",
+]

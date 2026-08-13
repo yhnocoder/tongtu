@@ -14,10 +14,15 @@
 | mask      | M1 | `unmask(mask(x)) == x` 恒等；`blocks.json` 完整 |
 | survey    | M3 | `brief.json` 与结构化术语表通过 schema 校验 |
 | chunk     | M1 | 块清单（每块 = 完整段落序列） |
-| translate | M3 | validate 全绿（占位符 / 控制序列 multiset / 段落数） |
+| translate | M2 驱动 / M3 扩全 | validate 全绿（占位符 / 控制序列 multiset / 段落数） |
 | compile   | M2 | `zh.pdf` 编译通过（坏段回退原文保底） |
 | figures   | M4 | `figures/*.png` + 元数据齐全 |
 | export    | M4 | 产物包契约 schema 校验通过 |
+
+阶段序、阶段级增量（`build/manifests/<stage>.json`）与 `--json` 事件流由
+:mod:`tongtu.pipeline` 编排——本包只放各阶段的驱动器，谁也不认识谁，更不认识编排器；
+survey / figures / export 尚未实现，编排器把它们记为 `skipped`（`tongtu.pipeline.
+SKIPPED_STAGES`），不是从阶段序里删掉——阶段图对所有论文不变（架构 §3）。
 """
 
 from __future__ import annotations

@@ -19,6 +19,11 @@
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
 #: 六个 agent 关节的稳定标识符，report.json 的干预记录与事件流共用这套命名。
 JOINTS: tuple[str, ...] = (
     "main_file",      # ① flatten：主文件歧义 → 判定主文件
@@ -29,4 +34,54 @@ JOINTS: tuple[str, ...] = (
     "fixup",          # ⑥ compile：documentclass 适配与编译修复
 )
 
-__all__ = ["JOINTS"]
+
+@dataclass(frozen=True)
+class SessionOutcome:
+    """`session` 原语的返回值。
+
+    `done` **只表示会话结束**（架构 §9），不是「修好了」——裁决权在事后的校验脚本与
+    编译。驱动器拿到它之后一定会重新编译一次，故本对象里没有、也不该有任何成败字段。
+    """
+
+    done: bool = True
+    transcript_path: Path | None = None
+    message: str = ""
+
+    def to_json(self) -> dict:
+        data: dict = {"done": self.done}
+        if self.transcript_path is not None:
+            data["transcript_path"] = str(self.transcript_path)
+        if self.message:
+            data["message"] = self.message
+        return data
+
+
+class Complete(Protocol):
+    """原语一：无状态判断（逐块翻译、术语决策）。
+
+        complete(prompt, text, model) -> text
+    """
+
+    def __call__(self, prompt: str, text: str, model: str | None = None) -> str: ...
+
+
+class Session(Protocol):
+    """原语二：有状态修复（修构建环境、修编译错、documentclass 适配）。
+
+        session(prompt, workdir, model, budget) -> {done, transcript_path}
+
+    实现须能 headless 拉起、读写 `workdir`、执行命令、联网、指定模型。
+    `tongtu.compiler.SessionFn`（关节 ②/⑥ 的 `FixupRequest` 形状）是它在编译回环里的
+    包装形态，适配层用 `as_session_fn()` 一类的适配器把两者接起来。
+    """
+
+    def __call__(
+        self,
+        prompt: str,
+        workdir: str | os.PathLike[str] | None = None,
+        model: str | None = None,
+        budget: int | None = None,
+    ) -> SessionOutcome: ...
+
+
+__all__ = ["JOINTS", "Complete", "Session", "SessionOutcome"]
