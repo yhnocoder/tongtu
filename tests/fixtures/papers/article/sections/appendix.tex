@@ -1,0 +1,38 @@
+\section{Routine Computations}
+\label{app:details}
+
+\subsection{Expanding the recursion by hand}
+\label{app:expand}
+
+For completeness we unroll \eqref{eq:iteration} once more, this time writing
+every index.  With $d_{k} = \norm{\iter{k+1} - \iter{k}}$ and $\lambda$ as in
+Definition~\ref{def:stable},
+
+\begin{equation}
+  \label{eq:unrolled}
+  d_{k} \le \lambda d_{k-1} \le \lambda^{2} d_{k-2} \le \cdots
+        \le \lambda^{k} d_{0},
+  \qquad k \ge 1 .
+\end{equation}
+
+Summing the geometric series gives
+$\sum_{k \ge 0} d_{k} \le d_{0}/(1-\lambda)$, which is the bound quoted without
+proof in \cite{placeholder2018}.
+
+\begin{placeholderthm}
+\label{thm:appendix}
+Under the hypotheses of Lemma~\ref{lem:contraction} the sequence
+$\{\iter{k}\}_{k \ge 0}$ is Cauchy, hence convergent, and its limit is a fixed
+point of $\Pop$.
+\end{placeholderthm}
+
+\subsection{Command line used for the runs that did not happen}
+\label{app:cli}
+
+\begin{verbatim}
+placeholder-run --iterations 100 --tolerance 1e-6 \
+                --report out/report.json      # 100% reproducible
+\end{verbatim}
+
+The flag \texttt{-{}-report} writes a JSON summary; approximately $5\%$ of its
+fields are ever read.

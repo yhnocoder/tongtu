@@ -1,0 +1,20 @@
+% 自定义命令与自定义环境。经 \input 进前导区——flatten 展开后 mask 才看得到这些声明，
+% 因而 placeholderthm 判为 newtheorem-散文、takeaway 判为 newenvironment-散文。
+\newcommand{\Pop}{\mathcal{P}}
+\newcommand{\iter}[1]{x^{(#1)}}
+\newcommand{\tol}{\varepsilon}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\fixturename}{placeholder iteration}
+
+\theoremstyle{plain}
+\newtheorem{placeholderthm}{Theorem}[section]
+\newtheorem{placeholderlem}[placeholderthm]{Lemma}
+\theoremstyle{definition}
+\newtheorem{placeholderdef}{Definition}[section]
+
+% 只给散文加装饰的自定义环境：mask 读 \newenvironment 的 begin 代码，没有委托任何
+% 重环境，故判为散文——包裹留在掩码流里，内容照常翻译。
+\newenvironment{takeaway}
+  {\par\medskip\noindent\textbf{Takeaway.}\ \ignorespaces}
+  {\par\medskip}

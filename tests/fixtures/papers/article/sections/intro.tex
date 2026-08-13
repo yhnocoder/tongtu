@@ -1,0 +1,40 @@
+\section{Introduction}
+\label{sec:intro}
+
+Placeholder iterations arise whenever a system is described by a map that is
+cheap to evaluate and inconvenient to invert.  This note collects the
+elementary facts we rely on later.  Nothing here is new, and nothing here is
+real: the document is a fixture, and its only job is to be translated.
+
+We write $\iter{k}$ for the $k$-th iterate of the placeholder operator $\Pop$
+acting on $\Real^{n}$, and we measure progress by the increment
+$\norm{\iter{k+1} - \iter{k}}$.  The tolerance $\tol > 0$ is fixed throughout,
+and the reader may assume it is small.  Roughly $70\%$ of the statements below
+are immediate; the rest follow from Lemma~\ref{lem:contraction} together with
+the estimates of \cite{fixture2021}.
+% 一整段被注释掉的旧引言：连续整行注释会被 mask 合并成一个块，
+% 往返自检要求它逐字节复原。
+% \emph{Deleted:} an earlier version claimed a sharper rate; it did not survive
+% contact with the counterexample in Appendix~\ref{app:details}.
+Our contributions are deliberately mundane:
+
+\begin{itemize}
+  \item a restatement of the contraction estimate in the notation of
+        Section~\ref{sec:method};
+  \item a table of parameters that no experiment produced;
+  \item an appendix that repeats the argument with more indices than are
+        strictly necessary.
+\end{itemize}
+
+The remainder is organised as follows.\footnote{Sections are numbered in the
+usual way and the appendix is lettered; we mention this only because a
+footnote had to appear somewhere.}  Section~\ref{sec:method} fixes notation and
+proves the one lemma we need, Section~\ref{sec:results} reports numbers that
+were chosen rather than measured, and Appendix~\ref{app:details} expands the
+recursion by hand.
+
+\begin{takeaway}
+Everything in this fixture is synthetic.  The numbers, the references and the
+figures were generated for testing, and no claim in this document should be
+believed by anyone, including its authors.
+\end{takeaway}

@@ -1,0 +1,50 @@
+% 通途 fixture 论文（自造，原创占位内容，非真实论文）：单栏 article + 多文件源码树。
+% 侧重覆盖点：flatten（\input 展开）、前导区 \title 槽位、\newtheorem/\newenvironment
+% 声明驱动的环境分类、caption 可选参数、verbatim 与 lstlisting、bibtex 数据库。
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{listings}
+
+\input{macros}
+
+\title{On the Convergence of Placeholder Iterations}
+\author{R. Placeholder\thanks{Fixture Institute for Synthetic Papers.}
+  \and Q. Stand-In}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study a family of iterations built from an operator whose only defining
+property is that it exists.  Under a contraction assumption that we simply
+postulate, the iterates converge at a geometric rate, and the rate constant is
+whatever the assumption says it is.  We restate this fact three times, tabulate
+parameters that no experiment produced, and relegate the indices to an
+appendix.  The paper is a test fixture: every number, citation and figure in it
+was manufactured for the purpose of exercising a translation pipeline.
+\end{abstract}
+
+\input{sections/intro}
+\input{sections/method}
+\input{sections/results}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have restated a contraction estimate in three notations and observed that
+none of them changed the conclusion.  Future work will consist of restating it
+in a fourth notation.  Readers looking for content are advised that this
+document exists only so that a pipeline has something to translate.
+
+\appendix
+\input{sections/appendix}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

@@ -1,0 +1,160 @@
+% 通途 fixture 论文（自造，原创占位内容，非真实论文）：IEEEtran conference 双栏会议版式。
+% 侧重覆盖点：跨栏浮动体 figure*/table*、IEEEkeywords、\appendices、本地 .sty 提供的
+% sidenote 环境（latexpand 默认不展开 \usepackage，故 mask 侧是分类表外的未知环境
+% → 保守整块掩码）、bibtex 数据库 + 预编译 main.bbl。
+\documentclass[conference]{IEEEtran}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{fixturestyle}
+
+\newcommand{\workers}{\mathcal{W}}
+\newcommand{\tasks}{\mathcal{T}}
+
+\begin{document}
+
+\title{A Modular Framework for Placeholder Scheduling}
+
+\author{\IEEEauthorblockN{First Fixture}
+\IEEEauthorblockA{Department of Synthetic Studies\\
+Placeholder University\\
+Email: first.fixture@example.invalid}
+\and
+\IEEEauthorblockN{Second Sample}
+\IEEEauthorblockA{Synthetic Systems Group\\
+Sample Institute\\
+Email: second.sample@example.invalid}}
+
+\maketitle
+
+\begin{abstract}
+We describe a scheduling framework that assigns synthetic tasks to synthetic
+workers.  The framework has three components because three fits the column
+width, and each component is described in one subsection.  We evaluate the
+framework on a workload we invented and report an improvement over a baseline
+we also invented.  The paper is a test fixture; it contains no measurements.
+\end{abstract}
+
+\begin{IEEEkeywords}
+placeholder scheduling, synthetic workloads, fixture papers, two-column layout
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+Scheduling papers are easy to write and hard to finish.  This one is easy to
+finish because it schedules nothing.  We fix a set of tasks
+$\tasks = \{\tau_{1}, \dots, \tau_{m}\}$ and a set of workers
+$\workers$, and we write $\sched{\tau}$ for the worker to which the task
+$\tau$ is assigned.
+
+The problem is stated in Section~\ref{sec:framework}, the numbers are given in
+Section~\ref{sec:evaluation}, and the bound is proved in
+Appendix~\ref{app:bound}.  Prior work is cited in the usual quantity
+\cite{sched2020,queue2018}, and about $10\%$ of it is relevant.
+
+\section{Framework}
+\label{sec:framework}
+
+\subsection{Cost model}
+\label{sec:cost}
+
+Each task $\tau$ carries a weight $w(\tau) > 0$ and a deadline $d(\tau)$.  The
+cost of an assignment $\sched{\cdot}$ is the largest load over workers,
+
+\begin{equation}
+  \label{eq:cost}
+  C(\sched{\cdot}) = \max_{u \in \workers}
+                     \sum_{\tau : \sched{\tau} = u} w(\tau) ,
+\end{equation}
+
+which is the definition everyone uses and which we adopt without discussion.
+
+\subsection{Assignment rule}
+\label{sec:rule}
+
+The rule is greedy: sort the tasks by weight and place each on the currently
+least loaded worker.  Two properties follow immediately, and neither is
+surprising:
+
+\begin{itemize}
+  \item the rule is deterministic once ties are broken by index;
+  \item its running time is dominated by the sort.
+\end{itemize}
+
+\begin{sidenote}
+The rule above is the textbook one.  It appears here so that the fixture
+contains an environment that is defined in a local style file rather than in
+the document, which is exactly the case a conservative masker has to survive.
+\end{sidenote}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.8\textwidth]{figures/layout.png}
+  \caption{Lane view of the greedy assignment across three workers.  The lanes
+  are drawn to fill the page width and their widths encode nothing.}
+  \label{fig:layout}
+\end{figure*}
+
+\section{Evaluation}
+\label{sec:evaluation}
+
+\subsection{Workload}
+\label{sec:workload}
+
+The workload mix of Table~\ref{tab:workload} was chosen so that the shares add
+to $100\%$.  It was not sampled from any system.
+
+\begin{table}[t]
+\caption{Synthetic Workload Mix}
+\label{tab:workload}
+\centering
+\begin{tabular}{lrr}
+\hline
+Class & Share & Deadline \\
+\hline
+interactive & $45\%$ & $10$\,ms \\
+batch       & $40\%$ & $1$\,s \\
+bulk        & $15\%$ & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Results}
+\label{sec:results}
+
+Against the baseline of \cite{queue2018} the greedy rule reduces the cost of
+\eqref{eq:cost} by an amount we chose in advance.\footnote{Choosing the
+improvement in advance saves a considerable amount of experimentation.}  The
+improvement is stable under every perturbation we did not try.
+
+\begin{enumerate}
+  \item Interactive tasks meet their deadlines by construction.
+  \item Batch tasks meet theirs on average, where the average is over the runs
+        in which they do.
+  \item Bulk tasks have no deadline and therefore never miss one.
+\end{enumerate}
+
+\appendices
+
+\section{Proof of the Scheduling Bound}
+\label{app:bound}
+
+Let $C^{\star}$ denote the optimal cost.  Because the greedy rule places each
+task on a least loaded worker, the load of that worker before the placement is
+at most the average load, and the bound
+
+\begin{equation}
+  \label{eq:bound}
+  C(\sched{\cdot}) \le \left( 2 - \frac{1}{|\workers|} \right) C^{\star}
+\end{equation}
+
+follows by the standard argument, which we omit for reasons of space \& taste.
+Note that \eqref{eq:bound} is tight for the instance labelled \#1 in
+Table~\ref{tab:workload}, or would be if that table described instances.
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

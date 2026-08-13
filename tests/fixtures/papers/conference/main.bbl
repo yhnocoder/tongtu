@@ -1,0 +1,15 @@
+% 预编译 .bbl（手写，内容与 refs.bib 对应）。
+% 用途：练 flatten 的 latexpand --expand-bbl —— 参考文献被就地内联进 flat.tex。
+% 编译时 latexmk 会照常跑 bibtex 覆盖本文件，两条路径都能编译通过。
+\begin{thebibliography}{1}
+
+\bibitem{sched2020}
+F.~Fixture and S.~Sample, ``Greedy placement for synthetic task sets,'' in
+  \emph{Proceedings of the Imaginary Conference on Scheduling}, 2020, pp.
+  17--24.
+
+\bibitem{queue2018}
+C.~Stand-In, ``A baseline nobody implemented,'' \emph{Transactions on Invented
+  Systems}, vol.~3, no.~4, pp. 88--95, 2018.
+
+\end{thebibliography}

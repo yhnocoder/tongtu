@@ -97,8 +97,8 @@ TRANSPARENT_ENVS = frozenset({"document", "appendix", "appendices", "subappendic
 #: 标志「此后是附录」的环境。
 APPENDIX_ENVS = frozenset({"appendix", "appendices", "subappendices"})
 
-#: 标志「此后是附录」的宏。
-_APPENDIX_RE = re.compile(r"\\appendix(?:es)?(?![A-Za-z])")
+#: 标志「此后是附录」的宏：`\appendix`（LaTeX 内核）与 `\appendices`（IEEEtran）。
+_APPENDIX_RE = re.compile(r"\\appendi(?:x|ces)(?![A-Za-z])")
 
 #: 空行分隔符（段落边界的候选位置）。容忍 CRLF 与行尾空白。
 _BLANK_RE = re.compile(r"\n[ \t\r]*(?:\n[ \t\r]*)+")

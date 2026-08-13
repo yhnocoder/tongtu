@@ -377,3 +377,20 @@ def test_token_estimate_rules(text, expected):
 def test_token_estimate_is_additive_over_paragraphs(small):
     plan = plan_of(small)
     assert sum(c.tokens for c in plan.chunks) == sum(p.tokens for p in plan.paragraphs)
+
+
+def test_appendices_macro_marks_appendix():
+    """IEEEtran 的 `\\appendices` 同样标志附录（回归：曾只认 `\\appendix`）。"""
+    masked = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "\\section{Body}\ntext here\n\n"
+        "\\appendices\n\n"
+        "\\section{Extra}\nappendix text\n\\end{document}"
+    )
+    from tongtu.stages.chunk import chunk_masked
+
+    plan = chunk_masked(masked, soft_target=10, hard_limit=100)
+    flags = [c.is_appendix for c in plan.chunks]
+    assert flags[-1] is True, "\\appendices 之后的块应标 is_appendix"
+    assert plan.chunks[-1].section_path == ("A",)
+    assert not any(c.is_appendix for c in plan.chunks[:-1])

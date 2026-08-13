@@ -1,0 +1,15 @@
+%% fixturestyle.sty —— fixture 专用的本地宏包（自造，非真实宏包）。
+%%
+%% 存在的理由：latexpand 默认只展开 \input/\include，**不展开** \usepackage 的本地
+%% .sty，因此 sidenote 在 flatten 之后仍然是「文档里没有声明、分类表里也没有」的环境。
+%% mask 对这种环境走保守默认：整块掩码、category=unknown——只降覆盖率，绝不损坏。
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{fixturestyle}[2026/08/13 v1.0 fixture-only helper macros]
+
+\newcommand{\sched}[1]{\ensuremath{\sigma(#1)}}
+
+\newenvironment{sidenote}
+  {\par\smallskip\noindent\small\textbf{Side note:}\ \ignorespaces}
+  {\par\smallskip}
+
+\endinput
