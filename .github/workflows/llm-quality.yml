@@ -1,0 +1,293 @@
+name: LLM 质量层（手动）
+
+# 测试金字塔第三层（架构 §12）：真模型跑 1–3 篇，report.json 的关键指标汇总进 job summary。
+#
+# **是质量监控，不是门禁。** 三条纪律写进了这个文件的形状里：
+#   1. 只有 workflow_dispatch —— 不绑 pull_request / push / schedule，永远不可能把 PR 标红；
+#   2. 单篇跑挂不 fail job —— 退出码记进表格，作业照常绿（模型抖动不是代码问题）；
+#   3. 限预算 —— 最多 3 篇（架构 §12「真模型跑 1–3 篇」），超了当场拒跑。
+#
+# 真跑需要仓库 secrets（Settings → Secrets and variables → Actions → New repository secret）：
+#   OPENAI_API_KEY     —— agent=codex 时 Codex CLI 的凭据（**必需**）
+#   ANTHROPIC_API_KEY  —— 将来接 Claude Code 一类运行时时用（现在没配也不影响 codex）
+# 没配 key 就跑：agent 拉起会失败，流水线按设计回退原文出包，表格里看到的是「全回退」——
+# 那是一次有效的冒烟，不是数据。
+
+on:
+  workflow_dispatch:
+    inputs:
+      papers:
+        description: arXiv id 列表（空格或逗号分隔，最多 3 篇）
+        type: string
+        required: true
+      model:
+        description: 模型标识（留空 = agent 运行时自己的默认模型）
+        type: string
+        default: ""
+      agent:
+        description: agent 运行时（tongtu --agent 的名字）
+        type: string
+        default: codex
+      image:
+        description: 跑在哪个镜像里（参考镜像发布后填 ghcr.io/yhnocoder/tongtu:latest）
+        type: string
+        default: texlive/texlive:latest
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  quality:
+    name: 真模型试跑（监控，不门禁）
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    # 参考镜像发布前，默认值是 ci.yml 编译层那套 fallback（texlive/texlive:latest + 自己装
+    # uv）；发布后 dispatch 时填 ghcr.io/yhnocoder/tongtu:latest 即可，别的一行都不用改。
+    # GHCR 包若设为 private，这里要补 credentials（username: ${{ github.actor }} /
+    # password: ${{ secrets.GITHUB_TOKEN }}）——公开包不要加，否则拉 docker.io 的镜像时
+    # 会拿着 GH token 去 docker hub 登录。
+    container:
+      image: ${{ inputs.image }}
+
+    env:
+      # 论文工作目录不进仓库（架构 §5）：$TONGTU_HOME/<arxiv_id>/{src,build,out,logs}
+      TONGTU_HOME: ${{ github.workspace }}/.tongtu-home
+      QUALITY_DIR: ${{ github.workspace }}/.llm-quality
+      AGENT: ${{ inputs.agent }}
+      MODEL: ${{ inputs.model }}
+      IMAGE: ${{ inputs.image }}
+      # Codex CLI 的家目录（下面把模型写进它的 config.toml，见「下发模型」那一步）
+      CODEX_HOME: ${{ github.workspace }}/.codex
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 预算闸（最多 3 篇）
+        run: |
+          set -euo pipefail
+          papers="$(echo "${{ inputs.papers }}" | tr ',' ' ' | xargs)"
+          if [ -z "$papers" ]; then
+            echo "papers 是空的，没什么可跑" >&2
+            exit 1
+          fi
+          count=$(echo "$papers" | wc -w)
+          if [ "$count" -gt 3 ]; then
+            echo "一次最多 3 篇（架构 §12 限预算），这次给了 $count 篇：$papers" >&2
+            exit 1
+          fi
+          echo "PAPERS=$papers" >> "$GITHUB_ENV"
+          echo "跑 $count 篇：$papers"
+
+      # 参考镜像里已经有 uv 与装好的 tongtu，但这里**一律从 checkout 的代码跑**——
+      # 质量层量的是当前树的表现，镜像只负责提供 TeX。fallback 镜像里连 uv 都没有，
+      # 装法与 ci.yml 编译层一致（官方安装脚本最省事）。
+      - name: 装 uv 与通途
+        run: |
+          set -euo pipefail
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          uv sync
+          uv run tongtu doctor || true
+
+      # agent 运行时不进参考镜像（镜像只管确定性的 TeX + 通途；运行时是每次跑的选择）。
+      # 镜像里已经有就跳过，没有就现装——codex 走 npm 发行渠道。
+      - name: 装 agent 运行时（${{ inputs.agent }}）
+        if: ${{ inputs.agent != 'mock' }}
+        run: |
+          set -euo pipefail
+          if [ "$AGENT" != "codex" ]; then
+            echo "运行时 $AGENT 没有自动安装分支，请先在镜像或本步骤里备好它" >&2
+            command -v "$AGENT" >/dev/null 2>&1 || exit 1
+            exit 0
+          fi
+          if command -v codex >/dev/null 2>&1; then
+            codex --version
+            exit 0
+          fi
+          if ! command -v npm >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends nodejs npm
+            rm -rf /var/lib/apt/lists/*
+          fi
+          npm install -g @openai/codex
+          codex --version
+
+      # 口径外的一处现实：`tongtu run` 目前没有 `--model`（CLI 只有 `--agent`，模型是
+      # 适配层构造参数）。故模型经运行时自己的配置下发——CodexAgent 的 model 为空时不下
+      # `--model`，Codex CLI 就用 $CODEX_HOME/config.toml 里的 model。等 CLI 有了
+      # `--model` / `$TONGTU_MODEL`，把这一步换成一个命令行参数即可。
+      - name: 下发模型
+        if: ${{ inputs.model != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_HOME"
+          printf 'model = "%s"\n' "$MODEL" > "$CODEX_HOME/config.toml"
+          cat "$CODEX_HOME/config.toml"
+
+      # 单篇失败不 fail step（监控不门禁）：退出码写进文件，汇总时照实摆进表格。
+      - name: 跑
+        run: |
+          set -uo pipefail
+          set +e  # 默认 shell 是 `bash -e`；这里要的是「跑挂了也接着跑下一篇」
+          mkdir -p "$QUALITY_DIR" "$TONGTU_HOME"
+          for id in $PAPERS; do
+            safe="${id//\//_}"
+            echo "::group::tongtu run $id"
+            uv run tongtu run "$id" --agent "$AGENT" --json \
+              > "$QUALITY_DIR/$safe.events.jsonl"
+            code=$?
+            echo "$code" > "$QUALITY_DIR/$safe.exit"
+            echo "退出码 $code"
+            if [ -f "$TONGTU_HOME/$safe/out/report.json" ]; then
+              cp "$TONGTU_HOME/$safe/out/report.json" "$QUALITY_DIR/$safe.report.json"
+            fi
+            tail -n 20 "$QUALITY_DIR/$safe.events.jsonl" || true
+            echo "::endgroup::"
+          done
+
+      # 汇总：优先读产物包里的 report.json（架构 §7 的权威统计）；export 阶段尚未落地
+      # （PHASE0 §3.2，report.json 属 M4）时降级到 `--json` 事件流，能算多少算多少，
+      # 算不出的字段写「—」而不是编个 0。
+      - name: 汇总进 job summary
+        if: always()
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          import pathlib
+
+          home = pathlib.Path(os.environ["TONGTU_HOME"])
+          qdir = pathlib.Path(os.environ["QUALITY_DIR"])
+          papers = os.environ.get("PAPERS", "").split()
+          agent = os.environ.get("AGENT", "")
+          model = os.environ.get("MODEL", "") or "(运行时默认)"
+
+          def load_json(path):
+              try:
+                  return json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, ValueError):
+                  return None
+
+          def load_events(path):
+              events = []
+              try:
+                  text = path.read_text(encoding="utf-8", errors="replace")
+              except OSError:
+                  return events
+              for line in text.splitlines():
+                  line = line.strip()
+                  if not line.startswith("{"):
+                      continue  # `--json` 之外的人类可读输出，跳过
+                  try:
+                      events.append(json.loads(line))
+                  except ValueError:
+                      pass
+              return events
+
+          def cell(value):
+              return "—" if value is None else str(value)
+
+          print("## LLM 质量层试跑")
+          print()
+          print(f"- 运行时：`{agent}` ／ 模型：`{model}` ／ 镜像：`{os.environ.get('IMAGE', '')}`")
+          print("- **监控不门禁**：单篇失败不代表代码坏了，看趋势而不是看红绿。")
+          print()
+          header = (
+              "| 论文 | 结果 | 退出码 | 块数 | 回退块 | 校验重试 | agent 干预 | 编译警告 | 编译 | 耗时 |"
+          )
+          print(header)
+          print("|---|---|---|---|---|---|---|---|---|---|")
+
+          for pid in papers:
+              safe = pid.replace("/", "_")
+              report = load_json(qdir / f"{safe}.report.json") or load_json(
+                  home / safe / "out" / "report.json"
+              )
+              events = load_events(qdir / f"{safe}.events.jsonl")
+              result = next(
+                  (e for e in reversed(events) if e.get("event") == "result"), {}
+              )
+              progress = [e for e in events if e.get("event") == "chunk_progress"]
+
+              try:
+                  code = (qdir / f"{safe}.exit").read_text(encoding="utf-8").strip()
+              except OSError:
+                  code = "—"
+
+              validation = (report or {}).get("validation", {})
+              compile_info = (report or {}).get("compile", {})
+
+              status = (report or {}).get("status") or result.get("status")
+              chunks = validation.get("chunks_total", result.get("chunks_total"))
+
+              fallback = validation.get("fallback")
+              if fallback is None and report is not None:
+                  fallback = len(report.get("fallbacks", []))
+              if fallback is None:
+                  fallback = result.get("fallback_chunks")
+              if fallback is None and progress:
+                  fallback = sum(1 for e in progress if e.get("status") == "fallback")
+
+              retries = validation.get("retries")
+              if retries is None and progress:
+                  retries = sum(1 for e in progress if e.get("status") == "retry")
+
+              interventions = (
+                  len(report.get("agent_interventions", [])) if report is not None else None
+              )
+
+              warnings = None
+              if compile_info:
+                  warnings = sum(w.get("count", 1) for w in compile_info.get("warnings", []))
+
+              compiled = compile_info.get("passed")
+              compiled = "—" if compiled is None else ("通过" if compiled else "未通过")
+
+              duration = result.get("duration_ms")
+              duration = "—" if duration is None else f"{duration / 1000:.0f}s"
+
+              print(
+                  "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                      pid,
+                      cell(status),
+                      code,
+                      cell(chunks),
+                      cell(fallback),
+                      cell(retries),
+                      cell(interventions),
+                      cell(warnings),
+                      compiled,
+                      duration,
+                  )
+              )
+
+          print()
+          missing = [
+              p for p in papers
+              if not (qdir / f"{p.replace('/', '_')}.report.json").is_file()
+          ]
+          if missing:
+              print(
+                  "> 这些论文没有 `out/report.json`，表内数据来自 `--json` 事件流（export "
+                  "阶段属 M4，见 PHASE0 §3.2）：" + "、".join(f"`{p}`" for p in missing)
+              )
+          PY
+
+      # 转录与事件流留档：促升规则（架构 §2.3）判断「复发问题」的原始数据。
+      # 产物包整体不上传（PDF 体积大且不是本层要看的东西）。
+      - name: 存档事件流与转录
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-quality-${{ github.run_id }}
+          path: |
+            ${{ env.QUALITY_DIR }}
+            ${{ env.TONGTU_HOME }}/*/logs
+          if-no-files-found: warn
+          retention-days: 14

@@ -99,13 +99,28 @@
 - [x] fixtures：自造最小模板论文三篇（article / revtex / 双栏会议）入仓库
 - [x] 文本层：golden-file + 往返恒等性质测试（PR 门禁）
 - [ ] 编译层：MockAgent 恒等翻译 e2e（M2 已落双形态：本机假工具 + CI texlive 镜像 pytest -m compile，PR 门禁；anchors 断言待 M4，伪翻译变体待补，M5 切自建镜像）
-- [ ] LLM 层：手动触发 workflow，真模型 1–3 篇，report.json 入质量看板（监控不门禁）
-- [ ] CI 一律跑参考镜像；镜像层缓存
+- [x] LLM 层：手动触发 workflow，真模型 1–3 篇，report.json 入质量看板（监控不门禁）——
+  `.github/workflows/llm-quality.yml`：只绑 `workflow_dispatch`（不绑 PR 事件，**结构上**
+  不可能标红 PR）、最多 3 篇的预算闸、单篇失败不 fail job；输入 = arXiv id 列表 / 模型 /
+  运行时（默认 codex）/ 镜像；汇总表（回退块、校验重试、agent 干预、编译警告）进
+  `$GITHUB_STEP_SUMMARY`，report.json 缺席时降级读 `--json` 事件流。**首跑验证待 dispatch**
+  （需先配 `OPENAI_API_KEY` secret，见 `docker/README.md`）
+- [ ] CI 一律跑参考镜像；镜像层缓存——发布侧的层缓存已落地（release-image 的 `type=gha`）；
+  ci.yml 的编译层仍跑 `texlive/texlive:latest`，**待首个 tag 把参考镜像推上 GHCR 后改
+  `container:` 一行**切过去（llm-quality 已可用 `image` 输入先行验证参考镜像）
 
 ### 3.8 docker（`docker/`）〔迁 + 改〕
 
-- [ ] 双层 Dockerfile：TeX Live full 基底 + 通途代码层；含 latexmk / latexpand / 字体 / Python
-- [ ] GHCR 发布流水线，git tag 即版本
+- [x] 双层 Dockerfile：TeX Live full 基底 + 通途代码层；含 latexmk / latexpand / 字体 / Python
+  ——`docker/Dockerfile`：基底层 `texlive/texlive:latest`（TeX Live full 不裁）+ poppler-utils /
+  ghostscript / ImageMagick（figures 真渲染）+ fonts-noto-cjk + uv 托管的 Python；代码层
+  `uv sync --frozen` + 仓库字体经 fontconfig 注册（探测链第三档真命中）+ 构建末尾跑一次
+  `tongtu doctor` 自检。三角色说明与运行命令见 `docker/README.md`。**构建验证待首跑**
+  （本机无 docker daemon，首次构建在 release-image 的 `push=false` 手动触发上做）
+- [x] GHCR 发布流水线，git tag 即版本——`.github/workflows/release-image.yml`：push tag `v*`
+  → `{{version}}` / `{{major}}.{{minor}}` / `latest` 推 `ghcr.io/yhnocoder/tongtu`；另有
+  workflow_dispatch（可 `push=false` 只构建）；buildx `type=gha` 层缓存 + `packages: write`。
+  **首跑验证待 tag / dispatch**
 
 ### 3.9 CLI 命令面〔新〕
 
