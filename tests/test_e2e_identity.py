@@ -30,9 +30,7 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import shutil
-import stat
 from pathlib import Path
 
 import pytest
@@ -83,89 +81,10 @@ def test_the_schema_checker_actually_rejects():
 
 
 # --------------------------------------------------------------------------- #
-# 假 latexpand / 假 latexmk
-# --------------------------------------------------------------------------- #
-
-FAKE_LATEXPAND = r'''#!/usr/bin/env python3
-"""最小 latexpand 替身：递归拼 \input，按需内联 .bbl，结果回显到 stdout。"""
-import re, sys
-from pathlib import Path
-
-argv = sys.argv[1:]
-main, bbl = None, None
-i = 0
-while i < len(argv):
-    if argv[i] == "--expand-bbl":
-        bbl = argv[i + 1]
-        i += 2
-        continue
-    if argv[i].startswith("--"):
-        i += 1
-        continue
-    main = argv[i]
-    i += 1
-
-INPUT = re.compile(r"\\(?:input|include)\{([^}]*)\}")
-
-
-def expand(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
-
-    def sub(match):
-        name = match.group(1)
-        target = Path(name if name.endswith(".tex") else name + ".tex")
-        return expand(target)
-
-    return INPUT.sub(sub, text)
-
-
-text = expand(Path(main))
-if bbl:
-    # 替换文本用 lambda 递进去：.bbl 里全是反斜杠，当成 re 的替换模板会被当转义解释
-    body = Path(bbl).read_text(encoding="utf-8")
-    text = re.sub(r"\\bibliography\{[^}]*\}", lambda m: body, text)
-sys.stdout.write(text)
-'''
-
-FAKE_LATEXMK = r'''#!/usr/bin/env python3
-"""最小 latexmk 替身：把 tex 原样写进「PDF」，日志里没有 ! 错误，退出 0。"""
-import sys
-from pathlib import Path
-
-tex = Path([a for a in sys.argv[1:] if not a.startswith("-")][-1])
-if not tex.is_file():
-    sys.stderr.write("fake latexmk: %s not found\n" % tex)
-    sys.exit(1)
-Path(tex.stem + ".log").write_text(
-    "This is fake latexmk\nOutput written on %s.pdf (3 pages).\n" % tex.stem, encoding="utf-8"
-)
-Path(tex.stem + ".pdf").write_bytes(
-    b"%PDF-1.4\n" + tex.read_bytes() + b"\n%%EOF\n"
-)
-'''
-
-
-def _install(bindir: Path, name: str, body: str) -> None:
-    script = bindir / name
-    script.write_text(body, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-
-@pytest.fixture
-def tools(request, tmp_path, monkeypatch):
-    """fake 模式：把假 latexpand / 假 latexmk 塞到 PATH 最前面；real 模式：什么也不做。"""
-    mode = getattr(request, "param", "fake")
-    if mode == "fake":
-        bindir = tmp_path / "bin"
-        bindir.mkdir()
-        _install(bindir, "latexpand", FAKE_LATEXPAND)
-        _install(bindir, "latexmk", FAKE_LATEXMK)
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    return mode
-
-
-# --------------------------------------------------------------------------- #
 # 跑一篇
+#
+# 假 latexpand / 假 latexmk 在 `tests/conftest.py` 的 `tools` 夹具里（M3 起翻译记忆与
+# 六关节的测试也要用同一份假工具链，故抬到 conftest 共用）。
 # --------------------------------------------------------------------------- #
 
 
@@ -262,6 +181,15 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     assert {c["status"] for c in memory["chunks"]} == {"translated"}
     assert validate_schema(memory, load_schema("chunks")) == []
 
+    # --- 翻译记忆：首跑必然全 miss（架构 §4）----------------------------
+    assert translate_result["cache_hits"] == 0, "第一次跑不可能命中缓存"
+    assert translate_result["cache_misses"] == translate_result["chunk_count"]
+    assert result.cache_hits == 0 and result.cache_misses == result.chunks_total
+    assert translate_result["memory"]["loaded"] == 0
+    assert len({c["cache_key"] for c in memory["chunks"]}) == len(memory["chunks"]), (
+        "每块一个 cache_key，重复即意味着两块会互相冒充"
+    )
+
     # --- 回填后与原文逐字节等价（恒等翻译的核心断言）--------------------
     flat = (paper_dir.build / "flat.tex").read_text(encoding="utf-8")
     masked = (paper_dir.build / "masked.tex").read_text(encoding="utf-8")
@@ -337,6 +265,21 @@ def test_force_recomputes_everything(tools, tmp_path):
         **{name: "skipped" for name in SKIPPED},
     }
     assert [e for e in events if e["event"] == "chunk_progress"], "重算就该重新逐块翻译"
+    # `--force` 连块级缓存一起无视：全量重翻，一条都不许命中（架构 §6）
+    assert forced.cache_hits == 0 and forced.cache_misses == forced.chunks_total
+    progress = [e for e in events if e["event"] == "chunk_progress"]
+    assert "cached" not in {e["status"] for e in progress}
+
+    # 再跑一次、只把 translate 的 manifest 抹掉：这次该全 hit（记忆还在盘上）
+    (workdir / "build" / "manifests" / "translate.json").unlink()
+    again, again_events = run("article", workdir)
+
+    assert again.exit_code == 0
+    assert {s.stage: s.status for s in again.stages}["translate"] == "ok", "manifest 没了就得重算"
+    assert again.cache_hits == again.chunks_total and again.cache_misses == 0
+    assert {
+        e["status"] for e in again_events if e["event"] == "chunk_progress"
+    } == {"cached"}, "全部块命中翻译记忆，一次也不该拉起关节⑤"
 
 
 def test_changing_the_source_invalidates_the_downstream(tools, tmp_path):

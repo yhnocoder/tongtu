@@ -6,7 +6,7 @@
     tongtu doctor                     # 检查 xelatex/latexmk/latexpand/字体，缺啥说啥
     tongtu preview <id>               # 打开检验页
 
-零期状态：`doctor`（M0）、`run` 与 `stage`（M2）已实现；`retranslate` 属 M3、
+零期状态：`doctor`（M0）、`run` 与 `stage`（M2）、`retranslate`（M3）已实现；
 `preview` 属 M4，执行时退出 2 并指向 docs/PHASE0.md。
 退出码约定：0 = 成功（`doctor` 全部命中 / `run` 产物包完整产出，含有回退块的情形）；
 1 = 检查未通过或运行失败；2 = 用法错误或功能尚未实现。
@@ -194,6 +194,38 @@ def run_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def run_retranslate(args: argparse.Namespace) -> int:
+    """`tongtu retranslate <id>`：块级失效重算（架构 §4 返工触发表）。
+
+    退出码同 `run`（0 = 出包）；块 id 写错、术语没命中任何块这类**用法错误**退 2。
+    """
+    from .pipeline import retranslate
+    from .workdir import WorkdirError
+
+    chunks = tuple(part.strip() for part in (args.chunks or "").split(",") if part.strip())
+    if args.chunks is not None and not chunks:
+        print("tongtu retranslate：--chunks 要求至少一个块 id（形如 c012,c045）", file=sys.stderr)
+        return 2
+    try:
+        result = retranslate(
+            args.id,
+            workdir=args.workdir,
+            chunks=chunks,
+            term=(args.term or "").strip(),
+            all_chunks=bool(args.all),
+            json_events=args.json,
+            glossary=tuple(args.glossary or ()),
+            **_agent(args),
+        )
+    except WorkdirError as exc:
+        print(f"tongtu retranslate：{exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:  # 未知块 id / 未知 agent 名 = 用法错误
+        print(f"tongtu retranslate：{exc}", file=sys.stderr)
+        return 2
+    return result.exit_code
+
+
 def run_stage_cmd(args: argparse.Namespace) -> int:
     """`tongtu stage <name> <id>`：单阶段调试入口。
 
@@ -288,10 +320,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_re = sub.add_parser(
         "retranslate",
-        parents=[global_opts, workdir_opts],
+        parents=[global_opts, workdir_opts, agent_opts],
         help="块级失效重算（增量重翻）",
+        description=(
+            "删掉对应的翻译记忆条目，再重算受影响子图：translate 必算（没被失效的块直接"
+            "命中缓存），compile 及下游按 manifest 判。上游阶段一律从工作目录装载，不重算。"
+        ),
     )
-    p_re.add_argument("id", metavar="<id>", help="arXiv id")
+    p_re.add_argument("id", metavar="<id>", help="arXiv id（或本地源码目录名）")
+    p_re.add_argument(
+        "--glossary",
+        metavar="FILE",
+        action="append",
+        default=[],
+        help="输入术语表，可多次；优先级高于论文目录内与全局表",
+    )
     scope = p_re.add_mutually_exclusive_group(required=True)
     scope.add_argument("--chunks", metavar="c012,c045", help="指定块 id，逗号分隔")
     scope.add_argument("--term", metavar="WORD", help="重翻命中该术语的块")
@@ -344,6 +387,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_doctor()
     if args.command == "run":
         return run_run(args)
+    if args.command == "retranslate":
+        return run_retranslate(args)
     if args.command == "stage":
         return run_stage_cmd(args)
     return _not_implemented(args.command)

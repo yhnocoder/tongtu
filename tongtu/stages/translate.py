@@ -32,11 +32,19 @@ body 与译文 body——空白不参与判断，段落数这一层才不会被�
   判定用的是 `tongtu.glossary.hit_terms`——与 `relevant_terms` 同一份实现，两处各写一遍
   必然漂，而漂了就意味着缓存 key 与提示词不是一回事；
 * `style_version`——术语表第三段的文风规则版本号（架构 §8），bump 即全量重翻；
-* `cache`——块级翻译缓存（`{cache_key: 译文}` 形状的可变映射）。key 的构成按架构 §4 算全
-  （见 :func:`cache_key`），接到 `out/chunks.json` 这份权威翻译记忆上即可（M3 收尾项）。
+* `cache`——块级翻译缓存（`{cache_key: 译文正文}` 形状的可变映射）。key 的构成按架构 §4
+  算全（见 :func:`cache_key`）；它的装载与写回（`out/chunks.json` 这份权威翻译记忆）住在
+  :mod:`tongtu.memory`——本模块只查、只写这个映射，不认识工作目录。
 
 **刻意不传前块译文**（架构 §3 末）：邻域上下文只用原文，否则缓存失效沿块链级联、并行
 翻译退化为串行。
+
+## 内环是可复用的
+
+「组装提示词 → 调关节⑤ → validate → 把错误喂回去重试」这一圈抽成了
+:func:`translate_body`，块循环与 compile 的**坏段重译**（关节⑤复用，
+:func:`retranslate_segment`）走同一份实现——出口判据在两处必须是同一个 validate，否则
+「编译回环救活的那一段」就绕过了机械校验。
 """
 
 from __future__ import annotations
@@ -55,6 +63,7 @@ from .compile import TranslatedChunk
 
 __all__ = [
     "CACHED",
+    "Attempt",
     "Context",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_NEIGHBOR_PARAGRAPHS",
@@ -76,8 +85,10 @@ __all__ = [
     "cache_key",
     "normalize_source",
     "prompt_rules",
+    "retranslate_segment",
     "split_affixes",
     "translate",
+    "translate_body",
 ]
 
 # ------------------------------------------------------------------ 常量
@@ -279,7 +290,13 @@ class TranslateResult:
 
     @property
     def cache_hits(self) -> int:
+        """翻译记忆命中、未拉起关节⑤的块数（架构 §4 的块级缓存）。"""
         return sum(1 for c in self.chunks if c.cached)
+
+    @property
+    def cache_misses(self) -> int:
+        """未命中、真的调了一次（或多次）模型的块数。命中 + 未命中 = 块数。"""
+        return sum(1 for c in self.chunks if not c.cached)
 
     def to_chunks_json(self) -> dict:
         """按 `docs/schemas/chunks.schema.json` 组装翻译记忆（export 阶段照此落盘）。"""
@@ -303,6 +320,7 @@ class TranslateResult:
             "translated": sum(1 for c in self.chunks if c.status != FALLBACK),
             "fallback": len(self.fallbacks),
             "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
             "attempts": sum(c.attempts for c in self.chunks),
             "model": self.model,
             "prompt_version": PROMPT_VERSION,
@@ -415,10 +433,15 @@ def prompt_rules() -> str:
 PROMPT_TAIL = "待翻译正文："
 
 
-def build_prompt(context: Context, errors: Iterable[Error] = ()) -> str:
-    """组装提示词：`skill/translate.md` 的规则 + 本块上下文 + 上一轮的校验错误。
+def build_prompt(
+    context: Context, errors: Iterable[Error] = (), notes: Iterable[str] = ()
+) -> str:
+    """组装提示词：`skill/translate.md` 的规则 + 本块上下文 + 上一轮的校验错误（+ 补充说明）。
 
     **拼接而非 format**：规则里全是 `\\section{...}`、`⟦BLK-n⟧` 这类字面量，模板替换会炸。
+
+    `notes` 是调用方自带的整段说明（坏段重译把编译错误从这里递进来），原样附在末尾——
+    本函数不替调用方措辞。
     """
     blocks: list[str] = [prompt_rules()]
     if context.brief:
@@ -438,8 +461,121 @@ def build_prompt(context: Context, errors: Iterable[Error] = ()) -> str:
             "上一版译文没通过机械校验，请修正后重译（不要解释，直接给译文）：\n"
             + format_errors(errors)
         )
+    blocks.extend(note for note in notes if note)
     blocks.append(PROMPT_TAIL)
     return "\n\n".join(blocks) + "\n"
+
+
+# ------------------------------------------------------------------ validate 内环
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """一次「翻到 validate 全绿或重试用尽」的结果（:func:`translate_body` 的返回值）。"""
+
+    translation: str | None
+    """通过 validate 的译文正文；`None` = 重试用尽（调用方决定回退还是放弃）。"""
+
+    attempts: int = 0
+    errors: tuple[Error, ...] = ()
+    """最后一次失败的 validate 错误（成功时为空）。"""
+
+    reason: str = REASON_VALIDATE
+    """失败原因（`chunks.schema.json` 的 `fallback_reason`）。"""
+
+    @property
+    def ok(self) -> bool:
+        return self.translation is not None
+
+
+def translate_body(
+    body: str,
+    *,
+    complete: CompleteFn,
+    context: Context | None = None,
+    model: str = "",
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    notes: Sequence[str] = (),
+    on_retry: Callable[[int, str], None] | None = None,
+) -> Attempt:
+    """内环：调关节⑤，validate 不过就把错误喂回去重试，至多 `1 + max_retries` 次。
+
+    这是**出口判据所在**：只有 :func:`tongtu.validate.check` 一条错误都挑不出来才算过。
+    关节抛异常、返回空译文都只算一次失败的尝试（可重试），不抛给调用方——块循环与
+    compile 的坏段重译都指望这一点。
+    """
+    if max_retries < 0:
+        raise ValueError(f"max_retries 不得为负：{max_retries}")
+    context = context if context is not None else Context()
+    errors: tuple[Error, ...] = ()
+    reason = REASON_VALIDATE
+    attempt = 0
+    while attempt <= max_retries:
+        attempt += 1
+        if attempt > 1 and on_retry is not None:
+            on_retry(attempt, errors[0].message if errors else reason)
+        prompt = build_prompt(context, errors, notes)
+        try:
+            candidate = complete(prompt, body, model or None)
+        except Exception as exc:  # 关节炸了不该拖垮流水线：当作一次失败，可重试
+            errors = (
+                Error(check="agent", message=f"关节⑤调用失败（{type(exc).__name__}）：{exc}"),
+            )
+            reason = REASON_AGENT
+            continue
+        if not isinstance(candidate, str) or not candidate.strip():
+            errors = (Error(check="agent", message="关节⑤返回了空译文"),)
+            reason = REASON_AGENT
+            continue
+        found = tuple(check(body, candidate))
+        if not found:
+            return Attempt(translation=candidate, attempts=attempt)
+        errors = found
+        reason = REASON_VALIDATE
+    return Attempt(translation=None, attempts=attempt, errors=errors, reason=reason)
+
+
+def retranslate_segment(
+    source: str,
+    *,
+    complete: CompleteFn,
+    model: str = "",
+    brief: str | None = None,
+    glossary: Mapping[str, str] | None = None,
+    detail: str = "",
+    max_retries: int = 0,
+) -> str | None:
+    """坏段重译一次（关节⑤复用，compile 的 `retranslate` 回调形状）。
+
+    与块循环共用 :func:`translate_body`，故**同一套 validate 仍是出口判据**——编译回环
+    只是提出「这一段有问题」，它没有资格让一段译文绕过机械校验。首尾空白照旧由驱动器
+    保管（`lead + 译文 + trail`），段落形状不因重译而变。
+
+    `detail` 是编译日志里的第一个 `!` 错误，作为补充说明进提示词。返回 `None` = 这次没
+    翻出可用的译文（调用方回退原文）。
+    """
+    lead, body, trail = split_affixes(source)
+    if not body:
+        return None
+    notes = (
+        (
+            "上一版译文让 xelatex 编译失败了，请重译这一段并避开可能致错的写法"
+            f"（占位符与控制序列必须原样保留）。编译器给的第一个错误：{detail}",
+        )
+        if detail
+        else ()
+    )
+    outcome = translate_body(
+        body,
+        complete=complete,
+        context=Context(terms=hit_terms(body, glossary), brief=brief or ""),
+        model=model,
+        max_retries=max_retries,
+        notes=notes,
+    )
+    if outcome.translation is None:
+        return None
+    return lead + outcome.translation + trail
 
 
 # ------------------------------------------------------------------ 阶段入口
@@ -468,7 +604,8 @@ def translate(
     :param brief_hash: 纲要内容 hash，进 cache key（M3；本期传空）。
     :param glossary: 术语决策表 `{可命中写法: 译法}`（`tongtu.glossary.term_map`）。
     :param style_version: 生效的文风规则版本号（术语表第三段）；bump 即全量重翻。
-    :param cache: 块级翻译缓存 `{cache_key: 译文}`（M3 接到 chunks.json 上；本期传 None）。
+    :param cache: 块级翻译缓存 `{cache_key: 译文正文}`；命中即免调用，翻成功的块写回。
+        装载与落盘见 :mod:`tongtu.memory`（权威记忆是产物包里的 `chunks.json`）。
     :param max_retries: validate 失败后的重试上限；总调用数 = 1 + `max_retries`。
     :param progress: 块进度回调，编排器用它发 `chunk_progress` 事件。
     """
@@ -550,65 +687,48 @@ def translate(
             continue
 
         emit(chunk.id, index, "started", 1, None)
-        errors: tuple[Error, ...] = ()
-        translated: str | None = None
-        attempt = 0
-        reason = REASON_VALIDATE
-        while attempt <= max_retries:
-            attempt += 1
-            if attempt > 1:
-                emit(
-                    chunk.id,
-                    index,
-                    "retry",
-                    attempt,
-                    errors[0].message if errors else reason,
-                )
-            prompt = build_prompt(context, errors)
-            try:
-                candidate = complete(prompt, body, model or None)
-            except Exception as exc:  # 关节炸了不该拖垮流水线：当作一次失败，可重试
-                errors = (
-                    Error(check="agent", message=f"关节⑤调用失败（{type(exc).__name__}）：{exc}"),
-                )
-                reason = REASON_AGENT
-                continue
-            if not isinstance(candidate, str) or not candidate.strip():
-                errors = (Error(check="agent", message="关节⑤返回了空译文"),)
-                reason = REASON_AGENT
-                continue
-            found = tuple(check(body, candidate))
-            if not found:
-                translated = candidate
-                break
-            errors = found
-            reason = REASON_VALIDATE
+        outcome = translate_body(
+            body,
+            complete=complete,
+            context=context,
+            model=model,
+            max_retries=max_retries,
+            on_retry=lambda attempt, reason, _id=chunk.id, _i=index: emit(
+                _id, _i, "retry", attempt, reason
+            ),
+        )
 
-        if translated is not None:
+        if outcome.translation is not None:
             if cache is not None:
-                cache[key] = translated
+                cache[key] = outcome.translation
             results.append(
-                ChunkTranslation(translation=lead + translated + trail, attempts=attempt, **base)
+                ChunkTranslation(
+                    translation=lead + outcome.translation + trail,
+                    attempts=outcome.attempts,
+                    **base,
+                )
             )
-            emit(chunk.id, index, TRANSLATED, attempt, None)
+            emit(chunk.id, index, TRANSLATED, outcome.attempts, None)
             continue
 
         # 重试用尽 → 回退原文（保证流水线继续；详情进 report）
-        for name, count in summarize(errors).items():
+        for name, count in summarize(outcome.errors).items():
             failures[name] = failures.get(name, 0) + count
-        detail = errors[0].message if errors else "未知原因"
-        warnings.append(f"块 {chunk.id} 重试 {attempt} 次仍未通过校验，回退原文：{detail}")
+        detail = outcome.errors[0].message if outcome.errors else "未知原因"
+        warnings.append(
+            f"块 {chunk.id} 重试 {outcome.attempts} 次仍未通过校验，回退原文：{detail}"
+        )
         results.append(
             ChunkTranslation(
                 translation=chunk.text,
                 status=FALLBACK,
-                attempts=attempt,
-                fallback_reason=reason,
-                errors=errors,
+                attempts=outcome.attempts,
+                fallback_reason=outcome.reason,
+                errors=outcome.errors,
                 **base,
             )
         )
-        emit(chunk.id, index, FALLBACK, attempt, detail)
+        emit(chunk.id, index, FALLBACK, outcome.attempts, detail)
 
     fallbacks = [c for c in results if c.status == FALLBACK]
     return TranslateResult(

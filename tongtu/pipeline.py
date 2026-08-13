@@ -29,6 +29,32 @@
 * `compile` 带回退块仍算**成功**：退出码 0，`result.status="ok_with_fallback"`，
   详情进 report（M4）——保证永远出 PDF 是 compile 的出口判据。
 
+## 块级增量：翻译记忆（架构 §4、决策 3）
+
+阶段级 manifest 之下还有一层块级缓存，也是唯一昂贵的那层。translate 之前从
+`out/chunks.json`（权威翻译记忆，随产物包走）与 `build/zh-chunks/chunks.json`（本轮工作
+副本）装载，按 cache_key 命中即免调用；翻完写回 build 侧。装载与失效住在
+:mod:`tongtu.memory`，key 的公式住在 :func:`tongtu.stages.translate.cache_key`——本模块
+只负责把两者接起来。`--force` 时装一个**空**记忆：无视缓存全量重跑（架构 §6）。
+
+于是 `build/` 整体删掉也不丢任何昂贵成果：`out/chunks.json` 在，重建时全量命中。
+
+## 六个关节都在这里接线（架构 §3、§9）
+
+阶段驱动器只声明「这里需要一次判断」（`arbiter` / `session` / `retranslate` 回调），
+**谁去问、问什么、拿什么 prompt 资产、怎么记账**归编排器：
+
+    ① 主文件   flatten 的 arbiter → complete（无专门资产，提示词内联）
+    ② 构建环境 baseline 的 session → agent.as_session_fn()（skill/repair.md）
+    ③ 环境分类 mask 的 arbiter → complete + skill/classify.md
+    ④ 通读与术语 survey 的 complete → skill/survey.md
+    ⑤ 翻译     translate 的块循环；compile 的坏段重译复用同一内环
+    ⑥ 适配与修复 compile 的 session → 同 ②
+
+每次拉起记一条 :class:`Intervention`（形状对齐 `report.schema.json` 的
+`agent_interventions`），攒在 :attr:`PipelineResult.interventions`——**outcome 一律由事后
+的校验脚本与编译裁决**，不信 agent 自述（架构 §9）。report 落盘是 M4 的活。
+
 ## 注入点
 
 编译器、agent 运行时、下载器、latexpand 全部可注入：e2e 用假 latexpand / 假 latexmk +
@@ -39,6 +65,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import time
 import uuid
@@ -46,13 +73,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
-from typing import Callable, Iterable, Sequence, TextIO
+from typing import Callable, Iterable, MutableMapping, Sequence, TextIO
 
 from . import CONTRACT_VERSION, __version__
 from . import glossary as glossary_module
+from . import memory as memory_module
+from . import prompts
 from .agent.mock import MockAgent, identity
 from .compiler import DEFAULT_TIMEOUT, Compiler
 from .glossary import Glossary, GlossaryError
+from .memory import CHUNKS_NAME, ZH_CHUNKS_DIRNAME, Memory
 from .prompts import PromptError
 from .stages import STAGES
 from .stages import baseline as baseline_stage
@@ -73,8 +103,10 @@ __all__ = [
     "CHUNKS_NAME",
     "Events",
     "GLOSSARY_NAME",
+    "Intervention",
     "MANIFEST_VERSION",
     "MASKED_NAME",
+    "OUTCOMES",
     "PipelineError",
     "PipelineResult",
     "SKIPPED_STAGES",
@@ -84,6 +116,7 @@ __all__ = [
     "hash_tree",
     "manifest_fresh",
     "read_manifest",
+    "retranslate",
     "run_pipeline",
     "run_stage",
     "sha256_file",
@@ -101,15 +134,13 @@ class PipelineError(RuntimeError):
 MASKED_NAME = "masked.tex"
 BLOCKS_NAME = "blocks.json"
 CHUNKS_DIRNAME = "chunks"
-ZH_CHUNKS_DIRNAME = "zh-chunks"
+#: 译块目录 `ZH_CHUNKS_DIRNAME` 与翻译记忆文件名 `CHUNKS_NAME` 从 :mod:`tongtu.memory`
+#: 导入（见文件头的 import）——**单一来源在那边**：它要用同一套名字定位
+#: `out/chunks.json` 与 `build/zh-chunks/chunks.json`，两处各写一遍迟早会漂。
 
 #: survey 的两份产物（形状即产物契约的 `brief.json` / `glossary.json`，export 直接搬）。
 BRIEF_NAME = survey_stage.BRIEF_NAME
 GLOSSARY_NAME = survey_stage.GLOSSARY_NAME
-
-#: 块清单 / 翻译记忆的文件名。后者与产物契约 `chunks.json` 同形（`docs/schemas/`），
-#: export（M4）直接搬过去即可，不需要二次组装。
-CHUNKS_NAME = "chunks.json"
 
 #: 本期占位跳过的阶段 → 落地里程碑。
 SKIPPED_STAGES: dict[str, str] = {
@@ -392,6 +423,58 @@ class StageOutcome:
         return data
 
 
+#: 干预结论（= `report.schema.json` 的 `agent_interventions[].outcome` 枚举）。
+RESOLVED = "resolved"
+UNRESOLVED = "unresolved"
+FELL_BACK = "fallback"
+
+OUTCOMES: tuple[str, ...] = (RESOLVED, UNRESOLVED, FELL_BACK)
+
+
+@dataclass
+class Intervention:
+    """一次 agent 关节干预的记录，字段与 `report.schema.json` 的 `agent_interventions[]`
+    一一对应（M4 的 export 直接把它们摆进 report.json）。
+
+    **可变**是有意的：`outcome` 在拉起的当下填不出来——裁决权在事后的校验脚本与编译
+    （架构 §9），故先记 `unresolved`，等阶段结果回来再改判。agent 自述的「我修好了」
+    在这一层没有任何效力。
+
+    `promotable` 是促升规则（架构 §2 原则 3）的抓手：反复出现的同类干预应当被固化成
+    确定性代码 / 分类表 / 适配表条目，而不是让编排器积累一次性 hack。
+    """
+
+    joint: str
+    stage: str = ""
+    primitive: str = "complete"  # complete / session
+    trigger: str = ""
+    outcome: str = UNRESOLVED
+    action: str = ""
+    model_id: str = ""
+    prompt_version: str = ""
+    duration_ms: int = 0
+    transcript_path: str = ""
+    promotable: bool | None = None
+
+    def to_json(self) -> dict:
+        data: dict = {
+            "joint": self.joint,
+            "primitive": self.primitive,
+            "outcome": self.outcome,
+        }
+        for name in ("stage", "trigger", "action", "model_id", "prompt_version"):
+            value = getattr(self, name)
+            if value:
+                data[name] = value
+        if self.duration_ms:
+            data["duration_ms"] = self.duration_ms
+        if self.transcript_path:
+            data["transcript_path"] = self.transcript_path
+        if self.promotable is not None:
+            data["promotable"] = self.promotable
+        return data
+
+
 @dataclass(frozen=True)
 class PipelineResult:
     """一次 `tongtu run` 的结果。`exit_code` 即进程退出码（架构 §6）。"""
@@ -405,6 +488,12 @@ class PipelineResult:
     fallback_chunks: int = 0
     duration_ms: int = 0
     message: str = ""
+    interventions: tuple[Intervention, ...] = ()
+    """六关节的干预记录（report.json 的 `agent_interventions`，落盘属 M4）。"""
+
+    cache_hits: int = 0
+    cache_misses: int = 0
+    """翻译记忆的命中 / 未命中块数（架构 §4 块级缓存）。"""
 
     @property
     def ok(self) -> bool:
@@ -421,8 +510,11 @@ class PipelineResult:
             "pdf": None if self.pdf is None else str(self.pdf),
             "chunks_total": self.chunks_total,
             "fallback_chunks": self.fallback_chunks,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
             "duration_ms": self.duration_ms,
             "stages": [s.to_json() for s in self.stages],
+            "agent_interventions": [i.to_json() for i in self.interventions],
             "message": self.message,
         }
 
@@ -469,6 +561,7 @@ class Pipeline:
         timeout: float = DEFAULT_TIMEOUT,
         soft_target: int = chunk_stage.SOFT_TARGET_TOKENS,
         hard_limit: int = chunk_stage.HARD_LIMIT_TOKENS,
+        cache: MutableMapping[str, str] | None = None,
     ) -> None:
         self.workdir = workdir
         self.target = target
@@ -499,8 +592,18 @@ class Pipeline:
         self.units: tuple[compile_stage.TranslatedChunk, ...] = ()
         self.chunks_total = 0
         self.fallback_chunks = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
         self.pdf: Path | None = None
         self.outcomes: list[StageOutcome] = []
+
+        # 六关节的干预记录（形状对齐 report.schema.json；落盘属 M4）
+        self.interventions: list[Intervention] = []
+        self._pending: dict[str, Intervention] = {}
+        """还等着被事后裁决改判 outcome 的记录（键：阶段名 / 坏段标识）。"""
+
+        self._cache: MutableMapping[str, str] | None = cache
+        """块级翻译缓存。None = 尚未装载（`--force` 时装一个空的）。"""
 
     # -- 路径 ---------------------------------------------------------------
 
@@ -532,18 +635,255 @@ class Pipeline:
     def zh_chunks_dir(self) -> Path:
         return self.workdir.build / ZH_CHUNKS_DIRNAME
 
-    # -- agent 接线 ---------------------------------------------------------
+    # -- 翻译记忆 -----------------------------------------------------------
+
+    def memory(self) -> MutableMapping[str, str]:
+        """本篇的块级翻译缓存（架构 §4）。`--force` 时是空的——无视缓存全量重跑。
+
+        只装载一次：一次运行内 translate 至多算一遍，而 retranslate 会**预先塞**一个删过
+        条目的记忆进来（`Pipeline(cache=...)`），这里不该把它再覆盖回去。
+        """
+        if self._cache is None:
+            self._cache = Memory() if self.force else memory_module.load(self.workdir)
+        return self._cache
+
+    # -- agent 接线（六关节，架构 §3/§9）------------------------------------
 
     @property
-    def session_fn(self):
-        """关节 ②/⑥ 的回调（`FixupRequest` 形状）；agent 不提供则 None。"""
+    def complete_fn(self):
+        """关节 ①③④⑤ 的 `complete` 原语；agent 不提供则 None。"""
+        fn = getattr(self.agent, "complete", None)
+        return fn if callable(fn) else None
+
+    def _record(self, **fields) -> Intervention:
+        """记一条干预（默认带上模型与 prompt 资产版本，促升统计要按这两维分组看）。"""
+        fields.setdefault("model_id", self.model)
+        fields.setdefault("prompt_version", prompts.PROMPT_VERSION)
+        entry = Intervention(**fields)
+        self.interventions.append(entry)
+        return entry
+
+    def _settle(self, key: str, outcome: str, *, action: str = "") -> None:
+        """事后裁决：把挂起的那条记录改判（`outcome` 永远由脚本填，不由 agent 自述）。"""
+        entry = self._pending.pop(key, None)
+        if entry is None:
+            return
+        entry.outcome = outcome
+        if action:
+            entry.action = action
+
+    def session_for(self, stage: str):
+        """关节 ②/⑥ 的回调（`FixupRequest` 形状），外加一层记账；agent 不提供则 None。
+
+        包一层的意义不在功能而在**账**：`session` 的返回值不是裁决（架构 §9），故这里先
+        把干预记成 `unresolved`，由阶段驱动器随后的重新编译改判。
+        """
         adapter = getattr(self.agent, "as_session_fn", None)
-        return adapter() if callable(adapter) else None
+        inner = adapter() if callable(adapter) else None
+        if inner is None:
+            return None
+
+        def run(request):
+            started = time.monotonic()
+            joint = str(getattr(request, "joint", "") or stage)
+            try:
+                outcome = inner(request)
+            except Exception as exc:  # noqa: BLE001 —— 关节炸了不该拖垮编译回环
+                self._record(
+                    joint=joint,
+                    stage=stage,
+                    primitive="session",
+                    trigger=_first_error(request),
+                    outcome=UNRESOLVED,
+                    action=f"关节调用失败（{type(exc).__name__}）：{exc}",
+                    duration_ms=_ms(started),
+                )
+                return None
+            entry = self._record(
+                joint=joint,
+                stage=stage,
+                primitive="session",
+                trigger=_first_error(request),
+                outcome=UNRESOLVED,  # 裁决在随后的重新编译
+                action=str(getattr(outcome, "message", "") or "")[:200],
+                duration_ms=_ms(started),
+                transcript_path=str(getattr(outcome, "transcript_path", "") or ""),
+            )
+            self._pending[stage] = entry
+            return outcome
+
+        return run
+
+    def main_arbiter(self):
+        """关节①：主文件真歧义时判一个（`skill/` 没有专门资产，提示词内联）。
+
+        资产之所以内联：这不是「规则」而是一道选择题——候选与打分明细都在提问里，答案
+        只有一行路径，写成 markdown 资产反而多一层间接。判错的代价由 baseline 编译当场
+        兜住（架构 §3：编译门控就在 flatten 之后）。
+        """
+        complete = self.complete_fn
+        if complete is None:
+            return None
+
+        def arbiter(query) -> str | None:
+            started = time.monotonic()
+            trigger = "主文件歧义：" + "、".join(c.relpath for c in query.tied)
+            listing = "\n".join(
+                f"- {c.relpath}（启发式得分 {c.score}"
+                + ("，含 \\begin{document}" if c.has_document else "")
+                + (f"，被 {', '.join(c.included_by)} 包含" if c.included_by else "")
+                + "）"
+                for c in query.candidates
+            )
+            prompt = (
+                "这份 arXiv 源码里有多个含 \\documentclass 的 .tex 文件，启发式打分并列，"
+                "需要你判定哪一个是**主文件**（latexpand 要展开的那个）。\n\n"
+                f"源码根目录：{query.root}\n候选：\n{listing}\n\n"
+                "判据：主文件是整篇论文的入口（通常含 \\begin{document} 与 \\title，"
+                "且不被别的 .tex \\input/\\include）；模板残骸、投稿说明、单章片段都不是。\n"
+                "只输出一行：候选中那个文件的相对路径，不要解释、不要代码块。"
+                "拿不准就输出一个空行——脚本会按分数取第一个，由编译裁决。"
+            )
+            try:
+                answer = complete(prompt, "", self.model or None)
+            except Exception as exc:  # noqa: BLE001
+                self._record(
+                    joint="main_file",
+                    stage="flatten",
+                    primitive="complete",
+                    trigger=trigger,
+                    outcome=UNRESOLVED,
+                    action=f"关节①调用失败（{type(exc).__name__}）：{exc}",
+                    duration_ms=_ms(started),
+                )
+                return None
+            picked = _first_line(answer)
+            self._pending["main_file"] = self._record(
+                joint="main_file",
+                stage="flatten",
+                primitive="complete",
+                trigger=trigger,
+                outcome=UNRESOLVED,  # 由 find_main_tex 的 `arbitrated` 改判
+                action=f"答「{picked}」" if picked else "没给出答案，按分数取第一个",
+                duration_ms=_ms(started),
+            )
+            return picked or None
+
+        return arbiter
+
+    def env_arbiter(self):
+        """关节③：未知环境的散文 / 重环境分类（规则来自 `skill/classify.md`）。
+
+        拿不到规则资产就**不问**——没有规则的分类是瞎猜，而瞎猜的代价是不对称的
+        （`skill/classify.md` 自己写着：该 heavy 判成 prose 会炸编译）。不问即保守整块
+        掩码，只降覆盖率，绝不损坏。
+        """
+        complete = self.complete_fn
+        if complete is None:
+            return None
+
+        def arbiter(query) -> str | None:
+            started = time.monotonic()
+            trigger = f"未知环境 {query.name}（全文出现 {query.count} 次）"
+            try:
+                rules = prompts.joint_prompt("env_classify")
+            except PromptError as exc:
+                self._record(
+                    joint="env_classify",
+                    stage="mask",
+                    primitive="complete",
+                    trigger=trigger,
+                    outcome=UNRESOLVED,
+                    action=f"prompt 资产不可用（{exc}）→ 保守整块掩码",
+                    duration_ms=_ms(started),
+                )
+                return None
+            prompt = (
+                f"{rules}\n\n---\n\n"
+                f"环境名：{query.name}\n全文出现次数：{query.count}\n\n"
+                "下面是它首次出现处的源码片段："
+            )
+            try:
+                answer = complete(prompt, query.sample, self.model or None)
+            except Exception as exc:  # noqa: BLE001
+                self._record(
+                    joint="env_classify",
+                    stage="mask",
+                    primitive="complete",
+                    trigger=trigger,
+                    outcome=UNRESOLVED,
+                    action=f"关节③调用失败（{type(exc).__name__}）：{exc}→ 保守整块掩码",
+                    duration_ms=_ms(started),
+                )
+                return None
+            verdict = _verdict(answer)
+            self._record(
+                joint="env_classify",
+                stage="mask",
+                primitive="complete",
+                trigger=trigger,
+                outcome=RESOLVED if verdict else UNRESOLVED,
+                action=(
+                    f"判为 {verdict}"
+                    if verdict
+                    else "没给出可用判定 → 保守整块掩码（category=unknown）"
+                ),
+                duration_ms=_ms(started),
+                # 促升规则（架构 §2）：agent 的分类结论该沉淀成 environments.json 条目
+                promotable=True if verdict else None,
+            )
+            return verdict
+
+        return arbiter
+
+    def retranslate_fn(self):
+        """关节⑤复用：compile 定位出的坏段重译一次（走 translate 的同一个 validate 内环）。
+
+        出口判据仍是机械的两层——译文先过 validate，再由**重新编译**裁决救没救活；
+        两层都不看 agent 怎么自述。
+        """
+        complete = self.complete_fn
+        if complete is None:
+            return None
+
+        def run(segment) -> str | None:
+            started = time.monotonic()
+            label = (
+                segment.chunk_id
+                if segment.para_index is None
+                else f"{segment.chunk_id}#{segment.para_index}"
+            )
+            text = translate_stage.retranslate_segment(
+                segment.source,
+                complete=complete,
+                model=self.model,
+                brief=survey_stage.render_brief(self.brief) if self.brief else None,
+                glossary=glossary_module.term_map(self.decisions),
+                detail=segment.detail,
+            )
+            self._pending[f"segment:{label}"] = self._record(
+                joint=translate_stage.JOINT,
+                stage="compile",
+                primitive="complete",
+                trigger=f"编译失败坏段 {label}：{segment.detail or '（日志里没有 ! 错误）'}",
+                outcome=FELL_BACK,  # 默认回退原文；编译救活了再改判
+                action="重译一次（validate 通过）" if text else "没能翻出可用译文",
+                duration_ms=_ms(started),
+            )
+            return text
+
+        return run
 
     # -- 主循环 -------------------------------------------------------------
 
-    def run(self, only: str | None = None) -> PipelineResult:
-        """跑完整阶段序；`only` 给出时只算该阶段（上游一律从盘上装载）。"""
+    def run(self, only: str | None = None, *, since: str | None = None) -> PipelineResult:
+        """跑阶段序。
+
+        * 默认：全部阶段按 manifest 判（`auto`）；
+        * `only=<阶段>`：只算该阶段，上游一律从盘上装载，之后的阶段不跑（`tongtu stage`）；
+        * `since=<阶段>`：上游装载、该阶段必算、**下游照常按 manifest 判**——
+          `tongtu retranslate` 走这条（失效缓存 + 重算受影响子图，架构 §4）。
+        """
         started = time.monotonic()
         failed: StageOutcome | None = None
         if isinstance(self.agent, MockAgent) and self.agent.transform is identity:
@@ -555,7 +895,7 @@ class Pipeline:
         for name in STAGES:
             if only is not None and STAGES.index(name) > STAGES.index(only):
                 break
-            mode = "auto" if only is None else ("force" if name == only else "load")
+            mode = _mode_for(name, only=only, since=since)
             outcome = self.run_one(name, mode=mode)
             self.outcomes.append(outcome)
             if outcome.status == "failed":
@@ -584,6 +924,9 @@ class Pipeline:
             fallback_chunks=self.fallback_chunks,
             duration_ms=duration,
             message=message,
+            interventions=tuple(self.interventions),
+            cache_hits=self.cache_hits,
+            cache_misses=self.cache_misses,
         )
         self.events.result(result)
         return result
@@ -603,23 +946,29 @@ class Pipeline:
         started = time.monotonic()
 
         try:
-            inputs = spec.inputs()
-            if mode == "load" or (mode == "auto" and not self.force and manifest_fresh(
-                self.workdir, name, inputs
-            )):
+            # 装载模式下**不算输入 hash**：装载只读盘上已有的产物，而输入 hash 可能根本
+            # 算不出来（`tongtu retranslate` 没有 target，fetch 的输入无从谈起）。
+            if mode == "load":
                 work = spec.load()
                 status = "cached" if work.ok else "failed"
             else:
-                work = spec.compute()
-                status = "ok" if work.ok else "failed"
-                if work.ok:
-                    write_manifest(
-                        self.workdir,
-                        name,
-                        inputs=inputs,
-                        outputs=work.outputs,
-                        result=work.detail,
-                    )
+                inputs = spec.inputs()
+                if mode == "auto" and not self.force and manifest_fresh(
+                    self.workdir, name, inputs
+                ):
+                    work = spec.load()
+                    status = "cached" if work.ok else "failed"
+                else:
+                    work = spec.compute()
+                    status = "ok" if work.ok else "failed"
+                    if work.ok:
+                        write_manifest(
+                            self.workdir,
+                            name,
+                            inputs=inputs,
+                            outputs=work.outputs,
+                            result=work.detail,
+                        )
         except PipelineError as exc:
             work, status = _Work(ok=False, error=str(exc)), "failed"
         except Exception as exc:  # 阶段驱动器自己炸了：结构化成失败，不把栈甩给用户
@@ -703,7 +1052,12 @@ class Pipeline:
         return {"src": tree, "latexpand": self.latexpand}
 
     def _flatten_compute(self) -> _Work:
-        main = flatten_stage.find_main_tex(self.workdir)
+        # 关节①：只有真歧义（最高分并列）时驱动器才会回调，一篇论文至多问一次。
+        main = flatten_stage.find_main_tex(self.workdir, arbiter=self.main_arbiter())
+        if main.arbitrated and main.main is not None:
+            self._settle("main_file", RESOLVED, action=f"判定主文件为 {main.main.name}")
+        else:
+            self._settle("main_file", UNRESOLVED)
         if not main.ok or main.main is None:
             return _Work(ok=False, error=main.message or "未找到主文件", detail=main.to_json())
         result = flatten_stage.flatten(self.workdir, main.main, latexpand=self.latexpand)
@@ -732,8 +1086,14 @@ class Pipeline:
         result = baseline_stage.baseline(
             self.workdir,
             compiler=self.compiler,
-            session=self.session_fn,
+            session=self.session_for("baseline"),  # 关节②
             timeout=self.timeout,
+        )
+        # 裁决在会话之后的那次重新编译，不在会话自述（架构 §9）。
+        self._settle(
+            "baseline",
+            RESOLVED if result.ok else UNRESOLVED,
+            action="修复会话之后原文编译通过" if result.ok else "修复会话之后仍编不过",
         )
         detail = result.to_json()
         if not result.ok:
@@ -765,9 +1125,12 @@ class Pipeline:
 
     def _mask_compute(self) -> _Work:
         text = self.flat_text or _read_tex(self.flat_path)
-        result = mask_stage.mask(text)
+        # 关节③：分类表与文档自带声明都没结论的环境名才会问到 agent；分类结论进
+        # blocks.json 的 `environments[].decided_by="agent"`（数据在产物里，不只在报告里）。
+        result = mask_stage.mask(text, arbiter=self.env_arbiter())
         # 往返自检门（架构 §3.1 第 3 条）：不恒等不放行——解析缺陷在花第一分钱之前暴露。
         diff = mask_stage.roundtrip_diff(text, result=result)
+        decided_by_agent = [e.name for e in result.environments if e.decided_by == "agent"]
         detail = {
             "blocks": len(result.blocks),
             "captions": len(result.captions),
@@ -775,6 +1138,8 @@ class Pipeline:
             "roundtrip_ok": diff is None,
             "warnings": list(result.warnings),
         }
+        if decided_by_agent:
+            detail["classified_by_agent"] = decided_by_agent
         if diff is not None:
             detail["roundtrip_diff"] = diff
             return _Work(ok=False, error=f"掩码往返自检未通过：{diff}", detail=detail)
@@ -858,6 +1223,20 @@ class Pipeline:
             arxiv_id=self.workdir.arxiv_id,
         )
         detail = result.to_json()
+        if result.attempts:  # 关节④ 被拉起过才记账（没 agent 时直接走确定性骨架）
+            self._record(
+                joint=survey_stage.JOINT,
+                stage="survey",
+                primitive="complete",
+                trigger="全文通读 → 纲要与术语预扫",
+                outcome=FELL_BACK if result.degraded else RESOLVED,
+                action=(
+                    "输出不可用，brief 降级为确定性骨架"
+                    if result.degraded
+                    else f"新增术语 {result.terms_added} 条、"
+                    f"不译 {result.do_not_translate_added} 条"
+                ),
+            )
         if not result.ok:
             return _Work(ok=False, error=result.message or "survey 失败", detail=detail)
         self.brief = result.brief
@@ -953,9 +1332,16 @@ class Pipeline:
     def _translate_compute(self) -> _Work:
         if self.plan is None:
             return _Work(ok=False, error="没有块清单（先跑 chunk）")
-        complete = getattr(self.agent, "complete", None)
-        if not callable(complete):
+        complete = self.complete_fn  # 关节⑤
+        if complete is None:
             return _Work(ok=False, error=f"agent 运行时没有 complete 原语：{type(self.agent).__name__}")
+        cache = self.memory()
+        sources = getattr(cache, "sources", ())
+        loaded = len(cache)  # 翻完之后 cache 会长大，装载条数得在这之前记
+        if loaded:
+            self.events.note(
+                f"    翻译记忆：装载 {loaded} 条（{'、'.join(sources) or '注入'}）"
+            )
         result = translate_stage.translate(
             self.plan,
             complete=complete,
@@ -964,23 +1350,26 @@ class Pipeline:
             brief_hash=survey_stage.brief_hash(self.brief) if self.brief else "",
             glossary=glossary_module.term_map(self.decisions),
             style_version=self.decisions.style_version,
+            cache=cache,
             max_retries=self.max_retries,
             progress=self.events.chunk_progress,
         )
-        detail = result.to_json()
+        detail = {**result.to_json(), "memory": {"loaded": loaded, "sources": list(sources)}}
         if not result.ok:
             return _Work(ok=False, error=result.message or "translate 失败", detail=detail)
         self.units = result.units
         self.chunks_total = len(result.chunks)
         self.fallback_chunks = len(result.fallbacks)
+        self.cache_hits = result.cache_hits
+        self.cache_misses = result.cache_misses
         self.zh_chunks_dir.mkdir(parents=True, exist_ok=True)
         for item in result.chunks:
             (self.zh_chunks_dir / f"{item.id}{chunk_stage.CHUNK_SUFFIX}").write_text(
                 item.translation, encoding="utf-8"
             )
-        (self.zh_chunks_dir / CHUNKS_NAME).write_text(
-            json.dumps(result.to_chunks_json(), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        # 翻译记忆写回 build 侧（权威副本随产物包走，export（M4）搬进 `out/`）。
+        memory_module.write_chunks(
+            self.zh_chunks_dir / CHUNKS_NAME, result.to_chunks_json()
         )
         return _Work(outputs=(self.zh_chunks_dir,), detail=detail)
 
@@ -1035,10 +1424,22 @@ class Pipeline:
             list(self.units),
             self.mask_result,
             compiler=self.compiler,
-            session=self.session_fn,
+            retranslate=self.retranslate_fn(),  # 关节⑤复用（坏段重译一次）
+            session=self.session_for("compile"),  # 关节⑥
             budget=self.budget,
             fonts=self.fonts,
             timeout=self.timeout,
+        )
+        # 事后裁决：救活的坏段改判 resolved，其余留在 fallback；会话看重新编译的结果。
+        for label in result.retranslated:
+            self._settle(
+                f"segment:{label}", RESOLVED, action="重译后编译通过（坏段救活）"
+            )
+        self._pending = {k: v for k, v in self._pending.items() if not k.startswith("segment:")}
+        self._settle(
+            "compile",
+            RESOLVED if result.ok else UNRESOLVED,
+            action="修复会话之后译文编译通过" if result.ok else "修复会话之后仍编不过",
         )
         detail = result.to_json()
         if not result.ok:
@@ -1060,6 +1461,59 @@ class Pipeline:
 
 
 # ------------------------------------------------------------------ 辅助
+
+
+def _mode_for(name: str, *, only: str | None, since: str | None) -> str:
+    """某个阶段这一轮该怎么跑：`auto`（按 manifest 判）/ `force`（必算）/ `load`（只装载）。"""
+    if only is not None:
+        return "force" if name == only else "load"
+    if since is not None:
+        index, start = STAGES.index(name), STAGES.index(since)
+        if index < start:
+            return "load"
+        return "force" if index == start else "auto"
+    return "auto"
+
+
+def _ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
+
+
+def _first_line(text: object) -> str:
+    """取答案的第一行非空文本（关节①要的就是一行路径）。"""
+    if not isinstance(text, str):
+        return ""
+    for line in text.splitlines():
+        stripped = line.strip().strip("`").strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+#: 关节③认得的两个答案。别的一律当「不知道」——`skill/classify.md` 明说 unknown 是有用
+#: 的答案，而不是失败。
+_VERDICTS = ("prose", "heavy")
+
+_WORD_RE = re.compile(r"[a-zA-Z]+")
+
+
+def _verdict(answer: object) -> str | None:
+    """把关节③的回答收敛成 `prose` / `heavy` / None（保守默认）。
+
+    **只认「整个回答就是那一个词」**（`skill/classify.md` 要求的输出格式，允许围栏、标点
+    与空白）。「prose 还是 heavy？」这种含糊话读成 prose 是不划算的：判错方向的代价是
+    不对称的——该 heavy 的判成 prose 会把公式送去翻译、炸编译，反过来只是少翻一段。
+    """
+    if not isinstance(answer, str):
+        return None
+    words = _WORD_RE.findall(answer.strip().lower())
+    return words[0] if len(words) == 1 and words[0] in _VERDICTS else None
+
+
+def _first_error(request: object) -> str:
+    """`FixupRequest` 里的第一条编译错误（干预记录的 trigger）。"""
+    detail = getattr(request, "first_error", None)
+    return f"编译失败：{detail}" if detail else "编译失败（日志里没有 ! 错误）"
 
 
 def _read_tex(path: Path) -> str:
@@ -1198,3 +1652,88 @@ def run_stage(
     events = Events(out, json_mode=json_events, arxiv_id=paper.arxiv_id)
     pipeline = Pipeline(paper, target=raw, events=events, **kwargs)
     return pipeline.run(only=name)
+
+
+# --------------------------------------------------------------- retranslate
+
+
+def _failed(workdir: Workdir, events: Events, message: str) -> PipelineResult:
+    """一次没跑起来的运行：结构化失败 + 事件流里照样有 result 行（消费方不必特判）。"""
+    result = PipelineResult(status="failed", exit_code=1, workdir=workdir, message=message)
+    events.result(result)
+    return result
+
+
+def retranslate(
+    target: str | Path,
+    *,
+    workdir: str | Path | None = None,
+    chunks: Sequence[str] = (),
+    term: str = "",
+    all_chunks: bool = False,
+    json_events: bool = False,
+    out: TextIO | None = None,
+    glossary: Sequence[str | Path] = (),
+    **kwargs,
+) -> PipelineResult:
+    """`tongtu retranslate <id>`：块级失效重算（架构 §4 返工触发表、§6）。
+
+    三种失效范围恰好对应架构 §4 那张表的三行：
+
+    * `chunks=["c012", "c045"]` —— 点名重翻（编译回环之外的人工返工）；
+    * `term="tensor"` —— **命中该术语的块**（编辑某术语条目 → 增量重翻 → 重编译）；
+    * `all_chunks=True` —— 全部块（改文风 / 升级 prompt / 换模型时的显式全量重翻）。
+
+    实现就是架构 §2 原则 2 的字面意思：**删掉对应的缓存条目，再重算受影响子图**——
+    translate 必算（缓存里还在的块直接命中，等于只重翻被失效的那些），compile 及其下游
+    按 manifest 判（译文没变则整段跳过）。没有任何「回跳到某阶段」的控制流。
+
+    上游阶段一律**从盘上装载**，不重算：retranslate 只给 id，没有下载目标，也不该因为
+    一次重翻去碰 fetch / baseline。想让上游也重算，那是 `tongtu run` 的活。
+
+    退出码语义同 `run`：0 = 出包（含有回退块），非 0 = 未能出包。
+    未知的块 id 是**用法错误**，抛 `ValueError`（CLI 转成退出码 2）。
+    """
+    if not (chunks or term or all_chunks):
+        raise ValueError("retranslate 要指定失效范围：--chunks / --term / --all 三选一")
+    raw, arxiv_id = _resolve_target(target)
+    paper = open_workdir(arxiv_id=arxiv_id, workdir=workdir, create=False)
+    events = Events(out, json_mode=json_events, arxiv_id=paper.arxiv_id)
+    if not paper.exists():
+        return _failed(paper, events, f"工作目录不存在：{paper.path}（先跑 tongtu run）")
+
+    out_path, build_path = memory_module.memory_paths(paper)
+    record = memory_module.read_chunks(build_path) or memory_module.read_chunks(out_path)
+    if not memory_module.entries(record):
+        return _failed(
+            paper,
+            events,
+            f"没有可失效的翻译记忆（找过 {build_path} 与 {out_path}）——先跑 tongtu run",
+        )
+
+    memory = memory_module.load(paper)
+    if all_chunks:
+        keys, scope = set(memory), "全部块"
+    elif term:
+        keys = memory_module.keys_for_term(record, term)
+        scope = f"命中术语 {term!r} 的块"
+        if not keys:
+            return _failed(paper, events, f"没有块命中术语 {term!r}，无需重翻")
+    else:
+        keys, missing = memory_module.keys_for_chunks(record, chunks)
+        if missing:
+            known = ", ".join(memory_module.chunk_ids(record)[:20])
+            raise ValueError(f"翻译记忆里没有这些块：{', '.join(missing)}（已有：{known}）")
+        scope = f"块 {', '.join(chunks)}"
+
+    dropped = memory.forget(keys)
+    # 权威记忆也要抹掉，否则下一次 `tongtu run` 会把失效掉的译文原样装回来。
+    dropped_out = memory_module.drop_entries(out_path, keys)
+    events.note(
+        f"失效 {scope}：翻译记忆删掉 {dropped} 条"
+        + (f"（其中 {dropped_out} 条来自 {out_path.name}）" if dropped_out else "")
+        + f"，剩 {len(memory)} 条可命中"
+    )
+
+    pipeline = Pipeline(paper, target=raw, events=events, glossary=glossary, cache=memory, **kwargs)
+    return pipeline.run(since="translate")

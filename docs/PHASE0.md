@@ -65,18 +65,18 @@
 - [x] **mask**〔迁 + 扩展〕：见 §2.1 映射行；分类表数据文件 + 关节③ + 保守默认 + 往返自检
 - [x] **survey**〔新〕：masked.tex 选择性回填视图（剔除附录与参考文献）一次通读 → `brief.json`（abstract 照录 + 章节树 + 记号约定 + 文风基调）+ 术语预扫决策（关节④）；术语表三层合并（全局 XDG → 论文目录内 `<workdir>/glossary.json` → `--glossary`，`tongtu/glossary.py`）；产物过 schema 校验（`tongtu/schema_check.py`，与 e2e 共用同一校验器）。模型输出防御性解析、失败重试一次、再失败降级为确定性骨架（章节树 + 原文摘要 + 零术语增补）——**survey 失败不阻塞流水线**，brief 是增益不是门禁
 - [x] **chunk**〔重写〕：章节树优先分块，软目标 / 硬上限以 token 计，绝不切入环境或段落
-- [ ] **translate**〔新驱动 + 迁校验〕（M2 已落块循环 + validate 内环 + 邻域/术语命中 + cache_key 公式；M3 已接上 survey 的 brief 上下文、术语决策表与 `style_version`；`chunks.json` 翻译记忆的缓存存取待补）：块循环、上下文组装（brief + 命中术语 + 邻域原文，刻意不传前块译文）、缓存查询、validate 内环重试、关节⑤（`complete` 原语）
+- [x] **translate**〔新驱动 + 迁校验〕：块循环、上下文组装（brief + 命中术语 + 邻域原文，刻意不传前块译文）、缓存查询（`tongtu/memory.py` 的翻译记忆，命中即免调用）、validate 内环重试、关节⑤（`complete` 原语）；内环抽成 `translate_body`，compile 的坏段重译（`retranslate_segment`）复用同一份 validate 出口判据
 - [x] **compile**〔重写〕：unmask 回填 → inject_cjk（查适配表）→ latexmk -xelatex 回环；失败分诊、块 → 段落二分、坏段重译一次再回退原文（保证永远出 PDF）、关节⑥
 - [ ] **figures**〔新〕：EPS/PDF/位图 → PNG 预渲染（长边 ≈1568px 定 DPI，位图只缩不放）、caption 与引用段落收集；仅依赖 `src/`，与翻译轨并行，逐图 hash 缓存
 - [ ] **export**〔新，吸收 v2 package.py〕：产物包组装（zh.tex 自包含）、anchors 三来源合成、检验页生成、契约 schema 自校验
-- [ ] **增量模型**〔新〕（M2 已落阶段级 manifest 与块级 cache_key；chunks.json 翻译记忆的存取复用待 M3）：阶段级 `build/manifests/<stage>.json`（输入 hash → 跳过）；块级翻译缓存（key = 块源码 + 邻域 + 命中术语 + brief_hash + style_version + prompt_version + model_id），权威翻译记忆落产物 `chunks.json`
+- [x] **增量模型**〔新〕：阶段级 `build/manifests/<stage>.json`（输入 hash → 跳过）；块级翻译缓存（key = 块源码 + 邻域 + 命中术语 + brief_hash + style_version + prompt_version + model_id），权威翻译记忆落产物 `chunks.json`——`tongtu/memory.py` 负责装载（`out/` 权威 + `build/` 工作副本）、写回与失效，`build/` 整体删除后仍能从 `out/chunks.json` 全量命中；`--force` 连块级缓存一起无视
 
 ### 3.3 agent 适配层（`agent/`）
 
 - [x] 两原语接口〔新〕：`complete(prompt, text, model)` / `session(prompt, workdir, model, budget)`；`session` 的 done 不作裁决依据，转录一律落 `logs/`
 - [x] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 的钥匙
 - [x] **Codex CLI 适配器**〔新，选型已决〕（`tongtu/agent/codex.py`）：`codex exec` headless 拉起、`--sandbox` + `-C` 圈权限（继承 v2 run.sh 的 allowlist 思路）、指定模型、超时、转录落 `logs/`；`complete` 首发同走运行时（read-only 沙箱 + 输出清洗）；argv 段模板可覆盖、runner 可注入；`get_agent(name)` 工厂 + `tongtu run --agent`
-- [ ] 六关节接线：①主文件 ②构建环境 ③环境分类 ④通读与术语 ⑤翻译 ⑥适配与修复
+- [x] 六关节接线（全部在 `tongtu/pipeline.py`，阶段驱动器只声明回调）：①主文件（flatten 的 arbiter，提示词内联）②构建环境（baseline 的 session ← `as_session_fn` / `skill/repair.md`）③环境分类（mask 的 arbiter + `skill/classify.md`，结论进 blocks.json 的 `decided_by="agent"`）④通读与术语（survey 的 complete）⑤翻译（块循环 + compile 坏段重译）⑥适配与修复（compile 的 session）；每次拉起记一条干预（形状 = `report.schema.json` 的 `agent_interventions`），攒在 `PipelineResult.interventions`，**outcome 一律由事后的校验与编译裁决**，落盘属 M4
 
 ### 3.4 prompt 资产（`skill/`）
 
@@ -110,7 +110,7 @@
 ### 3.9 CLI 命令面〔新〕
 
 - [x] `tongtu run`（幂等，`--force` / `--json` / `--glossary` / `--workdir`；退出码 0 = 出包）
-- [ ] `tongtu retranslate`（`--chunks` / `--term` / `--all`，走块级失效重算）
+- [x] `tongtu retranslate`（`--chunks` / `--term` / `--all`，走块级失效重算：删缓存条目 → translate 必算 → compile 及下游按 manifest 判；上游一律装载不重算；退出码语义同 `run`）
 - [ ] `tongtu stage`（单阶段调试入口）、`tongtu doctor`（探测 xelatex / latexmk / latexpand / 字体）、`tongtu preview`
 
 ## 4. 建议施工顺序

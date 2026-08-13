@@ -67,7 +67,6 @@ def test_bare_invocation_prints_help(capsys):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["retranslate", "2401.01234", "--all"],
         ["preview", "2401.01234"],
         ["stage", "figures", "2401.01234"],  # 阶段名合法但本期占位跳过
         ["stage", "export", "2401.01234"],
@@ -93,6 +92,19 @@ def test_retranslate_requires_a_scope():
     with pytest.raises(SystemExit) as exc:
         cli.main(["retranslate", "2401.01234"])
     assert exc.value.code == 2
+
+
+def test_retranslate_is_wired_to_the_pipeline(tmp_path, capsys):
+    """`retranslate` 已接线（M3）：没有工作目录是结构化失败（退出码 1），不是「尚未实现」。
+
+    一律显式 `--workdir`——测试绝不去碰用户默认目录 `~/.local/share/tongtu/`。
+    """
+    empty = tmp_path / "nothing-here"
+
+    assert cli.main(["retranslate", "2401.01234", "--all", "--workdir", str(empty)]) == 1
+
+    assert "工作目录不存在" in capsys.readouterr().out
+    assert not empty.exists(), "失败的 retranslate 不该顺手建出论文目录"
 
 
 def test_stage_name_is_validated():
