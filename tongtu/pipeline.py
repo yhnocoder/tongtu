@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence, TextIO
 
 from . import CONTRACT_VERSION, __version__
-from .agent.mock import MockAgent
+from .agent.mock import MockAgent, identity
 from .compiler import DEFAULT_TIMEOUT, Compiler
 from .stages import STAGES
 from .stages import baseline as baseline_stage
@@ -287,6 +287,10 @@ class Events:
         if not self.json_mode:
             print(text, file=self.stream, flush=True)
 
+    def note(self, text: str) -> None:
+        """人读模式的旁白。JSON 模式下**什么也不发**——事件流是契约，不塞自由文本。"""
+        self._say(text)
+
     # -- 四类事件 -----------------------------------------------------------
 
     def stage_start(self, stage: str, *, total: int | None = None) -> None:
@@ -519,6 +523,12 @@ class Pipeline:
         """跑完整阶段序；`only` 给出时只算该阶段（上游一律从盘上装载）。"""
         started = time.monotonic()
         failed: StageOutcome | None = None
+        if isinstance(self.agent, MockAgent) and self.agent.transform is identity:
+            # 不许让人误以为跑出了译文：默认 agent 是恒等 mock（真运行时属 M3）。
+            self.events.note(
+                "注意：当前 agent 运行时是 MockAgent（恒等翻译，译文即原文）——"
+                "真 agent 适配层属 M3（docs/PHASE0.md §3.3）"
+            )
         for name in STAGES:
             if only is not None and STAGES.index(name) > STAGES.index(only):
                 break

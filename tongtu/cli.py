@@ -161,14 +161,19 @@ def _not_implemented(command: str) -> int:
 def run_run(args: argparse.Namespace) -> int:
     """`tongtu run`：跑完整流水线，退出码即 `PipelineResult.exit_code`（架构 §6）。"""
     from .pipeline import run_pipeline
+    from .workdir import WorkdirError
 
-    result = run_pipeline(
-        args.target,
-        workdir=args.workdir,
-        force=args.force,
-        json_events=args.json,
-        glossary=tuple(args.glossary or ()),
-    )
+    try:
+        result = run_pipeline(
+            args.target,
+            workdir=args.workdir,
+            force=args.force,
+            json_events=args.json,
+            glossary=tuple(args.glossary or ()),
+        )
+    except WorkdirError as exc:
+        print(f"tongtu run：{exc}", file=sys.stderr)
+        return 2
     return result.exit_code
 
 
@@ -179,6 +184,7 @@ def run_stage_cmd(args: argparse.Namespace) -> int:
     （survey / figures / export）尚未实现，退 2。
     """
     from .pipeline import SKIPPED_STAGES, run_stage
+    from .workdir import WorkdirError
 
     if args.name in SKIPPED_STAGES:
         print(
@@ -186,12 +192,16 @@ def run_stage_cmd(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    result = run_stage(
-        args.name,
-        args.id,
-        workdir=args.workdir,
-        json_events=args.json,
-    )
+    try:
+        result = run_stage(
+            args.name,
+            args.id,
+            workdir=args.workdir,
+            json_events=args.json,
+        )
+    except WorkdirError as exc:
+        print(f"tongtu stage {args.name}：{exc}", file=sys.stderr)
+        return 2
     outcome = result.stage(args.name)
     return 0 if outcome is not None and outcome.ok else 1
 

@@ -8,8 +8,6 @@ e2e（`tests/test_e2e_identity.py`）只走恒等译文这条happy path——内
 
 from __future__ import annotations
 
-import pytest
-
 from tongtu.agent import SessionOutcome
 from tongtu.agent.mock import MockAgent
 from tongtu.stages.chunk import chunk_masked

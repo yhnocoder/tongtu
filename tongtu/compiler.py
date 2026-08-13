@@ -64,6 +64,7 @@ __all__ = [
     "LogSummary",
     "MISSING_TOOL",
     "OK",
+    "PACKAGED_FONTS",
     "RUN_STATUSES",
     "SessionFn",
     "TIMEOUT",

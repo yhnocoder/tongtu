@@ -59,22 +59,22 @@
 
 ### 3.2 确定性流水线（`scripts/`，按阶段）
 
-- [ ] **fetch**〔迁〕：e-print 下载解包、PDF-only 与 pdfpages 套壳检测（报错并标记降级路线）
-- [ ] **flatten**〔迁〕：latexpand 展开 + `--expand-bbl`；主文件歧义 → 关节①
-- [ ] **baseline**〔新〕：latexmk 原样编译原文，隔离环境问题；失败 → 关节②（workdir 内修构建环境），仍失败终止——这是最早的编译门控，编译不过的论文不花一分钱 LLM
-- [ ] **mask**〔迁 + 扩展〕：见 §2.1 映射行；分类表数据文件 + 关节③ + 保守默认 + 往返自检
+- [x] **fetch**〔迁〕：e-print 下载解包、PDF-only 与 pdfpages 套壳检测（报错并标记降级路线）
+- [x] **flatten**〔迁〕：latexpand 展开 + `--expand-bbl`；主文件歧义 → 关节①
+- [x] **baseline**〔新〕：latexmk 原样编译原文，隔离环境问题；失败 → 关节②（workdir 内修构建环境），仍失败终止——这是最早的编译门控，编译不过的论文不花一分钱 LLM
+- [x] **mask**〔迁 + 扩展〕：见 §2.1 映射行；分类表数据文件 + 关节③ + 保守默认 + 往返自检
 - [ ] **survey**〔新〕：masked.tex 选择性回填视图（剔除附录与参考文献）一次通读 → `brief.json`（abstract 照录 + 章节树 + 记号约定 + 文风基调）+ 术语预扫决策（关节④）；术语表三层合并（全局 XDG → 论文目录 → `--glossary`）；产物 schema 校验
-- [ ] **chunk**〔重写〕：章节树优先分块，软目标 / 硬上限以 token 计，绝不切入环境或段落
-- [ ] **translate**〔新驱动 + 迁校验〕：块循环、上下文组装（brief + 命中术语 + 邻域原文，刻意不传前块译文）、缓存查询、validate 内环重试、关节⑤（`complete` 原语）
-- [ ] **compile**〔重写〕：unmask 回填 → inject_cjk（查适配表）→ latexmk -xelatex 回环；失败分诊、块 → 段落二分、坏段重译一次再回退原文（保证永远出 PDF）、关节⑥
+- [x] **chunk**〔重写〕：章节树优先分块，软目标 / 硬上限以 token 计，绝不切入环境或段落
+- [ ] **translate**〔新驱动 + 迁校验〕（M2 已落块循环 + validate 内环 + 邻域/术语命中 + cache_key 公式；brief 上下文与缓存存取待 M3）：块循环、上下文组装（brief + 命中术语 + 邻域原文，刻意不传前块译文）、缓存查询、validate 内环重试、关节⑤（`complete` 原语）
+- [x] **compile**〔重写〕：unmask 回填 → inject_cjk（查适配表）→ latexmk -xelatex 回环；失败分诊、块 → 段落二分、坏段重译一次再回退原文（保证永远出 PDF）、关节⑥
 - [ ] **figures**〔新〕：EPS/PDF/位图 → PNG 预渲染（长边 ≈1568px 定 DPI，位图只缩不放）、caption 与引用段落收集；仅依赖 `src/`，与翻译轨并行，逐图 hash 缓存
 - [ ] **export**〔新，吸收 v2 package.py〕：产物包组装（zh.tex 自包含）、anchors 三来源合成、检验页生成、契约 schema 自校验
-- [ ] **增量模型**〔新〕：阶段级 `build/manifests/<stage>.json`（输入 hash → 跳过）；块级翻译缓存（key = 块源码 + 邻域 + 命中术语 + brief_hash + style_version + prompt_version + model_id），权威翻译记忆落产物 `chunks.json`
+- [ ] **增量模型**〔新〕（M2 已落阶段级 manifest 与块级 cache_key；chunks.json 翻译记忆的存取复用待 M3）：阶段级 `build/manifests/<stage>.json`（输入 hash → 跳过）；块级翻译缓存（key = 块源码 + 邻域 + 命中术语 + brief_hash + style_version + prompt_version + model_id），权威翻译记忆落产物 `chunks.json`
 
 ### 3.3 agent 适配层（`agent/`）
 
-- [ ] 两原语接口〔新〕：`complete(prompt, text, model)` / `session(prompt, workdir, model, budget)`；`session` 的 done 不作裁决依据，转录一律落 `logs/`
-- [ ] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 的钥匙
+- [x] 两原语接口〔新〕：`complete(prompt, text, model)` / `session(prompt, workdir, model, budget)`；`session` 的 done 不作裁决依据，转录一律落 `logs/`
+- [x] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 的钥匙
 - [ ] **Codex CLI 适配器**〔新，选型已决〕：headless 拉起、圈权限（继承 v2 run.sh 的 allowlist 思路）、指定模型；`complete` 首发同走运行时
 - [ ] 六关节接线：①主文件 ②构建环境 ③环境分类 ④通读与术语 ⑤翻译 ⑥适配与修复
 
@@ -96,9 +96,9 @@
 
 ### 3.7 测试与 CI〔新〕
 
-- [ ] fixtures：自造最小模板论文三篇（article / revtex / 双栏会议）入仓库
-- [ ] 文本层：golden-file + 往返恒等性质测试（PR 门禁）
-- [ ] 编译层：MockAgent 恒等翻译 e2e，三篇 fixture 出 PDF + anchors + schema 校验（PR 门禁）；补「伪翻译」变体覆盖 xeCJK 中文路径（开放问题 2）
+- [x] fixtures：自造最小模板论文三篇（article / revtex / 双栏会议）入仓库
+- [x] 文本层：golden-file + 往返恒等性质测试（PR 门禁）
+- [ ] 编译层：MockAgent 恒等翻译 e2e（M2 已落双形态：本机假工具 + CI texlive 镜像 pytest -m compile，PR 门禁；anchors 断言待 M4，伪翻译变体待补，M5 切自建镜像）
 - [ ] LLM 层：手动触发 workflow，真模型 1–3 篇，report.json 入质量看板（监控不门禁）
 - [ ] CI 一律跑参考镜像；镜像层缓存
 
@@ -109,7 +109,7 @@
 
 ### 3.9 CLI 命令面〔新〕
 
-- [ ] `tongtu run`（幂等，`--force` / `--json` / `--glossary` / `--workdir`；退出码 0 = 出包）
+- [x] `tongtu run`（幂等，`--force` / `--json` / `--glossary` / `--workdir`；退出码 0 = 出包）
 - [ ] `tongtu retranslate`（`--chunks` / `--term` / `--all`，走块级失效重算）
 - [ ] `tongtu stage`（单阶段调试入口）、`tongtu doctor`（探测 xelatex / latexmk / latexpand / 字体）、`tongtu preview`
 
