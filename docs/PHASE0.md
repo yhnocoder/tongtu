@@ -75,7 +75,7 @@
 
 - [x] 两原语接口〔新〕：`complete(prompt, text, model)` / `session(prompt, workdir, model, budget)`；`session` 的 done 不作裁决依据，转录一律落 `logs/`
 - [x] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 靠它成立
-- [x] **Codex CLI 适配器**〔新，选型已决〕（`tongtu/agent/codex.py`）：`codex exec` headless 拉起、`--sandbox` + `-C` 圈权限（继承 v2 run.sh 的 allowlist 思路）、指定模型、超时、转录落 `logs/`；`complete` 首发同走运行时（read-only 沙箱 + 输出清洗）；argv 段模板可覆盖、runner 可注入；`get_agent(name)` 工厂 + `tongtu run --agent`
+- [x] **Codex CLI 适配器**〔新，选型已决〕（`tongtu/agent/codex.py`）：`codex exec` headless 拉起、`--sandbox` + `-C` 圈权限（继承 v2 run.sh 的 allowlist 思路）、指定模型、超时、转录落 `logs/`；`complete` 首发同走运行时（read-only 沙箱 + 输出清洗）；argv 段模板可覆盖、runner 可注入；`get_agent(name)` 工厂 + `tongtu run --agent` / `--model`（模型必须显式指定——它进翻译缓存 key，留空则换模型不失效缓存）
 - [x] 六关节接线（全部在 `tongtu/pipeline.py`，阶段驱动器只声明回调）：①主文件（flatten 的 arbiter，提示词内联）②构建环境（baseline 的 session ← `as_session_fn` / `skill/repair/SKILL.md`）③环境分类（mask 的 arbiter + `skill/classify/SKILL.md`，结论进 blocks.json 的 `decided_by="agent"`）④通读与术语（survey 的 complete）⑤翻译（块循环 + compile 坏段重译）⑥适配与修复（compile 的 session）；每次拉起记一条干预（形状 = `report.schema.json` 的 `agent_interventions`），攒在 `PipelineResult.interventions`，**outcome 一律由事后的校验与编译裁决**，落盘属 M4
 
 ### 3.4 prompt 资产（`skill/`）

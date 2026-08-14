@@ -40,7 +40,7 @@
    pdftocairo / ImageMagick 的真实渲染用例目前本机 skip、CI 的 `-m compile` 未选中。参考镜像（已含 poppler / ghostscript / ImageMagick）发布并接入 ci.yml 后，为这些用例补 `compile` 标记；同时补 EPS / JPEG 的 fixture 资产。
 
 10. **真实论文验收**（零期验收判据 3）。
-    本 PR 的开发环境无 arXiv 网络访问与 TeX，尚未用真实论文跑通全流水线。需在具备网络与 TeX 的环境执行 `tongtu run <arxiv-id> --agent codex` 至少一篇，核对产物包与 report.json。
+    本 PR 的开发环境无 arXiv 网络访问与 TeX，尚未用真实论文跑通全流水线。需在具备网络与 TeX 的环境执行 `tongtu run <arxiv-id> --agent codex --model <模型>` 至少一篇，核对产物包与 report.json（`--model` 是必填项：模型标识进翻译缓存 key）。
 
 ## 发布链路
 

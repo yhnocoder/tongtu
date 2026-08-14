@@ -160,15 +160,24 @@ def _not_implemented(command: str) -> int:
 
 
 def _agent(args: argparse.Namespace) -> dict:
-    """`--agent` 透传给 `Pipeline(agent=...)`；没给就让编排器用它的默认（MockAgent）。
+    """`--agent` / `--model` 透传给 `Pipeline(agent=...)`；没给就让编排器用它的默认（MockAgent）。
 
     名字解析（显式 → `$TONGTU_AGENT` → mock）在 :func:`tongtu.agent.get_agent` 里，这里
-    不重复一套口径。
+    不重复一套口径。`--model` 同样只是转交：要不要模型、给不给默认，由各运行时自己定
+    （codex 要求显式给——模型标识进翻译缓存 key；mock / pseudo 丢弃）。
     """
     from .agent import AGENT_ENV, get_agent
 
     name = getattr(args, "agent", None) or os.environ.get(AGENT_ENV)
-    return {"agent": get_agent(name)} if name else {}
+    model = (getattr(args, "model", None) or "").strip()
+    if not name and not model:
+        return {}
+    try:
+        return {"agent": get_agent(name, **({"model": model} if model else {}))}
+    except RuntimeError as exc:
+        # 运行时拒绝被构造（如 codex 没给模型）。对 CLI 而言这与「未知 agent 名」同类：
+        # 用法错误，退 2；上层只认 ValueError，故在此换个类型，消息原样带出去。
+        raise ValueError(str(exc)) from exc
 
 
 def run_run(args: argparse.Namespace) -> int:
@@ -363,6 +372,14 @@ def build_parser() -> argparse.ArgumentParser:
             f"agent 运行时：{' / '.join(agent_names())}"
             f"（默认 {DEFAULT_AGENT}；也可用 ${AGENT_ENV}）"
         ),
+    )
+    # 模型标识进翻译缓存 key（架构 §4），故真运行时要求显式给：换模型必须换缓存，
+    # 靠运行时自己的配置文件下发模型会让缓存分不清新旧译文。mock / pseudo 忽略它。
+    agent_opts.add_argument(
+        "--model",
+        metavar="ID",
+        default=None,
+        help="模型标识，透传给 agent 运行时（--agent codex 必须给；mock / pseudo 忽略）",
     )
 
     parser = argparse.ArgumentParser(

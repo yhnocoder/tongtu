@@ -298,6 +298,34 @@ def test_synctex_is_shipped_and_used(paper):
     assert "synctex" in {a["source"] for a in document["anchors"]}
 
 
+def test_anchors_use_the_span_file_left_by_compile(paper):
+    """compile 落的 `build/zh-spans.json` 是精确输入：块指到哪一行由它说了算。"""
+    sample = (
+        "SyncTeX Version:1\nInput:1:zh.tex\nUnit:1\nX Offset:0\nY Offset:0\nContent:\n"
+        "{1\n[1,1:4736286,4241067:26214400,45613056,0\n"
+        # 第 4 行（图块所在行）有一个盒子；文本查找那条路会把图块定位到第 5 行
+        "h1,4:4736286,20000000:13107200,655360,0\n]\n}1\n"
+    )
+    _write(paper.build / "zh" / "zh.synctex.gz", gzip.compress(sample.encode("utf-8")))
+    figure_at = ZH_TEX.index("\\begin{figure}")
+    # 故意把区间往前挪一行（指向「正文一段。」），证明用的是这份文件而不是文本查找
+    prose_at = ZH_TEX.index("正文一段。")
+    _write(
+        paper.build / "zh-spans.json",
+        {"tex": "zh.tex", "blocks": {"BLK-1": [prose_at, prose_at + len("正文一段。")]}},
+    )
+
+    result = run(paper)
+
+    figure = next(a for a in result.anchors.anchors if a.block_id == "BLK-1")
+    assert figure.source == "synctex", "区间指向第 4 行，那里正好有 synctex 盒子"
+    # 不给这份文件（旧产物）时退回文本查找：图块回到第 5 行，没有盒子 ⇒ 页级降级
+    (paper.build / "zh-spans.json").unlink()
+    fallback = next(a for a in run(paper).anchors.anchors if a.block_id == "BLK-1")
+    assert fallback.source == "blocks"
+    assert ZH_TEX.count("\n", 0, figure_at) + 1 == 5  # 文本查找看到的是第 5 行
+
+
 def test_a_stale_synctex_is_removed_from_the_package(paper):
     """上一轮的 synctex 不许留在包里，被当成这一轮的映射。"""
     _write(paper.out / "zh.synctex.gz", b"stale")

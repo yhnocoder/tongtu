@@ -49,10 +49,23 @@
 
 **不接收 ChunkPlan**：compile 只需要「原文段 ↔ 译文段」这一层对应关系，块的章节树、token
 数等分块信息与它无关，少一个依赖少一处耦合。
+
+## 块区间落盘（`build/zh-spans.json`）
+
+回填时 unmask 记下了每个块在输出里的字符区间，注入之后再经 `InjectResult.map_offset`
+换算到 `zh.tex` 的坐标系——于是「块 → zh.tex 位置」这件事在本阶段是**已知量**。交付的那
+一次编译写完 `zh.tex` 后，把这份区间落成 `build/zh-spans.json`，export 阶段的 anchors 直接
+消费，不必再拿块内容去 `zh.tex` 里反查（caption 被翻译后块 tex 已不逐字节存在，反查只能
+靠启发式）。
+
+关节⑥的修复会话可以任意改动 `zh.tex`，此时区间随时失效。故落盘前**逐字节比对**磁盘上的
+`zh.tex` 与本阶段最后写进去的那一份：不一致就不写、并删掉上一次的旧文件——anchors 那边
+自会退回文本查找。宁可少一份精确输入，也不能给出一份错的。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -90,6 +103,7 @@ __all__ = [
     "OK_WITH_FALLBACK",
     "RAW_NAME",
     "REASON",
+    "SPANS_NAME",
     "STATUSES",
     "TranslatedChunk",
     "WHOLE_ID",
@@ -113,6 +127,10 @@ ZH_TEX = "zh.tex"
 
 #: 回填之后、注入之前的中间产物（决策 13：仍落 `build/` 供调试）。
 RAW_NAME = "zh-raw.tex"
+
+#: 块在 `zh.tex` 里的字符区间（见模块文档「块区间落盘」）。不是产物契约的一部分，
+#: 只是 compile 交给 export/anchors 的一份已知量，缺席即降级为文本查找。
+SPANS_NAME = "zh-spans.json"
 
 #: 编译日志归档位置（相对 `logs/`）。
 LOG_NAME = "compile.log"
@@ -220,6 +238,13 @@ class CompileZhResult:
     pdf: Path | None = None
     tex: Path | None = None
     raw_tex: Path | None = None
+    spans_path: Path | None = None
+    """`build/zh-spans.json` 的路径；区间不可信（关节⑥改过 `zh.tex`）或写不下去时为 None。
+
+    刻意不进 :meth:`to_json`：`report.schema.json` 的 `compile` 段是封闭的，而这份文件是
+    compile 交给 export 的中间量，不是报告内容。
+    """
+
     build_dir: Path | None = None
     engine: str = ENGINE
     passes: int = 0
@@ -294,6 +319,28 @@ def paragraph_pieces(text: str) -> tuple[list[str], list[int]]:
     pieces = PARAGRAPH_SPLIT_RE.split(text)
     para_at = [i for i, piece in enumerate(pieces) if i % 2 == 0 and piece.strip()]
     return pieces, para_at
+
+
+def _shift_spans(spans: Mapping[str, tuple[int, int]], injected) -> dict[str, tuple[int, int]]:
+    """把回填侧的块区间换算到注入之后的 `zh.tex` 坐标系。
+
+    注入是若干次切片改写（导言区插块、删包、剥环境），`InjectResult.map_offset` 就是那张
+    换算表。止点按**最后一个字符**换算再加一：区间右端恰好落在插入点上时，直接换算会把
+    注入块整个吞进来。空区间原样保留（长度为 0，怎么换算都还是空的）。
+
+    换算给出的是块在 `zh.tex` 里**占据的区域**，而不是块文本本身的副本：注入点落在块内部
+    时（前导区块就是如此——注入块插在 `\\documentclass` 之后）该区域连注入块一并算进去。
+    这是如实描述，且前导区不产锚点，下游不受影响。
+    """
+    shifted: dict[str, tuple[int, int]] = {}
+    for key, (start, end) in spans.items():
+        if end <= start:
+            shifted[key] = (injected.map_offset(start), injected.map_offset(start))
+            continue
+        first = injected.map_offset(start)
+        last = injected.map_offset(end - 1) + 1
+        shifted[key] = (first, max(first, last))
+    return shifted
 
 
 class _Original:
@@ -452,6 +499,7 @@ class _Driver:
         self.build_dir = workdir.build / ZH_DIRNAME
         self.tex = self.build_dir / ZH_TEX
         self.raw_tex = workdir.build / RAW_NAME
+        self.spans_file = workdir.build / SPANS_NAME
         self.passes = 0
         self.probes = 0
         self.exhausted = False
@@ -462,6 +510,7 @@ class _Driver:
         self.assets = AssetLinks()
         self.last: CompileRunResult | None = None
         self.tex_text = ""
+        self.block_spans: dict[str, tuple[int, int]] = {}
         self._unmask_warned = False
 
     # -- 组装 ---------------------------------------------------------------
@@ -511,7 +560,40 @@ class _Driver:
             if warning not in self.warnings:
                 self.warnings.append(f"inject: {warning}")
         self.tex_text = injected.text
+        self.block_spans = _shift_spans(detail.block_spans, injected)
         self.tex.write_text(injected.text, encoding="utf-8")
+
+    # -- 块区间 -------------------------------------------------------------
+
+    def save_spans(self) -> Path | None:
+        """把块区间落 `build/zh-spans.json`（见模块文档）。
+
+        磁盘上的 `zh.tex` 与本阶段最后写进去的那一份对不上（关节⑥改过）时不写，并删掉
+        旧文件——错的区间比没有区间更糟。写不下去（只读盘）同样如实返回 None。
+        """
+        try:
+            if not self.block_spans or self.tex.read_text(encoding="utf-8") != self.tex_text:
+                self.spans_file.unlink(missing_ok=True)
+                return None
+            self.spans_file.parent.mkdir(parents=True, exist_ok=True)
+            self.spans_file.write_text(
+                json.dumps(
+                    {
+                        "tex": ZH_TEX,
+                        "blocks": {
+                            key: [start, end]
+                            for key, (start, end) in sorted(self.block_spans.items())
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return None
+        return self.spans_file
 
     # -- 编译 ---------------------------------------------------------------
 
@@ -713,6 +795,7 @@ def compile_zh(
             pdf=last.pdf if last is not None and last.has_pdf else None,
             tex=driver.tex,
             raw_tex=driver.raw_tex,
+            spans_path=driver.save_spans(),
             build_dir=driver.build_dir,
             engine=driver.engine,
             passes=driver.passes,

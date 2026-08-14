@@ -156,7 +156,8 @@ _MAX_LEADIN_LINES = 3
 class CodexError(RuntimeError):
     """Codex CLI 不可用（结构化，不带栈）。
 
-    `kind` ∈ :data:`RUN_STATUSES` ∪ {"bad_template", "empty_output"}；`detail` 放现场
+    `kind` ∈ :data:`RUN_STATUSES` ∪ {"bad_template", "empty_output", "no_model",
+    "transcript"}；`detail` 放现场
     （命令行、stderr 尾巴）。同 :class:`tongtu.compiler.AssetError` 的形状。
     """
 
@@ -383,8 +384,10 @@ class CodexAgent:
     """Codex CLI 上的两原语实现。
 
     :param cli: 可执行文件名。
-    :param model: 模型标识。空 = 用 CLI 自己的默认模型；**建议显式指定**——它进块级翻译
-        缓存的 key（架构 §4），留空则换模型不会失效缓存。
+    :param model: 模型标识，**必填**。它既下发给 CLI（`--model`），又进块级翻译缓存的 key
+        （架构 §4）；留空则 CLI 用自己配置文件里的模型，而缓存 key 记的是空串——用户在
+        CLI 配置里换了模型，缓存不会失效，译文于是新旧模型混杂且无人知晓。故构造时空 model
+        直接报 :class:`CodexError`，见 :meth:`__post_init__`。
     :param log_dir: 转录落点。给 `session` 传 `Workdir` 时优先用它的 `logs/`。
     :param runner: 执行 argv 的函数，默认 :func:`subprocess_runner`（唯一碰 subprocess 的地方）。
     :param session_argv / complete_argv: argv 段模板，见模块文档。
@@ -410,6 +413,18 @@ class CodexAgent:
     log_completions: bool = False
     calls: list[CallRecord] = field(default_factory=list)
     errors: list[CodexError] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """模型必须显式指定——缓存 key 认的是这个字符串（见 `model` 参数说明）。"""
+        if not (self.model or "").strip():
+            raise CodexError(
+                "CodexAgent 必须显式指定模型：模型标识进翻译缓存 key，留空则 Codex CLI 用"
+                "自己配置里的模型，而缓存无法区分模型（换模型不失效缓存，译文会新旧混杂）。"
+                "指定方式：`tongtu run <id> --agent codex --model <模型>`，"
+                "或 `get_agent(\"codex\", model=\"<模型>\")` / `CodexAgent(model=\"<模型>\")`。",
+                kind="no_model",
+            )
+        self.model = self.model.strip()
 
     # -- 原语 ① complete ----------------------------------------------------
 

@@ -211,6 +211,96 @@ def test_block_line_spans_survives_translated_captions():
     assert spans["BLK-1"][0] == 2
 
 
+def test_block_line_spans_prefers_exact_offsets():
+    """精确路径：compile 记下的字符区间直接换算成行号，不再拿块内容去反查。"""
+    blocks = anchors._normalize_blocks(BLOCKS)[0]
+    start = ZH_TEX.index(BLOCK_TEX)
+    offsets = {"BLK-1": (start, start + len(BLOCK_TEX))}
+
+    spans = anchors.block_line_spans(ZH_TEX, blocks, offsets)
+
+    assert spans["BLK-1"] == (4, 7) == anchors.block_line_spans(ZH_TEX, blocks)["BLK-1"]
+
+
+def test_exact_offsets_beat_text_search_on_repeated_blocks():
+    """两个块内容一模一样时文本查找只能靠游标，精确区间各归各位。"""
+    text = (
+        "\\begin{document}\n"
+        "\\begin{equation}a=b\\end{equation}\n"
+        "Prose.\n"
+        "\\begin{equation}a=b\\end{equation}\n"
+    )
+    same = "\\begin{equation}a=b\\end{equation}"
+    blocks = anchors._normalize_blocks(
+        {
+            "blocks": [
+                {"id": "BLK-1", "placeholder": "⟦BLK-1⟧", "category": "math", "tex": same},
+                {"id": "BLK-2", "placeholder": "⟦BLK-2⟧", "category": "math", "tex": same},
+            ]
+        }
+    )[0]
+    second = text.rindex(same)
+    offsets = {"BLK-2": (second, second + len(same))}
+
+    spans = anchors.block_line_spans(text, blocks, offsets)
+
+    assert spans["BLK-2"] == (4, 4), "精确区间指向第二处"
+    assert spans["BLK-1"] == (2, 2), "没给区间的块走兼容分支（文本查找）"
+
+
+def test_block_line_spans_falls_back_when_offsets_are_unusable():
+    """越界的区间（产物与 zh.tex 对不上）不信，退回文本查找。"""
+    blocks = anchors._normalize_blocks(BLOCKS)[0]
+
+    spans = anchors.block_line_spans(ZH_TEX, blocks, {"BLK-1": (10**6, 10**6 + 5)})
+
+    assert spans["BLK-1"] == (4, 7)
+
+
+def test_block_char_spans_reads_the_file_and_skips_garbage(tmp_path):
+    path = tmp_path / "zh-spans.json"
+    path.write_text(
+        json.dumps(
+            {
+                "tex": "zh.tex",
+                "blocks": {
+                    "BLK-1": [3, 9],
+                    "BLK-2": "不是区间",
+                    "BLK-3": [5],
+                    "BLK-4": [9, 3],  # 止在起之前
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert anchors.block_char_spans(path) == {"BLK-1": (3, 9)}
+    assert anchors.block_char_spans(tmp_path / "nope.json") == {}
+    assert anchors.block_char_spans(None) == {}
+    assert anchors.block_char_spans({"BLK-1": [0, 2]}) == {"BLK-1": (0, 2)}
+
+
+def test_build_consumes_exact_spans():
+    """`build(spans=…)` 走精确路径：块指到哪一行由区间说了算。"""
+    start = ZH_TEX.index(BLOCK_TEX)
+    result = anchors.build(
+        zh_tex=ZH_TEX,
+        blocks=BLOCKS,
+        pdf=MINIMAL_PDF,
+        synctex=gz(SYNCTEX_SAMPLE),
+        spans={"blocks": {"BLK-1": [start, start + len(BLOCK_TEX)]}},
+    )
+
+    block = next(a for a in result.anchors if a.block_id == "BLK-1")
+    assert block.source == "synctex"
+    assert block.rects == next(
+        a for a in anchors.build(
+            zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(SYNCTEX_SAMPLE)
+        ).anchors
+        if a.block_id == "BLK-1"
+    ).rects
+
+
 def test_sections_are_scanned_from_zh_tex():
     found = anchors.sections_in(ZH_TEX)
 

@@ -538,6 +538,116 @@ def test_extra_errors_on_top_of_a_dirty_paper_are_still_bad_segments(paper):
 
 
 # --------------------------------------------------------------------------- #
+# 块区间落盘（build/zh-spans.json）
+# --------------------------------------------------------------------------- #
+
+#: 带图与 caption 的小论文——回填后 caption 变成译文，块文本不再逐字节等于 blocks.json。
+SPANS_SRC = (
+    "\\documentclass{article}\n"
+    "\\begin{document}\n"
+    "First prose paragraph.\n\n"
+    "\\begin{figure}\\includegraphics{a}\\caption{Pipeline}\\end{figure}\n\n"
+    "Second prose paragraph.\n\n"
+    "\\begin{equation}a=b\\end{equation}\n\n"
+    "\\end{document}\n"
+)
+
+
+def spans_paper(paper, *, translation=None, **kwargs):
+    """把 `SPANS_SRC` 掩码后整流回填一次，返回 `(结果, mask 结果, 落盘的区间)`。"""
+    import json
+
+    from tongtu.stages.mask import mask
+
+    masked = mask(SPANS_SRC)
+    stream = masked.masked if translation is None else translation(masked.masked)
+    result = cp.compile_zh(paper, stream, masked, **kwargs)
+    path = paper.build / cp.SPANS_NAME
+    spans = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    return result, masked, spans
+
+
+def test_spans_file_locates_every_block_in_zh_tex(paper):
+    """落盘的区间必须指向 `zh.tex` 里那一段——注入在导言区插了一整块，偏移不是常数。"""
+    result, masked, spans = spans_paper(paper, compiler=compiler())
+
+    assert result.status == cp.OK and result.spans_path == paper.build / cp.SPANS_NAME
+    assert spans["tex"] == "zh.tex"
+    tex = result.tex.read_text(encoding="utf-8")
+    by_id = {b.id: b for b in masked.blocks}
+    assert set(spans["blocks"]) == set(by_id)
+    for block_id, (start, end) in spans["blocks"].items():
+        block = by_id[block_id]
+        if block.category == "preamble":
+            # 注入点落在前导区块内部：区域如实把注入块也算进去（前导区不产锚点）
+            assert tex[start:end].startswith("\\documentclass{article}")
+            assert "injected by tongtu" in tex[start:end]
+            assert tex[start:end].endswith("\\begin{document}")
+            continue
+        # caption 没被翻译 ⇒ 回填逐字节原文（unmask 的「未改动 ⇒ 原文」规则）
+        expected = block.tex
+        for placeholder, caption in masked.caption_map.items():
+            expected = expected.replace(placeholder, caption.text)
+        assert tex[start:end] == expected
+    # 注入块确实插在了正文之前（否则这个用例证明不了偏移换算）
+    figure = next(b for b in masked.blocks if b.category == "figure")
+    assert spans["blocks"][figure.id][0] > SPANS_SRC.index("\\begin{figure}")
+
+
+def test_spans_follow_a_translated_caption(paper):
+    """caption 被译成中文之后，图块的区间跟着长——文本查找到这里就只能靠启发式了。"""
+    result, masked, spans = spans_paper(
+        paper,
+        translation=lambda stream: stream.replace("⟦CAP-0⟧ Pipeline", "⟦CAP-0⟧ 流水线总览"),
+        compiler=compiler(),
+    )
+
+    tex = result.tex.read_text(encoding="utf-8")
+    figure = next(b for b in masked.blocks if b.category == "figure")
+    start, end = spans["blocks"][figure.id]
+    assert tex[start:end] == figure.tex.replace("⟦CAP-0⟧", "流水线总览")
+    # 其后的块也在正确位置上（区间是按最终文本累计出来的，不是按块清单猜的）
+    equation = next(b for b in masked.blocks if b.category == "math")
+    first, last = spans["blocks"][equation.id]
+    assert tex[first:last] == equation.tex
+
+
+def test_spans_are_dropped_when_the_fixup_session_edits_zh_tex(paper):
+    """关节⑥可以任意改 `zh.tex`，此时区间失效：不写、并删掉旧文件（宁可少一份精确输入）。"""
+
+    def predicate(text):
+        return "\\usepackage{amsmath}" not in text  # 第一次编不过，加了包才过
+
+    def session(request):
+        text = request.tex.read_text(encoding="utf-8")
+        request.tex.write_text(
+            text.replace("\\begin{document}", "\\usepackage{amsmath}\n\\begin{document}"),
+            encoding="utf-8",
+        )
+
+    stale = paper.build / cp.SPANS_NAME
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"blocks": {"BLK-0": [0, 1]}}\n', encoding="utf-8")
+
+    result, _, spans = spans_paper(
+        paper, compiler=compiler(predicate=predicate), session=session
+    )
+
+    assert result.status == cp.OK and result.session_used == 1
+    assert result.spans_path is None and spans is None
+    assert not stale.is_file(), "上一次的区间必须删掉，错的区间比没有更糟"
+
+
+def test_spans_file_is_absent_without_a_block_list(paper):
+    """块清单为空（本文件多数用例的合成流）时无从记区间，如实不写。"""
+    units = build_units(chunks=1, paragraphs=2)
+    result = run_compile(paper, units, compiler=compiler())
+
+    assert result.status == cp.OK and result.spans_path is None
+    assert not (paper.build / cp.SPANS_NAME).exists()
+
+
+# --------------------------------------------------------------------------- #
 # 结果契约
 # --------------------------------------------------------------------------- #
 

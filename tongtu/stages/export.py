@@ -408,6 +408,7 @@ def export(
     pdf: str | os.PathLike[str] | None = None,
     synctex: str | os.PathLike[str] | None = None,
     figures_dir: str | os.PathLike[str] | None = None,
+    spans: str | os.PathLike[str] | Mapping | None = None,
     out_dir: str | os.PathLike[str] | None = None,
     title: str = "",
     bundle_fonts: bool = True,
@@ -419,6 +420,9 @@ def export(
     :param blocks: blocks.json 内容；缺省从 `build/blocks.json` 读。
     :param zh_tex / pdf / synctex: 编译产物；缺省取 `build/zh/` 下的同名文件。
     :param figures_dir: figures 阶段的产物目录；缺省 `build/figures/`。
+    :param spans: 块在 `zh.tex` 里的字符区间（compile 落的 `build/zh-spans.json`，缺省即
+        取它）。anchors 拿它精确定位块；文件缺席（旧产物、或关节⑥改过 `zh.tex` 使区间失效）
+        时自动退回文本查找。
     """
     build = workdir.build
     out = Path(out_dir) if out_dir is not None else workdir.out
@@ -430,6 +434,10 @@ def export(
     pdf_path = Path(pdf) if pdf is not None else zh_dir / ZH_PDF
     synctex_path = Path(synctex) if synctex is not None else zh_dir / SYNCTEX_NAME
     figures_src = Path(figures_dir) if figures_dir is not None else build / figures_stage.FIGURES_DIRNAME
+    spans_src: str | os.PathLike[str] | Mapping | None = spans
+    if spans_src is None:
+        candidate = build / compile_stage.SPANS_NAME
+        spans_src = candidate if candidate.is_file() else None
 
     def fail(message: str) -> ExportResult:
         return ExportResult(
@@ -480,6 +488,7 @@ def export(
         pdf=out / ZH_PDF,
         synctex=(out / SYNCTEX_NAME) if (out / SYNCTEX_NAME).is_file() else None,
         chunks=chunks_json,
+        spans=spans_src,
         tex_name=compile_stage.ZH_TEX,
         pdf_path=ZH_PDF,
     )

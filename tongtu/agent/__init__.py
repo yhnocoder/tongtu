@@ -18,7 +18,7 @@
   不含中文，xeCJK 断行与字体那条路只有它盖得到（架构附录 B 开放问题 2）。
 - CodexAgent（M3，`codex.py`）：Codex CLI headless 拉起；`complete` 首发同走运行时。
 
-运行时用 :func:`get_agent` 选：`get_agent("codex")` / `$TONGTU_AGENT` / 默认 `mock`。
+运行时用 :func:`get_agent` 选：`get_agent("codex", model=…)` / `$TONGTU_AGENT` / 默认 `mock`。
 默认是 mock 而不是真运行时——**花钱与拉起外部进程都必须是显式选择**。
 
 六个关节：①主文件 ②构建环境 ③环境分类 ④通读与术语 ⑤翻译 ⑥适配与修复。
@@ -103,15 +103,22 @@ DEFAULT_AGENT = "mock"
 AGENT_ENV = "TONGTU_AGENT"
 
 
-def _mock_agent(**kwargs) -> object:
+def _mock_agent(model: str | None = None, **kwargs) -> object:
+    """`model` 对 mock 无意义：它的模型标识就是身份（`"mock"`，进缓存 key），故丢弃。
+
+    于是 `tongtu run --model X --agent mock` 不会把假运行时的译文与真模型的缓存搅在一起。
+    """
     from .mock import MockAgent
 
+    del model
     return MockAgent(**kwargs)
 
 
-def _pseudo_agent(**kwargs) -> object:
+def _pseudo_agent(model: str | None = None, **kwargs) -> object:
+    """同 :func:`_mock_agent`：pseudo 的模型标识固定为 `"pseudo"`，不接受覆盖。"""
     from .mock import PseudoAgent
 
+    del model
     return PseudoAgent(**kwargs)
 
 
@@ -150,9 +157,12 @@ def get_agent(
 ) -> object:
     """按名字造一个 agent 运行时（两原语的实现），关键字参数直通构造器。
 
-        get_agent()          -> MockAgent（默认，零成本）
-        get_agent("pseudo")  -> PseudoAgent（中文注入：每段前缀固定中文，同样零成本）
-        get_agent("codex")   -> CodexAgent（架构 §13 选型：首发 Codex CLI）
+        get_agent()                            -> MockAgent（默认，零成本）
+        get_agent("pseudo")                    -> PseudoAgent（中文注入：每段前缀固定中文，同样零成本）
+        get_agent("codex", model="<模型>")      -> CodexAgent（架构 §13 选型：首发 Codex CLI）
+
+    `model` 是各运行时自己的事：真运行时（codex）**要求**显式给（模型标识进翻译缓存 key，
+    留空则换模型不失效缓存）；mock / pseudo 的模型标识即它们的身份，给了也丢弃。
 
     名字未知时抛 `ValueError`（用法错误，不是运行期故障——CLI 会把它变成退出码 2）。
     """

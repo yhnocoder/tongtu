@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +62,7 @@ __all__ = [
     "Section",
     "SyncTexMap",
     "SyncTexRecord",
+    "block_char_spans",
     "block_line_spans",
     "build",
     "line_of",
@@ -456,19 +458,74 @@ def _needle(block: Block) -> str:
     return max(parts, key=len) if parts else block.tex
 
 
-def block_line_spans(text: str, blocks: Iterable[Block]) -> dict[str, tuple[int, int]]:
+def block_char_spans(source: object) -> dict[str, tuple[int, int]]:
+    """把 `build/zh-spans.json`（或等价的 mapping）读成 `{块 id: (起, 止)}`。
+
+    认得三种输入：路径、已读出的 dict（`{"blocks": {id: [起, 止]}}`，也接受直接给
+    `{id: [起, 止]}`）、以及 `None`。**认不出的条目一律跳过**——这份文件是锦上添花的
+    精确输入，坏了只该让对应的块退回文本查找，不该炸掉整个 export。
+    """
+    if source is None:
+        return {}
+    document: object = source
+    if isinstance(source, (str, Path)):
+        try:
+            document = json.loads(Path(source).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    if not isinstance(document, Mapping):
+        return {}
+    entries = document.get("blocks", document)
+    if not isinstance(entries, Mapping):
+        return {}
+    spans: dict[str, tuple[int, int]] = {}
+    for key, value in entries.items():
+        if not isinstance(key, str) or not isinstance(value, Sequence) or isinstance(value, str):
+            continue
+        if len(value) != 2:
+            continue
+        try:
+            start, end = int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            continue
+        if 0 <= start <= end:
+            spans[key] = (start, end)
+    return spans
+
+
+def block_line_spans(
+    text: str,
+    blocks: Iterable[Block],
+    offsets: Mapping[str, tuple[int, int]] | None = None,
+) -> dict[str, tuple[int, int]]:
     """`{块 id: (起始行, 结束行)}`——块在 **zh.tex** 里的行区间（1-based，闭区间）。
 
     blocks.json 记的 `span` 是块在 `flat.tex` 里的位置，而 synctex 认的是 `zh.tex` 的行号；
     两者之间隔着回填（caption 译文长度可变）与注入（导言区多出一块），偏移量不是常数。
-    与其维护一张脆弱的偏移表，不如**按文档顺序在 zh.tex 里顺序查找**：块内容本就逐字节
-    存在（caption 除外，见 :func:`_needle`），顺序查找还顺带保证了「后一个块不会定位到前
-    一个块之前」。找不到的块直接缺席——少一个精确热区，不损坏任何东西。
+
+    `offsets` 是 compile 落下的**字符区间**（`build/zh-spans.json`，键同为块 id）：回填时
+    每个块被写到哪里是已知量，换算成行号只是一次查表。给了就用它——这是精确路径。
+
+    没给（旧产物、独立调用 :func:`build`）的块走**兼容分支**：按文档顺序在 zh.tex 里顺序
+    查找块内容。块内容本就逐字节存在（caption 除外，见 :func:`_needle`），顺序查找还顺带
+    保证了「后一个块不会定位到前一个块之前」。找不到的块直接缺席——少一个精确热区，不损坏
+    任何东西。
     """
     starts = line_starts(text)
     spans: dict[str, tuple[int, int]] = {}
-    cursor = 0
+    remaining: list[Block] = []
     for block in blocks:
+        span = (offsets or {}).get(block.id)
+        if span is None or span[1] > len(text):
+            remaining.append(block)
+            continue
+        first = line_of(starts, span[0])
+        last = line_of(starts, max(span[0], span[1] - 1))
+        spans[block.id] = (first, max(first, last))
+
+    # --- 兼容分支：拿不到精确区间的块退回文本查找 ---------------------------
+    cursor = 0
+    for block in remaining:
         needle = _needle(block)
         if not needle.strip():
             continue
@@ -676,6 +733,7 @@ def build(
     pdf: str | Path | bytes | None = None,
     synctex: str | Path | bytes | None = None,
     chunks: Mapping | None = None,
+    spans: str | Path | Mapping | None = None,
     tex_name: str = "zh.tex",
     pdf_path: str = "zh.pdf",
 ) -> AnchorsResult:
@@ -686,6 +744,8 @@ def build(
     :param pdf: `zh.pdf` 路径或字节 —— 画布来源（页数与页面尺寸）。
     :param synctex: `zh.synctex.gz` 路径或字节；`None` / 不存在 / 解析不出 → 页级锚点降级。
     :param chunks: chunks.json 的 dict，给出即为锚点填 `chunk_id`。
+    :param spans: compile 落下的块字符区间（`build/zh-spans.json` 的路径或内容）。给出即
+        走精确路径；缺席的块退回文本查找（见 :func:`block_line_spans`）。
 
     出口判据在调用方（export）：产物过 `anchors.schema.json`。本函数只保证「说得出来源」。
     """
@@ -717,7 +777,7 @@ def build(
     else:
         warnings.append("没有 zh.synctex.gz，锚点降级为页级（不伪造精确矩形）")
 
-    spans = block_line_spans(zh_tex, block_list)
+    line_spans = block_line_spans(zh_tex, block_list, block_char_spans(spans))
     total_lines = zh_tex.count("\n") + 1
     chunk_of = _chunk_index(chunks)
     synctex_ok = bool(mapping) and tag is not None
@@ -800,7 +860,7 @@ def build(
         emit(
             base_id=block.id,
             kind=kind,
-            line_span=spans.get(block.id),
+            line_span=line_spans.get(block.id),
             label=block.label,
             title=clean_title(caption) or None,
             block_id=block.id,

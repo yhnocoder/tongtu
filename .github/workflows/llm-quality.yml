@@ -21,7 +21,7 @@ on:
         type: string
         required: true
       model:
-        description: 模型标识（留空 = agent 运行时自己的默认模型）
+        description: 模型标识（agent=codex 时必填——模型进翻译缓存 key）
         type: string
         default: ""
       agent:
@@ -58,7 +58,7 @@ jobs:
       AGENT: ${{ inputs.agent }}
       MODEL: ${{ inputs.model }}
       IMAGE: ${{ inputs.image }}
-      # Codex CLI 的家目录（下面把模型写进它的 config.toml，见「下发模型」那一步）
+      # Codex CLI 的家目录（凭据与它自己的配置落这里；模型不走它，见「跑」那一步）
       CODEX_HOME: ${{ github.workspace }}/.codex
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -118,28 +118,20 @@ jobs:
           npm install -g @openai/codex
           codex --version
 
-      # 口径外的一处现实：`tongtu run` 目前没有 `--model`（CLI 只有 `--agent`，模型是
-      # 适配层构造参数）。故模型经运行时自己的配置下发——CodexAgent 的 model 为空时不下
-      # `--model`，Codex CLI 就用 $CODEX_HOME/config.toml 里的 model。等 CLI 有了
-      # `--model` / `$TONGTU_MODEL`，把这一步换成一个命令行参数即可。
-      - name: 下发模型
-        if: ${{ inputs.model != '' }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$CODEX_HOME"
-          printf 'model = "%s"\n' "$MODEL" > "$CODEX_HOME/config.toml"
-          cat "$CODEX_HOME/config.toml"
-
-      # 单篇失败不 fail step（监控不门禁）：退出码写进文件，汇总时照实摆进表格。
+      # 模型走命令行（`tongtu run --model`），不写运行时自己的配置文件：模型标识要进翻译
+      # 缓存 key（架构 §4），配置文件那条路 tongtu 看不见，换模型不会失效缓存。
+      # `--agent codex` 没给 `--model` 会被适配层当场拒绝（退出码 2）。
       - name: 跑
         run: |
           set -uo pipefail
           set +e  # 默认 shell 是 `bash -e`；这里要的是「跑挂了也接着跑下一篇」
           mkdir -p "$QUALITY_DIR" "$TONGTU_HOME"
+          model_args=()
+          [ -n "$MODEL" ] && model_args=(--model "$MODEL")
           for id in $PAPERS; do
             safe="${id//\//_}"
             echo "::group::tongtu run $id"
-            uv run tongtu run "$id" --agent "$AGENT" --json \
+            uv run tongtu run "$id" --agent "$AGENT" "${model_args[@]}" --json \
               > "$QUALITY_DIR/$safe.events.jsonl"
             code=$?
             echo "$code" > "$QUALITY_DIR/$safe.exit"

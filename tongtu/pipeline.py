@@ -1477,7 +1477,11 @@ class Pipeline:
             return _Work(ok=False, error=result.message or "译文编译失败", detail=detail)
         self.pdf = result.pdf
         self.fallback_chunks += len(result.fallbacks)
-        outputs = tuple(p for p in (result.tex, result.pdf, result.raw_tex) if p is not None)
+        outputs = tuple(
+            p
+            for p in (result.tex, result.pdf, result.raw_tex, result.spans_path)
+            if p is not None
+        )
         return _Work(outputs=outputs, detail=detail)
 
     def _compile_load(self) -> _Work:
@@ -1553,6 +1557,8 @@ class Pipeline:
             "zh_tex": sha256_file(self.zh_dir / compile_stage.ZH_TEX),
             "pdf": pdf,
             "synctex": sha256_file(self.zh_dir / export_stage.SYNCTEX_NAME),
+            # 块区间进 anchors，改了它 anchors.json 就该重算（文件缺席即空串）。
+            "spans": sha256_file(self.workdir.build / compile_stage.SPANS_NAME),
             "blocks": sha256_file(self.blocks_path),
             "chunks": sha256_file(self.zh_chunks_dir / CHUNKS_NAME),
             "brief": sha256_file(self.brief_path),

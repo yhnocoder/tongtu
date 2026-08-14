@@ -35,6 +35,12 @@ from tongtu.workdir import Workdir
 
 ANSWER = "第一段译文 ⟦BLK-1⟧"
 
+#: 构造 CodexAgent 必须显式给模型（缓存 key 认它），测试统一用这一个。
+MODEL = "gpt-x"
+
+#: 真 codex CLI 用例里下发的模型（本机没装 codex 时该用例 skip）。
+REAL_MODEL = "gpt-5-codex"
+
 
 # --------------------------------------------------------------------------- #
 # 夹具：可编程假 runner
@@ -115,7 +121,7 @@ def test_render_argv_rejects_unknown_field():
 
 def test_session_argv_pins_sandbox_model_and_workdir(tmp_path):
     work = paper(tmp_path)
-    agent = CodexAgent(model="gpt-x", runner=runner(), session_timeout=99.0)
+    agent = CodexAgent(model=MODEL, runner=runner(), session_timeout=99.0)
 
     agent.session("修一下", workdir=work)
 
@@ -124,21 +130,21 @@ def test_session_argv_pins_sandbox_model_and_workdir(tmp_path):
     assert argv[:2] == ["codex", "exec"]
     assert flag_value(argv, "--sandbox") == "workspace-write", "会话要写工作目录"
     assert flag_value(argv, "-C") == str(work.path), "工作目录必须圈进 argv"
-    assert flag_value(argv, "--model") == "gpt-x"
+    assert flag_value(argv, "--model") == MODEL
     assert "--json" in argv and argv[-1] == "-", "转录走事件流，提示词走 stdin"
     assert call.stdin == "修一下" and call.cwd == str(work.path)
     assert call.timeout == 99.0
 
 
 def test_complete_argv_is_read_only_and_isolated(tmp_path):
-    agent = CodexAgent(runner=runner(), complete_timeout=42.0)
+    agent = CodexAgent(model=MODEL, runner=runner(), complete_timeout=42.0)
 
     agent.complete("规则", "正文")
 
     call = agent.runner.calls[0]  # type: ignore[attr-defined]
     argv = list(call.argv)
     assert flag_value(argv, "--sandbox") == "read-only", "无状态判断不该有写权限"
-    assert "--model" not in argv, "没给模型就不下发 --model"
+    assert flag_value(argv, "--model") == MODEL, "模型是必填项，两个原语都要下发"
     assert "--json" not in argv, "要的是最后一条消息，不是事件流"
     assert flag_value(argv, "-C") != str(tmp_path), "complete 在临时目录里跑，不碰论文目录"
     assert call.stdin == join_prompt("规则", "正文") == "规则\n\n正文"
@@ -148,6 +154,7 @@ def test_complete_argv_is_read_only_and_isolated(tmp_path):
 def test_argv_template_and_extras_are_overridable(tmp_path):
     """CLI 细节变了只改模板：换 flag 名、加预算段，逻辑一行不动。"""
     agent = CodexAgent(
+        model=MODEL,
         runner=runner(),
         session_argv=(("{cli}",), ("run",), ("--cd", "{workdir}"), ("{prompt_arg}",)),
         budget_args=(("--max-turns", "{budget}"),),
@@ -168,7 +175,7 @@ def test_argv_template_and_extras_are_overridable(tmp_path):
 def test_budget_is_not_sent_by_default(tmp_path):
     """codex CLI 没有稳定的『最大轮数』开关——默认只进转录，不瞎编 flag。"""
     work = paper(tmp_path)
-    agent = CodexAgent(runner=runner())
+    agent = CodexAgent(model=MODEL, runner=runner())
 
     outcome = agent.session("修", workdir=work, budget=3)
 
@@ -184,7 +191,7 @@ def test_budget_is_not_sent_by_default(tmp_path):
 
 def test_session_writes_transcript_into_workdir_logs(tmp_path):
     work = paper(tmp_path)
-    agent = CodexAgent(runner=runner(stdout='{"type":"item"}\n'), model="gpt-x")
+    agent = CodexAgent(runner=runner(stdout='{"type":"item"}\n'), model=MODEL)
 
     outcome = agent.session("编不过，修", workdir=work, joint="fixup")
 
@@ -195,7 +202,7 @@ def test_session_writes_transcript_into_workdir_logs(tmp_path):
 
     meta = json.loads(transcript.with_suffix(".json").read_text("utf-8"))
     assert meta["prompt"] == "编不过，修"
-    assert meta["joint"] == "fixup" and meta["model"] == "gpt-x"
+    assert meta["joint"] == "fixup" and meta["model"] == MODEL
     assert meta["status"] == OK and meta["returncode"] == 0
 
     record = agent.calls[0]
@@ -204,6 +211,7 @@ def test_session_writes_transcript_into_workdir_logs(tmp_path):
 
 def test_session_reports_missing_cli_without_raising(tmp_path):
     agent = CodexAgent(
+        model=MODEL,
         runner=runner(status=MISSING_TOOL, returncode=None, message="PATH 中没有 codex"),
         log_dir=tmp_path / "logs",
     )
@@ -217,12 +225,15 @@ def test_session_reports_missing_cli_without_raising(tmp_path):
 
 def test_session_reports_timeout_and_nonzero_exit(tmp_path):
     timed_out = CodexAgent(
-        runner=runner(status=TIMEOUT, returncode=None, message="codex 超时（1800s）")
+        model=MODEL,
+        runner=runner(status=TIMEOUT, returncode=None, message="codex 超时（1800s）"),
     )
     assert timed_out.session("修", workdir=tmp_path).done is False
     assert timed_out.errors[0].kind == TIMEOUT
 
-    failed = CodexAgent(runner=runner(returncode=3, stderr="boom: not logged in\n"))
+    failed = CodexAgent(
+        model=MODEL, runner=runner(returncode=3, stderr="boom: not logged in\n")
+    )
     outcome = failed.session("修", workdir=tmp_path)
     assert outcome.done is False and "3" in outcome.message
     assert failed.errors[0].kind == FAILED and "not logged in" in failed.errors[0].detail
@@ -232,7 +243,7 @@ def test_session_survives_a_runner_that_raises(tmp_path):
     def explode(argv, **kwargs):
         raise OSError("fd 用光了")
 
-    agent = CodexAgent(runner=explode)
+    agent = CodexAgent(model=MODEL, runner=explode)
 
     outcome = agent.session("修", workdir=tmp_path)
 
@@ -242,7 +253,7 @@ def test_session_survives_a_runner_that_raises(tmp_path):
 def test_as_session_fn_prepends_the_repair_skill(tmp_path):
     """关节②/⑥ 的规则住在 `skill/repair/SKILL.md`，现场信息由阶段驱动器给。"""
     work = paper(tmp_path)
-    agent = CodexAgent(runner=runner())
+    agent = CodexAgent(model=MODEL, runner=runner())
     request = SimpleNamespace(joint="fixup", prompt="第一个错误：! Undefined", workdir=work)
 
     agent.as_session_fn()(request)
@@ -258,14 +269,14 @@ def test_as_session_fn_prepends_the_repair_skill(tmp_path):
 
 
 def test_complete_returns_the_last_message(tmp_path):
-    agent = CodexAgent(runner=runner(f"  {ANSWER}  \n"))
+    agent = CodexAgent(model=MODEL, runner=runner(f"  {ANSWER}  \n"))
 
     assert agent.complete("规则", "src") == ANSWER
 
 
 def test_complete_falls_back_to_stdout(tmp_path):
     """`--output-last-message` 没写出来（CLI 换了 flag 名）也不该白跑一趟。"""
-    agent = CodexAgent(runner=runner(None, stdout=f"{ANSWER}\n"))
+    agent = CodexAgent(model=MODEL, runner=runner(None, stdout=f"{ANSWER}\n"))
 
     assert agent.complete("规则", "src") == ANSWER
 
@@ -289,7 +300,9 @@ def test_clean_output_strips_decoration_conservatively(raw, expected):
 
 
 def test_complete_raises_structured_error_on_failure(tmp_path):
-    agent = CodexAgent(runner=runner(status=MISSING_TOOL, returncode=None, message="没装"))
+    agent = CodexAgent(
+        model=MODEL, runner=runner(status=MISSING_TOOL, returncode=None, message="没装")
+    )
 
     with pytest.raises(CodexError) as excinfo:
         agent.complete("规则", "src")
@@ -299,7 +312,7 @@ def test_complete_raises_structured_error_on_failure(tmp_path):
 
 
 def test_complete_treats_empty_output_as_failure(tmp_path):
-    agent = CodexAgent(runner=runner(""))
+    agent = CodexAgent(model=MODEL, runner=runner(""))
 
     with pytest.raises(CodexError) as excinfo:
         agent.complete("规则", "src")
@@ -308,15 +321,15 @@ def test_complete_treats_empty_output_as_failure(tmp_path):
 
 
 def test_complete_logs_only_failures_by_default(tmp_path):
-    quiet = CodexAgent(runner=runner(), log_dir=tmp_path / "logs")
+    quiet = CodexAgent(model=MODEL, runner=runner(), log_dir=tmp_path / "logs")
     quiet.complete("规则", "src")
     assert not (tmp_path / "logs").exists(), "每块一份转录只是噪声"
 
-    loud = CodexAgent(runner=runner(), log_dir=tmp_path / "all", log_completions=True)
+    loud = CodexAgent(model=MODEL, runner=runner(), log_dir=tmp_path / "all", log_completions=True)
     loud.complete("规则", "src")
     assert list((tmp_path / "all").glob("codex-complete-*.json"))
 
-    broken = CodexAgent(runner=runner(""), log_dir=tmp_path / "bad")
+    broken = CodexAgent(model=MODEL, runner=runner(""), log_dir=tmp_path / "bad")
     with pytest.raises(CodexError):
         broken.complete("规则", "src")
     assert list((tmp_path / "bad").glob("codex-complete-*.json")), "失败必须留证据"
@@ -326,7 +339,7 @@ def test_transcript_failure_does_not_break_the_session(tmp_path):
     """转录写不下去（只读盘）时记警告继续——它不是流水线的裁决者。"""
     blocked = tmp_path / "file-not-a-dir"
     blocked.write_text("x", encoding="utf-8")
-    agent = CodexAgent(runner=runner(), log_dir=blocked)
+    agent = CodexAgent(model=MODEL, runner=runner(), log_dir=blocked)
 
     outcome = agent.session("修", workdir=tmp_path)
 
@@ -348,11 +361,19 @@ def test_get_agent_defaults_to_mock(monkeypatch):
 
 
 def test_get_agent_by_name_and_env(monkeypatch):
-    assert isinstance(get_agent("codex"), CodexAgent)
+    assert isinstance(get_agent("codex", model=MODEL), CodexAgent)
 
     monkeypatch.setenv("TONGTU_AGENT", "codex")
-    assert isinstance(get_agent(), CodexAgent)
+    assert isinstance(get_agent(model=MODEL), CodexAgent)
     assert isinstance(get_agent("mock"), MockAgent), "显式参数压过环境变量"
+
+
+def test_get_agent_drops_model_for_the_fake_runtimes(monkeypatch):
+    """mock / pseudo 的模型标识就是它们的身份（进缓存 key），`--model` 对它们无意义。"""
+    monkeypatch.delenv("TONGTU_AGENT", raising=False)
+
+    assert get_agent("mock", model=MODEL).model == "mock"
+    assert get_agent("pseudo", model=MODEL).model == "pseudo"
 
 
 def test_get_agent_pseudo_is_the_chinese_path_variant(monkeypatch):
@@ -385,6 +406,56 @@ def test_cli_accepts_agent_flag():
 
 
 # --------------------------------------------------------------------------- #
+# 模型必须显式指定（缓存 key 认它）
+# --------------------------------------------------------------------------- #
+
+
+def test_codex_refuses_to_be_built_without_a_model():
+    """空 model 会让缓存 key 记空串，而 CLI 那边照样换着模型跑——必须当场拒绝。"""
+    for kwargs in ({}, {"model": ""}, {"model": "   "}):
+        with pytest.raises(CodexError) as excinfo:
+            CodexAgent(**kwargs)
+        assert excinfo.value.kind == "no_model"
+        assert "缓存" in str(excinfo.value) and "--model" in str(excinfo.value)
+
+    with pytest.raises(CodexError):
+        get_agent("codex")  # 工厂不许绕过这一条
+
+
+def test_codex_model_is_trimmed_and_reaches_argv(tmp_path):
+    agent = CodexAgent(model=f"  {MODEL} ", runner=runner())
+
+    assert agent.model == MODEL
+    agent.complete("规则", "正文")
+    assert flag_value(list(agent.runner.calls[0].argv), "--model") == MODEL  # type: ignore[attr-defined]
+
+
+def test_cli_passes_model_through_to_the_runtime(monkeypatch):
+    """`tongtu run --agent codex --model X`：CLI 只负责转交，不自作主张给默认值。"""
+    from tongtu.cli import _agent, parse_args
+
+    monkeypatch.delenv("TONGTU_AGENT", raising=False)
+    args = parse_args(["run", "2501.00001", "--agent", "codex", "--model", MODEL])
+    assert args.model == MODEL
+
+    agent = _agent(args)["agent"]
+    assert isinstance(agent, CodexAgent) and agent.model == MODEL
+
+    # mock 收到 --model 也只用自己的身份标识
+    assert _agent(parse_args(["run", "2501.00001", "--model", MODEL]))["agent"].model == "mock"
+
+
+def test_cli_turns_a_missing_model_into_a_usage_error(monkeypatch, capsys):
+    """构造被拒 = 用法错误：退 2 且打出办法，不冒栈。"""
+    from tongtu.cli import main
+
+    monkeypatch.delenv("TONGTU_AGENT", raising=False)
+
+    assert main(["run", "2501.00001", "--agent", "codex"]) == 2
+    assert "--model" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
 # 真 subprocess（默认 runner）
 # --------------------------------------------------------------------------- #
 
@@ -398,7 +469,7 @@ def test_subprocess_runner_reports_missing_tool():
 @pytest.mark.skipif(shutil.which("cat") is None, reason="没有 cat")
 def test_default_runner_really_runs_a_subprocess(tmp_path):
     """不依赖 codex 也能走通默认 runner：`cat` 把 stdin 原样吐回 stdout。"""
-    agent = CodexAgent(cli="cat", complete_argv=(("{cli}",),))
+    agent = CodexAgent(model=MODEL, cli="cat", complete_argv=(("{cli}",),))
 
     assert agent.complete("规则", "正文") == "规则\n\n正文"
     assert agent.calls[0].status == OK
@@ -406,6 +477,6 @@ def test_default_runner_really_runs_a_subprocess(tmp_path):
 
 @pytest.mark.skipif(shutil.which("codex") is None, reason="本机没有 codex CLI（预期）")
 def test_real_codex_cli_answers(tmp_path):
-    agent = CodexAgent(log_dir=tmp_path / "logs", complete_timeout=120.0)
+    agent = CodexAgent(model=REAL_MODEL, log_dir=tmp_path / "logs", complete_timeout=120.0)
 
     assert agent.complete("只回答一个词：ok", "").strip()

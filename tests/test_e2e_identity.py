@@ -221,6 +221,23 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     assert zh_raw in strip_injection(zh_tex), "zh.tex 去掉注入块后应当逐字节等于原文"
     assert inject(zh_raw).text == zh_tex, "zh.tex 应当恰好是 inject(回填后的原文)"
 
+    # --- 块区间：compile 记下每块落在 zh.tex 的哪一段（anchors 的精确输入）----
+    spans = json.loads((paper_dir.build / "zh-spans.json").read_text("utf-8"))
+    blocks_json = json.loads((paper_dir.build / "blocks.json").read_text("utf-8"))
+    by_id = {b["id"]: b for b in blocks_json["blocks"]}
+    # 恒等翻译下 caption 未被改写 ⇒ 槽位回填的是 blocks.json 里的逐字节原文
+    captions = {c["placeholder"]: c["text"] for c in blocks_json.get("captions", ())}
+    assert set(spans["blocks"]) == set(by_id), "每个块都该有区间"
+    for block_id, (start, end) in spans["blocks"].items():
+        piece = zh_tex[start:end]
+        if by_id[block_id]["category"] == "preamble":
+            assert BEGIN_MARK in piece, "注入点落在前导区块内部，区域如实含注入块"
+            continue
+        expected = by_id[block_id]["tex"]
+        for placeholder, text in captions.items():
+            expected = expected.replace(placeholder, text)
+        assert piece == expected, block_id
+
     # --- PDF ------------------------------------------------------------
     pdf = paper_dir.build / "zh" / "zh.pdf"
     assert pdf.is_file()

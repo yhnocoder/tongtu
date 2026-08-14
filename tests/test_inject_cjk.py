@@ -386,6 +386,48 @@ def test_broken_table_rejected(raw):
 
 
 # --------------------------------------------------------------------------- #
+# 偏移换算：compile 拿着回填侧的块区间，注入之后要换算到 zh.tex 坐标系
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_map_offset_keeps_pointing_at_the_same_character(name):
+    """未被删改的每一个字符，`map_offset` 之后必须还是同一个字符。"""
+    src = load(name)
+    result = ij.inject(src)
+    removed = {i for start, end, _ in result.edits for i in range(start, end)}
+
+    mismatched = [
+        i
+        for i, char in enumerate(src)
+        if i not in removed and result.text[result.map_offset(i)] != char
+    ]
+
+    assert mismatched == []
+    assert result.map_offset(len(src)) == len(result.text)
+
+
+def test_map_offset_is_identity_for_the_passthrough_branch():
+    src = load("existing_xecjk")
+    result = ij.inject(src)
+
+    assert result.edits == ()
+    assert [result.map_offset(i) for i in (0, 7, len(src))] == [0, 7, len(src)]
+
+
+def test_map_offset_covers_removals_and_the_injected_block():
+    """删包（`replace` 分支）与插块同时发生：前者让偏移前移，后者让其后的偏移后移。"""
+    src = load("cjkutf8")
+    result = ij.inject(src)
+    assert result.removed_packages and result.stripped_environments
+
+    body_at = src.index("\\end{document}")
+    assert result.text[result.map_offset(body_at) :].startswith("\\end{document}")
+    # 注入块插在前面 ⇒ 正文整体后移
+    assert result.map_offset(body_at) > body_at
+
+
+# --------------------------------------------------------------------------- #
 # 幂等：compile 回环会反复调用，注入块绝不能叠加
 # --------------------------------------------------------------------------- #
 

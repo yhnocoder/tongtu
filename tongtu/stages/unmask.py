@@ -16,13 +16,20 @@ caption 的回填规则是「**未改动 ⇒ 回填原文**」：流中 `⟦CAP-
 的展示文本相同（或为空），说明没人翻译过它，回填 blocks.json 里的逐字节原文；不同才当译
 文。这条规则让默认参数下的 `unmask(mask(x)) == x` 逐字节成立，无需给自检开后门，也让
 「LLM 漏译某个 caption」自动退化为保留原文而不是留下半成品。
+
+## 块区间（`UnmaskResult.block_spans`）
+
+回填时本模块**知道**每个块被写到了输出的哪一段，故如实记下来：`{块 id: (起, 止)}`，
+满足 `text[起:止] == 该块回填后的文本`。下游（compile → anchors）据此把块与 `zh.tex` 的
+行号对上，不必再拿块内容去译文里反查——caption 被翻译之后块 tex 已不再逐字节存在，
+反查只能靠启发式，而这里的偏移是确定的。
 """
 
 from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Mapping
 
@@ -87,6 +94,17 @@ class UnmaskResult:
     duplicated: tuple[str, ...] = ()
     caption_fallbacks: tuple[str, ...] = ()
     caption_translated: tuple[str, ...] = ()
+
+    block_spans: dict[str, tuple[int, int]] = field(default_factory=dict)
+    """`{块 id: (起, 止)}`——各块在 :attr:`text` 里的字符区间（0-based，左闭右开）。
+
+    恒满足 `text[起:止] == 该块回填后的文本`。三条约定：
+
+    * 键是**块 id**（不是占位符）——下游 anchors 与 blocks.json 都按 id 索引；
+    * `Restore.DROP` 的块不记（它在输出里根本不存在，空区间只会误导下游）；
+      `Restore.PLACEHOLDER` 如实记，区间内容就是那个占位符本身；
+    * 占位符被译文重复使用时只记**第一次**出现的区间（重复本身另有 `duplicated` 交代）。
+    """
 
 
 def _normalize(blocks) -> tuple[list[Block], dict[str, Caption]]:
@@ -186,25 +204,43 @@ def unmask_detail(
     used: list[str] = []
     kept: list[str] = []
     dropped: list[str] = []
+    spans: dict[str, tuple[int, int]] = {}
 
-    def put(match: re.Match) -> str:
+    def put(match: re.Match) -> tuple[str, Block | None]:
+        """`(写进输出的文本, 该文本属于哪个块)`；块为 None 表示这一段不记区间。"""
         token = match.group(0)
         block = by_placeholder.get(token)
         if block is None:
             if strict:
                 raise UnmaskError(f"流中出现未知块占位符 {token}")
-            return token
+            return token, None
         used.append(token)
         mode = policy(block)
         if mode is Restore.DROP:
             dropped.append(block.id)
-            return ""
+            return "", None
         if mode is Restore.PLACEHOLDER:
             kept.append(block.id)
-            return token
-        return fill_captions(block.tex)
+            return token, block
+        return fill_captions(block.tex), block
 
-    text = BLOCK_TOKEN_RE.sub(put, stream)
+    # 手动扫描而不是 `BLOCK_TOKEN_RE.sub(put, stream)`：回填后的文本与占位符长度不同，
+    # 只有一边拼输出、一边累计输出长度，才能拿到块在**最终输出**里的区间。
+    pieces: list[str] = []
+    cursor = 0
+    length = 0
+    for match in BLOCK_TOKEN_RE.finditer(stream):
+        gap = stream[cursor : match.start()]
+        pieces.append(gap)
+        length += len(gap)
+        cursor = match.end()
+        filled, block = put(match)
+        pieces.append(filled)
+        if block is not None:
+            spans.setdefault(block.id, (length, length + len(filled)))
+        length += len(filled)
+    pieces.append(stream[cursor:])
+    text = "".join(pieces)
 
     counted = Counter(used)
     duplicated = tuple(sorted(t for t, n in counted.items() if n > 1))
@@ -227,6 +263,7 @@ def unmask_detail(
         duplicated=duplicated,
         caption_fallbacks=tuple(fallbacks),
         caption_translated=tuple(translated),
+        block_spans=spans,
     )
 
 

@@ -542,6 +542,31 @@ class InjectResult:
     stripped_environments: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
+    edits: tuple[tuple[int, int, int], ...] = ()
+    """应用过的改写 `(源起, 源止, 替换后长度)`，按起点升序（分支 1 恒为空）。
+
+    只为 :meth:`map_offset` 而存在：调用方（compile）握着一份**源码侧**的块区间，
+    注入之后要把它换算到 `text` 的坐标系里。不进 :meth:`to_json`——它是调用方当场用掉的
+    中间量，不是报告内容。
+    """
+
+    def map_offset(self, offset: int) -> int:
+        """源码字符偏移 → :attr:`text` 里的偏移。
+
+        落在被删改区间内部的偏移退到该区间在新文本里的起点（那段内容已经不在了）；
+        插入点上的偏移落在插入内容**之后**——注入块整体属于导言区，正文的区间不该被它
+        向前吞掉。
+        """
+        delta = 0
+        for start, end, length in self.edits:
+            if offset >= end:
+                delta += length - (end - start)
+            elif offset > start:
+                return start + delta
+            else:
+                break
+        return offset + delta
+
     @property
     def changed(self) -> bool:
         """是否改写了源码（分支 1 恒为 False——幂等的机械判据）。"""
@@ -584,8 +609,8 @@ class _Edit:
     text: str
 
 
-def _apply_edits(src: str, edits: Sequence[_Edit]) -> str:
-    """按偏移升序应用改写。
+def _apply_edits(src: str, edits: Sequence[_Edit]) -> tuple[str, tuple[tuple[int, int, int], ...]]:
+    """按偏移升序应用改写，并带出 `(源起, 源止, 替换后长度)` 供偏移换算。
 
     刻意不用 `re.sub`：其 replacement 会解释 `\\1` / `\\g<name>`，而注入块与适配表的
     `preamble_patch` 都是 LaTeX 文本（还可能由 agent 写进数据文件），当模板代入会静默
@@ -595,15 +620,17 @@ def _apply_edits(src: str, edits: Sequence[_Edit]) -> str:
     # 真正冲突（区间交叠但内容不同）仍然报错——那是适配表写错了，不该猜。
     unique = {(e.start, e.end, e.text): e for e in edits}
     out: list[str] = []
+    applied: list[tuple[int, int, int]] = []
     cursor = 0
     for edit in sorted(unique.values(), key=lambda e: (e.start, e.end)):
         if edit.start < cursor:
             raise InjectError(f"改写区间重叠：{edit.start} < {cursor}")
         out.append(src[cursor : edit.start])
         out.append(edit.text)
+        applied.append((edit.start, edit.end, len(edit.text)))
         cursor = edit.end
     out.append(src[cursor:])
-    return "".join(out)
+    return "".join(out), tuple(applied)
 
 
 def _separator(src: str, pos: int) -> str:
@@ -803,8 +830,9 @@ def inject(src: str, *, adaptation: AdaptationTable | None = None) -> InjectResu
     block = _separator(src, offset) + _render_block(before, after)
     edits.append(_Edit(offset, offset, block))
 
+    text, applied = _apply_edits(src, edits)
     return InjectResult(
-        text=_apply_edits(src, edits),
+        text=text,
         # 分支 2 与分支 3 的区别只在「有没有拆掉原有的 CJK 方案」。
         branch="replace" if removed else "inject",
         documentclass=dc.name if dc else None,
@@ -813,4 +841,5 @@ def inject(src: str, *, adaptation: AdaptationTable | None = None) -> InjectResu
         removed_packages=tuple(dict.fromkeys(removed)),
         stripped_environments=tuple(dict.fromkeys(stripped)),
         warnings=tuple(warnings),
+        edits=applied,
     )
