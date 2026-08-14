@@ -48,4 +48,5 @@ jobs:
           latexpand --version | head -1
       - run: uv run pytest -m compile
 
-  # 层 3 LLM 层为手动触发的独立 workflow（限预算，是质量监控不是门禁），M5 落地。
+  # 层 3 LLM 层**有意不在本 workflow 里**：它是手动触发的 `.github/workflows/llm-quality.yml`
+  # （真模型跑 1–3 篇，限预算），只做质量监控，不当 PR 门禁——模型抖动不该把 PR 标红。

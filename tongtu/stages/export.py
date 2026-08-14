@@ -243,7 +243,7 @@ def caption_translations(stream: str, blocks: Mapping | None) -> dict[str, str]:
         text = match.group(2).strip()
         source = str(caption.get("text") or "").strip()
         if not text or text == str(caption.get("stream_text") or "").strip():
-            continue  # 未改动 ⇒ 原文（与 unmask 同一把尺子）
+            continue  # 未改动 ⇒ 原文（与 unmask 同一判据）
         if source:
             found[source] = text
     return found
@@ -382,7 +382,7 @@ def _shipped(out: Path) -> list[str]:
     `zh-pack/` 与 `vendor/` 是**目录**级产物，逐文件记账只会把清单撑成噪音（vendor 里
     是两个 PDF.js 大文件，pack 里是整套源码资产），故不进 `artifacts`——它们的存在与体积
     另有 `pack_files` / `pack_bytes` 两个数交代。`report.json` 也不在其中：它就是这份清单
-    本身，把自己列进去只会变成一句自证。
+    本身，把自己列进去等于自我评判，没有效力。
     """
     names: list[str] = []
     for path in out.iterdir():
@@ -524,7 +524,7 @@ def export(
     _write_json(out / REPORT_NAME, body)
 
     # report.json 自己也要过 schema——它是唯一一份「校验器写的报告」，
-    # 校验它的人只能是同一把尺子（自证不算数，故这一步的结论直接决定阶段成败）。
+    # 校验它的只能是同一份 schema 实现（自我声明不算数，故这一步的结论直接决定阶段成败）。
     message = ""
     try:
         errors = schema_check(body, "report")

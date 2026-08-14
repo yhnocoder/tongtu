@@ -148,7 +148,7 @@ GLOBAL_ERROR_HINTS: tuple[str, ...] = (
     "Class ",
 )
 
-#: 段落切分：与 `validate.PARAGRAPH_SEP_RE` **同一把尺子**（分隔符入捕获组，便于原样重组）。
+#: 段落切分：与 `validate.PARAGRAPH_SEP_RE` **同一个正则**（分隔符入捕获组，便于原样重组）。
 PARAGRAPH_SPLIT_RE = re.compile(f"({PARAGRAPH_SEP_RE.pattern})")
 
 
@@ -289,7 +289,7 @@ def paragraph_pieces(text: str) -> tuple[list[str], list[int]]:
     返回 `(pieces, para_at)`：`"".join(pieces) == text` 恒成立（原样重组的基础），
     `para_at[i]` 是第 i 段在 `pieces` 里的下标。段落的定义与 `validate.paragraph_count`
     **完全一致**（空行分隔、纯空白不算），因为「原译段落一一对应」正是那一层的保证——
-    换一把尺子量就不再对齐了。
+    换一套切分规则就不再对齐了。
     """
     pieces = PARAGRAPH_SPLIT_RE.split(text)
     para_at = [i for i, piece in enumerate(pieces) if i % 2 == 0 and piece.strip()]

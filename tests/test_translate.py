@@ -2,7 +2,7 @@
 
 e2e（`tests/test_e2e_identity.py`）只走恒等译文这条happy path——内环重试、回退、缓存
 命中这些**只有模型不听话时才发生**的路径在那里永远盖不到。本文件用可编程的假 agent
-把它们逐条钉死：翻译驱动器的正确性判据是「validate 说了算、失败可控地降级」，而不是
+把它们逐条固定下来：翻译驱动器的正确性判据是「validate 说了算、失败可控地降级」，而不是
 「跑通了」。
 """
 
@@ -64,13 +64,16 @@ def test_mock_complete_is_identity():
 
 
 def test_mock_transform_enables_a_pseudo_translation_variant():
-    """伪翻译变体（附录 B 开放问题 2）：换个 transform 即可，零 LLM、零随机。"""
+    """伪翻译（pseudo-translation）变体（架构附录 B 开放问题 2）：
+
+    换个 transform 即可，零 LLM、零随机。
+    """
     agent = MockAgent(transform=lambda text: "【译】" + text)
     assert agent.complete("p", "abc") == "【译】abc"
 
 
 # --------------------------------------------------------------------------- #
-# PseudoAgent（伪翻译变体：中文路径的覆盖点，见 tests/test_e2e_pseudo.py）
+# PseudoAgent（中文注入变体：中文路径的覆盖点，见 tests/test_e2e_pseudo.py）
 # --------------------------------------------------------------------------- #
 
 
@@ -78,7 +81,7 @@ def test_pseudo_translation_passes_all_four_validate_layers():
     """前缀句不含 `\\` `{` `}` `$` `⟦` `⟧`，故四层校验逐项不变——变体的立身之本。"""
     translated = pseudo_translate(MASKED)
 
-    assert validate.check(MASKED, translated) == [], "伪翻译必须自带 validate 全绿"
+    assert validate.check(MASKED, translated) == [], "中文注入必须自带 validate 全绿"
     assert PSEUDO_PREFIX in translated
     assert translated.replace(PSEUDO_PREFIX, "") == MASKED, "删掉前缀句即逐字节回到原文"
 
@@ -106,7 +109,7 @@ def test_pseudo_agent_is_a_mock_with_a_transform_and_its_own_model():
     agent = PseudoAgent()
 
     assert isinstance(agent, MockAgent)
-    assert agent.model == "pseudo" != MockAgent().model, "两个变体的翻译记忆必须分家"
+    assert agent.model == "pseudo" != MockAgent().model, "两个变体的翻译记忆必须彼此独立"
     assert agent.complete("任意提示词", "Prose.") == PSEUDO_PREFIX + "Prose."
     assert agent.session("修一下").done is True, "session 仍是 no-op：变体只改译文"
 

@@ -545,7 +545,7 @@ class CodexAgent:
     def as_session_fn(self) -> Callable[[object], SessionOutcome]:
         """适配成 :data:`tongtu.compiler.SessionFn`（关节 ②/⑥ 的 `FixupRequest` 形状）。
 
-        除了拆参数，这里还把关节的 prompt 资产（`skill/repair.md`）拼在现场信息之前——
+        除了拆参数，这里还把关节的 prompt 资产（`skill/repair/SKILL.md`）拼在现场信息之前——
         阶段驱动器只给现场（主文件、引擎、第一条错误、日志尾巴），规则住在 `skill/`。
         资产读不到时退化成只用现场信息：修复路径不该因为一份 markdown 缺失而瘫掉。
         """
@@ -711,7 +711,7 @@ def _workdir_paths(
 
 
 def _with_skill(joint: str, prompt: str) -> str:
-    """在现场信息之前拼上关节的 prompt 资产（`skill/repair.md`）。资产缺失即原样返回。"""
+    """在现场信息之前拼上关节的 prompt 资产（`skill/repair/SKILL.md`）。资产缺失即原样返回。"""
     try:
         from ..prompts import joint_prompt
 

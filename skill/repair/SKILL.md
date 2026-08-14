@@ -1,12 +1,8 @@
-<!--
-用途：关节②（构建环境修复）与关节⑥（documentclass 适配与编译修复）的 prompt 资产。
-      迁自 v2 `skill/SKILL.md` 的「校验闭环」编译段与「常见坑」的 documentclass 一条，
-      补上适配表（tongtu/data/documentclass.json）的沉淀指引（架构 §2 原则 3 的促升规则）。
-消费方：tongtu/stages/baseline.py（关节②）与 tongtu/stages/compile.py（关节⑥）——两者经
-      tongtu.compiler.FixupRequest 把本文与现场信息（build 目录、tex 路径、引擎、日志尾巴、
-      第一条 ! 错误）拼成会话提示词，交给 agent.session 原语（首发 tongtu/agent/codex.py）。
-版本：改本文须 bump tongtu/prompts.py 的 PROMPT_VERSION。
--->
+---
+name: repair
+description: 关节②（构建环境修复）与关节⑥（documentclass 适配与编译修复）的规则：在圈定的工作目录内诊断 LaTeX 编译错误、最小改动修复，并把可复用的适配沉淀成 documentclass.json 条目。消费方 tongtu/stages/baseline.py 与 tongtu/stages/compile.py 的 session 原语。
+version: 1
+---
 
 # 编译修复会话
 
@@ -79,7 +75,8 @@ report 记录，不要污染适配表。
 - 编码问题（latin1 源码）：转成 UTF-8，别改字符内容；
 - 编译遍数不够（交叉引用未收敛）：latexmk 会自己多编几遍，别手动删 aux 掩盖问题。
 
-**修不动就说清楚修不动**：环境问题终止流水线是设计内的行为，硬把编译「糊过去」才是灾难。
+**修不动就说清楚修不动**：环境问题终止流水线是设计内的行为；用掩盖手段让编译「看起来通过」
+才是最坏的结果。
 
 ## 六、结束时
 

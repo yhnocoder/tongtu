@@ -1,6 +1,6 @@
 """survey 阶段驱动器：一次通读产出 brief + 术语预扫决策（架构 §3、决策 11、关节④）。
 
-survey 是**掩码与分块的解毒剂**：掩码 + 分块之后，翻译时模型只见「挖了洞的一小段」，
+survey 补的是**掩码与分块留下的上下文缺口**：掩码 + 分块之后，翻译时模型只见「挖了洞的一小段」，
 跨章节的记号约定、指称方式、语体是结构性风险。survey 花**一次**全文 token，产出两样
 稳定共享上下文——`brief.json`（全文纲要）与术语决策表——供后续每一块复用；块间一致性
 靠它们，不靠把前块译文链式传给后块（那会让缓存失效沿块链级联，架构 §3 末）。
@@ -40,7 +40,7 @@ brief 是**增益不是门禁**：模型输出的 JSON 截断了、裹了 markdo
 ## abstract 由程序填，不由模型抄
 
 架构 §3 要求 abstract **原文照录**（避免全部块对摘要译文形成级联依赖）。让模型抄一遍
-原文既费 token 又可能被「顺手改一改」，故本模块从源码里**程序侧**取：mask 抽出的
+原文既费 token 又可能被改写，故本模块从源码里**程序侧**取：mask 抽出的
 `kind="abstract"` caption 槽位优先，没有则在完整回填的原文里按词法定位
 `\\begin{abstract}…\\end{abstract}` 或 `\\abstract{…}`。标题同理。
 """
@@ -73,7 +73,6 @@ __all__ = [
     "JOINT",
     "OK",
     "PROMPT_NAME",
-    "PROMPT_VERSION",
     "SurveyResult",
     "brief_hash",
     "build_prompt",
@@ -81,6 +80,7 @@ __all__ = [
     "load_prompt",
     "paper_facts",
     "parse_json_object",
+    "prompt_version",
     "reading_view",
     "render_brief",
     "skeleton_brief",
@@ -97,12 +97,18 @@ class SurveyParseError(ValueError):
 #: 本阶段的 agent 关节（`tongtu.agent.JOINTS` 的 ④）。
 JOINT = "survey"
 
-#: prompt 资产版本号。**单一来源在 `tongtu.prompts`**（规则住在 `skill/survey.md`，版本号
-#: 跟规则走）；它进 brief 的 `generated_by` 与 survey 的阶段 manifest。
-PROMPT_VERSION = prompts.PROMPT_VERSION
-
-#: 本阶段的 prompt 资产名（`skill/survey.md`）。
+#: 本阶段的 prompt 资产名（`skill/survey/SKILL.md`）。
 PROMPT_NAME = prompts.SURVEY
+
+
+def prompt_version() -> str:
+    """关节④规则的版本号 = `skill/survey/SKILL.md` frontmatter 的 `version`。
+
+    **逐技能**而不是全局一个（见 :mod:`tongtu.prompts` 的「版本号」一节）；它进 brief 的
+    `generated_by` 与 survey 的阶段 manifest。
+    """
+    return prompts.version_of(PROMPT_NAME)
+
 
 #: 产物名（本期落 `build/`；export 阶段 M4 搬进 `out/`）。
 BRIEF_NAME = "brief.json"
@@ -134,7 +140,7 @@ CompleteFn = Callable[..., str]
 
 
 def load_prompt(skill_dir: str | os.PathLike[str] | None = None) -> str:
-    """读通读 prompt 文本（`skill/survey.md`，经 :mod:`tongtu.prompts` 装载）。
+    """读通读 prompt 文本（`skill/survey/SKILL.md`，经 :mod:`tongtu.prompts` 装载）。
 
     代码里不硬编码长串规则：改文案不必动代码，改代码不必重述文案（架构决策 1——SKILL
     降级为 prompt 资产）。查找链见 :func:`tongtu.prompts.find_skill_dir`。
@@ -503,7 +509,7 @@ def build_brief(
     ):
         if value:
             brief[key] = value
-    generated: dict = {"prompt_version": PROMPT_VERSION, "generated_at": _now()}
+    generated: dict = {"prompt_version": prompt_version(), "generated_at": _now()}
     if model:
         generated["model_id"] = model
     if view_hash:
@@ -607,7 +613,7 @@ class SurveyResult:
             "status": self.status,
             "degraded": self.degraded,
             "attempts": self.attempts,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": prompt_version(),
             "brief_hash": self.brief_hash,
             "view_chars": len(self.view),
             "sections": len(self.brief.get("sections", ())),

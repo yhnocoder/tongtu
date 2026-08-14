@@ -34,7 +34,7 @@ token 计数
 
 * `⟦BLK-n⟧` / `⟦CAP-n⟧` 占位符：每个 3 token；
 * 控制序列（`\\alpha`、`\\{` 等）：每个 2 token；
-* CJK 字符（伪翻译与中文 fixture 会出现）：每字 1 token；
+* CJK 字符（中文注入变体与中文 fixture 会出现）：每字 1 token；
 * 其余按空白分词，每词 `ceil(len/4)` token（下限 1）。
 
 软目标 4000 / 硬上限 8000（掩码后散文 token 计）是架构附录 B 开放问题 1 的**起步

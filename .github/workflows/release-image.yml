@@ -1,6 +1,6 @@
 name: 发布参考镜像
 
-# 参考镜像的发布口子（架构 §10：git tag 即版本，wenshu 按 tag 引用）。
+# 参考镜像的发布入口（架构 §10：git tag 即版本，wenshu 按 tag 引用）。
 #
 # 触发方式两种：
 #   1. push tag `v*`     —— 正式发布：打 {{version}} / {{major}}.{{minor}} / latest 三个 tag 并推 GHCR
@@ -27,7 +27,7 @@ permissions:
   contents: read
   packages: write
 
-# 发布不抢跑：同一 ref 的构建排队而不是互相取消（取消一次 6GB 的构建等于白烧十几分钟）。
+# 发布不抢跑：同一 ref 的构建排队而不是互相取消（取消一次 6GB 的构建等于白白消耗十几分钟）。
 concurrency:
   group: release-image-${{ github.ref }}
   cancel-in-progress: false

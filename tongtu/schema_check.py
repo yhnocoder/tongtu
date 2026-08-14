@@ -7,7 +7,7 @@ survey 行把「`brief.json` 与结构化术语表通过 schema 校验」写成�
 enum / pattern / items / minimum，不追求完备，也不打算长成 jsonschema。
 
 它原先住在 `tests/test_e2e_identity.py` 里（只给 e2e 用）；survey 阶段要在运行时校验自
-己的产物，于是抽到运行时包内，e2e 改为引用同一份实现——测试与生产用同一把尺子量，
+己的产物，于是抽到运行时包内，e2e 改为引用同一份实现——测试与生产用同一份实现校验，
 「测试里过了、生产里没查」这类偏差不复存在。
 
 schema 文件的定位与 `fonts/` 同法（见 `tongtu.compiler.find_fonts`）：源码树 /

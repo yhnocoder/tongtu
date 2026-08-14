@@ -74,14 +74,15 @@
 ### 3.3 agent 适配层（`agent/`）
 
 - [x] 两原语接口〔新〕：`complete(prompt, text, model)` / `session(prompt, workdir, model, budget)`；`session` 的 done 不作裁决依据，转录一律落 `logs/`
-- [x] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 的钥匙
+- [x] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 靠它成立
 - [x] **Codex CLI 适配器**〔新，选型已决〕（`tongtu/agent/codex.py`）：`codex exec` headless 拉起、`--sandbox` + `-C` 圈权限（继承 v2 run.sh 的 allowlist 思路）、指定模型、超时、转录落 `logs/`；`complete` 首发同走运行时（read-only 沙箱 + 输出清洗）；argv 段模板可覆盖、runner 可注入；`get_agent(name)` 工厂 + `tongtu run --agent`
-- [x] 六关节接线（全部在 `tongtu/pipeline.py`，阶段驱动器只声明回调）：①主文件（flatten 的 arbiter，提示词内联）②构建环境（baseline 的 session ← `as_session_fn` / `skill/repair.md`）③环境分类（mask 的 arbiter + `skill/classify.md`，结论进 blocks.json 的 `decided_by="agent"`）④通读与术语（survey 的 complete）⑤翻译（块循环 + compile 坏段重译）⑥适配与修复（compile 的 session）；每次拉起记一条干预（形状 = `report.schema.json` 的 `agent_interventions`），攒在 `PipelineResult.interventions`，**outcome 一律由事后的校验与编译裁决**，落盘属 M4
+- [x] 六关节接线（全部在 `tongtu/pipeline.py`，阶段驱动器只声明回调）：①主文件（flatten 的 arbiter，提示词内联）②构建环境（baseline 的 session ← `as_session_fn` / `skill/repair/SKILL.md`）③环境分类（mask 的 arbiter + `skill/classify/SKILL.md`，结论进 blocks.json 的 `decided_by="agent"`）④通读与术语（survey 的 complete）⑤翻译（块循环 + compile 坏段重译）⑥适配与修复（compile 的 session）；每次拉起记一条干预（形状 = `report.schema.json` 的 `agent_interventions`），攒在 `PipelineResult.interventions`，**outcome 一律由事后的校验与编译裁决**，落盘属 M4
 
 ### 3.4 prompt 资产（`skill/`）
 
-- [x] SKILL 瘦身迁移〔迁〕：删编排，留翻译规则 / 占位符纪律 / 术语与文风 / 常见坑；按关节拆成 `skill/translate.md`（⑤）、`skill/repair.md`（②/⑥，含适配表沉淀指引）、`skill/classify.md`（③）、`skill/survey.md`（④）
-- [x] `prompt_version` / `style_version` 版本化，进缓存 key（单一来源 `tongtu/prompts.py`，装载 + wheel 打包链）
+- [x] SKILL 瘦身迁移〔迁〕：删编排，留翻译规则 / 占位符纪律 / 术语与文风 / 常见坑；按关节拆成 `skill/translate/SKILL.md`（⑤）、`skill/repair/SKILL.md`（②/⑥，含适配表沉淀指引）、`skill/classify/SKILL.md`（③）、`skill/survey/SKILL.md`（④）
+- [x] 采用 Agent Skills 通用目录形态（`skill/<name>/SKILL.md` + YAML frontmatter + 可选 `references/`），其它 coding agent 运行时可直接识别；frontmatter 解析零依赖，只支持 `key: value` 子集，超出即报错
+- [x] 版本化并进缓存 key：`version` **逐技能**写在各自 frontmatter 里（改 repair 不失效 translate 的译文缓存），`style_version` 仍是 `tongtu/prompts.py` 的手写常量（用户可在术语表里覆盖，bump 即全量重翻）；装载 + wheel 打包链同上
 
 ### 3.5 产物契约与 schemas（`docs/schemas/`）〔新〕
 
@@ -99,10 +100,10 @@
 - [x] fixtures：自造最小模板论文三篇（article / revtex / 双栏会议）入仓库
 - [x] 文本层：golden-file + 往返恒等性质测试（PR 门禁）
 - [x] 编译层：MockAgent 恒等翻译 e2e（M2 已落双形态：本机假工具 + CI texlive 镜像 pytest -m compile，PR 门禁；M4 补齐产物包断言——契约文件齐全 + 全部过 schema + anchors 页级降级路径 + 检验页含 vendor 引用）
-  ——**伪翻译变体已补齐**（零期收尾）：`get_agent("pseudo")` 给每个散文段前缀一句固定中文
+  ——**伪翻译（pseudo-translation）变体已补齐**（零期收尾）：`get_agent("pseudo")` 给每个散文段前缀一句固定中文
   （零 LLM、零随机，删掉前缀即逐字节回到原文，validate 四层一层不动），
   `tests/test_e2e_pseudo.py` 与恒等 e2e 同参数化跑三篇 fixture；**真 TeX 形态即 xeCJK 断行
-  与 CJK 字体链的覆盖点**（日志里出现 `There is no 以 in font` 即豆腐，当场红）。附录 B
+  与 CJK 字体链的覆盖点**（日志里出现 `There is no 以 in font` 即豆腐，测试立即失败）。附录 B
   开放问题 2 就此落定为「伪翻译变体」而非另造中文 fixture。CI 镜像切换见下一条
 - [x] LLM 层：手动触发 workflow，真模型 1–3 篇，report.json 入质量看板（监控不门禁）——
   `.github/workflows/llm-quality.yml`：只绑 `workflow_dispatch`（不绑 PR 事件，**结构上**
@@ -142,7 +143,7 @@
 | **M0 骨架** | §3.1 + schemas 草案（§3.5）+ CI 空跑 | `tongtu doctor` 可运行；CI 绿 |
 | **M1 文本层** | mask 迁移审计 / validate / unmask / chunk 重写 + golden 测试 | 文本层 PR 门禁生效；真实论文 `mask→unmask` 往返恒等 |
 | **M2 编译链** | fetch / flatten / baseline / inject_cjk / compile 回环 + fixtures 三篇 + MockAgent | **恒等翻译 e2e 门禁生效**（零期核心判据） |
-| **M3 真翻译** | agent 适配层（Codex CLI）+ survey + translate + glossary + 缓存与 manifests | 真实论文出 `zh.pdf`；`retranslate --term` 只重翻命中块 |
+| **M3 agent 接入与翻译闭环** | agent 适配层（Codex CLI）+ survey + translate + glossary + 缓存与 manifests | 真实论文出 `zh.pdf`；`retranslate --term` 只重翻命中块 |
 | **M4 产物闭环** | figures / anchors / export / report.html / preview | 产物包契约齐全过 schema；检验页热区可点 |
 | **M5 镜像与收尾** | docker 双层 + GHCR + LLM 层手动 workflow + 真实论文批量试跑 | 镜像内复现全流程；`--json` schema 草案定稿 |
 

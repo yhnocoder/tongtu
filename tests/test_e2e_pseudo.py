@@ -1,9 +1,10 @@
-"""伪翻译 e2e：PseudoAgent 给每段前缀一句固定中文，三篇 fixture 全流水线跑到底。
+"""伪翻译（pseudo-translation）e2e：PseudoAgent 给每段前缀一句固定中文，
+三篇 fixture 全流水线跑到底。
 
 恒等翻译 e2e（`tests/test_e2e_identity.py`）的译文**不含一个中文字**，于是 xeCJK 断行、
 CJK 字体、`\\XeTeXlinebreaklocale` 这条路它一寸也盖不到（架构 §12 层 2 的注、附录 B 开放
-问题 2）。本文件是那道口子的补丁，也是开放问题 2 的落点：**伪翻译变体**而不是另造一篇中文
-fixture——同一批 fixture、同一条流水线、同一套断言，只把 agent 换成
+问题 2）。本文件补上那一段覆盖，也是开放问题 2 的落点：**伪翻译变体**（该词出自架构附录 B）而不是
+另造一篇中文 fixture——同一批 fixture、同一条流水线、同一套断言，只把 agent 换成
 :class:`~tongtu.agent.mock.PseudoAgent`，仍旧零 LLM、零随机。
 
 两种形态与恒等 e2e 同参数化：
@@ -14,14 +15,14 @@ fixture——同一批 fixture、同一条流水线、同一套断言，只把 a
   真 xelatex 拿含中文的 `zh.tex` 编出非空 PDF，且日志里没有一个「有字无形」的
   `There is no 以 in font …`（豆腐即字体链断了，见 `inject_cjk.XECJK_BODY`）。
 
-## 伪翻译凭什么不是「乱塞字符」
+## 这个变体凭什么不是「乱塞字符」
 
 前缀句只由汉字与全角句号组成，不含 `\\` `{` `}` `$` `⟦` `⟧`，且只插在**散文段**的段首
 （结构行开头的段一律跳过），于是：
 
 1. `validate` 四层（占位符 / 控制序列 / 括号与行内数学 / 段落数）逐项不变——译文全绿、
    零重试，翻译内环里跑出的失败一定是流水线自己的 bug；
-2. 删掉全部前缀句即逐字节回到 `flat.tex`——恒等 e2e 那条字节级等式的伪翻译版本；
+2. 删掉全部前缀句即逐字节回到 `flat.tex`——恒等 e2e 那条字节级等式的中文注入版本；
 3. 中文绝不落到 `\\documentclass` 之前或 `\\begin{itemize}` 与首个 `\\item` 之间，故
    real 形态里编译**该过**，编不过就是真出了问题。
 """
@@ -51,7 +52,7 @@ CJK_RE = re.compile(r"[㐀-䶿一-鿿]")
 
 
 def run(paper: str, workdir: Path):
-    """跑一篇 fixture，agent 换成伪翻译变体。返回 `(PipelineResult, 事件列表)`。"""
+    """跑一篇 fixture，agent 换成中文注入变体。返回 `(PipelineResult, 事件列表)`。"""
     stream = io.StringIO()
     result = run_pipeline(
         PAPERS / paper,
@@ -83,7 +84,7 @@ def test_pseudo_translation_e2e(paper, tools, tmp_path):
     with_cjk = [c for c in memory["chunks"] if CJK_RE.search(c["translation"])]
     assert len(with_cjk) >= 2, "至少两块该带上中文，不然这个变体等于没跑"
 
-    # --- 中文没把 validate 四层碰坏（伪翻译的立身之本）--------------------
+    # --- 中文没把 validate 四层碰坏（这个变体成立的前提）------------------
     translate_manifest = json.loads(
         paper_dir.manifest_path("translate").read_text(encoding="utf-8")
     )
@@ -92,14 +93,14 @@ def test_pseudo_translation_e2e(paper, tools, tmp_path):
     assert translate_result.get("failures_by_check", {}) == {}
     assert translate_result["attempts"] == translate_result["chunk_count"], "四层全绿就不该重试"
     assert translate_manifest["inputs"]["model"] == PseudoAgent().model != "mock", (
-        "伪翻译与恒等 mock 的翻译记忆必须分家，否则两个变体互相冒充"
+        "中文注入与恒等 mock 的翻译记忆必须彼此独立，否则两个变体会命中对方的缓存"
     )
 
     # --- survey 照旧走确定性降级骨架（变体只改译文，不改分支）------------
     survey_result = json.loads(paper_dir.manifest_path("survey").read_text("utf-8"))["result"]
-    assert survey_result["degraded"] is True, "伪翻译返回的同样不是 JSON，仍该走骨架"
+    assert survey_result["degraded"] is True, "本变体返回的同样不是 JSON，仍该走骨架"
 
-    # --- 字节级：伪翻译只是往散文段里插了句中文 --------------------------
+    # --- 字节级：本变体只是往散文段里插了句中文 --------------------------
     flat = (paper_dir.build / "flat.tex").read_text(encoding="utf-8")
     zh_raw = (paper_dir.build / "zh-raw.tex").read_text(encoding="utf-8")
     assert zh_raw.count(PSEUDO_PREFIX) >= 5, "三篇 fixture 每篇都不止五个散文段"

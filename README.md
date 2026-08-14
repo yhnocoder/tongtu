@@ -13,10 +13,12 @@ tongtu/     Python 包：确定性流水线各阶段（fetch / flatten / baselin
             translate / compile / figures / export）+ agent 运行时适配层子模块 tongtu/agent/
             （Claude Code / Codex CLI / opencode / 自建循环，可插拔）
 fonts/      随仓库分发的中文字体（霞鹜文楷 Light/Medium，OFL-1.1），inject_cjk 以相对路径引用
-skill/      prompt 资产：按 agent 关节组织的规则（逐块翻译 / 编译修复 / 环境分类 / 通读），
-            编排不在其中（控制流住在代码里）；装载与版本号见 tongtu/prompts.py
+skill/      prompt 资产：按 agent 关节组织的规则，每个关节一个标准 Skill 目录
+            （skill/<name>/SKILL.md：逐块翻译 / 编译修复 / 环境分类 / 通读）；编排不在其中
+            （控制流住在代码里）。装载与逐技能版本号见 tongtu/prompts.py
 docker/     执行环境镜像（TeX Live full + 通途 + agent 运行时）
-fallback/   非 arXiv PDF 的降级流水线（doc2x → markdown）
+fallback/   非 arXiv PDF 的降级流水线（PDF→Markdown 解析服务 → markdown，选型待定）
+ci/         CI 用的脚本（不属引擎，不进 wheel）
 docs/       设计文档
 ```
 

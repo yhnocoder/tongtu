@@ -72,8 +72,8 @@ __all__ = [
     "JOINT",
     "OK",
     "OK_WITH_FALLBACK",
+    "PROMPT_NAME",
     "PROMPT_TAIL",
-    "PROMPT_VERSION",
     "Progress",
     "STATUSES",
     "STYLE_VERSION",
@@ -85,6 +85,7 @@ __all__ = [
     "cache_key",
     "normalize_source",
     "prompt_rules",
+    "prompt_version",
     "retranslate_segment",
     "split_affixes",
     "translate",
@@ -102,11 +103,22 @@ DEFAULT_MAX_RETRIES = 3
 #: 邻域原文的段数（前节末段 / 后节首段各取几段）。附录 B 开放问题 5：M3 用 fixture 校准。
 DEFAULT_NEIGHBOR_PARAGRAPHS = 1
 
-#: prompt 资产版本号。**单一来源在 `tongtu.prompts`**（规则住在 `skill/`，版本号跟规则走）。
-PROMPT_VERSION = prompts.PROMPT_VERSION
+#: 本阶段的 prompt 资产名（`skill/translate/SKILL.md`）。
+PROMPT_NAME = prompts.TRANSLATE
 
-#: 全局文风规则版本号（架构 §4：bump 即全量重翻，是显式有意的行为）。同上，单一来源。
+#: 全局文风规则版本号（架构 §4：bump 即全量重翻，是显式有意的行为）。单一来源在
+#: :mod:`tongtu.prompts`。
 STYLE_VERSION = prompts.STYLE_VERSION
+
+
+def prompt_version() -> str:
+    """关节⑤规则的版本号 = `skill/translate/SKILL.md` frontmatter 的 `version`。
+
+    **逐技能**而不是全局一个（见 :mod:`tongtu.prompts` 的「版本号」一节）：它进块级翻译
+    缓存 key，只有本文件的规则动了才该让译文缓存失效——改编译修复的规则不该牵连翻译。
+    """
+    return prompts.version_of(PROMPT_NAME)
+
 
 # 阶段状态。
 OK = "ok"
@@ -240,7 +252,7 @@ class ChunkTranslation:
             "status": TRANSLATED if self.status == CACHED else self.status,
             "attempts": self.attempts,
             "paragraph_count": self.paragraph_count,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": prompt_version(),
             "style_version": self.style_version,
         }
         if self.section_path:
@@ -303,7 +315,7 @@ class TranslateResult:
         data: dict = {
             "contract_version": CONTRACT_VERSION,
             "style_version": self.style_version,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": prompt_version(),
             "chunks": [c.to_json() for c in self.chunks],
         }
         if self.model:
@@ -323,7 +335,7 @@ class TranslateResult:
             "cache_misses": self.cache_misses,
             "attempts": sum(c.attempts for c in self.chunks),
             "model": self.model,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": prompt_version(),
             "style_version": self.style_version,
         }
         if self.failures_by_check:
@@ -361,7 +373,7 @@ def cache_key(
     terms: Iterable[tuple[str, str]] = (),
     brief_hash: str = "",
     style_version: str = STYLE_VERSION,
-    prompt_version: str = PROMPT_VERSION,
+    prompt_version: str | None = None,
     model: str = "",
 ) -> str:
     """块级翻译缓存的 key（架构 §4 的公式，逐项照搬）。
@@ -371,6 +383,9 @@ def cache_key(
 
     术语条目按块内命中计入——改一个词只失效含它的块；全局文风规则单列 `style_version`，
     bump 即全量重翻（显式有意的行为）。各段之间插入分隔符，避免拼接歧义。
+
+    `prompt_version` 缺省时**在调用当下**取 :func:`prompt_version`（关节⑤自己的技能版本
+    号，不是全部技能的聚合版本）——运行中途换 `$TONGTU_SKILL` 也不会拿着旧号算 key。
     """
     digest = hashlib.sha256()
     parts = (
@@ -379,7 +394,7 @@ def cache_key(
         "\n".join(f"{term}\t{value}" for term, value in sorted(terms)),
         brief_hash,
         style_version,
-        prompt_version,
+        prompts.version_of(PROMPT_NAME) if prompt_version is None else prompt_version,
         model,
     )
     for part in parts:
@@ -421,7 +436,7 @@ def assemble_context(
 
 
 def prompt_rules() -> str:
-    """关节⑤的规则正文 = `skill/translate.md`（PHASE0 §3.4，经 :mod:`tongtu.prompts` 装载）。
+    """关节⑤的规则正文 = `skill/translate/SKILL.md`（PHASE0 §3.4，经 :mod:`tongtu.prompts` 装载）。
 
     资产缺失时抛 :class:`tongtu.prompts.PromptError`——**故意让它响**：没有规则的「翻译」
     就是拿默认文风乱译一通，而缓存 key 里的 `prompt_version` 还写着规则已经生效。
@@ -436,7 +451,7 @@ PROMPT_TAIL = "待翻译正文："
 def build_prompt(
     context: Context, errors: Iterable[Error] = (), notes: Iterable[str] = ()
 ) -> str:
-    """组装提示词：`skill/translate.md` 的规则 + 本块上下文 + 上一轮的校验错误（+ 补充说明）。
+    """组装提示词：`skill/translate/SKILL.md` 的规则 + 本块上下文 + 上一轮的校验错误（+ 补充说明）。
 
     **拼接而非 format**：规则里全是 `\\section{...}`、`⟦BLK-n⟧` 这类字面量，模板替换会炸。
 

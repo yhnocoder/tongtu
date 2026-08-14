@@ -427,7 +427,7 @@ def test_survey_stage_writes_both_products_and_a_manifest(tmp_path):
 
     manifest = read_manifest(pipeline.workdir, "survey")
     assert manifest["inputs"]["masked"] and manifest["inputs"]["blocks"]
-    assert manifest["inputs"]["prompt_version"] == sv.PROMPT_VERSION
+    assert manifest["inputs"]["prompt_version"] == sv.prompt_version()
     assert manifest["inputs"]["prompt"], "prompt 资产的内容 hash 也要进 manifest"
     assert {e["path"] for e in manifest["outputs"]} == {"build/brief.json", "build/glossary.json"}
 

@@ -54,7 +54,7 @@ v2 审计（迁移时发现并修掉的三处）
    缺字）；反过来 `ctexrep`/`ctexbook`/`ctexbeamer` 又漏判。本实现解析出 documentclass
    **名**再与 `CTEX_CLASSES` 精确比对。
 
-另外两处顺手修掉的：`\\usepackage(\\[[^\\]]*\\])?\\{(xeCJK|ctex)\\}` 认不出逗号列表
+另外两处一并修正的：`\\usepackage(\\[[^\\]]*\\])?\\{(xeCJK|ctex)\\}` 认不出逗号列表
 （`\\usepackage{xeCJK,graphicx}`）也认不出 `\\RequirePackage`，且方括号里嵌套 `[]` 时
 可选参数会截断——本实现按逗号列表解析、括号用 `find_bracket_arg` 配平；
 `\\begin\\{CJK\\*?\\}\\{UTF8\\}\\{[^}]*\\}` 写死了 UTF8 编码参数，本实现按参数个数吃。

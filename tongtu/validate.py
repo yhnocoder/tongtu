@@ -11,7 +11,7 @@
 层名与 `docs/schemas/report.schema.json` 的 `validation.failures_by_check` 键一一对应。
 
 本模块**不是流水线阶段**（故不在 `tongtu/stages/` 下）：translate 的内环拿它当重试判据、
-把 `Error` 喂回 agent 提示词，compile 的坏段重译与 `tongtu retranslate` 也共用同一把尺子。
+把 `Error` 喂回 agent 提示词，compile 的坏段重译与 `tongtu retranslate` 也共用同一份实现。
 纯函数、无 IO、无第三方依赖。
 
     >>> check("Hello ⟦BLK-1⟧", "你好 ⟦BLK-1⟧")

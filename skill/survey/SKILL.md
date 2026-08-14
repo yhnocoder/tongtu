@@ -1,12 +1,8 @@
-<!--
-用途：关节④（全文通读 → brief + 术语预扫决策）的 prompt 资产。术语部分迁自 v2
-      `skill/SKILL.md` 的「术语表」一节，brief 字段按架构 §3/§7 与 docs/schemas/brief.schema.json。
-消费方：tongtu/stages/survey.py::build_prompt（经 tongtu/prompts.py 装载）——本文原样作为
-      提示词开头，通读输入（masked.tex 的选择性回填视图）由 complete 原语的 text 参数递入，
-      重试时在其后追加上一轮的解析错误。
-版本：改本文须 bump tongtu/prompts.py 的 PROMPT_VERSION（本文的内容 hash 也进 survey 的
-      阶段 manifest；brief 内容变了则块级缓存经 brief_hash 自然失效）。
--->
+---
+name: survey
+description: 关节④（全文通读）的规则：一次读完选择性回填的全文视图，输出纲要 brief 与术语预扫决策 JSON。字段按 docs/schemas/brief.schema.json 与 glossary.schema.json。消费方 tongtu/stages/survey.py::build_prompt。
+version: 1
+---
 
 # 通读与术语预扫
 

@@ -6,7 +6,9 @@
 - arXiv 上只投了 PDF（PDF-only），或源码是 `pdfpages` 套壳；
 - 根本不在 arXiv 上的 PDF。
 
-这些走本目录的降级路线：PDF → markdown（v1 的 doc2x 路线）→ 翻译 → 重排版。参考实现是
+这些走本目录的降级路线：PDF → markdown（经一个 **PDF→Markdown 解析服务**）→ 翻译 → 重排版。
+v1 用的是 doc2x，但**选型不绑定**——这类工具迭代很快，实施时按当时的解析质量、价格与可用性
+重新评估，接口按「PDF 进、Markdown 出」抽象，换服务不该牵动流水线。参考实现是
 [arxiv_translator_v1](https://github.com/yhnocoder/arxiv_translator_v1) 的 `download.py` 与 `translate_pdf.sh`。
 
 **零期只做检测与标记，不实现降级流水线**（见 docs/PHASE0.md §5 边界）：`fetch` 阶段识别

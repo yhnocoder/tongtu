@@ -23,7 +23,7 @@
 `chunks.json` 的 `translation` 含块首尾空白（拼接恒等于掩码流是 compile 的前提），而
 translate 的块循环把首尾空白**由驱动器保管**（`lead + complete(...) + trail`），缓存里
 只该有中间那截正文。故装载时按 :func:`tongtu.stages.translate.split_affixes` 剥一次——
-两处用同一把尺子，命中之后重新拼回去仍是同一个形状。
+两处用同一份实现，命中之后重新拼回去仍是同一个形状。
 
 ## 只有 translated 进记忆
 

@@ -1,6 +1,6 @@
 """块级增量：翻译记忆在流水线里的行为，与 `tongtu retranslate`（架构 §4/§6、决策 3）。
 
-`tests/test_memory.py` 钉的是存取与命中语义（纯函数层），这里钉的是**整条流水线上**的
+`tests/test_memory.py` 覆盖的是存取与命中语义（纯函数层），这里覆盖的是**整条流水线上**的
 账：首跑全 miss、记忆写回产物形态的 `chunks.json`、`build/` 删掉还能从 `out/chunks.json`
 恢复、以及三种失效范围各自只重翻该重翻的那些块。
 

@@ -3,6 +3,7 @@
 # 宿主，混进 /opt/tongtu 会让 uv 面对一个对不上的环境。
 .git/
 .github/
+ci/
 .venv/
 **/__pycache__/
 *.pyc

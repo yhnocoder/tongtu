@@ -1,11 +1,8 @@
-<!--
-用途：关节③（未知环境分类）的 prompt 资产。掩码的分类知识按优先级来自：文档自带声明
-      （\newtheorem / \newenvironment）→ tongtu/data/environments.json 分类表 → **本关节** →
-      保守默认。前两级都没结论时才轮到你（架构决策 10、§3.1）。
-消费方：tongtu/stages/mask.py 的 `arbiter` 回调（EnvArbiter，输入 EnvQuery{name,count,sample}），
-      经 agent.complete 原语拉起。回调只认三种回答，其余一律按「不知道」处理。
-版本：改本文须 bump tongtu/prompts.py 的 PROMPT_VERSION。
--->
+---
+name: classify
+description: 关节③（未知环境分类）的规则：给定一个 LaTeX 环境名与其首现源码片段，判定它是散文环境还是重环境，只输出 prose / heavy / unknown。消费方 tongtu/stages/mask.py 的 arbiter 回调。
+version: 1
+---
 
 # 环境分类（散文 / 重环境）
 
@@ -42,8 +39,8 @@
 
 **拿不准就答 unknown。** 后果是不对称的：
 
-- 该 heavy 的判成 prose：公式 / 代码被送去翻译，占位符与控制序列比对会炸，回退与重试白烧
-  token，最坏情况是编译不过；
+- 该 heavy 的判成 prose：公式 / 代码被送去翻译，占位符与控制序列比对必然不等，回退与重试
+  白白消耗 token，最坏情况是编译不过；
 - 该 prose 的判成 heavy：那一段留英文没被翻译，**覆盖率降低，但绝不损坏**。
 
 答 unknown 时驱动器就按保守默认整块掩码（`category=unknown`），并把它记进报告——报告里

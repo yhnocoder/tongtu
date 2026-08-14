@@ -46,9 +46,9 @@
 **谁去问、问什么、拿什么 prompt 资产、怎么记账**归编排器：
 
     ① 主文件   flatten 的 arbiter → complete（无专门资产，提示词内联）
-    ② 构建环境 baseline 的 session → agent.as_session_fn()（skill/repair.md）
-    ③ 环境分类 mask 的 arbiter → complete + skill/classify.md
-    ④ 通读与术语 survey 的 complete → skill/survey.md
+    ② 构建环境 baseline 的 session → agent.as_session_fn()（skill/repair/SKILL.md）
+    ③ 环境分类 mask 的 arbiter → complete + skill/classify/SKILL.md
+    ④ 通读与术语 survey 的 complete → skill/survey/SKILL.md
     ⑤ 翻译     translate 的块循环；compile 的坏段重译复用同一内环
     ⑥ 适配与修复 compile 的 session → 同 ②
 
@@ -679,9 +679,14 @@ class Pipeline:
         return fn if callable(fn) else None
 
     def _record(self, **fields) -> Intervention:
-        """记一条干预（默认带上模型与 prompt 资产版本，促升统计要按这两维分组看）。"""
+        """记一条干预（默认带上模型与 prompt 资产版本，促升统计要按这两维分组看）。
+
+        版本号取**本关节自己那个技能**的（`skill/<name>/SKILL.md` 的 frontmatter），不是
+        全部技能的聚合版本：促升统计要回答的是「这条规则的哪一版反复要人干预」。关节没有
+        专属资产（如关节①）或资产读不到时留空，记账不因此中断。
+        """
         fields.setdefault("model_id", self.model)
-        fields.setdefault("prompt_version", prompts.PROMPT_VERSION)
+        fields.setdefault("prompt_version", prompts.joint_version(fields.get("joint", "")))
         entry = Intervention(**fields)
         self.interventions.append(entry)
         return entry
@@ -795,10 +800,10 @@ class Pipeline:
         return arbiter
 
     def env_arbiter(self):
-        """关节③：未知环境的散文 / 重环境分类（规则来自 `skill/classify.md`）。
+        """关节③：未知环境的散文 / 重环境分类（规则来自 `skill/classify/SKILL.md`）。
 
-        拿不到规则资产就**不问**——没有规则的分类是瞎猜，而瞎猜的代价是不对称的
-        （`skill/classify.md` 自己写着：该 heavy 判成 prose 会炸编译）。不问即保守整块
+        拿不到规则资产就**不问**——没有规则的分类只是猜测，而猜错的代价是不对称的
+        （`skill/classify/SKILL.md` 自己写着：该 heavy 判成 prose 会炸编译）。不问即保守整块
         掩码，只降覆盖率，绝不损坏。
         """
         complete = self.complete_fn
@@ -995,7 +1000,7 @@ class Pipeline:
                         )
         except PipelineError as exc:
             work, status = _Work(ok=False, error=str(exc)), "failed"
-        except Exception as exc:  # 阶段驱动器自己炸了：结构化成失败，不把栈甩给用户
+        except Exception as exc:  # 阶段驱动器自身异常：结构化成失败，不把栈回溯抛给用户
             work = _Work(ok=False, error=f"{name} 阶段异常（{type(exc).__name__}）：{exc}")
             status = "failed"
 
@@ -1233,7 +1238,7 @@ class Pipeline:
             ),
             "agent": type(self.agent).__name__,
             "model": self.model,
-            "prompt_version": survey_stage.PROMPT_VERSION,
+            "prompt_version": survey_stage.prompt_version(),
             "prompt": _prompt_hash(),
         }
 
@@ -1345,7 +1350,7 @@ class Pipeline:
             "chunks": plan_hash,
             "agent": type(self.agent).__name__,
             "model": self.model,
-            "prompt_version": translate_stage.PROMPT_VERSION,
+            "prompt_version": translate_stage.prompt_version(),
             # 文风规则版本号来自术语表第三段（架构 §8）：bump 即全量重翻。
             "style_version": self.decisions.style_version,
             "max_retries": str(self.max_retries),
@@ -1599,7 +1604,7 @@ class Pipeline:
         数据来源是各阶段的 `detail`——**同一份 detail 既进 manifest 也进 report**，故
         「命中缓存的阶段」照样有账可报（`_x_load` 把 manifest 里的 result 读回来）。
 
-        `stages` 里没有 export 自己：一个阶段不为自己的成败作证（那是「我检查过了」的
+        `stages` 里没有 export 自己：一个阶段不评判自己的成败（那正是「我检查过了」的
         变体，架构 §2 原则 1）。export 的成败在事件流、manifest 与退出码里，由 schema
         校验裁决。
         """
@@ -1731,7 +1736,7 @@ def _first_line(text: object) -> str:
     return ""
 
 
-#: 关节③认得的两个答案。别的一律当「不知道」——`skill/classify.md` 明说 unknown 是有用
+#: 关节③认得的两个答案。别的一律当「不知道」——`skill/classify/SKILL.md` 明说 unknown 是有用
 #: 的答案，而不是失败。
 _VERDICTS = ("prose", "heavy")
 
@@ -1741,7 +1746,7 @@ _WORD_RE = re.compile(r"[a-zA-Z]+")
 def _verdict(answer: object) -> str | None:
     """把关节③的回答收敛成 `prose` / `heavy` / None（保守默认）。
 
-    **只认「整个回答就是那一个词」**（`skill/classify.md` 要求的输出格式，允许围栏、标点
+    **只认「整个回答就是那一个词」**（`skill/classify/SKILL.md` 要求的输出格式，允许围栏、标点
     与空白）。「prose 还是 heavy？」这种含糊话读成 prose 是不划算的：判错方向的代价是
     不对称的——该 heavy 的判成 prose 会把公式送去翻译、炸编译，反过来只是少翻一段。
     """
@@ -1776,7 +1781,7 @@ def _write_json(path: Path, payload: dict) -> Path:
 
 
 def _prompt_hash() -> str:
-    """通读 prompt 资产的内容 hash——改 `skill/survey.md` 即失效 survey（架构 §4）。
+    """通读 prompt 资产的内容 hash——改 `skill/survey/SKILL.md` 即失效 survey（架构 §4）。
 
     `prompt_version` 是人工 bump 的，忘了 bump 也不该让缓存说谎；内容 hash 是兜底。
     """
@@ -1791,7 +1796,7 @@ def _plan_from_manifest(data: dict, masked: str) -> chunk_stage.ChunkPlan:
 
     块正文按记录下来的 `span` 从掩码流里切——这也顺带校验了「块区间首尾相接、拼接可还原
     掩码流」这条不变式。`headings` 不还原（下游无人消费，且 `to_dict` 本就是有损的），
-    段落表用同一把尺子重新切一遍（纯函数，无 IO）。
+    段落表用同一个纯函数重新切一遍（无 IO）。
     """
     paragraphs = chunk_stage.split_paragraphs(masked)
     chunks: list[chunk_stage.Chunk] = []

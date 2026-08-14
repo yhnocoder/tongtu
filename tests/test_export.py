@@ -1,7 +1,7 @@
 """export 阶段：产物包组装、自包含 pack、契约自校验（架构 §3 export 行、§7）。
 
-`tests/test_e2e_identity.py` 钉的是「三篇 fixture 全流水线跑到底、产物包契约齐全」，这里
-钉的是 export 自己的行为边界，且**不跑流水线**——工作目录按最小形态手搭出来，于是每条
+`tests/test_e2e_identity.py` 覆盖的是「三篇 fixture 全流水线跑到底、产物包契约齐全」，这里
+覆盖的是 export 自己的行为边界，且**不跑流水线**——工作目录按最小形态手搭出来，于是每条
 断言只被一件事影响：
 
 * 契约文件齐不齐、chunks.json 有没有写回 `out/`（权威翻译记忆，决策 3）；
@@ -299,7 +299,7 @@ def test_synctex_is_shipped_and_used(paper):
 
 
 def test_a_stale_synctex_is_removed_from_the_package(paper):
-    """上一轮的 synctex 不许留在包里冒充这一轮的映射。"""
+    """上一轮的 synctex 不许留在包里，被当成这一轮的映射。"""
     _write(paper.out / "zh.synctex.gz", b"stale")
 
     run(paper)

@@ -240,7 +240,7 @@ def test_session_survives_a_runner_that_raises(tmp_path):
 
 
 def test_as_session_fn_prepends_the_repair_skill(tmp_path):
-    """关节②/⑥ 的规则住在 `skill/repair.md`，现场信息由阶段驱动器给。"""
+    """关节②/⑥ 的规则住在 `skill/repair/SKILL.md`，现场信息由阶段驱动器给。"""
     work = paper(tmp_path)
     agent = CodexAgent(runner=runner())
     request = SimpleNamespace(joint="fixup", prompt="第一个错误：! Undefined", workdir=work)
@@ -356,7 +356,7 @@ def test_get_agent_by_name_and_env(monkeypatch):
 
 
 def test_get_agent_pseudo_is_the_chinese_path_variant(monkeypatch):
-    """`pseudo` 与 `mock` 同族但分家：译文带中文、模型标识不同（tests/test_e2e_pseudo.py）。"""
+    """`pseudo` 与 `mock` 同族但互相独立：译文带中文、模型标识不同（tests/test_e2e_pseudo.py）。"""
     monkeypatch.delenv("TONGTU_AGENT", raising=False)
     agent = get_agent("pseudo")
 

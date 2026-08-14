@@ -23,7 +23,7 @@ compile 有意加的），故 `zh.tex` 去掉 tongtu 标记之间的那一段之
 
 仓库运行时与 dev 都不引 jsonschema（架构 §13），校验器是自家的**够用子集**
 （`tongtu.schema_check`）。它原本住在本文件里，M3 起 survey 阶段要在运行时校验
-`brief.json` / `glossary.json`，于是抽进运行时包——测试与生产用同一把尺子。
+`brief.json` / `glossary.json`，于是抽进运行时包——测试与生产用同一份实现。
 """
 
 from __future__ import annotations
@@ -203,7 +203,7 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     assert result.cache_hits == 0 and result.cache_misses == result.chunks_total
     assert translate_result["memory"]["loaded"] == 0
     assert len({c["cache_key"] for c in memory["chunks"]}) == len(memory["chunks"]), (
-        "每块一个 cache_key，重复即意味着两块会互相冒充"
+        "每块一个 cache_key，重复即意味着两块会互相命中对方的缓存"
     )
 
     # --- 回填后与原文逐字节等价（恒等翻译的核心断言）--------------------

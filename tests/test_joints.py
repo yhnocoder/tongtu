@@ -1,6 +1,6 @@
 """六个 agent 关节的接线（架构 §3 的介入点、§9 两原语、决策 1）。
 
-关节的正确性判据只有三条，本文件逐条钉死：
+关节的正确性判据只有三条，本文件逐条固定：
 
 1. **该问的时候才问**（未知环境、主文件真歧义、编译失败……），问的时候现场信息与
    prompt 资产都到位；
@@ -148,7 +148,8 @@ def test_main_file_joint_is_asked_only_on_a_real_tie(tools, tmp_path):
     entry = only(pipeline.interventions, "main_file")[0]
     assert entry.primitive == "complete" and entry.outcome == "resolved"
     assert entry.stage == "flatten" and "beta.tex" in entry.action
-    assert entry.model_id == "fake-model" and entry.prompt_version
+    assert entry.model_id == "fake-model"
+    assert entry.prompt_version == "", "关节①没有专属技能（提示词内联），版本号留空"
 
 
 def test_a_single_candidate_never_reaches_the_joint(tools, tmp_path):
@@ -177,7 +178,7 @@ def test_an_unusable_answer_falls_back_to_the_score(tools, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# ③ 环境分类（mask，complete + skill/classify.md）
+# ③ 环境分类（mask，complete + skill/classify/SKILL.md）
 # --------------------------------------------------------------------------- #
 
 UNKNOWN_ENV = """\
@@ -213,7 +214,7 @@ def test_env_classify_joint_gets_the_rules_and_the_sample(tools, tmp_path):
 
     assert outcome.status == "ok" and outcome.detail["roundtrip_ok"] is True
     prompt, sample = agent.prompts[0]
-    assert "环境分类" in prompt, "skill/classify.md 的规则要到达关节③"
+    assert "环境分类" in prompt, "skill/classify/SKILL.md 的规则要到达关节③"
     assert "sidebar" in prompt and "全文出现次数：1" in prompt
     assert "\\begin{sidebar}" in sample, "首次出现处的源码片段是判断的依据"
     assert len(agent.prompts) == 1, "一个未知环境只问一次（article / document 是已知的）"
@@ -396,7 +397,7 @@ def test_compile_retranslates_a_bad_segment_and_records_it(tools, tmp_path):
     assert entry.outcome == "resolved" and "坏段" in entry.trigger
     prompt = next(c.prompt for c in agent.completions if "编译失败" in c.prompt)
     assert "Undefined control sequence" in prompt, "编译器给的线索要到达关节⑤"
-    assert "占位符" in prompt, "重译仍走 skill/translate.md 的规则"
+    assert "占位符" in prompt, "重译仍走 skill/translate/SKILL.md 的规则"
 
 
 def test_a_bad_segment_that_stays_broken_falls_back(tools, tmp_path):

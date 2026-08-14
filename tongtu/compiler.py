@@ -582,7 +582,7 @@ def latexmk_compiler(
 
         pdf = build_dir / f"{tex.stem}.pdf"
         log_path = build_dir / f"{tex.stem}.log"
-        # 上一轮的产物不能冒充这一轮的成功——先清掉再编。
+        # 上一轮的产物不能被当作这一轮的成功——先清掉再编。
         for stale in (pdf, log_path):
             if stale.exists():
                 stale.unlink()

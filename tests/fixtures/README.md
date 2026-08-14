@@ -47,7 +47,7 @@ MockAgent 恒等翻译、三篇全流水线跑到底、产出 PDF + anchors 并�
 `coverage` 的每个键在 `tests/test_fixtures.py` 的 `PROBES` 里有**探针**：正则或 mask 的
 分类结论。`test_claimed_coverage_is_real` 保证「声明了就必须真的在源码里」（MANIFEST 不许
 说谎），`test_coverage_matrix_is_complete` 保证「三篇的并集 == 全部词表」（谁删了覆盖点
-而没改 MANIFEST，当场红）。加新覆盖点 = 加探针 + 改 MANIFEST，两边缺一不可。
+而没改 MANIFEST，测试即失败）。加新覆盖点 = 加探针 + 改 MANIFEST，两边缺一不可。
 
 ## 覆盖矩阵
 
@@ -103,7 +103,7 @@ MockAgent 恒等翻译、三篇全流水线跑到底、产出 PDF + anchors 并�
   `\newenvironment`）判出的散文环境，`decided_by` 为 `newtheorem` / `newenvironment`；
 * `custom_env_unknown` —— 分类表里没有、文档里也没声明（revtex 的 `widetext`、
   conference 的 `sidenote`），走**保守默认**：整块掩码、`category=unknown`、
-  `decided_by=default`。这条是「不确定就别翻，只降覆盖率不损坏」的活体样本。
+  `decided_by=default`。这条是「不确定就别翻，只降覆盖率不损坏」的实际用例。
 
 ## 图片资产的再生
 

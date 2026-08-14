@@ -114,7 +114,7 @@ def test_retranslate_is_wired_to_the_pipeline(tmp_path, capsys):
     assert cli.main(["retranslate", "2401.01234", "--all", "--workdir", str(empty)]) == 1
 
     assert "工作目录不存在" in capsys.readouterr().out
-    assert not empty.exists(), "失败的 retranslate 不该顺手建出论文目录"
+    assert not empty.exists(), "失败的 retranslate 不该建出论文目录"
 
 
 def test_stage_name_is_validated():

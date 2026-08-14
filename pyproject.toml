@@ -34,8 +34,9 @@ packages = ["tongtu"]
 # 查找链见 `tongtu.compiler.find_fonts`。
 [tool.hatch.build.targets.wheel.force-include]
 "fonts" = "tongtu/data/fonts"
-# prompt 资产（关节⑤/⑥/③ 的规则，PHASE0 §3.4）：源码树里在仓库根 `skill/`，wheel 里落到
-# 包内 `tongtu/data/skill/`，查找链见 `tongtu.prompts.find_skill_dir`。
+# prompt 资产（关节③④⑤⑥ 的规则，PHASE0 §3.4）：源码树里在仓库根 `skill/`，每个关节一个
+# 标准 Skill 目录（`skill/<name>/SKILL.md`，可带 `references/`），整棵树原样打进 wheel 的
+# `tongtu/data/skill/`。查找链见 `tongtu.prompts.find_skill_dir`。
 "skill" = "tongtu/data/skill"
 # 产物契约 schema：survey 在**运行时**校验 brief / glossary（架构 §3 survey 行的出口判据），
 # 故 schema 不能只活在源码树里。查找链见 `tongtu.schema_check.find_schema_dir`。

@@ -1,13 +1,13 @@
 """fixture 论文的冒烟测试（架构 §12 层 1，PR 门禁）。
 
 `tests/fixtures/papers/` 下的三篇自造论文是编译层 e2e（层 2，MockAgent 恒等翻译）
-的输入。真编译要等参考镜像，本文件先把**不需要 TeX 的那部分**钉死：
+的输入。真编译要等参考镜像，本文件先把**不需要 TeX 的那部分**固定下来：
 
 1. **MANIFEST 齐全合法**：字段、类型、id 与目录名对应、声明的文件真实存在。
 2. **主文件像论文**：含 `\\documentclass` 与 `\\begin{document}`/`\\end{document}`。
 3. **覆盖矩阵不缩水**：MANIFEST 的 `coverage` 是**可机器验证**的断言——每个覆盖点都有
    探针（正则或 mask 结论），claim 了就必须真的在源码里；三篇的并集必须等于全部词表。
-   删掉一个覆盖点而忘了改 MANIFEST 会当场红。
+   删掉一个覆盖点而忘了改 MANIFEST，本文件会失败。
 4. **fixture 先过自家文本层**：对每篇的 flat 视图跑 `unmask(mask(x)) == x` 与
    `ChunkPlan.reassemble() == masked`。fixture 自己都不恒等的话，拿它去做 e2e 毫无意义。
 5. **图片资产可复跑再生**：`gen_assets.py` 重新生成的结果与入库文件等价。
@@ -302,7 +302,7 @@ def test_claimed_coverage_is_real(paper, loaded):
 
 
 def test_coverage_matrix_is_complete(loaded):
-    """三篇合计必须覆盖全部词表——任何一处缩水都在这里当场红。"""
+    """三篇合计必须覆盖全部词表——任何一处缩水都会让本用例失败。"""
     union: set[str] = set()
     for _, manifest, _, _ in loaded.values():
         union |= set(manifest["coverage"])
