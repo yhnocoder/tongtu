@@ -1,0 +1,26 @@
+\documentclass{article}
+\usepackage{listings}
+\usepackage{fancyvrb}
+\begin{document}
+
+Inline \verb|%| is not a comment, and \verb+\end{lstlisting}+ is not an end
+marker.  The starred form \verb*=a b= keeps its spaces.  The command
+\verbatiminput{snippet.txt} merely looks like \verb (v2 read its ``a'' as a
+delimiter and swallowed the rest of the line).
+
+\begin{lstlisting}[language=Python,caption={not a caption slot}]
+def mask(src):          % 这不是注释
+    return "\begin{figure} 这不是环境"
+\end{lstlisting}
+
+\begin{verbatim}
+100% verbatim, braces {{{ unbalanced, \begin{table} fake
+\end{verbatim}
+
+\begin{alltt}
+alltt keeps \textbf{some} markup but is still masked whole.
+\end{alltt}
+
+After the listings, prose resumes and $\alpha$ stays in the stream.
+
+\end{document}

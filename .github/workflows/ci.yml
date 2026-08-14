@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 层 1 文本层（架构 §12）：秒级、无 TeX、无 LLM。PR 门禁。
+  text:
+    name: 文本层（pytest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest
+
+  # 层 2 编译层（架构 §12）：分钟级、有 TeX、无 LLM——MockAgent 恒等翻译 e2e，
+  # 三篇 fixture 全流水线跑到底，产出真 PDF。PR 门禁。
+  #
+  # 容器用官方 texlive/texlive:latest（TeX Live full，含 latexmk / latexpand / xeCJK）。
+  # M5 换成自建的参考镜像（docker/ 双层构建：TeX Live 基底 + 通途代码层，GHCR 发布），
+  # 届时这里只改 container 一行——本 job 对镜像的全部要求就是 PATH 里有那两个程序。
+  compile:
+    name: 编译层（恒等翻译 e2e）
+    runs-on: ubuntu-latest
+    container: texlive/texlive:latest
+    steps:
+      - uses: actions/checkout@v4
+      # setup-uv 依赖宿主 runner 的工具链，容器里不一定合用；官方安装脚本最省事。
+      # 镜像里未必有 python3，交给 uv 自己装（uv sync 按 requires-python 拉一个）。
+      - name: 装 uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv sync
+      - name: 探一眼环境（缺什么当场看得见）
+        run: |
+          uv run tongtu doctor || true
+          latexmk --version | head -1
+          latexpand --version | head -1
+      - run: uv run pytest -m compile
+
+  # 层 3 LLM 层**有意不在本 workflow 里**：它是手动触发的 `.github/workflows/llm-quality.yml`
+  # （真模型跑 1–3 篇，限预算），只做质量监控，不当 PR 门禁——模型抖动不该把 PR 标红。

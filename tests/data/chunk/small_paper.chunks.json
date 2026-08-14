@@ -1,0 +1,183 @@
+{
+  "estimator": "approx-v1",
+  "soft_target_tokens": 120,
+  "hard_limit_tokens": 240,
+  "tail_min_tokens": 30,
+  "paragraph_count": 12,
+  "chunk_count": 4,
+  "tokens": 410,
+  "chunks": [
+    {
+      "id": "c000",
+      "index": 0,
+      "file": "c000.tex",
+      "section_path": [],
+      "section_titles": [],
+      "headings": [],
+      "para_start": 0,
+      "para_end": 1,
+      "paragraph_count": 1,
+      "tokens": 57,
+      "is_appendix": false,
+      "is_front_matter": true,
+      "part": 1,
+      "part_count": 1,
+      "span": [
+        0,
+        195
+      ],
+      "prev_tail_para": null,
+      "next_head_para": 1
+    },
+    {
+      "id": "c001",
+      "index": 1,
+      "file": "c001.tex",
+      "section_path": [
+        "1"
+      ],
+      "section_titles": [
+        "Introduction"
+      ],
+      "headings": [
+        {
+          "command": "section",
+          "level": 2,
+          "title": "Introduction",
+          "numbered": true,
+          "path": [
+            "1"
+          ],
+          "para": 1
+        }
+      ],
+      "para_start": 1,
+      "para_end": 3,
+      "paragraph_count": 2,
+      "tokens": 104,
+      "is_appendix": false,
+      "is_front_matter": false,
+      "part": 1,
+      "part_count": 1,
+      "span": [
+        195,
+        574
+      ],
+      "prev_tail_para": 0,
+      "next_head_para": 3
+    },
+    {
+      "id": "c002",
+      "index": 2,
+      "file": "c002.tex",
+      "section_path": [],
+      "section_titles": [],
+      "headings": [
+        {
+          "command": "section",
+          "level": 2,
+          "title": "Method",
+          "numbered": true,
+          "path": [
+            "2"
+          ],
+          "para": 3
+        },
+        {
+          "command": "subsection",
+          "level": 3,
+          "title": "Masking",
+          "numbered": true,
+          "path": [
+            "2",
+            "2.1"
+          ],
+          "para": 4
+        },
+        {
+          "command": "subsection",
+          "level": 3,
+          "title": "Chunking",
+          "numbered": true,
+          "path": [
+            "2",
+            "2.2"
+          ],
+          "para": 7
+        },
+        {
+          "command": "section",
+          "level": 2,
+          "title": "Acknowledgements",
+          "numbered": false,
+          "path": [
+            "*1"
+          ],
+          "para": 8
+        }
+      ],
+      "para_start": 3,
+      "para_end": 9,
+      "paragraph_count": 6,
+      "tokens": 194,
+      "is_appendix": false,
+      "is_front_matter": false,
+      "part": 1,
+      "part_count": 1,
+      "span": [
+        574,
+        1295
+      ],
+      "prev_tail_para": 2,
+      "next_head_para": 9
+    },
+    {
+      "id": "c003",
+      "index": 3,
+      "file": "c003.tex",
+      "section_path": [
+        "A"
+      ],
+      "section_titles": [
+        "Proofs"
+      ],
+      "headings": [
+        {
+          "command": "section",
+          "level": 2,
+          "title": "Proofs",
+          "numbered": true,
+          "path": [
+            "A"
+          ],
+          "para": 10
+        },
+        {
+          "command": "subsection",
+          "level": 3,
+          "title": "Lemma restated",
+          "numbered": true,
+          "path": [
+            "A",
+            "A.1"
+          ],
+          "para": 11
+        }
+      ],
+      "para_start": 9,
+      "para_end": 12,
+      "paragraph_count": 3,
+      "tokens": 55,
+      "is_appendix": true,
+      "is_front_matter": false,
+      "part": 1,
+      "part_count": 1,
+      "span": [
+        1295,
+        1504
+      ],
+      "prev_tail_para": 8,
+      "next_head_para": null
+    }
+  ]
+}

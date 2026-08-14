@@ -1,0 +1,196 @@
+{
+ "contract_version": "0.2",
+ "source": {
+  "path": "tests/data/mask/theorem_unknown.tex",
+  "sha256": "d2bd0a5b725698f926b9a0ed01f04dda2115e33518fc90fc673c0c6d89d9a910",
+  "chars": 1424
+ },
+ "blocks": [
+  {
+   "id": "BLK-0",
+   "placeholder": "⟦BLK-0⟧",
+   "category": "preamble",
+   "tex": "\\documentclass{article}\n\\usepackage{amsthm}\n\\usepackage{tikz}\n\\newtheorem{lemma}{Lemma}\n\\newtheorem*{remark}{Remark}\n\\newenvironment{highlight}{\\begingroup\\bfseries}{\\endgroup}\n\\newenvironment{myfigure}[1]{\\begin{figure}[#1]}{\\end{figure}}\n\\NewDocumentEnvironment{fancybox}{m}{\\begin{tcolorbox}[title=#1]}{\\end{tcolorbox}}\n\\begin{document}",
+   "span": {
+    "start": 0,
+    "end": 339,
+    "line_start": 1,
+    "line_end": 9
+   },
+   "survey_restore": false
+  },
+  {
+   "id": "BLK-1",
+   "placeholder": "⟦BLK-1⟧",
+   "category": "figure",
+   "tex": "\\begin{myfigure}{t}\n  \\includegraphics{a.pdf}\n  \\caption{⟦CAP-0⟧}\n\\end{myfigure}\n",
+   "span": {
+    "start": 645,
+    "end": 779,
+    "line_start": 25,
+    "line_end": 28
+   },
+   "survey_restore": false,
+   "environment": "myfigure",
+   "label": null,
+   "caption_ids": [
+    "CAP-0"
+   ]
+  },
+  {
+   "id": "BLK-2",
+   "placeholder": "⟦BLK-2⟧",
+   "category": "other",
+   "tex": "\\begin{fancybox}{Title}\nDelegating to a heavy environment through xparse.\n\\end{fancybox}",
+   "span": {
+    "start": 780,
+    "end": 868,
+    "line_start": 30,
+    "line_end": 32
+   },
+   "survey_restore": false,
+   "environment": "fancybox",
+   "label": null
+  },
+  {
+   "id": "BLK-3",
+   "placeholder": "⟦BLK-3⟧",
+   "category": "figure",
+   "tex": "\\begin{figure*}[t]\n  \\begin{minipage}{0.45\\linewidth}\n    \\begin{tikzpicture}\n      \\draw (0,0) -- (1,1);\n    \\end{tikzpicture}\n  \\end{minipage}\n  \\begin{minipage}{0.45\\linewidth}\n    \\begin{tabular}{cc}\n      a & b \\\\\n    \\end{tabular}\n  \\end{minipage}\n  \\caption{⟦CAP-1⟧}\n  \\label{fig:panels}\n\\end{figure*}\n",
+   "span": {
+    "start": 921,
+    "end": 1245,
+    "line_start": 35,
+    "line_end": 48
+   },
+   "survey_restore": false,
+   "environment": "figure*",
+   "label": "fig:panels",
+   "caption_ids": [
+    "CAP-1"
+   ]
+  },
+  {
+   "id": "BLK-4",
+   "placeholder": "⟦BLK-4⟧",
+   "category": "unknown",
+   "tex": "\\begin{cosmoplot}\nAn environment nobody has ever heard of: no table entry, no declaration, no\nagent to ask.  Conservative default masks it whole.\n\\end{cosmoplot}",
+   "span": {
+    "start": 1246,
+    "end": 1407,
+    "line_start": 50,
+    "line_end": 53
+   },
+   "survey_restore": false,
+   "environment": "cosmoplot",
+   "label": null
+  }
+ ],
+ "captions": [
+  {
+   "id": "CAP-0",
+   "placeholder": "⟦CAP-0⟧",
+   "block_id": "BLK-1",
+   "kind": "caption",
+   "text": "A delegating environment inherits the figure classification.",
+   "stream_text": "A delegating environment inherits the figure classification."
+  },
+  {
+   "id": "CAP-1",
+   "placeholder": "⟦CAP-1⟧",
+   "block_id": "BLK-3",
+   "kind": "caption",
+   "text": "Two panels, one block.",
+   "stream_text": "Two panels, one block."
+  }
+ ],
+ "environments": [
+  {
+   "name": "minipage",
+   "classification": "prose",
+   "decided_by": "table",
+   "count": 2
+  },
+  {
+   "name": "cosmoplot",
+   "classification": "heavy",
+   "decided_by": "default",
+   "count": 1,
+   "category": "unknown"
+  },
+  {
+   "name": "document",
+   "classification": "prose",
+   "decided_by": "table",
+   "count": 1
+  },
+  {
+   "name": "fancybox",
+   "classification": "heavy",
+   "decided_by": "newenvironment",
+   "count": 1,
+   "category": "other"
+  },
+  {
+   "name": "figure",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "figure"
+  },
+  {
+   "name": "figure*",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "figure"
+  },
+  {
+   "name": "highlight",
+   "classification": "prose",
+   "decided_by": "newenvironment",
+   "count": 1
+  },
+  {
+   "name": "lemma",
+   "classification": "prose",
+   "decided_by": "newtheorem",
+   "count": 1
+  },
+  {
+   "name": "myfigure",
+   "classification": "heavy",
+   "decided_by": "newenvironment",
+   "count": 1,
+   "category": "figure"
+  },
+  {
+   "name": "remark",
+   "classification": "prose",
+   "decided_by": "newtheorem",
+   "count": 1
+  },
+  {
+   "name": "tabular",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "table"
+  },
+  {
+   "name": "tcolorbox",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "other"
+  },
+  {
+   "name": "tikzpicture",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "tikz"
+  }
+ ],
+ "roundtrip_ok": true
+}

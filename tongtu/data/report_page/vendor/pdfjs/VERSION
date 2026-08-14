@@ -1,0 +1,4 @@
+pdfjs-dist 3.11.174 (legacy build)
+Apache-2.0，见 LICENSE。
+取自 https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-3.11.174.tgz
+只保留 legacy/build/pdf.min.js 与 legacy/build/pdf.worker.min.js 两个文件。

@@ -134,7 +134,7 @@ tongtu preview <id>               # 打开检验页
 ## 8. 术语表
 
 - **预扫、合并与新词决策统一发生在 survey 阶段**（§3），与全文纲要在同一次通读中完成。
-- **三层合并**，后者覆盖前者：全局 `~/.config/tongtu/glossary.json`（XDG）→ 论文目录内输入表 → `--glossary` 命令行（可多次）。
+- **三层合并**，后者覆盖前者：全局 `~/.config/tongtu/glossary.json`（XDG，`$XDG_CONFIG_HOME` 覆盖）→ 论文目录内输入表 `<workdir>/glossary.json`（与 `src/`/`build/`/`out/`/`logs/` 同级，**不放进 `src/`**——那是只读的 e-print 树，混入会污染 fetch 的树 hash）→ `--glossary` 命令行（可多次，靠后的优先）。合并语义：`terms` 条目级覆盖（同名后者胜）、`do_not_translate` 取并集、`style` 逐字段覆盖。
 - **输入表**（用户可编辑）与**决策表**（产物 `glossary.json`，本篇实际生效决策）分离；用户条目优先于 agent 决策。
 - 结构三段：不译清单 / 术语唯一译法 / 文风约定（`style_version` 所在，含译者注开关）。
 - 云上传入：wenshu 把 R2 中的表落成文件递给容器——仍是「文件 + CLI」，不新增接口形态。
@@ -183,7 +183,7 @@ session(prompt, workdir, model, budget) -> {done, transcript_path}
 
 1. **文本层**（秒级；无 TeX、无 LLM）：mask / unmask / validate / chunk 皆为纯文本变换，golden-file 测试打底；外加 mask/unmask 往返恒等的性质测试——同一自检在生产环境对每篇论文运行时也会执行（§3.1）。正确性的大头在这层。**PR 门禁。**
 2. **编译层**（分钟级；有 TeX、无 LLM）：**恒等翻译 e2e**——MockAgent 原样返回源文，三篇 fixture 论文全流水线跑到底，产出 PDF + anchors 并通过 schema 校验。零 LLM 成本覆盖掩码/注入/编译回环/导出/索引全链路。**PR 门禁。**
-   注意：恒等译文不含中文，xeCJK 断行等中文路径盖不到——需补「伪翻译」变体（每块注入固定中文句）或一篇中文 fixture（见附录 B）。
+   注意：恒等译文不含中文，xeCJK 断行等中文路径盖不到——故同一批 fixture 再跑一遍**伪翻译变体**（`get_agent("pseudo")`：每个散文段前缀一句固定中文，零 LLM、零随机，删掉前缀即逐字节回到原文），真 TeX 形态即中文路径（xeCJK 断行、CJK 字体链）的覆盖点。附录 B 开放问题 2 已落此项，不另造中文 fixture。
 3. **LLM 层**（**手动触发**；限预算）：真模型跑 1–3 篇，report.json 统计入质量看板。**是质量监控，不是门禁**——模型抖动不得卡 PR。暂不设 nightly（纯烧钱）；待朝晖（hot-paper 自动发现）接入后，挂在其自动入队流上用真实论文流做质量回归。
 
 fixtures：自造最小模板论文（article / revtex / 双栏会议，各数页）入仓库；真实 arXiv 论文仅 nightly 拉取、不入库（license 干净）。
@@ -229,7 +229,7 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 **仍开放**（多为实测校准项，非设计阻塞）：
 
 1. **chunk 软目标 / 硬上限的具体数值**（掩码后散文 token 计）：软 ~4k、硬 ~8k 起步，三篇 fixture 校准（观测指标：validate 重试率、长生成漂移、术语一致性）。
-2. **恒等翻译的中文路径覆盖**：伪翻译变体（每块前缀固定中文句，零 LLM、零随机，倾向此项）vs 专门的中文 fixture。
+2. **恒等翻译的中文路径覆盖**：伪翻译变体（每块前缀固定中文句，零 LLM、零随机，倾向此项）vs 专门的中文 fixture。**已落**（零期收尾）：取伪翻译变体——`tongtu.agent.mock.PseudoAgent`（`get_agent("pseudo")`）给每个散文段前缀一句固定中文，前缀不含 `\` `{` `}` `$` `⟦` `⟧` 故 validate 四层逐项不变，结构行开头的段一律跳过（中文落在 `\documentclass` 前或首个 `\item` 前是真编译错）；`tests/test_e2e_pseudo.py` 与恒等 e2e 同参数化，真 TeX 形态断言含中文的 `zh.tex` 编出非空 PDF 且日志无缺字。不另造中文 fixture：同一批 fixture、同一条流水线，变体只换 agent。
 3. **`--json` 事件流 schema**：一期容器调度前冻结，零期先出草案。
-4. **anchors 三来源叠加的实现次序与热区容差**：零期拿真实论文实测后定。
+4. **anchors 三来源叠加的实现次序与热区容差**：零期拿真实论文实测后定。M4 已把它们收成 `tongtu/anchors.py` 的模块级常量（`SOURCE_PRIORITY` / `RECT_PADDING_PT` / `BAND_MERGE_TOLERANCE_PT` / `SYNCTEX_SCALE` 与页级降级的页码估计），改一个数即可重新校准；synctex 缺席时一律退化为页级锚点并如实标注 `source` 与 `confidence`，不伪造精确矩形。
 5. **brief 各字段粒度与邻域原文段数**：三篇 fixture 校准。

@@ -1,0 +1,44 @@
+⟦BLK-0⟧
+⟦CAP-0⟧ Deterministic Pipelines for Translating \LaTeX{} Papers
+⟦CAP-1⟧ We describe a pipeline that masks heavy environments before translation. \par The masked stream keeps prose only.
+
+\section{Introduction}
+\label{sec:intro}
+Machine translation of scientific papers usually starts from the rendered PDF, which
+loses the structure that makes a paper readable. Working from ⟦BLK-1⟧ sources keeps
+every cross reference intact.
+
+The second paragraph of the introduction cites \cite{knuth1984} and mentions inline
+math such as $x_i$ without leaving the prose stream.
+
+\section{Method}
+The method section opens with a short overview paragraph that belongs to the section
+itself rather than to any of its subsections.
+
+\subsection{Masking}
+Masking replaces heavy environments with opaque placeholders:
+
+\begin{itemize}
+  \item Tables and figures become block placeholders.
+
+  \item Display math follows the same rule, so the translator never sees it.
+\end{itemize}
+
+⟦BLK-2⟧
+⟦CAP-2⟧ Overview of the deterministic pipeline.
+
+\subsection{Chunking}
+Chunking prefers the section tree over a fixed character window, because coherence
+inside a section is where translation quality comes from.
+
+\section*{Acknowledgements}
+We thank the reviewers for their patience with an unusually long appendix.
+
+\appendix
+
+\section{Proofs}
+\label{app:proofs}
+The appendix restates the lemmas in full and proves them.
+
+\subsection{Lemma restated}
+The restated lemma is unchanged apart from notation introduced in ⟦BLK-3⟧.

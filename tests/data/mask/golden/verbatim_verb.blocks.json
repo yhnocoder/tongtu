@@ -1,0 +1,99 @@
+{
+ "contract_version": "0.2",
+ "source": {
+  "path": "tests/data/mask/verbatim_verb.tex",
+  "sha256": "bf28f3d1d3f0868ad266e033c7bce9b6a3ba5572077a02af11f07320d10c5dd4",
+  "chars": 765
+ },
+ "blocks": [
+  {
+   "id": "BLK-0",
+   "placeholder": "⟦BLK-0⟧",
+   "category": "preamble",
+   "tex": "\\documentclass{article}\n\\usepackage{listings}\n\\usepackage{fancyvrb}\n\\begin{document}",
+   "span": {
+    "start": 0,
+    "end": 84,
+    "line_start": 1,
+    "line_end": 4
+   },
+   "survey_restore": false
+  },
+  {
+   "id": "BLK-1",
+   "placeholder": "⟦BLK-1⟧",
+   "category": "code",
+   "tex": "\\begin{lstlisting}[language=Python,caption={not a caption slot}]\ndef mask(src):          % 这不是注释\n    return \"\\begin{figure} 这不是环境\"\n\\end{lstlisting}",
+   "span": {
+    "start": 355,
+    "end": 502,
+    "line_start": 11,
+    "line_end": 14
+   },
+   "survey_restore": false,
+   "environment": "lstlisting",
+   "label": null
+  },
+  {
+   "id": "BLK-2",
+   "placeholder": "⟦BLK-2⟧",
+   "category": "code",
+   "tex": "\\begin{verbatim}\n100% verbatim, braces {{{ unbalanced, \\begin{table} fake\n\\end{verbatim}",
+   "span": {
+    "start": 504,
+    "end": 592,
+    "line_start": 16,
+    "line_end": 18
+   },
+   "survey_restore": false,
+   "environment": "verbatim",
+   "label": null
+  },
+  {
+   "id": "BLK-3",
+   "placeholder": "⟦BLK-3⟧",
+   "category": "code",
+   "tex": "\\begin{alltt}\nalltt keeps \\textbf{some} markup but is still masked whole.\n\\end{alltt}",
+   "span": {
+    "start": 594,
+    "end": 679,
+    "line_start": 20,
+    "line_end": 22
+   },
+   "survey_restore": false,
+   "environment": "alltt",
+   "label": null
+  }
+ ],
+ "captions": [],
+ "environments": [
+  {
+   "name": "alltt",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "code"
+  },
+  {
+   "name": "document",
+   "classification": "prose",
+   "decided_by": "table",
+   "count": 1
+  },
+  {
+   "name": "lstlisting",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "code"
+  },
+  {
+   "name": "verbatim",
+   "classification": "heavy",
+   "decided_by": "table",
+   "count": 1,
+   "category": "code"
+  }
+ ],
+ "roundtrip_ok": true
+}

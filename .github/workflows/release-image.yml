@@ -1,0 +1,105 @@
+name: 发布参考镜像
+
+# 参考镜像的发布入口（架构 §10：git tag 即版本，wenshu 按 tag 引用）。
+#
+# 触发方式两种：
+#   1. push tag `v*`     —— 正式发布：打 {{version}} / {{major}}.{{minor}} / latest 三个 tag 并推 GHCR
+#   2. workflow_dispatch —— 手动：可只构建不推（push=false，用来验证 Dockerfile），
+#                            推的话打的是 `tag` 输入给的名字（默认 dev），**不动 latest**
+#
+# 镜像名 = ghcr.io/<owner>/<repo>，即 ghcr.io/yhnocoder/tongtu。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 推到 GHCR（false = 只构建，验证 Dockerfile 用）
+        type: boolean
+        default: true
+      tag:
+        description: 手动触发时的镜像 tag（tag 触发时忽略）
+        type: string
+        default: dev
+
+permissions:
+  contents: read
+  packages: write
+
+# 发布不抢跑：同一 ref 的构建排队而不是互相取消（取消一次 6GB 的构建等于白白消耗十几分钟）。
+concurrency:
+  group: release-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    name: 构建并推送参考镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # TeX Live full 解开约 6GB，加上 buildx 缓存层，runner 默认可用空间会很紧。
+      # 删的都是本仓库用不到的预装 SDK。
+      - name: 腾磁盘
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # tag 即版本：v1.2.3 → 1.2.3 / 1.2 / latest。手动触发只打 `tag` 输入那一个名字。
+      - name: 算镜像 tag
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ inputs.tag || 'dev' }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      # 层缓存走 GitHub Actions cache：基底层（TeX + apt + uv + Python）改动极少，
+      # 命中后每次发布只重跑代码层。
+      # 注意 GH 缓存有 10GB 配额，mode=max 会把所有中间层都推上去——真撑爆了就把
+      # cache-to 换成 registry 缓存：type=registry,ref=ghcr.io/<owner>/<repo>:buildcache,mode=max
+      - name: 构建（并推送）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 单一 manifest，不额外挂 provenance 证明——云侧（Cloudflare Containers）按 tag
+          # 直接拉，镜像索引里多一层不必要的间接反而添乱。
+          provenance: false
+
+      - name: 记一笔
+        run: |
+          {
+            echo "### 参考镜像"
+            echo
+            echo "- 触发：\`${{ github.event_name }}\`（ref \`${{ github.ref }}\`）"
+            echo "- 推送：\`${{ github.event_name != 'workflow_dispatch' || inputs.push }}\`"
+            echo "- tags:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

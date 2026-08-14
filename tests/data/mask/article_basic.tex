@@ -1,0 +1,49 @@
+\documentclass[11pt]{article}
+% 前导区里的注释整体属于 BLK-0，不单独成块
+\usepackage{amsmath}
+\usepackage{graphicx}
+\title{Deterministic Pipelines for \LaTeX{} Translation}
+\author{A. Nonymous}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+\label{sec:intro}
+Working from source keeps every cross reference intact, as $x_i$ and
+\cite{knuth1984} show.  % 行尾注释：只吞它自己这一段
+%% 连续的整行注释合并成一个块
+%% 免得掩码流被占位符搅碎
+About 50\% of the pipeline is deterministic; the escaped percent above must
+survive the round trip.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.6\linewidth]{pipeline.pdf}
+  \caption[Pipeline overview]{The deterministic pipeline: masking, chunking and
+  the compile loop.  Note the escaped \% inside the caption.}
+  \label{fig:pipeline}
+\end{figure}
+
+Display math becomes an opaque block:
+\begin{equation}
+  \label{eq:mask}
+  m(x) = \sum_{i} b_i
+\end{equation}
+
+\begin{itemize}
+  \item Prose environments stay in the stream.
+  \item Their \texttt{\textbackslash begin} wrappers are preserved verbatim.
+\end{itemize}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lr}
+    stage & cost \\
+    mask  & 0    \\
+  \end{tabular}
+  \caption{Costs per stage.}
+  \label{tab:cost}
+\end{table}
+
+\end{document}

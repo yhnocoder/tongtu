@@ -1,0 +1,15 @@
+# 镜像构建上下文的排除表（docker/Dockerfile 的构建上下文是仓库根）。
+# 首要目的不是省几 MB，而是**别把开发机的 .venv 拷进镜像**——那里面的解释器路径指向
+# 宿主，混进 /opt/tongtu 会让 uv 面对一个对不上的环境。
+.git/
+.github/
+ci/
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.env
+*.log
+.DS_Store
