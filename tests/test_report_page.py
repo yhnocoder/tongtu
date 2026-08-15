@@ -19,7 +19,6 @@ import re
 import pytest
 
 from tongtu import CONTRACT_VERSION, report_page
-from tongtu.cli import run_preview
 
 PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Page /MediaBox [0 0 612 792] >>\nendobj\n%%EOF\n"
 
@@ -226,74 +225,3 @@ def test_assets_hash_changes_with_the_template(tmp_path, monkeypatch):
 
     assert len(first) == 64
     assert first == report_page.assets_hash(), "同样的资产，同样的 hash"
-
-
-# ------------------------------------------------------------------- preview
-
-
-class _Args:
-    def __init__(self, **kwargs):
-        self.__dict__.update({"id": "2401.00001", "workdir": None, "serve": False})
-        self.__dict__.update(kwargs)
-
-
-def test_preview_opens_the_page(tmp_path, page, capsys):
-    """`tongtu preview`：打开 `out/report.html`。"""
-    opened: list[str] = []
-
-    code = run_preview(_Args(workdir=str(tmp_path)), opener=lambda url: opened.append(url) or True)
-
-    assert code == 0
-    assert opened and opened[0].startswith("file://") and opened[0].endswith("report.html")
-    assert opened[0] in capsys.readouterr().out
-
-
-def test_preview_prints_the_path_when_there_is_no_browser(tmp_path, page, capsys):
-    """headless 环境（容器、SSH）打不开浏览器 → 打印路径并退 0，不算失败。"""
-    code = run_preview(_Args(workdir=str(tmp_path)), opener=lambda url: False)
-
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "report.html" in out and "打不开浏览器" in out
-
-
-def test_preview_survives_a_browser_that_raises(tmp_path, page, capsys):
-    def boom(url):
-        raise RuntimeError("no display")
-
-    assert run_preview(_Args(workdir=str(tmp_path)), opener=boom) == 0
-    assert "report.html" in capsys.readouterr().out
-
-
-def test_preview_without_a_package_fails(tmp_path, capsys):
-    code = run_preview(_Args(workdir=str(tmp_path / "empty")), opener=lambda url: True)
-
-    assert code == 1
-    assert "tongtu run" in capsys.readouterr().err
-
-
-def test_preview_serve_starts_a_local_server(tmp_path, page, capsys):
-    """`--serve`：起本地 http.server（http 下页面走相对路径读 zh.pdf）。"""
-    served: dict = {}
-
-    class FakeServer:
-        server_address = ("127.0.0.1", 8765)
-
-        def serve_forever(self):
-            served["ran"] = True
-            raise KeyboardInterrupt
-
-        def server_close(self):
-            served["closed"] = True
-
-    urls: list[str] = []
-    code = run_preview(
-        _Args(workdir=str(tmp_path), serve=True),
-        opener=lambda url: urls.append(url) or True,
-        server=FakeServer,
-    )
-
-    assert code == 0
-    assert served == {"ran": True, "closed": True}
-    assert urls == ["http://127.0.0.1:8765/report.html"]
-    assert "http://127.0.0.1:8765/report.html" in capsys.readouterr().out

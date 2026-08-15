@@ -11,7 +11,9 @@
 ## 当前状态
 
 - AI 完成了 Phase0
-- 我正在验收，发现非常多不符合我要求的地方，正在 docs/ARCHITECTURE.md 里先把需求和 Spec 描述清楚。
+- 我正在验收，发现非常多不符合我要求的地方
+- 已经改完了 docs/ARCHITECTURE.md ，接下来需要改对应流水线的架构，使其符合 ARCHITECTURE 描述的架构。
+
 
 ## 这是一个自用的项目
 

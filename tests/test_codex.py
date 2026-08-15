@@ -389,16 +389,6 @@ def test_get_agent_passes_kwargs_and_rejects_unknown_names(monkeypatch):
     assert "codex" in str(excinfo.value) and "mock" in str(excinfo.value)
 
 
-def test_cli_accepts_agent_flag():
-    from tongtu.cli import parse_args
-
-    assert parse_args(["run", "2501.00001", "--agent", "codex"]).agent == "codex"
-    assert parse_args(["run", "2501.00001"]).agent is None
-
-    with pytest.raises(SystemExit):
-        parse_args(["run", "2501.00001", "--agent", "gpt-cli"])
-
-
 # --------------------------------------------------------------------------- #
 # 模型必须显式指定（缓存 key 认它）
 # --------------------------------------------------------------------------- #
@@ -424,29 +414,8 @@ def test_codex_model_is_trimmed_and_reaches_argv(tmp_path):
     assert flag_value(list(agent.runner.calls[0].argv), "--model") == MODEL  # type: ignore[attr-defined]
 
 
-def test_cli_passes_model_through_to_the_runtime(monkeypatch):
-    """`tongtu run --agent codex --model X`：CLI 只负责转交，不自作主张给默认值。"""
-    from tongtu.cli import _agent, parse_args
-
-    monkeypatch.delenv("TONGTU_AGENT", raising=False)
-    args = parse_args(["run", "2501.00001", "--agent", "codex", "--model", MODEL])
-    assert args.model == MODEL
-
-    agent = _agent(args)["agent"]
-    assert isinstance(agent, CodexAgent) and agent.model == MODEL
-
-    # mock 收到 --model 也只用自己的身份标识
-    assert _agent(parse_args(["run", "2501.00001", "--model", MODEL]))["agent"].model == "mock"
-
-
-def test_cli_turns_a_missing_model_into_a_usage_error(monkeypatch, capsys):
-    """构造被拒 = 用法错误：退 2 且打出办法，不冒栈。"""
-    from tongtu.cli import main
-
-    monkeypatch.delenv("TONGTU_AGENT", raising=False)
-
-    assert main(["run", "2501.00001", "--agent", "codex"]) == 2
-    assert "--model" in capsys.readouterr().err
+# CLI 侧 --agent / --model 的透传测试随 CLI 接线（docs/BACKLOG.md）补回，当前 CLI
+# 为占位实现，接口测试在 tests/test_cli.py。
 
 
 # --------------------------------------------------------------------------- #

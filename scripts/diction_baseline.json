@@ -1,11 +1,6 @@
 {
   "note": "diction_lint 基线：存量违例的 {路径: {正则: 数量}}，数量只许减少；清理后跑 scripts/diction_lint.py --update-baseline 收紧。不要手工放宽。",
   "counts": {
-    ".github/workflows/ci.yml": {
-      "标红": 1,
-      "真模型": 1,
-      "门禁": 3
-    },
     ".github/workflows/llm-quality.yml": {
       "促升": 1,
       "常绿": 1,
@@ -16,12 +11,6 @@
       "纪律": 1,
       "金字塔": 1,
       "门禁": 2
-    },
-    ".github/workflows/release-image.yml": {
-      "记一笔": 1
-    },
-    "README.md": {
-      "关节": 2
     },
     "ci/llm_summary.py": {
       "常绿": 1,
@@ -36,19 +25,7 @@
     "docs/ARCHITECTURE.md": {
       "真模型": 1,
       "纪律": 2,
-      "金字塔": 2,
       "顺手": 2
-    },
-    "docs/BACKLOG.md": {
-      "\\bjoints?\\b": 3,
-      "关节": 2,
-      "化身": 1,
-      "双保险": 1,
-      "粒度哲学": 1,
-      "解毒剂": 1,
-      "钥匙": 1,
-      "门禁": 1,
-      "顺手": 1
     },
     "docs/PHASE0.md": {
       "促升": 1,

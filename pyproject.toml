@@ -5,9 +5,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 dynamic = ["version"]
 
-# 运行时零第三方依赖（架构 §13：保持 v2 传统）。
-# 新增运行时依赖需要在 PR 里给出理由——这一行留空是有意的。
-dependencies = []
+dependencies = [
+    "pydantic>=2.7",       # artifact model
+    "typer>=0.12",         # CLI 命令面
+    "rich>=13",            # 进度显示与 doctor 结果的人读输出
+    "httpx>=0.27",         # fetch 下载
+    "pypdfium2>=4.30",     # anchors 的 pdf-scan 来源
+]
 
 [project.scripts]
 tongtu = "tongtu.cli:main"
@@ -17,9 +21,11 @@ Homepage = "https://github.com/yhnocoder/tongtu"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6",       # mask/unmask 往返恒等的性质测试，随机输入打词法状态机
     "pre-commit>=4.6.2",
     "pytest>=8",
     "ruff>=0.16.3",
+    "syrupy>=4",           # golden-file 快照管理
 ]
 
 [build-system]

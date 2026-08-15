@@ -271,31 +271,5 @@ def test_retranslate_emits_a_valid_event_stream(tools, tmp_path):
     }
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-
-def test_cli_retranslate_roundtrip(tools, tmp_path, capsys):
-    from tongtu.cli import main
-
-    workdir = tmp_path / "work"
-    assert run(workdir, Counting()).exit_code == 0
-    capsys.readouterr()
-
-    code = main(["retranslate", "article", "--workdir", str(workdir), "--all", "--json"])
-
-    assert code == 0
-    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
-    assert lines[-1]["event"] == "result" and lines[-1]["exit_code"] == 0
-
-
-def test_cli_retranslate_reports_a_bad_chunk_id(tools, tmp_path, capsys):
-    from tongtu.cli import main
-
-    workdir = tmp_path / "work"
-    assert run(workdir, Counting()).exit_code == 0
-
-    assert main(["retranslate", "article", "--workdir", str(workdir), "--chunks", "c999"]) == 2
-    assert "c999" in capsys.readouterr().err
-    assert main(["retranslate", "article", "--workdir", str(workdir), "--chunks", " ,"]) == 2
+# CLI 命令面（参数解析与约束）的测试在 tests/test_cli.py；本文件只测 retranslate 的
+# pipeline 语义。经 CLI 的端到端调用在 CLI 接线（docs/BACKLOG.md）后补回。
