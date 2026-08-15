@@ -202,9 +202,7 @@ def test_retranslate_also_forgets_the_authoritative_memory(tools, tmp_path):
     assert mem.chunk_ids(mem.read_chunks(out_path)) == tuple(ids)
 
     stream = io.StringIO()
-    result = retranslate(
-        "article", workdir=workdir, agent=agent, out=stream, chunks=[ids[0]]
-    )
+    result = retranslate("article", workdir=workdir, agent=agent, out=stream, chunks=[ids[0]])
 
     assert result.exit_code == 0
     assert f"来自 {out_path.name}" in stream.getvalue(), "权威记忆没被抹到"
@@ -234,9 +232,7 @@ def test_retranslate_without_any_memory_fails_structurally(tools, tmp_path):
 
 
 def test_retranslate_on_a_missing_workdir_says_so(tmp_path):
-    result = retranslate(
-        "article", workdir=tmp_path / "没有这个目录", all_chunks=True, out=io.StringIO()
-    )
+    result = retranslate("article", workdir=tmp_path / "没有这个目录", all_chunks=True, out=io.StringIO())
 
     assert result.exit_code == 1 and "工作目录不存在" in result.message
 
@@ -259,9 +255,7 @@ def test_retranslate_emits_a_valid_event_stream(tools, tmp_path):
     run(workdir, agent)
     stream = io.StringIO()
 
-    result = retranslate(
-        "article", workdir=workdir, agent=agent, all_chunks=True, json_events=True, out=stream
-    )
+    result = retranslate("article", workdir=workdir, agent=agent, all_chunks=True, json_events=True, out=stream)
 
     events = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
     schema = load_schema("events")
@@ -272,7 +266,8 @@ def test_retranslate_emits_a_valid_event_stream(tools, tmp_path):
     assert ends["mask"] == "cached" and ends["survey"] == "cached"
     assert ends["translate"] == "ok"
     assert {e["status"] for e in events if e["event"] == "chunk_progress"} == {
-        "started", "translated",
+        "started",
+        "translated",
     }
 
 

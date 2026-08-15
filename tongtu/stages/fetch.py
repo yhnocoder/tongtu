@@ -34,9 +34,9 @@ import shutil
 import tarfile
 import urllib.request
 import zlib
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable
 from urllib.parse import quote
 
 from .. import __version__
@@ -198,9 +198,7 @@ def fetch(
             message=f"下载失败（{type(exc).__name__}）：{exc}",
         )
     if not payload:
-        return FetchResult(
-            status=DOWNLOAD_FAILED, src=workdir.src, url=target, message="下载得到空响应"
-        )
+        return FetchResult(status=DOWNLOAD_FAILED, src=workdir.src, url=target, message="下载得到空响应")
 
     raw = workdir.build / RAW_NAME
     raw.write_bytes(payload)
@@ -235,24 +233,18 @@ def unpack(
             try:
                 data = gzip.decompress(payload)
             except (OSError, EOFError, zlib.error) as exc:
-                return FetchResult(
-                    status=UNPACK_FAILED, src=src, kind="gz", message=f"gzip 解压失败：{exc}", **common
-                )
+                return FetchResult(status=UNPACK_FAILED, src=src, kind="gz", message=f"gzip 解压失败：{exc}", **common)
             if data[:4] == b"%PDF":
                 return _finalize(src, kind="gz", forced_pdf=True, **common)
             (src / SINGLE_NAME).write_bytes(data)
             kind = "gz"
         except (tarfile.TarError, OSError) as exc:
-            return FetchResult(
-                status=UNPACK_FAILED, src=src, kind="tar.gz", message=f"解包失败：{exc}", **common
-            )
+            return FetchResult(status=UNPACK_FAILED, src=src, kind="tar.gz", message=f"解包失败：{exc}", **common)
     elif tarfile.is_tarfile(io.BytesIO(payload)):
         try:
             rejected = _extract_tar(payload, src)
         except (tarfile.TarError, OSError) as exc:
-            return FetchResult(
-                status=UNPACK_FAILED, src=src, kind="tar", message=f"解包失败：{exc}", **common
-            )
+            return FetchResult(status=UNPACK_FAILED, src=src, kind="tar", message=f"解包失败：{exc}", **common)
         kind = "tar"
     else:
         (src / SINGLE_NAME).write_bytes(payload)
@@ -355,9 +347,7 @@ def ingest_local(
     try:
         shutil.copytree(source, src, dirs_exist_ok=True, ignore=_ignore)
     except (shutil.Error, OSError) as exc:
-        return FetchResult(
-            status=UNPACK_FAILED, src=src, kind="local", message=f"拷贝本地源码失败：{exc}"
-        )
+        return FetchResult(status=UNPACK_FAILED, src=src, kind="local", message=f"拷贝本地源码失败：{exc}")
     return _finalize(src, kind="local")
 
 
@@ -383,9 +373,7 @@ def detect_pdf_shell(src: Path, tex_files: Iterable[str]) -> tuple[str | None, i
 def _list_files(root: Path) -> tuple[str, ...]:
     return tuple(
         sorted(
-            path.relative_to(root).as_posix()
-            for path in root.rglob("*")
-            if path.is_file() and not path.is_symlink()
+            path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file() and not path.is_symlink()
         )
     )
 

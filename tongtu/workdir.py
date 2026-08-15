@@ -126,7 +126,7 @@ class Workdir:
     def exists(self) -> bool:
         return self.path.is_dir()
 
-    def create(self) -> "Workdir":
+    def create(self) -> Workdir:
         """创建工作目录、四区与 `build/manifests/`；已存在则原样返回。"""
         for directory in (self.path, *self.areas, self.manifests):
             directory.mkdir(parents=True, exist_ok=True)

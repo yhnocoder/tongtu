@@ -27,18 +27,19 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
 #: 六个 agent 关节的稳定标识符，report.json 的干预记录与事件流共用这套命名。
 JOINTS: tuple[str, ...] = (
-    "main_file",      # ① flatten：主文件歧义 → 判定主文件
-    "build_env",      # ② baseline：原文编译失败 → workdir 内修构建环境
-    "env_classify",   # ③ mask：未知环境 → 散文/重环境分类
-    "survey",         # ④ survey：全文通读 → brief + 术语预扫决策
-    "translate",      # ⑤ translate：单块翻译
-    "fixup",          # ⑥ compile：documentclass 适配与编译修复
+    "main_file",  # ① flatten：主文件歧义 → 判定主文件
+    "build_env",  # ② baseline：原文编译失败 → workdir 内修构建环境
+    "env_classify",  # ③ mask：未知环境 → 散文/重环境分类
+    "survey",  # ④ survey：全文通读 → brief + 术语预扫决策
+    "translate",  # ⑤ translate：单块翻译
+    "fixup",  # ⑥ compile：documentclass 适配与编译修复
 )
 
 
@@ -66,7 +67,7 @@ class SessionOutcome:
 class Complete(Protocol):
     """原语一：无状态判断（逐块翻译、术语决策）。
 
-        complete(prompt, text, model) -> text
+    complete(prompt, text, model) -> text
     """
 
     def __call__(self, prompt: str, text: str, model: str | None = None) -> str: ...
@@ -138,9 +139,7 @@ def agent_names() -> tuple[str, ...]:
     return tuple(sorted(AGENTS))
 
 
-def resolve_agent_name(
-    name: str | None = None, env: os._Environ[str] | dict[str, str] | None = None
-) -> str:
+def resolve_agent_name(name: str | None = None, env: os._Environ[str] | dict[str, str] | None = None) -> str:
     """名字解析：显式参数 → `$TONGTU_AGENT` → :data:`DEFAULT_AGENT`。"""
     chosen = (name or "").strip()
     if not chosen:
@@ -169,10 +168,7 @@ def get_agent(
     chosen = resolve_agent_name(name, env)
     factory = AGENTS.get(chosen)
     if factory is None:
-        raise ValueError(
-            f"未知的 agent 运行时：{chosen!r}（可选 {'/'.join(agent_names())}；"
-            f"也可用 ${AGENT_ENV} 指定）"
-        )
+        raise ValueError(f"未知的 agent 运行时：{chosen!r}（可选 {'/'.join(agent_names())}；也可用 ${AGENT_ENV} 指定）")
     return factory(**kwargs)
 
 

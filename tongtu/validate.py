@@ -152,9 +152,7 @@ def paragraph_count(text: str) -> int:
 def _render(tokens: Iterable[str]) -> str:
     """把展开的 multiset 渲染成 `\\alpha×3, \\beta` 形式，供人读消息用。"""
     counts = Counter(tokens)
-    return ", ".join(
-        token if count == 1 else f"{token}×{count}" for token, count in sorted(counts.items())
-    )
+    return ", ".join(token if count == 1 else f"{token}×{count}" for token, count in sorted(counts.items()))
 
 
 def _diff(orig: Counter[str], trans: Counter[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:

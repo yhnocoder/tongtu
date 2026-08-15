@@ -190,12 +190,8 @@ UNREADABLE = "unreadable"  # 文件读不出来 / 不是它自称的格式
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
-_MEDIABOX_RE = re.compile(
-    rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]"
-)
-_BBOX_RE = re.compile(
-    rb"%%(?:HiRes|Exact)?BoundingBox:\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)"
-)
+_MEDIABOX_RE = re.compile(rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]")
+_BBOX_RE = re.compile(rb"%%(?:HiRes|Exact)?BoundingBox:\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)")
 
 #: `\ref` 家族。命中即认作「此处引用了这些 label」。
 REF_COMMANDS: frozenset[str] = frozenset(
@@ -353,7 +349,7 @@ class RenderResult:
         return data
 
     @classmethod
-    def from_cache(cls, data: Mapping) -> "RenderResult":
+    def from_cache(cls, data: Mapping) -> RenderResult:
         return cls(
             ok=True,
             width_px=int(data.get("width_px", 0)),
@@ -398,9 +394,7 @@ class PurePythonRenderer:
             return RenderResult(ok=False, degradation=UNREADABLE, message=f"读不出源图：{exc}")
         size = png_size(data)
         if size is None:
-            return RenderResult(
-                ok=False, degradation=UNREADABLE, message="PNG 头部残缺（读不到 IHDR）"
-            )
+            return RenderResult(ok=False, degradation=UNREADABLE, message="PNG 头部残缺（读不到 IHDR）")
         width, height = size
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -443,11 +437,9 @@ class DefaultRenderer:
     fallback: PurePythonRenderer = field(default_factory=PurePythonRenderer)
 
     @classmethod
-    def detect(cls, **kwargs) -> "DefaultRenderer":
+    def detect(cls, **kwargs) -> DefaultRenderer:
         """按 PATH 探测工具链。显式传参可覆盖任何一项（测试用）。"""
-        magick = next(
-            ((found,) for found in map(shutil.which, ("magick", "convert")) if found), None
-        )
+        magick = next(((found,) for found in map(shutil.which, ("magick", "convert")) if found), None)
         defaults = {
             "pdftocairo": shutil.which("pdftocairo"),
             "epstopdf": shutil.which("epstopdf"),
@@ -477,15 +469,11 @@ class DefaultRenderer:
     def _finish(self, dst: Path, tool: str, dpi: float | None) -> RenderResult:
         """渲染工具号称成功之后，唯一的裁决者是产出的 PNG 本身。"""
         if not dst.is_file():
-            return RenderResult(
-                ok=False, degradation=RENDER_FAILED, message=f"{tool} 没有产出 {dst.name}"
-            )
+            return RenderResult(ok=False, degradation=RENDER_FAILED, message=f"{tool} 没有产出 {dst.name}")
         data = dst.read_bytes()
         size = png_size(data)
         if size is None:
-            return RenderResult(
-                ok=False, degradation=RENDER_FAILED, message=f"{tool} 产出的不是可解析的 PNG"
-            )
+            return RenderResult(ok=False, degradation=RENDER_FAILED, message=f"{tool} 产出的不是可解析的 PNG")
         return RenderResult(
             ok=True,
             width_px=size[0],
@@ -594,9 +582,7 @@ class Graphic:
     """在块 tex 里的起始偏移（与 caption / label 配对靠它）。"""
 
 
-def iter_includegraphics(
-    tex: str, *, verbatim_envs: Iterable[str] = ()
-) -> tuple[Graphic, ...]:
+def iter_includegraphics(tex: str, *, verbatim_envs: Iterable[str] = ()) -> tuple[Graphic, ...]:
     """按词法扫出块内全部取图命令（注释与 verbatim 体内的不算）。
 
     识别 `\\includegraphics*`、任意多个可选参数、必选参数里的换行与嵌套花括号；
@@ -700,10 +686,7 @@ def _normalize_blocks(blocks) -> tuple[list[Block], list[Caption]]:
     if isinstance(blocks, Mapping):
         return (
             [b if isinstance(b, Block) else Block.from_json(b) for b in blocks.get("blocks", ())],
-            [
-                c if isinstance(c, Caption) else Caption.from_json(c)
-                for c in blocks.get("captions", ())
-            ],
+            [c if isinstance(c, Caption) else Caption.from_json(c) for c in blocks.get("captions", ())],
         )
     if isinstance(blocks, Sequence):
         return [b if isinstance(b, Block) else Block.from_json(b) for b in blocks], []
@@ -749,9 +732,7 @@ def _label_events(block: Block, captions: Mapping[str, Caption]) -> tuple[tuple[
     `\\caption{\\label{fig:x}…}` 因此在 block.tex 里看不见——故 caption 原文也要扫一遍，
     命中的 label 记在该 caption 槽位的位置上。
     """
-    events: list[tuple[int, str]] = [
-        (m.start(), m.group(1).strip()) for m in _LABEL_RE.finditer(block.tex)
-    ]
+    events: list[tuple[int, str]] = [(m.start(), m.group(1).strip()) for m in _LABEL_RE.finditer(block.tex)]
     for match in CAPTION_TOKEN_RE.finditer(block.tex):
         caption = captions.get(match.group(0))
         if caption is None:
@@ -816,8 +797,10 @@ def collect_references(
     wanted = {label for label in labels if label}
     if not wanted or not masked:
         return {}
-    paras = tuple(paragraphs) if paragraphs is not None else (
-        plan.paragraphs if plan is not None else split_paragraphs(masked)
+    paras = (
+        tuple(paragraphs)
+        if paragraphs is not None
+        else (plan.paragraphs if plan is not None else split_paragraphs(masked))
     )
     if not paras:
         return {}
@@ -940,9 +923,7 @@ def collect_figures(
         slots = _caption_slots(block, caption_map)
         labels = _label_events(block, caption_map)
         for position, graphic in enumerate(graphics):
-            next_offset = (
-                graphics[position + 1].offset if position + 1 < len(graphics) else len(block.tex)
-            )
+            next_offset = graphics[position + 1].offset if position + 1 < len(graphics) else len(block.tex)
             caption_id = _pair_caption(graphic.offset, slots)
             caption = caption_by_id.get(caption_id) if caption_id else None
             label = _pair_label(graphic.offset, next_offset, labels) or block.label
@@ -978,15 +959,10 @@ def collect_figures(
     if masked:
         stray = len(iter_includegraphics(masked))
         if stray:
-            notes.append(
-                f"掩码流里还有 {stray} 处 \\includegraphics 不在图块内（正文里的裸图），本阶段不收集"
-            )
+            notes.append(f"掩码流里还有 {stray} 处 \\includegraphics 不在图块内（正文里的裸图），本阶段不收集")
         wanted_labels = {s.label for s in specs if s.label}
         refs = collect_references(masked, wanted_labels, plan=plan)
-        specs = [
-            spec if not spec.label else replace(spec, referenced_in=refs.get(spec.label, ()))
-            for spec in specs
-        ]
+        specs = [spec if not spec.label else replace(spec, referenced_in=refs.get(spec.label, ())) for spec in specs]
     return tuple(specs)
 
 
@@ -1148,9 +1124,7 @@ def _write_cache(path: Path, entries: Mapping[str, dict], max_long_edge: int) ->
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _stage_cache_hits(
-    out: Path, specs: Sequence[FigureSpec], cache: Mapping[str, dict]
-) -> dict[str, Path]:
+def _stage_cache_hits(out: Path, specs: Sequence[FigureSpec], cache: Mapping[str, dict]) -> dict[str, Path]:
     """把「要换个名字才能用」的缓存文件先快照出来。
 
     id 是按源码顺序编的，前面插一张图就会让后面全部平移：`fig-002.png` 这一轮成了
@@ -1275,9 +1249,7 @@ def figures(
             rendered += 1
         if result.degradation and not from_cache:
             warnings.append(f"{spec.id}（{spec.rel_path}）降级：{result.message}")
-        records.append(
-            FigureRecord(spec=spec, render=result, file=target.name, cached=from_cache)
-        )
+        records.append(FigureRecord(spec=spec, render=result, file=target.name, cached=from_cache))
         fresh[spec.sha256] = {**result.to_cache(), "file": target.name}
 
     # 清扫：上一轮留下的 PNG（id 平移、图被删）与本轮的快照文件都不该活到下一轮。
@@ -1300,9 +1272,7 @@ def figures(
 
     document = outcome.to_figures_json()
     errors = _schema_errors(document, "figures", warnings)
-    (out / FIGURES_JSON).write_text(
-        json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    (out / FIGURES_JSON).write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _write_cache(cache_path, fresh, max_long_edge)
 
     if errors:

@@ -16,7 +16,11 @@ tongtu = "tongtu.cli:main"
 Homepage = "https://github.com/yhnocoder/tongtu"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "pre-commit>=4.6.2",
+    "pytest>=8",
+    "ruff>=0.16.3",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -48,3 +52,13 @@ addopts = "-q"
 markers = [
   "compile: 编译层 e2e（架构 §12 层 2）——需要真 latexmk / latexpand，本机没装即 skip，CI 在参考镜像里跑 `pytest -m compile`",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# 行宽交给 ruff format 管代码结构；中文技术散文的注释/文档字符串/断言字符串经常
+# 略超 120，逐处手工折行收益低于成本，故不选 E501。
+ignore = ["E501"]

@@ -29,9 +29,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Callable, Mapping
+from enum import StrEnum
 
 from .mask import (
     BLOCK_TOKEN_RE,
@@ -57,7 +57,7 @@ class UnmaskError(ValueError):
     """回填失败：占位符残缺、重复、未知，或块清单与流对不上。"""
 
 
-class Restore(str, Enum):
+class Restore(StrEnum):
     """单个块的回填方式。"""
 
     ORIGINAL = "original"  # 回填原始 TeX
@@ -74,12 +74,7 @@ _CAPTION_LINE_RE = re.compile(r"\n?[ \t]*⟦CAP-(\d+)⟧([^\n]*)\n?")
 #: survey 通读视图里直接删掉的块分类。
 _SURVEY_DROP = frozenset({"comment", "preamble"})
 
-RestoreSpec = (
-    str
-    | Mapping[str, "Restore | str"]
-    | Callable[[Block], "Restore | str"]
-    | None
-)
+RestoreSpec = str | Mapping[str, "Restore | str"] | Callable[[Block], "Restore | str"] | None
 
 
 @dataclass
@@ -112,13 +107,8 @@ def _normalize(blocks) -> tuple[list[Block], dict[str, Caption]]:
     if isinstance(blocks, MaskResult):
         return list(blocks.blocks), blocks.caption_map
     if isinstance(blocks, Mapping):
-        block_list = [
-            b if isinstance(b, Block) else Block.from_json(b) for b in blocks.get("blocks", ())
-        ]
-        captions = [
-            c if isinstance(c, Caption) else Caption.from_json(c)
-            for c in blocks.get("captions", ())
-        ]
+        block_list = [b if isinstance(b, Block) else Block.from_json(b) for b in blocks.get("blocks", ())]
+        captions = [c if isinstance(c, Caption) else Caption.from_json(c) for c in blocks.get("captions", ())]
         return block_list, {c.placeholder: c for c in captions}
     if isinstance(blocks, (tuple, list)) and len(blocks) == 2:
         block_list, captions = blocks
@@ -284,9 +274,7 @@ def unmask(
       文）；`"keep"` 原样留着 CAP 行（survey 通读要读 caption）；
     * `strict`：占位符残缺 / 重复 / 未知时报错。分块校验等场景可关掉。
     """
-    return unmask_detail(
-        masked, blocks, restore=restore, caption_mode=caption_mode, strict=strict
-    ).text
+    return unmask_detail(masked, blocks, restore=restore, caption_mode=caption_mode, strict=strict).text
 
 
 def survey_view(masked: str, blocks) -> str:

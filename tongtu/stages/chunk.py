@@ -81,9 +81,7 @@ HEADING_LEVELS: dict[str, int] = {
     "subparagraph": 6,
 }
 
-_HEADING_RE = re.compile(
-    r"\\(" + "|".join(sorted(HEADING_LEVELS, key=len, reverse=True)) + r")(\*?)(?![A-Za-z])"
-)
+_HEADING_RE = re.compile(r"\\(" + "|".join(sorted(HEADING_LEVELS, key=len, reverse=True)) + r")(\*?)(?![A-Za-z])")
 
 #: 环境名：字母/`@` 起头，可含数字（`algorithm2e`），可带星号（`figure*`）。
 _ENV_NAME = r"[A-Za-z@][A-Za-z@0-9]*\*?"
@@ -118,11 +116,7 @@ _GLUE_COMMANDS = (
 )
 _GLUE_ENVS = "|".join(sorted(APPENDIX_ENVS, key=len, reverse=True))
 _GLUE_RE = re.compile(
-    r"(?:\s|\\(?:"
-    + "|".join(_GLUE_COMMANDS)
-    + r")(?![A-Za-z])|\\(?:begin|end)\s*\{(?:"
-    + _GLUE_ENVS
-    + r")\})*"
+    r"(?:\s|\\(?:" + "|".join(_GLUE_COMMANDS) + r")(?![A-Za-z])|\\(?:begin|end)\s*\{(?:" + _GLUE_ENVS + r")\})*"
 )
 
 _HEADING_ARG_GAP = re.compile(r"[ \t]*\n?[ \t]*")
@@ -523,7 +517,7 @@ def _number_headings(
             title_path = parent_titles + (item.title,)
         paths.append(path)
         titles.append(title_path)
-    return list(zip(paths, titles))
+    return list(zip(paths, titles, strict=True))
 
 
 # --------------------------------------------------------------------------- #
@@ -658,11 +652,7 @@ def _units(paragraphs: tuple[Paragraph, ...], primary_level: int | None) -> list
     units: list[list[Paragraph]] = []
     current: list[Paragraph] = []
     for para in paragraphs:
-        starts_unit = (
-            primary_level is not None
-            and para.heading is not None
-            and para.heading.level == primary_level
-        )
+        starts_unit = primary_level is not None and para.heading is not None and para.heading.level == primary_level
         if starts_unit:
             glue_tail: list[Paragraph] = []
             while current and current[-1].is_glue:
@@ -676,14 +666,10 @@ def _units(paragraphs: tuple[Paragraph, ...], primary_level: int | None) -> list
     return units
 
 
-def _subunits(
-    paragraphs: list[Paragraph], level: int | None
-) -> list[tuple[int | None, list[Paragraph]]]:
+def _subunits(paragraphs: list[Paragraph], level: int | None) -> list[tuple[int | None, list[Paragraph]]]:
     """按**更深一级**的标题把单元切成子单元；首个子标题之前的段落自成一段。"""
     child_levels = {
-        p.heading.level
-        for p in paragraphs[1:]
-        if p.heading is not None and (level is None or p.heading.level > level)
+        p.heading.level for p in paragraphs[1:] if p.heading is not None and (level is None or p.heading.level > level)
     }
     if not child_levels:
         return [(level, list(paragraphs))]
@@ -705,9 +691,7 @@ def _subunits(
     return groups
 
 
-def _split_unit(
-    paragraphs: list[Paragraph], level: int | None, soft: int, hard: int
-) -> list[list[Paragraph]]:
+def _split_unit(paragraphs: list[Paragraph], level: int | None, soft: int, hard: int) -> list[list[Paragraph]]:
     """超大单元下分：先按子标题，仍超限再按段落边界。段落绝不切开。"""
     if _tokens(paragraphs) <= hard:
         return [list(paragraphs)]
@@ -857,9 +841,7 @@ def chunk_masked(
     )
 
 
-def _build_chunks(
-    source: str, paragraphs: tuple[Paragraph, ...], groups: list[_Group]
-) -> tuple[Chunk, ...]:
+def _build_chunks(source: str, paragraphs: tuple[Paragraph, ...], groups: list[_Group]) -> tuple[Chunk, ...]:
     """给块编号、算章节路径与邻域，并把源码切成首尾相接的区间（拼接可还原）。"""
     parts_of: dict[int, list[int]] = {}
     for i, group in enumerate(groups):
@@ -873,17 +855,11 @@ def _build_chunks(
         members = group.paragraphs
         para_start = members[0].index
         para_end = members[-1].index + 1
-        body_paths = [p.section_path for p in members if not p.is_glue] or [
-            p.section_path for p in members
-        ]
+        body_paths = [p.section_path for p in members if not p.is_glue] or [p.section_path for p in members]
         shared = _common_prefix(body_paths)
         anchor = next((p for p in members if not p.is_glue), members[0])
         siblings = parts_of[group.unit_ids[0]]
-        headings = tuple(
-            h
-            for h in (p.heading for p in members)
-            if h is not None
-        )
+        headings = tuple(h for h in (p.heading for p in members) if h is not None)
         span = (bounds[i], bounds[i + 1])
         chunks.append(
             Chunk(

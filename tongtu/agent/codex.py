@@ -50,9 +50,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Protocol
 
 from . import SessionOutcome
 
@@ -196,7 +197,7 @@ class RunResult:
 class Runner(Protocol):
     """执行 argv 的薄接口——真 subprocess 只在 :func:`subprocess_runner` 里。
 
-        runner(argv, cwd=..., stdin=..., timeout=..., env=...) -> RunResult
+    runner(argv, cwd=..., stdin=..., timeout=..., env=...) -> RunResult
     """
 
     def __call__(
@@ -284,7 +285,8 @@ def render_argv(template: Sequence[Segment], fields: Mapping[str, object]) -> tu
         rendered: list[str] = []
         drop = False
         for piece in segment:
-            def sub(match: re.Match) -> str:
+
+            def sub(match: re.Match, segment: Segment = segment) -> str:
                 nonlocal drop
                 name = match.group(1)
                 if name not in fields:
@@ -421,7 +423,7 @@ class CodexAgent:
                 "CodexAgent 必须显式指定模型：模型标识进翻译缓存 key，留空则 Codex CLI 用"
                 "自己配置里的模型，而缓存无法区分模型（换模型不失效缓存，译文会新旧混杂）。"
                 "指定方式：`tongtu run <id> --agent codex --model <模型>`，"
-                "或 `get_agent(\"codex\", model=\"<模型>\")` / `CodexAgent(model=\"<模型>\")`。",
+                '或 `get_agent("codex", model="<模型>")` / `CodexAgent(model="<模型>")`。',
                 kind="no_model",
             )
         self.model = self.model.strip()
@@ -515,9 +517,7 @@ class CodexAgent:
                 output_file=output_file,
                 budget=budget,
             )
-            result, duration = self._run(
-                argv, cwd=root, stdin=prompt, timeout=self.session_timeout
-            )
+            result, duration = self._run(argv, cwd=root, stdin=prompt, timeout=self.session_timeout)
             answer = clean_output(self._last_message(output_file, result))
             error = self._error(result, argv)
             transcript = self._write_transcript(
@@ -606,17 +606,13 @@ class CodexAgent:
             argv[at:at] = extra
         return tuple(argv)
 
-    def _run(
-        self, argv: Sequence[str], *, cwd: Path, stdin: str, timeout: float
-    ) -> tuple[RunResult, float]:
+    def _run(self, argv: Sequence[str], *, cwd: Path, stdin: str, timeout: float) -> tuple[RunResult, float]:
         runner = self.runner or subprocess_runner
         started = time.monotonic()
         try:
             result = runner(argv, cwd=str(cwd), stdin=stdin, timeout=timeout, env=self.env)
         except Exception as exc:  # noqa: BLE001 —— 注入的 runner 也不许把栈冒出去
-            result = RunResult(
-                status=ERROR, message=f"runner 抛了异常（{type(exc).__name__}）：{exc}"
-            )
+            result = RunResult(status=ERROR, message=f"runner 抛了异常（{type(exc).__name__}）：{exc}")
         return result, time.monotonic() - started
 
     def _error(self, result: RunResult, argv: Sequence[str]) -> CodexError | None:
@@ -631,8 +627,7 @@ class CodexAgent:
                 detail=detail or " ".join(argv),
             )
         return CodexError(
-            f"codex 退出码 {result.returncode}"
-            + (f"：{detail.strip().splitlines()[-1]}" if detail.strip() else ""),
+            f"codex 退出码 {result.returncode}" + (f"：{detail.strip().splitlines()[-1]}" if detail.strip() else ""),
             kind=FAILED,
             detail=detail or " ".join(argv),
         )
@@ -689,9 +684,7 @@ class CodexAgent:
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             meta_path = log_dir / f"{base}.json"
-            meta_path.write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             if result.stdout:
                 stream_path = log_dir / f"{base}.log"
                 stream_path.write_text(result.stdout, encoding="utf-8")
@@ -711,9 +704,7 @@ class CodexAgent:
 # ----------------------------------------------------------------- 辅助
 
 
-def _workdir_paths(
-    workdir: object, fallback_logs: Path | None
-) -> tuple[Path, Path | None]:
+def _workdir_paths(workdir: object, fallback_logs: Path | None) -> tuple[Path, Path | None]:
     """`(圈定的根目录, 转录目录)`。`Workdir` 走它的 `path` / `logs`，路径走它自己。"""
     if workdir is None:
         return Path.cwd(), fallback_logs

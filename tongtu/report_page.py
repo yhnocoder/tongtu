@@ -29,11 +29,11 @@ import base64
 import hashlib
 import json
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
-from typing import Mapping
 
 from . import CONTRACT_VERSION
 
@@ -170,9 +170,7 @@ def render_data(
     """组装 `report-data.js` 的正文，返回 `(文本, PDF 字节数)`。"""
     payload: dict = {
         "contract_version": CONTRACT_VERSION,
-        "generated_at": datetime.now(timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "report": dict(report),
         "anchors": dict(anchors),
         "blocks": block_summary(blocks),
@@ -217,11 +215,7 @@ def render(
     template = (root / PAGE_TEMPLATE).read_text(encoding="utf-8")
     style = (root / "style.css").read_text(encoding="utf-8")
     app = (root / "app.js").read_text(encoding="utf-8")
-    page = (
-        template.replace("__STYLE__", style)
-        .replace("__APP__", app)
-        .replace("__TITLE__", title or "产物包")
-    )
+    page = template.replace("__STYLE__", style).replace("__APP__", app).replace("__TITLE__", title or "产物包")
 
     data_text, pdf_bytes = render_data(
         report=report,

@@ -75,10 +75,7 @@ def build_units(*, chunks=3, paragraphs=4, bombs=(), preamble=PREAMBLE):
     for c in range(chunks):
         cid = f"c{c:03d}"
         src = [f"EN-{cid}-p{p} lorem ipsum dolor sit amet." for p in range(paragraphs)]
-        trans = [
-            f"ZH-{cid}-p{p} {BOMB + ' ' if (c, p) in bombs else ''}这是译文内容。"
-            for p in range(paragraphs)
-        ]
+        trans = [f"ZH-{cid}-p{p} {BOMB + ' ' if (c, p) in bombs else ''}这是译文内容。" for p in range(paragraphs)]
         source = "\n\n".join(src) + "\n\n"
         translation = "\n\n".join(trans) + "\n\n"
         if c == 0:
@@ -87,17 +84,13 @@ def build_units(*, chunks=3, paragraphs=4, bombs=(), preamble=PREAMBLE):
         if c == chunks - 1:
             source += END
             translation += END
-        units.append(
-            cp.TranslatedChunk(id=cid, source=source, translation=translation, section=f"第{c}节")
-        )
+        units.append(cp.TranslatedChunk(id=cid, source=source, translation=translation, section=f"第{c}节"))
     return units
 
 
 def masked_of(units) -> MaskResult:
     """把块原文拼回掩码流。测试不需要真掩码块——回填对无占位符的流是恒等变换。"""
-    return MaskResult(
-        masked="".join(u.source for u in units), blocks=(), captions=(), environments=()
-    )
+    return MaskResult(masked="".join(u.source for u in units), blocks=(), captions=(), environments=())
 
 
 @pytest.fixture
@@ -478,9 +471,7 @@ def test_error_line_inside_preamble_counts_as_global(paper):
     result = run_compile(
         paper,
         units,
-        compiler=compiler(
-            predicate=lambda text: True, error="! Undefined control sequence.", line=2
-        ),
+        compiler=compiler(predicate=lambda text: True, error="! Undefined control sequence.", line=2),
     )
     assert result.status == cp.FAILED and result.probes == 0 and "前导区" in result.message
 
@@ -505,9 +496,7 @@ def test_paper_with_pre_existing_errors_is_not_judged_failed(paper):
     def run(tex: Path, build_dir: Path) -> CompileRunResult:
         pdf = build_dir / f"{tex.stem}.pdf"
         pdf.write_text(tex.read_text(encoding="utf-8"), encoding="utf-8")
-        return CompileRunResult(
-            ok=False, pdf=pdf, returncode=12, log="! Undefined control sequence.\nl.999 x\n"
-        )
+        return CompileRunResult(ok=False, pdf=pdf, returncode=12, log="! Undefined control sequence.\nl.999 x\n")
 
     result = cp.compile_zh(paper, units, masked_of(units), compiler=run)
 
@@ -526,9 +515,7 @@ def test_extra_errors_on_top_of_a_dirty_paper_are_still_bad_segments(paper):
         errors = ["! Undefined control sequence."] + (["! Extra bomb."] if BOMB in text else [])
         pdf = build_dir / f"{tex.stem}.pdf"
         pdf.write_text(text, encoding="utf-8")
-        return CompileRunResult(
-            ok=False, pdf=pdf, returncode=12, log="\n".join(errors) + "\nl.999 x\n"
-        )
+        return CompileRunResult(ok=False, pdf=pdf, returncode=12, log="\n".join(errors) + "\nl.999 x\n")
 
     result = cp.compile_zh(paper, units, masked_of(units), budget=20, compiler=run)
 
@@ -629,9 +616,7 @@ def test_spans_are_dropped_when_the_fixup_session_edits_zh_tex(paper):
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text('{"blocks": {"BLK-0": [0, 1]}}\n', encoding="utf-8")
 
-    result, _, spans = spans_paper(
-        paper, compiler=compiler(predicate=predicate), session=session
-    )
+    result, _, spans = spans_paper(paper, compiler=compiler(predicate=predicate), session=session)
 
     assert result.status == cp.OK and result.session_used == 1
     assert result.spans_path is None and spans is None
@@ -724,9 +709,7 @@ def test_latexmk_compiler_really_compiles(tmp_path):
     build = tmp_path / "build"
     build.mkdir()
     tex = build / "mini.tex"
-    tex.write_text(
-        "\\documentclass{article}\n\\begin{document}\nhello\n\\end{document}\n", encoding="utf-8"
-    )
+    tex.write_text("\\documentclass{article}\n\\begin{document}\nhello\n\\end{document}\n", encoding="utf-8")
 
     result = latexmk_compiler("pdflatex")(tex, build)
 
@@ -779,7 +762,7 @@ def test_find_fonts_locates_the_repo_copy():
 
 
 def test_find_fonts_honours_explicit_and_env(tmp_path, monkeypatch):
-    from tongtu.compiler import AssetError, FONTS_ENV, FONT_FILES, find_fonts
+    from tongtu.compiler import FONT_FILES, FONTS_ENV, AssetError, find_fonts
 
     fake = tmp_path / "fonts"
     fake.mkdir()

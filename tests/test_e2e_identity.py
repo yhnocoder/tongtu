@@ -50,16 +50,31 @@ FIXTURES = ("article", "revtex", "conference")
 
 #: 编排器实际会跑的阶段——M4 起十个全跑，一个不跳。
 RUN_STAGES = (
-    "fetch", "flatten", "baseline", "mask", "survey", "chunk", "translate", "compile",
-    "figures", "export",
+    "fetch",
+    "flatten",
+    "baseline",
+    "mask",
+    "survey",
+    "chunk",
+    "translate",
+    "compile",
+    "figures",
+    "export",
 )
 SKIPPED: tuple[str, ...] = ()
 
 #: 产物包顶层的契约文件（架构 §7 那张表）。`zh.synctex.gz` 不在其列——它要真 xelatex
 #: 才有，假编译器路径下缺席是**预期内**的，anchors 因此走页级降级。
 CONTRACT_FILES = (
-    "zh.tex", "zh.pdf", "blocks.json", "chunks.json", "brief.json", "glossary.json",
-    "anchors.json", "report.json", "report.html",
+    "zh.tex",
+    "zh.pdf",
+    "blocks.json",
+    "chunks.json",
+    "brief.json",
+    "glossary.json",
+    "anchors.json",
+    "report.json",
+    "report.html",
 )
 
 #: 过 schema 的那几份（名字 → schema 名）。
@@ -175,9 +190,7 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     assert blocks["blocks"], "一篇论文不可能一个掩码块都没有"
 
     # --- survey 的两份产物（MockAgent 恒等返回 → 降级骨架路径）-----------
-    survey_result = json.loads(paper_dir.manifest_path("survey").read_text(encoding="utf-8"))[
-        "result"
-    ]
+    survey_result = json.loads(paper_dir.manifest_path("survey").read_text(encoding="utf-8"))["result"]
     assert survey_result["degraded"] is True, "恒等 mock 返回的不是 JSON，只能走确定性骨架"
     brief = json.loads((paper_dir.build / "brief.json").read_text(encoding="utf-8"))
     decided = json.loads((paper_dir.build / "glossary.json").read_text(encoding="utf-8"))
@@ -187,9 +200,7 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     assert brief["sections"], "章节树是确定性扫出来的，降级也该在"
 
     # --- 恒等译文过 validate 全绿 ---------------------------------------
-    translate_result = json.loads(
-        paper_dir.manifest_path("translate").read_text(encoding="utf-8")
-    )["result"]
+    translate_result = json.loads(paper_dir.manifest_path("translate").read_text(encoding="utf-8"))["result"]
     assert translate_result["fallback"] == 0, translate_result
     assert translate_result.get("failures_by_check", {}) == {}
     assert translate_result["attempts"] == translate_result["chunk_count"], "恒等译文不该重试"
@@ -328,9 +339,7 @@ def test_identity_translation_e2e(paper, tools, tmp_path):
     # --- 幂等：原样重跑一次，全部命中 manifest --------------------------
     again, again_events = run(paper, workdir)
     assert again.exit_code == 0
-    assert {s.stage: s.status for s in again.stages} == {
-        name: "cached" for name in RUN_STAGES
-    }
+    assert {s.stage: s.status for s in again.stages} == {name: "cached" for name in RUN_STAGES}
     assert again.pdf == out / "zh.pdf" and again.chunks_total == result.chunks_total
     assert [e["event"] for e in again_events if e["event"] == "chunk_progress"] == []
     for event in again_events:
@@ -366,9 +375,9 @@ def test_force_recomputes_everything(tools, tmp_path):
     assert again.exit_code == 0
     assert {s.stage: s.status for s in again.stages}["translate"] == "ok", "manifest 没了就得重算"
     assert again.cache_hits == again.chunks_total and again.cache_misses == 0
-    assert {
-        e["status"] for e in again_events if e["event"] == "chunk_progress"
-    } == {"cached"}, "全部块命中翻译记忆，一次也不该拉起关节⑤"
+    assert {e["status"] for e in again_events if e["event"] == "chunk_progress"} == {"cached"}, (
+        "全部块命中翻译记忆，一次也不该拉起关节⑤"
+    )
 
 
 def test_changing_the_source_invalidates_the_downstream(tools, tmp_path):
@@ -421,8 +430,10 @@ def test_baseline_failure_stops_before_any_llm_spend(tools, tmp_path, monkeypatc
 
     def broken(tex, build_dir):
         return CompileRunResult(
-            ok=False, log="! LaTeX Error: File `nope.sty' not found.\nl.3 \\usepackage\n",
-            returncode=1, engine="pdflatex",
+            ok=False,
+            log="! LaTeX Error: File `nope.sty' not found.\nl.3 \\usepackage\n",
+            returncode=1,
+            engine="pdflatex",
         )
 
     workdir = Workdir(path=tmp_path / "work" / "article", arxiv_id="article").create()
@@ -501,16 +512,14 @@ def test_stage_entrypoint_can_rerun_survey(tools, tmp_path):
     result = run_stage("survey", str(PAPERS / "article"), workdir=workdir, out=io.StringIO())
 
     assert {s.stage: s.status for s in result.stages}["survey"] == "ok"
-    assert json.loads(brief.read_text(encoding="utf-8"))["sections"] == json.loads(before)[
-        "sections"
-    ], "同一篇论文重跑通读，章节树不该漂"
+    assert json.loads(brief.read_text(encoding="utf-8"))["sections"] == json.loads(before)["sections"], (
+        "同一篇论文重跑通读，章节树不该漂"
+    )
 
 
 def test_stage_entrypoint_reports_missing_upstream(tools, tmp_path):
     """上游产物不在 → 结构化报错（说清先跑哪个阶段），不抛栈。"""
-    result = run_stage(
-        "compile", str(PAPERS / "article"), workdir=tmp_path / "work" / "empty", out=io.StringIO()
-    )
+    result = run_stage("compile", str(PAPERS / "article"), workdir=tmp_path / "work" / "empty", out=io.StringIO())
 
     assert result.exit_code == 1
     failed = [s for s in result.stages if s.status == "failed"]

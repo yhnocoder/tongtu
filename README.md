@@ -29,3 +29,13 @@ docs/       设计文档
 - **产物契约**（每篇论文一个产物包）：`zh.tex` / `zh.pdf` / `blocks.json` / `anchors.json` / `chunks.json` / `brief.json` / `figures/*.png` / `glossary.json` / `report.json` / `report.html` / `zh.synctex.gz`；字段级定义在 `docs/schemas/`，export 阶段逐份自校验，不过即不出包。
 - **静态检验页**（`report.html`）：PDF.js 随包，anchors 热区可点看原始 TeX，无网络双击即开（`tongtu preview`）。凡需服务端或 LLM 的功能一律归文枢，此页永不添加。
 - **agent 运行时可插拔**：流水线只依赖薄接口（headless 拉起、读写文件、执行命令、联网、可指定模型），不绑定具体产品。
+
+## 开发
+
+```
+uv sync              # 装依赖（含 dev 组：pytest / ruff / pre-commit）
+make install-hooks   # 装 git pre-commit hook（ruff check / ruff format / diction lint）
+make lint            # 检查：ruff check + ruff format --check + diction lint
+make format          # 自动修：ruff check --fix + ruff format
+uv run pytest        # 跑测试
+```

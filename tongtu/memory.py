@@ -34,9 +34,9 @@ translate 的块循环把首尾空白**由驱动器保管**（`lead + complete(.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, MutableMapping
 
 from .glossary import hit_terms
 from .stages.translate import FALLBACK, split_affixes
@@ -180,9 +180,7 @@ def write_chunks(path: str | Path, payload: Mapping) -> Path:
     """落一份 `chunks.json`（UTF-8、缩进 2、末尾换行——与其余产物同一风格）。"""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return target
 
 
@@ -257,8 +255,7 @@ def keys_for_term(data: Mapping | None, term: str) -> set[str]:
             continue
         snapshot = entry.get("terms")
         if isinstance(snapshot, (list, tuple)) and any(
-            isinstance(t, Mapping) and str(t.get("term", "")).strip().lower() == lowered
-            for t in snapshot
+            isinstance(t, Mapping) and str(t.get("term", "")).strip().lower() == lowered for t in snapshot
         ):
             keys.add(key)
     return keys

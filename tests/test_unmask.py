@@ -86,9 +86,7 @@ def test_survey_view_matches_the_architecture_table(masked):
 
 
 def test_survey_stats_are_reported(masked):
-    detail = unmask_detail(
-        masked.masked, masked, restore="survey", caption_mode="keep", strict=False
-    )
+    detail = unmask_detail(masked.masked, masked, restore="survey", caption_mode="keep", strict=False)
     assert set(detail.dropped) >= {"BLK-0"}
     assert detail.kept  # 保持占位符的块数 > 0
     assert not detail.missing
@@ -195,9 +193,7 @@ def test_block_spans_survive_repeated_block_text():
 
 def test_survey_view_records_kept_placeholders_and_skips_dropped(masked):
     """选择性回填如实记：保持占位符的记占位符本身，删掉的块不记（空区间只会误导下游）。"""
-    detail = unmask_detail(
-        masked.masked, masked, restore="survey", caption_mode="keep", strict=False
-    )
+    detail = unmask_detail(masked.masked, masked, restore="survey", caption_mode="keep", strict=False)
 
     by_id = {b.id: b for b in masked.blocks}
     for block_id, (start, end) in detail.block_spans.items():

@@ -162,11 +162,16 @@ def test_cli_writes_a_table_to_a_file(tmp_path, monkeypatch, capsys):
 
     code = llm_summary.main(
         [
-            "--papers", "2401.00001",
-            "--quality-dir", str(qdir),
-            "--tongtu-home", str(tmp_path / "home"),
-            "--agent", "mock",
-            "--output", str(out),
+            "--papers",
+            "2401.00001",
+            "--quality-dir",
+            str(qdir),
+            "--tongtu-home",
+            str(tmp_path / "home"),
+            "--agent",
+            "mock",
+            "--output",
+            str(out),
         ]
     )
 
@@ -198,8 +203,6 @@ def test_the_script_runs_standalone():
     """`--help` 得能在裸 python 下跑起来（不 import tongtu，不依赖项目环境）。"""
     import subprocess
 
-    proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, check=False)
 
     assert proc.returncode == 0 and "--quality-dir" in proc.stdout

@@ -101,14 +101,7 @@ def test_classify_asset_keeps_the_conservative_default():
 
 def test_parses_the_supported_subset():
     fields, body = prompts.parse_frontmatter(
-        "---\n"
-        "# 注释行\n"
-        "name: translate\n"
-        'description: "带引号的说明：冒号也不怕"\n'
-        "version: 2\n"
-        "\n"
-        "---\n"
-        "\n正文第一行\n"
+        '---\n# 注释行\nname: translate\ndescription: "带引号的说明：冒号也不怕"\nversion: 2\n\n---\n\n正文第一行\n'
     )
 
     assert fields == {

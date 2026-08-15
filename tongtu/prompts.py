@@ -288,8 +288,7 @@ def parse_frontmatter(text: str, *, source: str = "") -> tuple[dict[str, str], s
             )
         if not value:
             raise PromptError(
-                f"{where}第 {index} 行 `{key}` 没有值——空值多半是想写多行，"
-                f"本解析器只支持单行标量：{line!r}",
+                f"{where}第 {index} 行 `{key}` 没有值——空值多半是想写多行，本解析器只支持单行标量：{line!r}",
                 kind="bad_frontmatter",
                 detail=str(source),
             )
@@ -336,16 +335,14 @@ def _split(path: str) -> tuple[tuple[tuple[str, str], ...], str]:
         missing = [key for key in _REQUIRED_META if not data.get(key)]
         if missing:
             raise PromptError(
-                f"{path} 的 frontmatter 缺字段：{'、'.join(missing)}"
-                f"（必填：{'、'.join(_REQUIRED_META)}）",
+                f"{path} 的 frontmatter 缺字段：{'、'.join(missing)}（必填：{'、'.join(_REQUIRED_META)}）",
                 kind="missing_field",
                 detail=path,
             )
         expected = Path(path).parent.name
         if data["name"] != expected:
             raise PromptError(
-                f"{path} 的 frontmatter 写着 name: {data['name']}，"
-                f"与目录名 {expected} 不一致——技能名以目录名为准",
+                f"{path} 的 frontmatter 写着 name: {data['name']}，与目录名 {expected} 不一致——技能名以目录名为准",
                 kind="bad_frontmatter",
                 detail=path,
             )
@@ -371,9 +368,7 @@ def load(
     return _split(path)[1]
 
 
-def meta(
-    name: str, *, skill_dir: str | os.PathLike[str] | None = None
-) -> dict[str, str]:
+def meta(name: str, *, skill_dir: str | os.PathLike[str] | None = None) -> dict[str, str]:
     """一个技能的 frontmatter（`{name, description, version, …}`）。没写则是空字典。"""
     return dict(_split(str(path_of(name, skill_dir=skill_dir)))[0])
 
@@ -397,10 +392,7 @@ def version_of(name: str, *, skill_dir: str | os.PathLike[str] | None = None) ->
 
 def versions(*, skill_dir: str | os.PathLike[str] | None = None) -> dict[str, str]:
     """现有技能的 `{名字: 版本号}`（按名字排序）。"""
-    return {
-        name: version_of(name, skill_dir=skill_dir)
-        for name in available(skill_dir=skill_dir)
-    }
+    return {name: version_of(name, skill_dir=skill_dir) for name in available(skill_dir=skill_dir)}
 
 
 def aggregate_version(*, skill_dir: str | os.PathLike[str] | None = None) -> str:
@@ -449,13 +441,7 @@ def _skill_for(joint: str) -> str:
 def available(*, skill_dir: str | os.PathLike[str] | None = None) -> tuple[str, ...]:
     """目录里现有的技能名（排序）。并行会话新加的技能也会出现在这里。"""
     root = find_skill_dir(skill_dir)
-    return tuple(
-        sorted(
-            path.parent.name
-            for path in root.glob(f"*/{SKILL_FILE}")
-            if _NAME_RE.match(path.parent.name)
-        )
-    )
+    return tuple(sorted(path.parent.name for path in root.glob(f"*/{SKILL_FILE}") if _NAME_RE.match(path.parent.name)))
 
 
 def cache_clear() -> None:

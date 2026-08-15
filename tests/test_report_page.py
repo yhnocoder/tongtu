@@ -61,9 +61,7 @@ BLOCKS = {
             "tex": "\\begin{equation}E = mc^2\\end{equation}",
         }
     ],
-    "captions": [
-        {"id": "CAP-0", "block_id": "BLK-1", "text": "能量公式", "stream_text": "能量公式"}
-    ],
+    "captions": [{"id": "CAP-0", "block_id": "BLK-1", "text": "能量公式", "stream_text": "能量公式"}],
 }
 
 FIGURES = {"contract_version": CONTRACT_VERSION, "figures": []}
@@ -156,9 +154,7 @@ def test_block_summary_truncates_giant_blocks():
 
 
 def test_render_without_a_pdf_still_produces_a_page(tmp_path):
-    result = report_page.render(
-        tmp_path / "out", report=REPORT, anchors=ANCHORS, pdf=None
-    )
+    result = report_page.render(tmp_path / "out", report=REPORT, anchors=ANCHORS, pdf=None)
 
     assert result.page.is_file()
     assert result.pdf_bytes == 0
@@ -245,9 +241,7 @@ def test_preview_opens_the_page(tmp_path, page, capsys):
     """`tongtu preview`：打开 `out/report.html`。"""
     opened: list[str] = []
 
-    code = run_preview(
-        _Args(workdir=str(tmp_path)), opener=lambda url: opened.append(url) or True
-    )
+    code = run_preview(_Args(workdir=str(tmp_path)), opener=lambda url: opened.append(url) or True)
 
     assert code == 0
     assert opened and opened[0].startswith("file://") and opened[0].endswith("report.html")

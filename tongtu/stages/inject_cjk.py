@@ -63,10 +63,10 @@ v2 审计（迁移时发现并修掉的三处）
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
-from typing import Iterable, Mapping, Sequence
 
 from ..texlex import (
     Lexer,
@@ -665,16 +665,12 @@ def _remove_package_edits(
         if len(hits) == len(group_uses):
             edits.append(_Edit(span[0], span[1], ""))
             continue
-        survivors = ",".join(
-            src[u.segment[0] : u.segment[1]] for u in group_uses if u.name not in wanted
-        )
+        survivors = ",".join(src[u.segment[0] : u.segment[1]] for u in group_uses if u.name not in wanted)
         edits.append(_Edit(group_uses[0].group[0], group_uses[0].group[1], survivors))
     return edits, removed, first
 
 
-def _strip_environment_edits(
-    src: str, specs: Iterable[EnvStrip], warnings: list[str]
-) -> tuple[list[_Edit], list[str]]:
+def _strip_environment_edits(src: str, specs: Iterable[EnvStrip], warnings: list[str]) -> tuple[list[_Edit], list[str]]:
     """剥掉 `\\begin{X}{…}{…}` / `\\end{X}` 包裹（保留环境体），词法定位。
 
     同名嵌套无所谓：本操作是「删掉全部同名 begin/end 包裹」，不需要配对。参数不配平
@@ -697,9 +693,7 @@ def _strip_environment_edits(
             for _ in range(args_of[tok.name]):
                 group = _read_group(src, end)
                 if group is None:
-                    warnings.append(
-                        f"偏移 {tok.start}：\\begin{{{tok.name}}} 的参数不配平，只删环境头"
-                    )
+                    warnings.append(f"偏移 {tok.start}：\\begin{{{tok.name}}} 的参数不配平，只删环境头")
                     break
                 end = group[1] + 1
         if end < len(src) and src[end] == "\n":
@@ -803,9 +797,7 @@ def inject(src: str, *, adaptation: AdaptationTable | None = None) -> InjectResu
             if action.op == "insert_at":
                 position, position_pkg = action.position or position, action.package
             elif action.op == "preamble_patch":
-                (before if action.where == "before_block" else after).append(
-                    (entry.name, action.tex)
-                )
+                (before if action.where == "before_block" else after).append((entry.name, action.tex))
             elif action.op == "remove_package":
                 pkg_edits, pkg_names, first = _remove_package_edits(src, uses, action.packages)
                 edits.extend(pkg_edits)

@@ -51,9 +51,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Callable, Iterable, Mapping, MutableMapping, Sequence
+from datetime import UTC, datetime
 
 from .. import CONTRACT_VERSION, prompts
 from ..glossary import hit_terms
@@ -421,9 +421,7 @@ def assemble_context(
         count = max(0, neighbor_paragraphs)
         if count and chunk.prev_tail_para is not None:
             start = max(0, chunk.prev_tail_para - count + 1)
-            before = "\n\n".join(
-                p.text for p in plan.paragraphs[start : chunk.prev_tail_para + 1]
-            )
+            before = "\n\n".join(p.text for p in plan.paragraphs[start : chunk.prev_tail_para + 1])
         if count and chunk.next_head_para is not None:
             end = min(len(plan.paragraphs), chunk.next_head_para + count)
             after = "\n\n".join(p.text for p in plan.paragraphs[chunk.next_head_para : end])
@@ -448,9 +446,7 @@ def prompt_rules() -> str:
 PROMPT_TAIL = "待翻译正文："
 
 
-def build_prompt(
-    context: Context, errors: Iterable[Error] = (), notes: Iterable[str] = ()
-) -> str:
+def build_prompt(context: Context, errors: Iterable[Error] = (), notes: Iterable[str] = ()) -> str:
     """组装提示词：`skill/translate/SKILL.md` 的规则 + 本块上下文 + 上一轮的校验错误（+ 补充说明）。
 
     **拼接而非 format**：规则里全是 `\\section{...}`、`⟦BLK-n⟧` 这类字面量，模板替换会炸。
@@ -462,20 +458,14 @@ def build_prompt(
     if context.brief:
         blocks.append(f"全文纲要：\n{context.brief}")
     if context.terms:
-        blocks.append(
-            "术语（必须照此译）：\n"
-            + "\n".join(f"- {term} → {value}" for term, value in context.terms)
-        )
+        blocks.append("术语（必须照此译）：\n" + "\n".join(f"- {term} → {value}" for term, value in context.terms))
     if context.before:
         blocks.append(f"上文原文（仅供参考，不要翻译）：\n{context.before}")
     if context.after:
         blocks.append(f"下文原文（仅供参考，不要翻译）：\n{context.after}")
     errors = tuple(errors)
     if errors:
-        blocks.append(
-            "上一版译文没通过机械校验，请修正后重译（不要解释，直接给译文）：\n"
-            + format_errors(errors)
-        )
+        blocks.append("上一版译文没通过机械校验，请修正后重译（不要解释，直接给译文）：\n" + format_errors(errors))
     blocks.extend(note for note in notes if note)
     blocks.append(PROMPT_TAIL)
     return "\n\n".join(blocks) + "\n"
@@ -533,9 +523,7 @@ def translate_body(
         try:
             candidate = complete(prompt, body, model or None)
         except Exception as exc:  # 关节炸了不该拖垮流水线：当作一次失败，可重试
-            errors = (
-                Error(check="agent", message=f"关节⑤调用失败（{type(exc).__name__}）：{exc}"),
-            )
+            errors = (Error(check="agent", message=f"关节⑤调用失败（{type(exc).__name__}）：{exc}"),)
             reason = REASON_AGENT
             continue
         if not isinstance(candidate, str) or not candidate.strip():
@@ -708,9 +696,7 @@ def translate(
             context=context,
             model=model,
             max_retries=max_retries,
-            on_retry=lambda attempt, reason, _id=chunk.id, _i=index: emit(
-                _id, _i, "retry", attempt, reason
-            ),
+            on_retry=lambda attempt, reason, _id=chunk.id, _i=index: emit(_id, _i, "retry", attempt, reason),
         )
 
         if outcome.translation is not None:
@@ -730,9 +716,7 @@ def translate(
         for name, count in summarize(outcome.errors).items():
             failures[name] = failures.get(name, 0) + count
         detail = outcome.errors[0].message if outcome.errors else "未知原因"
-        warnings.append(
-            f"块 {chunk.id} 重试 {outcome.attempts} 次仍未通过校验，回退原文：{detail}"
-        )
+        warnings.append(f"块 {chunk.id} 重试 {outcome.attempts} 次仍未通过校验，回退原文：{detail}")
         results.append(
             ChunkTranslation(
                 translation=chunk.text,
@@ -754,11 +738,9 @@ def translate(
         style_version=style_version,
         failures_by_check=failures,
         warnings=tuple(warnings),
-        message=(
-            f"{len(fallbacks)}/{total} 块回退原文（校验未通过）" if fallbacks else ""
-        ),
+        message=(f"{len(fallbacks)}/{total} 块回退原文（校验未通过）" if fallbacks else ""),
     )
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")

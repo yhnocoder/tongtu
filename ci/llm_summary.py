@@ -104,18 +104,7 @@ class Row:
     def to_markdown(self) -> str:
         compiled = MISSING if self.compiled is None else ("通过" if self.compiled else "未通过")
         duration = MISSING if self.duration_ms is None else f"{self.duration_ms / 1000:.0f}s"
-        return "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
-            self.paper,
-            cell(self.status),
-            self.exit_code,
-            cell(self.chunks),
-            cell(self.fallback),
-            cell(self.retries),
-            cell(self.interventions),
-            cell(self.warnings),
-            compiled,
-            duration,
-        )
+        return f"| `{self.paper}` | {cell(self.status)} | {self.exit_code} | {cell(self.chunks)} | {cell(self.fallback)} | {cell(self.retries)} | {cell(self.interventions)} | {cell(self.warnings)} | {compiled} | {duration} |"
 
 
 def collect(paper: str, quality_dir: pathlib.Path, tongtu_home: pathlib.Path) -> Row:
@@ -158,9 +147,7 @@ def collect(paper: str, quality_dir: pathlib.Path, tongtu_home: pathlib.Path) ->
         chunks=validation.get("chunks_total", result.get("chunks_total")),
         fallback=fallback,
         retries=retries,
-        interventions=(
-            len(report.get("agent_interventions", [])) if report is not None else None
-        ),
+        interventions=(len(report.get("agent_interventions", [])) if report is not None else None),
         warnings=warnings,
         compiled=compile_info.get("passed"),
         duration_ms=result.get("duration_ms"),
@@ -224,9 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent", default=os.environ.get("AGENT", ""), help="agent 运行时名")
     parser.add_argument("--model", default=os.environ.get("MODEL", ""), help="模型标识")
     parser.add_argument("--image", default=os.environ.get("IMAGE", ""), help="镜像标识")
-    parser.add_argument(
-        "-o", "--output", default="-", help="输出文件，`-` 即标准输出（默认）。"
-    )
+    parser.add_argument("-o", "--output", default="-", help="输出文件，`-` 即标准输出（默认）。")
     args = parser.parse_args(argv)
 
     quality_dir = pathlib.Path(args.quality_dir)

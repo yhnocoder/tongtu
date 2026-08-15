@@ -100,9 +100,7 @@ def test_skips_assets_pointing_outside_workdir(paper, tmp_path):
 def test_engine_detection(paper):
     assert bl.baseline(paper, compiler=fake_compiler()).engine == "pdflatex"
 
-    (paper.build / "flat.tex").write_text(
-        "\\documentclass{article}\n\\usepackage{fontspec}\n" + BODY, encoding="utf-8"
-    )
+    (paper.build / "flat.tex").write_text("\\documentclass{article}\n\\usepackage{fontspec}\n" + BODY, encoding="utf-8")
     assert bl.baseline(paper, compiler=fake_compiler()).engine == "xelatex"
 
 
@@ -120,9 +118,7 @@ def test_pdf_with_errors_still_passes_the_gate(paper):
     def run(tex: Path, build_dir: Path) -> CompileRunResult:
         pdf = build_dir / f"{tex.stem}.pdf"
         pdf.write_text("pdf", encoding="utf-8")
-        return CompileRunResult(
-            ok=False, pdf=pdf, returncode=12, log="! Undefined control sequence.\n"
-        )
+        return CompileRunResult(ok=False, pdf=pdf, returncode=12, log="! Undefined control sequence.\n")
 
     result = bl.baseline(paper, compiler=run)
 

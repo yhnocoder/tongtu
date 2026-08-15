@@ -200,7 +200,7 @@ def test_parse_tolerates_fences_and_surrounding_prose():
 
 
 def test_parse_skips_braces_that_are_not_the_object():
-    text = "视图里有 \\LaTeX{} 这种花括号。\n{\"sections\": [], \"terms\": []}\n"
+    text = '视图里有 \\LaTeX{} 这种花括号。\n{"sections": [], "terms": []}\n'
 
     assert sv.parse_json_object(text) == {"sections": [], "terms": []}
 
@@ -337,9 +337,7 @@ def test_user_entries_beat_agent_decisions_end_to_end():
         style=gl.Style(style_version="9"),
     )
 
-    outcome = sv.survey(
-        result.masked, result, complete=agent_of(fenced(DECISION)), glossary=user
-    )
+    outcome = sv.survey(result.masked, result, complete=agent_of(fenced(DECISION)), glossary=user)
 
     assert outcome.glossary.term("attention").translation == "注意力机制"
     assert outcome.glossary.term("attention").source == "paper"
@@ -498,9 +496,7 @@ def test_brief_and_terms_reach_the_translate_stage(tmp_path):
     prompts_seen = [p for p, _ in agent.completions[1:]]
     assert any("A Study of Placeholders" in p for p in prompts_seen), "brief 要进逐块提示词"
     assert any("attention → 注意力" in p for p in prompts_seen), "命中术语要进逐块提示词"
-    memory = json.loads(
-        (pipeline.zh_chunks_dir / "chunks.json").read_text(encoding="utf-8")
-    )
+    memory = json.loads((pipeline.zh_chunks_dir / "chunks.json").read_text(encoding="utf-8"))
     assert memory["brief_hash"] == sv.brief_hash(pipeline.brief)
     assert memory["style_version"] == pipeline.decisions.style_version
     hit = [c for c in memory["chunks"] if c.get("terms")]

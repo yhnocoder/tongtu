@@ -51,11 +51,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
 from types import MappingProxyType
-from typing import Callable, Iterable, Mapping, Sequence
 
 from .. import CONTRACT_VERSION
 from ..texlex import (
@@ -255,9 +255,7 @@ class EnvironmentInfo:
         return data
 
 
-def enumerate_environments(
-    src: str, verbatim_envs: Iterable[str] = ()
-) -> dict[str, tuple[int, int]]:
+def enumerate_environments(src: str, verbatim_envs: Iterable[str] = ()) -> dict[str, tuple[int, int]]:
     """完备枚举全文的 `\\begin{X}`：名字 → (出现次数, 首次出现偏移)。
 
     这一步**不需要任何先验知识**（架构 §3.1 第 2 条）：词法扫一遍，注释里的、`\\verb`
@@ -274,9 +272,7 @@ def enumerate_environments(
     return counts
 
 
-def parse_environment_declarations(
-    src: str, table: EnvironmentTable
-) -> dict[str, tuple[str, str | None, str]]:
+def parse_environment_declarations(src: str, table: EnvironmentTable) -> dict[str, tuple[str, str | None, str]]:
     """解析文档自带的环境声明 → 名字 → (classification, category, decided_by)。
 
     * `\\newtheorem{X}{…}` / `\\newtheorem*{X}{…}` / `\\declaretheorem[…]{X}`
@@ -363,9 +359,7 @@ def classify_environments(
             continue
         rule = table.lookup(name)
         if rule is not None:
-            result[name] = EnvironmentInfo(
-                name, rule.classification, "table", count, rule.category
-            )
+            result[name] = EnvironmentInfo(name, rule.classification, "table", count, rule.category)
             continue
         verdict = None
         if arbiter is not None:
@@ -408,7 +402,7 @@ class Caption:
         }
 
     @classmethod
-    def from_json(cls, data: Mapping) -> "Caption":
+    def from_json(cls, data: Mapping) -> Caption:
         return cls(
             id=data["id"],
             placeholder=data["placeholder"],
@@ -459,7 +453,7 @@ class Block:
         return data
 
     @classmethod
-    def from_json(cls, data: Mapping) -> "Block":
+    def from_json(cls, data: Mapping) -> Block:
         span = data.get("span") or {}
         line_span = None
         if "line_start" in span and "line_end" in span:
@@ -571,9 +565,7 @@ class _Masker:
         self.blocks.append(block)
         return block
 
-    def _make_caption(
-        self, *, block_id: str, kind: str, text: str, index: int
-    ) -> tuple[Caption, str]:
+    def _make_caption(self, *, block_id: str, kind: str, text: str, index: int) -> tuple[Caption, str]:
         cap_id = f"CAP-{index}"
         placeholder = CAPTION_TOKEN.format(index)
         caption = Caption(
@@ -695,8 +687,10 @@ class _Masker:
             if info is None or info.classification != "heavy":
                 continue
             try:
-                end = tok.env_end if tok.env_end is not None else find_env_end(
-                    body, tok.start, tok.name, self.verbatim_envs
+                end = (
+                    tok.env_end
+                    if tok.env_end is not None
+                    else find_env_end(body, tok.start, tok.name, self.verbatim_envs)
                 )
             except TexLexError as exc:
                 self._warn(f"{exc}；该环境不掩码，原样留在掩码流里", base + tok.start)
@@ -736,9 +730,7 @@ class _Masker:
             return block.placeholder
         return block.placeholder + "\n" + "\n".join(lines) + "\n"
 
-    def _extract_captions(
-        self, raw: str, block_id: str, offset: int
-    ) -> tuple[str, list[Caption], list[str]]:
+    def _extract_captions(self, raw: str, block_id: str, offset: int) -> tuple[str, list[Caption], list[str]]:
         """把块内 `\\caption` / `\\captionof` 的文本参数换成 CAP 槽位。
 
         与 v2 的正则相比：控制序列按词法比对（`\\captionsetup` 不再可能误伤）、
@@ -804,11 +796,7 @@ class _Masker:
 def _stream_text(kind: str, text: str, verbatim_envs: frozenset[str]) -> str:
     """caption/title/abstract 在掩码流里的单行展示文本。"""
     if kind == "abstract":
-        paragraphs = [
-            strip_comments_inline(p, verbatim_envs)
-            for p in re.split(r"\n[ \t]*\n", text)
-            if p.strip()
-        ]
+        paragraphs = [strip_comments_inline(p, verbatim_envs) for p in re.split(r"\n[ \t]*\n", text) if p.strip()]
         return " \\par ".join(paragraphs)
     return strip_comments_inline(text, verbatim_envs)
 
@@ -871,9 +859,7 @@ def mask(
     table = table or load_environment_table()
     counts = enumerate_environments(src, table.verbatim_envs)
     declarations = parse_environment_declarations(src, table)
-    classes = classify_environments(
-        counts, src=src, table=table, declarations=declarations, arbiter=arbiter
-    )
+    classes = classify_environments(counts, src=src, table=table, declarations=declarations, arbiter=arbiter)
 
     masker = _Masker(src, classes, table)
     document_start = _find_document_start(src, table.verbatim_envs)
@@ -899,9 +885,7 @@ def mask(
         masked="".join(parts),
         blocks=tuple(masker.blocks),
         captions=tuple(masker.captions),
-        environments=tuple(
-            sorted(classes.values(), key=lambda e: (-e.count, e.name))
-        ),
+        environments=tuple(sorted(classes.values(), key=lambda e: (-e.count, e.name))),
         warnings=tuple(masker.warnings),
         source_chars=len(src),
         source_sha256=hashlib.sha256(src.encode("utf-8")).hexdigest(),
