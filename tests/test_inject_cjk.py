@@ -5,9 +5,9 @@ golden 文件是 `tests/data/inject_cjk/golden/<name>.injected.tex`，用
 改它必须人眼过一遍 diff，故 golden 由人工确认后入库。
 """
 
-import pytest
-
 from pathlib import Path
+
+import pytest
 
 from tongtu.stages import inject_cjk as ij
 
@@ -253,9 +253,7 @@ def test_shipped_examples_are_valid_entries():
 
 def test_adaptation_entry_applies():
     """适配表条目生效一例：revtex 模板把注入推到 `\\begin{document}` 之前并加补丁。"""
-    entry = next(
-        a for a in ij.load_adaptation_table().examples if a.name == "revtex-inject-late"
-    )
+    entry = next(a for a in ij.load_adaptation_table().examples if a.name == "revtex-inject-late")
     table = ij.AdaptationTable(adaptations=(entry,))
     result = ij.inject(load("revtex"), adaptation=table)
     assert result.adaptations == ("revtex-inject-late",)
@@ -267,9 +265,7 @@ def test_adaptation_entry_applies():
 
 
 def test_adaptation_does_not_match_other_class():
-    entry = next(
-        a for a in ij.load_adaptation_table().examples if a.name == "revtex-inject-late"
-    )
+    entry = next(a for a in ij.load_adaptation_table().examples if a.name == "revtex-inject-late")
     table = ij.AdaptationTable(adaptations=(entry,))
     result = ij.inject(load("article_basic"), adaptation=table)
     assert result.adaptations == ()
@@ -343,9 +339,7 @@ def test_unresolvable_position_falls_back_with_warning():
         documentclasses=frozenset({"article"}),
         actions=(ij.Action(op="insert_at", position="after_package", package="nosuchpkg"),),
     )
-    result = ij.inject(
-        wrap("\\documentclass{article}"), adaptation=ij.AdaptationTable(adaptations=(entry,))
-    )
+    result = ij.inject(wrap("\\documentclass{article}"), adaptation=ij.AdaptationTable(adaptations=(entry,)))
     assert result.position == "after_documentclass"
     assert result.warnings and "nosuchpkg" in result.warnings[0]
 
@@ -397,11 +391,7 @@ def test_map_offset_keeps_pointing_at_the_same_character(name):
     result = ij.inject(src)
     removed = {i for start, end, _ in result.edits for i in range(start, end)}
 
-    mismatched = [
-        i
-        for i, char in enumerate(src)
-        if i not in removed and result.text[result.map_offset(i)] != char
-    ]
+    mismatched = [i for i, char in enumerate(src) if i not in removed and result.text[result.map_offset(i)] != char]
 
     assert mismatched == []
     assert result.map_offset(len(src)) == len(result.text)
@@ -443,9 +433,7 @@ def test_idempotent(name):
 
 
 def test_idempotent_after_adaptation():
-    entry = next(
-        a for a in ij.load_adaptation_table().examples if a.name == "revtex-inject-late"
-    )
+    entry = next(a for a in ij.load_adaptation_table().examples if a.name == "revtex-inject-late")
     table = ij.AdaptationTable(adaptations=(entry,))
     once = ij.inject(load("revtex"), adaptation=table)
     twice = ij.inject(once.text, adaptation=table)

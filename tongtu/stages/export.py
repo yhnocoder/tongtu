@@ -38,13 +38,12 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
-from .. import CONTRACT_VERSION, __version__
+from .. import CONTRACT_VERSION, __version__, report_page
 from .. import anchors as anchors_module
-from .. import report_page
 from ..memory import CHUNKS_NAME, ZH_CHUNKS_DIRNAME
 from ..schema_check import SchemaError
 from ..schema_check import check as schema_check
@@ -91,9 +90,24 @@ PACK_README = "README.md"
 #: 否则解包后还得跑一遍 bibtex）。
 PACK_SKIP_SUFFIXES: frozenset[str] = frozenset(
     {
-        ".aux", ".log", ".out", ".toc", ".lof", ".lot", ".fls", ".fdb_latexmk",
-        ".xdv", ".bcf", ".blg", ".idx", ".ilg", ".ind",
-        ".nav", ".snm", ".vrb", ".dvi",
+        ".aux",
+        ".log",
+        ".out",
+        ".toc",
+        ".lof",
+        ".lot",
+        ".fls",
+        ".fdb_latexmk",
+        ".xdv",
+        ".bcf",
+        ".blg",
+        ".idx",
+        ".ilg",
+        ".ind",
+        ".nav",
+        ".snm",
+        ".vrb",
+        ".dvi",
     }
 )
 
@@ -203,9 +217,7 @@ def _read_json(path: Path) -> dict | None:
 
 def _write_json(path: Path, payload: Mapping) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
 
@@ -370,9 +382,7 @@ def _validate(out: Path, warnings: list[str]) -> list[Artifact]:
                 else:
                     valid = not found
                     errors = tuple(found[:5])
-        artifacts.append(
-            Artifact(path=name, bytes=_size(path), schema_valid=valid, errors=errors)
-        )
+        artifacts.append(Artifact(path=name, bytes=_size(path), schema_valid=valid, errors=errors))
     return artifacts
 
 
@@ -440,9 +450,7 @@ def export(
         spans_src = candidate if candidate.is_file() else None
 
     def fail(message: str) -> ExportResult:
-        return ExportResult(
-            status=FAILED, out_dir=out, warnings=tuple(warnings), message=message
-        )
+        return ExportResult(status=FAILED, out_dir=out, warnings=tuple(warnings), message=message)
 
     if not tex_path.is_file():
         return fail(f"没有 {tex_path}（先跑 compile）")
@@ -459,10 +467,7 @@ def export(
         _copy(synctex_path, out / SYNCTEX_NAME)
     else:
         (out / SYNCTEX_NAME).unlink(missing_ok=True)
-        warnings.append(
-            f"没有 {synctex_path.name}（编译时没开 -synctex=1 或被清掉了）——"
-            "anchors 退化为页级锚点"
-        )
+        warnings.append(f"没有 {synctex_path.name}（编译时没开 -synctex=1 或被清掉了）——anchors 退化为页级锚点")
 
     for source, name in (
         (build / BLOCKS_NAME, BLOCKS_NAME),
@@ -498,9 +503,7 @@ def export(
     # --- 自包含包 ------------------------------------------------------
     pack_dir = out / PACK_DIRNAME
     engine = str((report or {}).get("compile", {}).get("engine") or "xelatex")
-    pack_files = pack(
-        zh_dir, pack_dir, tex_text=tex_text, engine=engine, fonts=bundle_fonts
-    )
+    pack_files = pack(zh_dir, pack_dir, tex_text=tex_text, engine=engine, fonts=bundle_fonts)
 
     # --- 契约自校验 ----------------------------------------------------
     body = dict(report or {})

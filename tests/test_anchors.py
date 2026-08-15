@@ -130,9 +130,7 @@ def test_parse_synctex_converts_to_pdf_points():
 
 def test_parse_synctex_survives_garbage():
     """认不出的行一律跳过——一条怪记录不该让整份映射作废。"""
-    broken = SYNCTEX_SAMPLE.replace(
-        "h1,5:4736286,11000000:13107200,655360,0", "h1,5:这不是数字"
-    )
+    broken = SYNCTEX_SAMPLE.replace("h1,5:4736286,11000000:13107200,655360,0", "h1,5:这不是数字")
     mapping = anchors.parse_synctex(gz(broken))
 
     assert mapping.tag_for("zh.tex") == 1
@@ -201,10 +199,7 @@ def test_block_line_spans_survives_translated_captions():
         ],
         "captions": [],
     }
-    text = (
-        "\\begin{document}\n"
-        "\\begin{figure}\n\\includegraphics{f}\n\\caption{图一：流水线}\n\\end{figure}\n"
-    )
+    text = "\\begin{document}\n\\begin{figure}\n\\includegraphics{f}\n\\caption{图一：流水线}\n\\end{figure}\n"
 
     spans = anchors.block_line_spans(text, anchors._normalize_blocks(blocks)[0])
 
@@ -224,12 +219,7 @@ def test_block_line_spans_prefers_exact_offsets():
 
 def test_exact_offsets_beat_text_search_on_repeated_blocks():
     """两个块内容一模一样时文本查找只能靠游标，精确区间各归各位。"""
-    text = (
-        "\\begin{document}\n"
-        "\\begin{equation}a=b\\end{equation}\n"
-        "Prose.\n"
-        "\\begin{equation}a=b\\end{equation}\n"
-    )
+    text = "\\begin{document}\n\\begin{equation}a=b\\end{equation}\nProse.\n\\begin{equation}a=b\\end{equation}\n"
     same = "\\begin{equation}a=b\\end{equation}"
     blocks = anchors._normalize_blocks(
         {
@@ -293,12 +283,14 @@ def test_build_consumes_exact_spans():
 
     block = next(a for a in result.anchors if a.block_id == "BLK-1")
     assert block.source == "synctex"
-    assert block.rects == next(
-        a for a in anchors.build(
-            zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(SYNCTEX_SAMPLE)
-        ).anchors
-        if a.block_id == "BLK-1"
-    ).rects
+    assert (
+        block.rects
+        == next(
+            a
+            for a in anchors.build(zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(SYNCTEX_SAMPLE)).anchors
+            if a.block_id == "BLK-1"
+        ).rects
+    )
 
 
 def test_sections_are_scanned_from_zh_tex():
@@ -312,9 +304,7 @@ def test_sections_are_scanned_from_zh_tex():
 
 
 def test_synctex_gives_precise_anchors():
-    result = anchors.build(
-        zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(SYNCTEX_SAMPLE)
-    )
+    result = anchors.build(zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(SYNCTEX_SAMPLE))
 
     assert result.synctex_used is True
     block = next(a for a in result.anchors if a.block_id == "BLK-1")
@@ -332,9 +322,7 @@ def test_synctex_gives_precise_anchors():
 def test_multi_page_object_gets_one_anchor_per_page():
     """跨页对象每页一条锚点，id 不许撞。"""
     sample = SYNCTEX_SAMPLE.replace("h1,9:", "h1,4:")
-    result = anchors.build(
-        zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(sample)
-    )
+    result = anchors.build(zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(sample))
 
     ids = [a.id for a in result.anchors if a.block_id == "BLK-1"]
     assert ids == ["BLK-1", "BLK-1@p2"]
@@ -358,9 +346,7 @@ def test_missing_synctex_degrades_to_page_anchors():
 def test_unknown_input_file_also_degrades():
     """synctex 在，但里面没有 zh.tex 的 Input 记录 → 同样降级，并说清原因。"""
     sample = SYNCTEX_SAMPLE.replace("Input:1:zh.tex", "Input:1:other.tex")
-    result = anchors.build(
-        zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(sample)
-    )
+    result = anchors.build(zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=gz(sample))
 
     assert result.synctex_used is False
     assert {a.source for a in result.anchors} == {"blocks"}
@@ -369,9 +355,7 @@ def test_unknown_input_file_also_degrades():
 
 def test_chunk_ids_come_from_translation_memory():
     chunks = {"chunks": [{"id": "c007", "src": "前文 ⟦BLK-1⟧ 后文"}]}
-    result = anchors.build(
-        zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=None, chunks=chunks
-    )
+    result = anchors.build(zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=None, chunks=chunks)
 
     block = next(a for a in result.anchors if a.block_id == "BLK-1")
     assert block.chunk_id == "c007"
@@ -379,9 +363,7 @@ def test_chunk_ids_come_from_translation_memory():
 
 def test_anchors_json_passes_schema():
     for synctex in (None, gz(SYNCTEX_SAMPLE)):
-        document = anchors.build(
-            zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=synctex
-        ).to_anchors_json()
+        document = anchors.build(zh_tex=ZH_TEX, blocks=BLOCKS, pdf=MINIMAL_PDF, synctex=synctex).to_anchors_json()
 
         assert validate_schema(document, load_schema("anchors")) == []
         assert document["contract_version"] == CONTRACT_VERSION

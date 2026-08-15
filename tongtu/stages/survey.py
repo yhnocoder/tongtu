@@ -51,14 +51,16 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 
 from .. import CONTRACT_VERSION, prompts
-from ..glossary import Glossary, empty as empty_glossary, with_agent_decisions
+from ..glossary import Glossary, with_agent_decisions
+from ..glossary import empty as empty_glossary
 from ..prompts import PromptError
-from ..schema_check import SchemaError, check as schema_check
+from ..schema_check import SchemaError
+from ..schema_check import check as schema_check
 from ..texlex import Lexer, TexLexError, find_env_end, read_group, skip_optionals
 from .chunk import split_paragraphs
 from .mask import Block, Caption, MaskResult, load_environment_table
@@ -153,11 +155,8 @@ def build_prompt(prompt: str, errors: Sequence[str] = ()) -> str:
     if not errors:
         return prompt
     return (
-        prompt
-        + "\n\n---\n\n上一次的输出没能解析成 JSON，原因如下。请**只**输出一个完整的 "
-        "JSON 对象，不要代码块围栏、不要解释文字，注意闭合所有括号：\n"
-        + "\n".join(f"- {e}" for e in errors)
-        + "\n"
+        prompt + "\n\n---\n\n上一次的输出没能解析成 JSON，原因如下。请**只**输出一个完整的 "
+        "JSON 对象，不要代码块围栏、不要解释文字，注意闭合所有括号：\n" + "\n".join(f"- {e}" for e in errors) + "\n"
     )
 
 
@@ -171,10 +170,7 @@ def _normalize_blocks(blocks) -> tuple[list[Block], list[Caption]]:
     if isinstance(blocks, Mapping):
         return (
             [b if isinstance(b, Block) else Block.from_json(b) for b in blocks.get("blocks", ())],
-            [
-                c if isinstance(c, Caption) else Caption.from_json(c)
-                for c in blocks.get("captions", ())
-            ],
+            [c if isinstance(c, Caption) else Caption.from_json(c) for c in blocks.get("captions", ())],
         )
     raise TypeError(f"无法识别的块清单类型：{type(blocks).__name__}")
 
@@ -289,9 +285,7 @@ _FENCE_RE = re.compile(r"```[a-zA-Z]*\n?")
 
 #: 决策对象里认得的字段。一个都不含 = 这不是我们要的那个对象（`\LaTeX{}` 也是一对
 #: 花括号，恰好还是合法 JSON——所以「解析成功」本身不构成证据）。
-KNOWN_KEYS = frozenset(
-    {"paper", "sections", "notation", "naming_conventions", "style", "terms", "do_not_translate"}
-)
+KNOWN_KEYS = frozenset({"paper", "sections", "notation", "naming_conventions", "style", "terms", "do_not_translate"})
 
 
 def parse_json_object(text: str, *, known_keys: frozenset[str] = KNOWN_KEYS) -> dict:
@@ -437,9 +431,7 @@ def _style(raw) -> dict:
         value = _text(raw.get(key), 500)
         if value:
             style[key] = value
-    notes = [_text(n, 500) for n in raw.get("notes", []) if _text(n, 500)] if isinstance(
-        raw.get("notes"), list
-    ) else []
+    notes = [_text(n, 500) for n in raw.get("notes", []) if _text(n, 500)] if isinstance(raw.get("notes"), list) else []
     if notes:
         style["notes"] = notes
     return style
@@ -486,9 +478,11 @@ def build_brief(
         paper["arxiv_id"] = arxiv_id
     if title or _text(raw_paper.get("title"), 500):
         paper["title"] = title or _text(raw_paper.get("title"), 500)
-    authors = [
-        _text(a, 200) for a in raw_paper.get("authors", []) if _text(a, 200)
-    ] if isinstance(raw_paper.get("authors"), list) else []
+    authors = (
+        [_text(a, 200) for a in raw_paper.get("authors", []) if _text(a, 200)]
+        if isinstance(raw_paper.get("authors"), list)
+        else []
+    )
     if authors:
         paper["authors"] = authors
     category = _text(raw_paper.get("primary_category"), 100)
@@ -553,14 +547,10 @@ def render_brief(brief: Mapping, *, max_sections: int = 60) -> str:
     if rendered:
         lines.append("章节结构与各节摘要：\n" + "\n".join(rendered))
     if brief.get("notation"):
-        lines.append(
-            "记号约定：\n"
-            + "\n".join(f"- {n['symbol']} = {n['meaning']}" for n in brief["notation"])
-        )
+        lines.append("记号约定：\n" + "\n".join(f"- {n['symbol']} = {n['meaning']}" for n in brief["notation"]))
     if brief.get("naming_conventions"):
         lines.append(
-            "命名约定：\n"
-            + "\n".join(f"- {n['name']}：{n['convention']}" for n in brief["naming_conventions"])
+            "命名约定：\n" + "\n".join(f"- {n['name']}：{n['convention']}" for n in brief["naming_conventions"])
         )
     style = brief.get("style") if isinstance(brief.get("style"), Mapping) else {}
     if style:
@@ -789,4 +779,4 @@ def _schema_errors(instance, name: str, warnings: list[str]) -> list[str]:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")

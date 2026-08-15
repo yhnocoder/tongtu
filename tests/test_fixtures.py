@@ -124,10 +124,10 @@ PROBES: dict[str, callable] = {
     "section": lambda p, f, r: re.search(r"\\section\s*[\[{]", f) is not None,
     "subsection": lambda p, f, r: re.search(r"\\subsection\s*[\[{]", f) is not None,
     "subsubsection": lambda p, f, r: re.search(r"\\subsubsection\s*[\[{]", f) is not None,
-    "appendix": lambda p, f, r: re.search(r"\\appendi(x|ces)(?![A-Za-z])", f) is not None
-    or _has_env(f, "appendices"),
-    "two_column": lambda p, f, r: "twocolumn" in f
-    or re.search(r"\\documentclass\[[^\]]*conference[^\]]*\]\s*\{IEEEtran\}", f) is not None,
+    "appendix": lambda p, f, r: re.search(r"\\appendi(x|ces)(?![A-Za-z])", f) is not None or _has_env(f, "appendices"),
+    "two_column": lambda p, f, r: (
+        "twocolumn" in f or re.search(r"\\documentclass\[[^\]]*conference[^\]]*\]\s*\{IEEEtran\}", f) is not None
+    ),
     # 数学
     "inline_math": lambda p, f, r: re.search(r"(?<!\\)\$[^$]+\$", f) is not None,
     "equation_env": lambda p, f, r: _has_env(f, "equation"),
@@ -165,14 +165,12 @@ PROBES: dict[str, callable] = {
     "custom_env_unknown": lambda p, f, r: _decided_by(r, "default"),
     "nested_env": lambda p, f, r: any(b.tex.count("\\begin{") >= 2 for b in r.blocks),
     # 源码树与参考文献
-    "multi_file_input": lambda p, f, r: _INPUT_RE.search((p / "main.tex").read_text("utf-8"))
-    is not None,
+    "multi_file_input": lambda p, f, r: _INPUT_RE.search((p / "main.tex").read_text("utf-8")) is not None,
     "local_sty_package": lambda p, f, r: any(
         re.search(r"\\usepackage\s*(\[[^\]]*\])?\s*\{[^}]*" + re.escape(sty.stem) + r"[^}]*\}", f)
         for sty in p.glob("*.sty")
     ),
-    "bibtex_database": lambda p, f, r: re.search(r"\\bibliography\s*\{", f) is not None
-    and any(p.glob("*.bib")),
+    "bibtex_database": lambda p, f, r: re.search(r"\\bibliography\s*\{", f) is not None and any(p.glob("*.bib")),
     "precompiled_bbl": lambda p, f, r: any(p.glob("*.bbl")),
     "thebibliography_env": lambda p, f, r: _has_env(f, "thebibliography"),
 }
@@ -230,16 +228,12 @@ def test_manifest_fields(paper, loaded):
 def test_manifest_files_exist(paper, loaded):
     """MANIFEST 声明的每个文件都在，且反过来没有漏报的 .tex。"""
     _, manifest, _, _ = loaded[paper.name]
-    declared = (
-        [manifest["main"]] + manifest["inputs"] + manifest["aux_files"] + manifest["generated_assets"]
-    )
+    declared = [manifest["main"]] + manifest["inputs"] + manifest["aux_files"] + manifest["generated_assets"]
     for name in declared:
         target = paper / name
         assert target.is_file(), f"{paper.name}/MANIFEST.json 声明了不存在的 {name}"
         assert target.stat().st_size > 0, f"{name} 是空文件"
-    on_disk = {
-        str(p.relative_to(paper)) for p in paper.rglob("*.tex")
-    }
+    on_disk = {str(p.relative_to(paper)) for p in paper.rglob("*.tex")}
     assert on_disk == {manifest["main"], *manifest["inputs"]}, "磁盘上的 .tex 与 MANIFEST 不符"
 
 
@@ -420,7 +414,5 @@ def test_pdf_assets_are_well_formed():
 
 def test_gen_assets_check_mode_passes():
     """`gen_assets.py --check` 是可复跑再生的对外承诺，这里当命令行跑一遍。"""
-    proc = subprocess.run(
-        [sys.executable, str(GEN_ASSETS), "--check"], capture_output=True, text=True
-    )
+    proc = subprocess.run([sys.executable, str(GEN_ASSETS), "--check"], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -74,12 +74,7 @@ ASSETS: dict[str, tuple[str, dict]] = {
 
 def _png_chunk(tag: bytes, data: bytes) -> bytes:
     """一个 PNG chunk：长度（大端 4 字节）+ 类型 + 数据 + CRC32(类型 + 数据)。"""
-    return (
-        struct.pack(">I", len(data))
-        + tag
-        + data
-        + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-    )
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
 
 def _pixel(pattern: str, x: int, y: int, width: int, height: int) -> tuple[int, int, int]:
@@ -171,15 +166,10 @@ def build_pdf(*, width: int, height: int, rects: list[tuple]) -> bytes:
     bodies: list[bytes] = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}]"
-            f" /Resources << >> /Contents 4 0 R >>"
-        ).encode("ascii"),
-        b"<< /Length "
-        + str(len(stream)).encode("ascii")
-        + b" >>\nstream\n"
-        + stream
-        + b"endstream",
+        (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] /Resources << >> /Contents 4 0 R >>").encode(
+            "ascii"
+        ),
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"endstream",
     ]
 
     # 第二行的高位字节注释是 PDF 规范的建议写法：告诉工具链这是二进制文件。

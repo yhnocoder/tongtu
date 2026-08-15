@@ -65,9 +65,7 @@ def runner(
     calls: list[SimpleNamespace] = []
 
     def run(argv, *, cwd=None, stdin="", timeout=None, env=None):
-        calls.append(
-            SimpleNamespace(argv=tuple(argv), cwd=cwd, stdin=stdin, timeout=timeout, env=env)
-        )
+        calls.append(SimpleNamespace(argv=tuple(argv), cwd=cwd, stdin=stdin, timeout=timeout, env=env))
         out = flag_value(argv, "--output-last-message")
         if answer is not None and out:
             Path(out).write_text(answer, encoding="utf-8")
@@ -231,9 +229,7 @@ def test_session_reports_timeout_and_nonzero_exit(tmp_path):
     assert timed_out.session("修", workdir=tmp_path).done is False
     assert timed_out.errors[0].kind == TIMEOUT
 
-    failed = CodexAgent(
-        model=MODEL, runner=runner(returncode=3, stderr="boom: not logged in\n")
-    )
+    failed = CodexAgent(model=MODEL, runner=runner(returncode=3, stderr="boom: not logged in\n"))
     outcome = failed.session("修", workdir=tmp_path)
     assert outcome.done is False and "3" in outcome.message
     assert failed.errors[0].kind == FAILED and "not logged in" in failed.errors[0].detail
@@ -300,9 +296,7 @@ def test_clean_output_strips_decoration_conservatively(raw, expected):
 
 
 def test_complete_raises_structured_error_on_failure(tmp_path):
-    agent = CodexAgent(
-        model=MODEL, runner=runner(status=MISSING_TOOL, returncode=None, message="没装")
-    )
+    agent = CodexAgent(model=MODEL, runner=runner(status=MISSING_TOOL, returncode=None, message="没装"))
 
     with pytest.raises(CodexError) as excinfo:
         agent.complete("规则", "src")

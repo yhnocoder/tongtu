@@ -35,11 +35,11 @@ from pathlib import Path
 
 from ..compiler import (
     DEFAULT_TIMEOUT,
-    AssetLinks,
-    CompileRunResult,
-    Compiler,
-    FixupRequest,
     LOG_TAIL,
+    AssetLinks,
+    Compiler,
+    CompileRunResult,
+    FixupRequest,
     SessionFn,
     detect_engine,
     latexmk_compiler,

@@ -70,17 +70,16 @@ import re
 import sys
 import time
 import uuid
+from collections.abc import Callable, Iterable, MutableMapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
-from typing import Callable, Iterable, MutableMapping, Sequence, TextIO
+from typing import TextIO
 
-from . import CONTRACT_VERSION, __version__
+from . import CONTRACT_VERSION, __version__, prompts, report_page
 from . import glossary as glossary_module
 from . import memory as memory_module
-from . import prompts
-from . import report_page
 from .agent.mock import MockAgent, identity
 from .compiler import DEFAULT_TIMEOUT, Compiler
 from .glossary import Glossary, GlossaryError
@@ -285,7 +284,7 @@ def manifest_fresh(workdir: Workdir, stage: str, inputs: dict[str, str]) -> bool
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class Events:
@@ -378,7 +377,7 @@ class Events:
                 + (f"（{progress.reason}）" if progress.reason else "")
             )
 
-    def result(self, result: "PipelineResult") -> None:
+    def result(self, result: PipelineResult) -> None:
         self._emit(
             {
                 "event": "result",
@@ -827,9 +826,7 @@ class Pipeline:
                 )
                 return None
             prompt = (
-                f"{rules}\n\n---\n\n"
-                f"环境名：{query.name}\n全文出现次数：{query.count}\n\n"
-                "下面是它首次出现处的源码片段："
+                f"{rules}\n\n---\n\n环境名：{query.name}\n全文出现次数：{query.count}\n\n下面是它首次出现处的源码片段："
             )
             try:
                 answer = complete(prompt, query.sample, self.model or None)
@@ -851,11 +848,7 @@ class Pipeline:
                 primitive="complete",
                 trigger=trigger,
                 outcome=RESOLVED if verdict else UNRESOLVED,
-                action=(
-                    f"判为 {verdict}"
-                    if verdict
-                    else "没给出可用判定 → 保守整块掩码（category=unknown）"
-                ),
+                action=(f"判为 {verdict}" if verdict else "没给出可用判定 → 保守整块掩码（category=unknown）"),
                 duration_ms=_ms(started),
                 # 促升规则（架构 §2）：agent 的分类结论该沉淀成 environments.json 条目
                 promotable=True if verdict else None,
@@ -876,11 +869,7 @@ class Pipeline:
 
         def run(segment) -> str | None:
             started = time.monotonic()
-            label = (
-                segment.chunk_id
-                if segment.para_index is None
-                else f"{segment.chunk_id}#{segment.para_index}"
-            )
+            label = segment.chunk_id if segment.para_index is None else f"{segment.chunk_id}#{segment.para_index}"
             text = translate_stage.retranslate_segment(
                 segment.source,
                 complete=complete,
@@ -937,11 +926,7 @@ class Pipeline:
         else:
             status = "ok_with_fallback" if self.fallback_chunks else "ok"
             exit_code = 0
-            message = (
-                f"{self.fallback_chunks} 块回退原文（详情见 report）"
-                if self.fallback_chunks
-                else ""
-            )
+            message = f"{self.fallback_chunks} 块回退原文（详情见 report）" if self.fallback_chunks else ""
         result = PipelineResult(
             status=status,
             exit_code=exit_code,
@@ -965,9 +950,7 @@ class Pipeline:
         if name in SKIPPED_STAGES:
             self.events.stage_start(name)
             self.events.stage_end(name, "skipped")
-            return StageOutcome(
-                stage=name, status="skipped", detail={"reason": SKIPPED_STAGES[name]}
-            )
+            return StageOutcome(stage=name, status="skipped", detail={"reason": SKIPPED_STAGES[name]})
 
         spec = self._specs()[name]
         total = len(self.plan) if name == "translate" and self.plan is not None else None
@@ -982,9 +965,7 @@ class Pipeline:
                 status = "cached" if work.ok else "failed"
             else:
                 inputs = spec.inputs()
-                if mode == "auto" and not self.force and manifest_fresh(
-                    self.workdir, name, inputs
-                ):
+                if mode == "auto" and not self.force and manifest_fresh(self.workdir, name, inputs):
                     work = spec.load()
                     status = "cached" if work.ok else "failed"
                 else:
@@ -1022,9 +1003,7 @@ class Pipeline:
             "mask": _Spec(self._mask_inputs, self._mask_compute, self._mask_load),
             "survey": _Spec(self._survey_inputs, self._survey_compute, self._survey_load),
             "chunk": _Spec(self._chunk_inputs, self._chunk_compute, self._chunk_load),
-            "translate": _Spec(
-                self._translate_inputs, self._translate_compute, self._translate_load
-            ),
+            "translate": _Spec(self._translate_inputs, self._translate_compute, self._translate_load),
             "compile": _Spec(self._compile_inputs, self._compile_compute, self._compile_load),
             "figures": _Spec(self._figures_inputs, self._figures_compute, self._figures_load),
             "export": _Spec(self._export_inputs, self._export_compute, self._export_load),
@@ -1058,10 +1037,7 @@ class Pipeline:
         if result.fallback:
             return _Work(
                 ok=False,
-                error=(
-                    f"{result.message}——降级流水线（fallback/）零期只标记不实现"
-                    "（PHASE0 §5）"
-                ),
+                error=(f"{result.message}——降级流水线（fallback/）零期只标记不实现（PHASE0 §5）"),
                 detail=detail,
             )
         if not result.ok:
@@ -1130,11 +1106,7 @@ class Pipeline:
         if not result.ok:
             return _Work(
                 ok=False,
-                error=(
-                    result.message
-                    or "原文编译不过（环境问题，不是翻译问题）——流水线到此终止，"
-                    "不产生任何 LLM 支出"
-                ),
+                error=(result.message or "原文编译不过（环境问题，不是翻译问题）——流水线到此终止，不产生任何 LLM 支出"),
                 detail=detail,
             )
         outputs = (result.pdf,) if result.pdf is not None else ()
@@ -1178,9 +1150,7 @@ class Pipeline:
         self.masked_path.write_text(result.masked, encoding="utf-8")
         self.blocks_path.write_text(
             json.dumps(
-                result.to_blocks_json(
-                    source_path=f"build/{flatten_stage.FLAT_NAME}", roundtrip_ok=True
-                ),
+                result.to_blocks_json(source_path=f"build/{flatten_stage.FLAT_NAME}", roundtrip_ok=True),
                 ensure_ascii=False,
                 indent=2,
             )
@@ -1215,9 +1185,7 @@ class Pipeline:
         """
         if self._layers is None:
             try:
-                self._layers = glossary_module.load_layers(
-                    workdir=self.workdir, cli=self.glossary
-                )
+                self._layers = glossary_module.load_layers(workdir=self.workdir, cli=self.glossary)
             except GlossaryError as exc:
                 raise PipelineError(str(exc)) from exc
         return self._layers
@@ -1231,10 +1199,7 @@ class Pipeline:
             "blocks": sha256_file(self.blocks_path),
             # 术语表按**内容**参与（换个路径、同样的内容不该重跑通读）
             "glossary": sha256_text(
-                "\x1e".join(
-                    f"{layer.layer}\t{glossary_module.content_hash(layer.glossary)}"
-                    for layer in layers
-                )
+                "\x1e".join(f"{layer.layer}\t{glossary_module.content_hash(layer.glossary)}" for layer in layers)
             ),
             "agent": type(self.agent).__name__,
             "model": self.model,
@@ -1264,8 +1229,7 @@ class Pipeline:
                 action=(
                     "输出不可用，brief 降级为确定性骨架"
                     if result.degraded
-                    else f"新增术语 {result.terms_added} 条、"
-                    f"不译 {result.do_not_translate_added} 条"
+                    else f"新增术语 {result.terms_added} 条、不译 {result.do_not_translate_added} 条"
                 ),
             )
         if not result.ok:
@@ -1280,13 +1244,9 @@ class Pipeline:
 
     def _survey_load(self) -> _Work:
         if not (self.brief_path.is_file() and self.glossary_path.is_file()):
-            return _Work(
-                ok=False, error=f"没有 {self.brief_path} / {self.glossary_path}（先跑 survey）"
-            )
+            return _Work(ok=False, error=f"没有 {self.brief_path} / {self.glossary_path}（先跑 survey）")
         self.brief = json.loads(self.brief_path.read_text(encoding="utf-8"))
-        self.decisions = Glossary.from_json(
-            json.loads(self.glossary_path.read_text(encoding="utf-8"))
-        )
+        self.decisions = Glossary.from_json(json.loads(self.glossary_path.read_text(encoding="utf-8")))
         manifest = read_manifest(self.workdir, "survey") or {}
         return _Work(detail=manifest.get("result", {}))
 
@@ -1316,9 +1276,7 @@ class Pipeline:
         for name, body in plan.chunk_files().items():
             (self.chunks_dir / name).write_text(body, encoding="utf-8")
         manifest_path = self.chunks_dir / CHUNKS_NAME
-        manifest_path.write_text(
-            json.dumps(plan.to_manifest(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        manifest_path.write_text(json.dumps(plan.to_manifest(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return _Work(
             outputs=(self.chunks_dir,),
             detail={
@@ -1370,9 +1328,7 @@ class Pipeline:
         sources = getattr(cache, "sources", ())
         loaded = len(cache)  # 翻完之后 cache 会长大，装载条数得在这之前记
         if loaded:
-            self.events.note(
-                f"    翻译记忆：装载 {loaded} 条（{'、'.join(sources) or '注入'}）"
-            )
+            self.events.note(f"    翻译记忆：装载 {loaded} 条（{'、'.join(sources) or '注入'}）")
         result = translate_stage.translate(
             self.plan,
             complete=complete,
@@ -1395,13 +1351,9 @@ class Pipeline:
         self.cache_misses = result.cache_misses
         self.zh_chunks_dir.mkdir(parents=True, exist_ok=True)
         for item in result.chunks:
-            (self.zh_chunks_dir / f"{item.id}{chunk_stage.CHUNK_SUFFIX}").write_text(
-                item.translation, encoding="utf-8"
-            )
+            (self.zh_chunks_dir / f"{item.id}{chunk_stage.CHUNK_SUFFIX}").write_text(item.translation, encoding="utf-8")
         # 翻译记忆写回 build 侧（权威副本随产物包走，export 搬进 `out/`）。
-        memory_module.write_chunks(
-            self.zh_chunks_dir / CHUNKS_NAME, result.to_chunks_json()
-        )
+        memory_module.write_chunks(self.zh_chunks_dir / CHUNKS_NAME, result.to_chunks_json())
         return _Work(outputs=(self.zh_chunks_dir,), detail=detail)
 
     def _translate_load(self) -> _Work:
@@ -1463,9 +1415,7 @@ class Pipeline:
         )
         # 事后裁决：救活的坏段改判 resolved，其余留在 fallback；会话看重新编译的结果。
         for label in result.retranslated:
-            self._settle(
-                f"segment:{label}", RESOLVED, action="重译后编译通过（坏段救活）"
-            )
+            self._settle(f"segment:{label}", RESOLVED, action="重译后编译通过（坏段救活）")
         self._pending = {k: v for k, v in self._pending.items() if not k.startswith("segment:")}
         self._settle(
             "compile",
@@ -1477,11 +1427,7 @@ class Pipeline:
             return _Work(ok=False, error=result.message or "译文编译失败", detail=detail)
         self.pdf = result.pdf
         self.fallback_chunks += len(result.fallbacks)
-        outputs = tuple(
-            p
-            for p in (result.tex, result.pdf, result.raw_tex, result.spans_path)
-            if p is not None
-        )
+        outputs = tuple(p for p in (result.tex, result.pdf, result.raw_tex, result.spans_path) if p is not None)
         return _Work(outputs=outputs, detail=detail)
 
     def _compile_load(self) -> _Work:
@@ -1625,9 +1571,7 @@ class Pipeline:
             "translated": int(translate.get("translated", 0)),
             "cached": int(translate.get("cache_hits", self.cache_hits)),
             "fallback": int(translate.get("fallback", 0)),
-            "retries": max(
-                0, int(translate.get("attempts", 0)) - int(translate.get("chunk_count", 0))
-            ),
+            "retries": max(0, int(translate.get("attempts", 0)) - int(translate.get("chunk_count", 0))),
         }
         if translate.get("failures_by_check"):
             validation["failures_by_check"] = dict(translate["failures_by_check"])
@@ -1643,10 +1587,7 @@ class Pipeline:
             compile_section["baseline_passed"] = bool(baseline["passed"])
         if compiled.get("inject"):
             compile_section["inject"] = dict(compiled["inject"])
-        warnings = [
-            {"kind": "compile", "message": str(text)}
-            for text in compiled.get("warnings", ())
-        ]
+        warnings = [{"kind": "compile", "message": str(text)} for text in compiled.get("warnings", ())]
         if warnings:
             compile_section["warnings"] = warnings
         if compiled.get("log_path"):
@@ -1780,9 +1721,7 @@ def _read_tex(path: Path) -> str:
 def _write_json(path: Path, payload: dict) -> Path:
     """写一份 JSON 产物（UTF-8、缩进 2、末尾换行——与其余产物落盘风格一致）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
 

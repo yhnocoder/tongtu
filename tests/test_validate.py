@@ -348,9 +348,7 @@ def test_summarize_keys_match_report_schema():
     from pathlib import Path
 
     schema = json.loads(
-        (Path(__file__).resolve().parent.parent / "docs/schemas/report.schema.json").read_text(
-            encoding="utf-8"
-        )
+        (Path(__file__).resolve().parent.parent / "docs/schemas/report.schema.json").read_text(encoding="utf-8")
     )
     documented = schema["properties"]["validation"]["properties"]["failures_by_check"]["properties"]
     assert set(v.CHECKS) == set(documented)

@@ -37,11 +37,12 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable, Container, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
 from pathlib import Path
-from typing import Callable, Container, Iterable, Protocol
+from typing import Protocol
 
 from .texlex import Lexer, TexLexError
 from .workdir import Workdir
@@ -440,9 +441,7 @@ def link_assets(
             warnings.append(f"资产 {name} 无法解析（{exc}），跳过")
             skipped.append(name)
             continue
-        if root_resolved is not None and not (
-            target == root_resolved or target.is_relative_to(root_resolved)
-        ):
+        if root_resolved is not None and not (target == root_resolved or target.is_relative_to(root_resolved)):
             warnings.append(f"资产 {name} 指向工作目录之外（{target}），跳过")
             skipped.append(name)
             continue
@@ -594,8 +593,7 @@ def latexmk_compiler(
                 engine=chosen,
                 status=MISSING_TOOL,
                 message=(
-                    f"PATH 中没有 {latexmk}——编译阶段需要它；跑 `tongtu doctor` 看缺什么，"
-                    "或用参考镜像（架构 §10）"
+                    f"PATH 中没有 {latexmk}——编译阶段需要它；跑 `tongtu doctor` 看缺什么，或用参考镜像（架构 §10）"
                 ),
             )
 

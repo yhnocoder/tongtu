@@ -57,7 +57,7 @@
 - [x] 目录落地：`tongtu/`（含 `stages/` 与 `agent/` 子模块）`skill/` `docker/` `fallback/`（占位）`docs/schemas/`——流水线代码落 Python 包 `tongtu/` 而非 `scripts/`，README 规划结构已同步
 - [x] 工作目录解析：`$TONGTU_HOME` / `--workdir` / 默认 `~/.local/share/tongtu/<arxiv_id>/`，四区布局 `src/ build/ out/ logs/`
 
-### 3.2 确定性流水线（`scripts/`，按阶段）
+### 3.2 确定性流水线（`tongtu/stages/`，按阶段）
 
 - [x] **fetch**〔迁〕：e-print 下载解包、PDF-only 与 pdfpages 套壳检测（报错并标记降级路线）
 - [x] **flatten**〔迁〕：latexpand 展开 + `--expand-bbl`；主文件歧义 → 关节①
@@ -71,7 +71,7 @@
 - [x] **export**〔新，吸收 v2 package.py〕：产物包组装（`out/` 契约文件 + `zh-pack/` 自包含编译包，资产取自编译目录、不猜名字）、anchors 三来源合成（`tongtu/anchors.py`：零依赖 synctex 解析 + blocks 行号映射 + PDF 页面扫描；无 synctex 即退化为页级锚点并如实标注来源）、`report.json` 落盘（含新加的 `compile.inject` 段，契约 bump 至 0.2）、检验页生成、**契约 schema 自校验即出口判据**（任一不过判 failed）
 - [x] **增量模型**〔新〕：阶段级 `build/manifests/<stage>.json`（输入 hash → 跳过）；块级翻译缓存（key = 块源码 + 邻域 + 命中术语 + brief_hash + style_version + prompt_version + model_id），权威翻译记忆落产物 `chunks.json`——`tongtu/memory.py` 负责装载（`out/` 权威 + `build/` 工作副本）、写回与失效，`build/` 整体删除后仍能从 `out/chunks.json` 全量命中；`--force` 连块级缓存一起无视
 
-### 3.3 agent 适配层（`agent/`）
+### 3.3 agent 适配层（`tongtu/agent/`）
 
 - [x] 两原语接口〔新〕：`complete(prompt, text, model)` / `session(prompt, workdir, model, budget)`；`session` 的 done 不作裁决依据，转录一律落 `logs/`
 - [x] **MockAgent**〔新〕：`complete` 恒等返回、`session` no-op——编译层 CI 靠它成立

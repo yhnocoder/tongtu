@@ -1,6 +1,7 @@
 """chunk 阶段：章节树优先分块（架构 §3 chunk 行、决策 12、开放问题 1）。"""
 
 import json
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -78,7 +79,7 @@ def test_chunks_tile_the_paragraph_stream(name, soft, hard):
     plan = plan_of(text, soft, hard)
     assert plan.chunks[0].para_start == 0
     assert plan.chunks[-1].para_end == len(plan.paragraphs)
-    for prev, nxt in zip(plan.chunks, plan.chunks[1:]):
+    for prev, nxt in pairwise(plan.chunks):
         assert prev.para_end == nxt.para_start
     for chunk in plan.chunks:
         members = plan.paragraphs_of(chunk)
@@ -349,7 +350,7 @@ def test_neighbour_indices_chain_the_chunks(long_paper):
     plan = plan_of(long_paper)
     assert plan.chunks[0].prev_tail_para is None
     assert plan.chunks[-1].next_head_para is None
-    for prev, nxt in zip(plan.chunks, plan.chunks[1:]):
+    for prev, nxt in pairwise(plan.chunks):
         assert prev.next_head_para == nxt.para_start
         assert nxt.prev_tail_para == prev.para_end - 1
         assert plan.paragraphs[nxt.prev_tail_para].text == plan.paragraphs_of(prev)[-1].text

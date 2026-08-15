@@ -34,9 +34,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from . import SessionOutcome
 
@@ -92,9 +92,7 @@ def pseudo_translate(text: str) -> str:
         '以下是本段中文译文。Hello ⟦BLK-1⟧\\n\\n\\\\section{Hi}'
     """
     parts = _PARAGRAPH_SPLIT_RE.split(text)
-    return "".join(
-        part if index % 2 else _prefix_paragraph(part) for index, part in enumerate(parts)
-    )
+    return "".join(part if index % 2 else _prefix_paragraph(part) for index, part in enumerate(parts))
 
 
 def _prefix_paragraph(paragraph: str) -> str:

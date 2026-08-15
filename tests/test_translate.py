@@ -11,8 +11,8 @@ from __future__ import annotations
 from tongtu import validate
 from tongtu.agent import SessionOutcome
 from tongtu.agent.mock import PSEUDO_PREFIX, MockAgent, PseudoAgent, pseudo_translate
-from tongtu.stages.chunk import chunk_masked
 from tongtu.stages import translate as tr
+from tongtu.stages.chunk import chunk_masked
 
 MASKED = """\
 ⟦BLK-0⟧
@@ -206,9 +206,7 @@ def test_identity_translation_is_all_green():
     p = plan()
     events, sink = progress_log()
 
-    result = translate = tr.translate(
-        p, complete=MockAgent().complete, model="mock", progress=sink
-    )
+    result = translate = tr.translate(p, complete=MockAgent().complete, model="mock", progress=sink)
 
     assert result.status == tr.OK and result.ok
     assert [c.status for c in result.chunks] == [tr.TRANSLATED] * len(p)
@@ -225,7 +223,7 @@ def test_block_affixes_survive_a_sloppy_agent():
     result = tr.translate(p, complete=agent_that(lambda body, n: body))
 
     assert result.stream == MASKED
-    for chunk, item in zip(p.chunks, result.chunks):
+    for chunk, item in zip(p.chunks, result.chunks, strict=True):
         assert item.source == chunk.text
 
 
@@ -262,9 +260,7 @@ def test_retries_are_capped_then_the_chunk_falls_back():
 
 
 def test_zero_retries_means_one_shot():
-    result = tr.translate(
-        plan(), complete=agent_that(lambda body, n: "不合规"), max_retries=0
-    )
+    result = tr.translate(plan(), complete=agent_that(lambda body, n: "不合规"), max_retries=0)
     assert all(c.attempts == 1 for c in result.chunks)
     assert result.status == tr.OK_WITH_FALLBACK
 

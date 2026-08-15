@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -104,13 +104,9 @@ def compiler(predicate=lambda text: BOMB in text, *, error="! Undefined control 
         if predicate(text):
             if pdf.exists():
                 pdf.unlink()
-            return CompileRunResult(
-                ok=False, log=f"{error}\nl.{line} \\foo\n", returncode=12, engine="xelatex"
-            )
+            return CompileRunResult(ok=False, log=f"{error}\nl.{line} \\foo\n", returncode=12, engine="xelatex")
         pdf.write_text(text, encoding="utf-8")
-        return CompileRunResult(
-            ok=True, pdf=pdf, log="Output written on zh.pdf\n", returncode=0, engine="xelatex"
-        )
+        return CompileRunResult(ok=True, pdf=pdf, log="Output written on zh.pdf\n", returncode=0, engine="xelatex")
 
     run.calls = calls  # type: ignore[attr-defined]
     return run
@@ -310,9 +306,7 @@ def test_build_env_joint_gets_the_scene_and_the_verdict_is_the_recompile(tools, 
         state["broken"] = False  # 会话「修好了环境」
 
     agent = FakeAgent(on_session=fixed)
-    pipeline = pipeline_for(
-        tmp_path, agent=agent, compiler=compiler(lambda text: state["broken"])
-    )
+    pipeline = pipeline_for(tmp_path, agent=agent, compiler=compiler(lambda text: state["broken"]))
     seed_flat(pipeline, FLAT)
 
     outcome = pipeline.run_one("baseline")

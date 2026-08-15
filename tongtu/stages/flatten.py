@@ -37,10 +37,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable
 
 from ..texlex import Lexer, TexLexError, find_balanced
 from ..workdir import Workdir
@@ -287,9 +287,7 @@ def find_main_tex(
 
     files = _tex_files(root)
     texts: dict[Path, str] = {path: _read(path) for path in files}
-    scans: dict[Path, tuple[bool, bool, list[str]]] = {
-        path: _scan(text) for path, text in texts.items()
-    }
+    scans: dict[Path, tuple[bool, bool, list[str]]] = {path: _scan(text) for path, text in texts.items()}
 
     # 谁被谁 \input：全树扫一遍（片段文件也可能 \input 别的片段）
     included: dict[Path, list[str]] = {}
@@ -376,9 +374,7 @@ def find_main_tex(
     )
 
 
-def _match_answer(
-    root: Path, candidates: tuple[MainCandidate, ...], answer: object
-) -> MainCandidate | None:
+def _match_answer(root: Path, candidates: tuple[MainCandidate, ...], answer: object) -> MainCandidate | None:
     if answer is None:
         return None
     if isinstance(answer, MainCandidate):
@@ -454,9 +450,7 @@ def flatten(
     if not main.is_absolute():
         main = workdir.src / main
     if not main.is_file():
-        return FlattenResult(
-            status=MISSING_MAIN, main=main, message=f"主文件不存在：{main}"
-        )
+        return FlattenResult(status=MISSING_MAIN, main=main, message=f"主文件不存在：{main}")
 
     executable = shutil.which(latexpand)
     if executable is None:

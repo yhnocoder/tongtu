@@ -36,9 +36,9 @@ from __future__ import annotations
 import gzip
 import json
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 from . import CONTRACT_VERSION
 from .stages.mask import Block, Caption, MaskResult
@@ -132,9 +132,7 @@ SECTION_LEVELS: dict[str, int] = {
     "subsubsection": 4,
 }
 
-_SECTION_RE = re.compile(
-    r"\\(part|chapter|section|subsection|subsubsection)\*?\s*(?:\[[^\]]*\])?\s*\{"
-)
+_SECTION_RE = re.compile(r"\\(part|chapter|section|subsection|subsubsection)\*?\s*(?:\[[^\]]*\])?\s*\{")
 
 #: 粗清理：把标题里的控制序列与花括号剥掉（只为侧栏可读，不追求 TeX 语义）。
 _COMMAND_RE = re.compile(r"\\[A-Za-z@]+\*?|[{}]|\\[^A-Za-z]")
@@ -153,17 +151,17 @@ class Rect:
     w: float
     h: float
 
-    def padded(self, amount: float) -> "Rect":
+    def padded(self, amount: float) -> Rect:
         return Rect(self.x - amount, self.y - amount, self.w + 2 * amount, self.h + 2 * amount)
 
-    def union(self, other: "Rect") -> "Rect":
+    def union(self, other: Rect) -> Rect:
         x0 = min(self.x, other.x)
         y0 = min(self.y, other.y)
         x1 = max(self.x + self.w, other.x + other.w)
         y1 = max(self.y + self.h, other.y + other.h)
         return Rect(x0, y0, x1 - x0, y1 - y0)
 
-    def clamp(self, width: float, height: float) -> "Rect":
+    def clamp(self, width: float, height: float) -> Rect:
         """裁进页面。热区跑到纸外没有意义，也会让检验页的覆盖层长歪。"""
         x0 = min(max(self.x, 0.0), width)
         y0 = min(max(self.y, 0.0), height)
@@ -230,17 +228,14 @@ class PdfInfo:
         data: dict = {"path": path, "page_count": self.page_count}
         if self.pages:
             data["pages"] = [
-                {"page": i + 1, "width": round(w, 2), "height": round(h, 2)}
-                for i, (w, h) in enumerate(self.pages)
+                {"page": i + 1, "width": round(w, 2), "height": round(h, 2)} for i, (w, h) in enumerate(self.pages)
             ]
         return data
 
 
 # ------------------------------------------------------------------ pdf-scan
 
-_MEDIABOX_RE = re.compile(
-    rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]"
-)
+_MEDIABOX_RE = re.compile(rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]")
 _PAGE_RE = re.compile(rb"/Type\s*/Page(?![a-zA-Z])")
 _COUNT_RE = re.compile(rb"/Count\s+(\d+)")
 
@@ -290,9 +285,7 @@ def scan_pdf(source: str | Path | bytes) -> PdfInfo:
 #: 一条盒子记录：`<kind><tag>,<line>[,<column>]:<x>,<y>:<w>,<h>,<d>`。
 #: 只收带完整尺寸的四种（`[` vbox、`(` hbox、`v`/`h` 空盒），glue / kern / math 那几种
 #: 只有一个点、画不出矩形，跳过。
-_RECORD_RE = re.compile(
-    r"^([\[(hv])(\d+),(\d+)(?:,\d+)?:(-?\d+),(-?\d+):(-?\d+),(-?\d+),(-?\d+)"
-)
+_RECORD_RE = re.compile(r"^([\[(hv])(\d+),(\d+)(?:,\d+)?:(-?\d+),(-?\d+):(-?\d+),(-?\d+),(-?\d+)")
 _INPUT_RE = re.compile(r"^Input:(\d+):(.*)$")
 _SHEET_RE = re.compile(r"^\{(\d+)$")
 _HEADER_NUM_RE = re.compile(r"^(Unit|X Offset|Y Offset|Magnification):\s*([-\d.]+)")
@@ -422,9 +415,7 @@ def parse_synctex(source: str | Path | bytes) -> SyncTexMap:
         # synctex 的 (x, y) 是盒子左边沿与**基线**；矩形上边沿 = 基线 - 高，
         # 下边沿 = 基线 + 深（origin=top-left，y 向下）。
         rect = Rect(x=left, y=baseline - height, w=width, h=height + depth)
-        records.append(
-            SyncTexRecord(tag=int(tag), line=int(src_line), page=page, rect=rect)
-        )
+        records.append(SyncTexRecord(tag=int(tag), line=int(src_line), page=page, rect=rect))
 
     if not records and in_content:
         warnings.append("synctex 里没有可用的盒子记录（版本或格式不认识）")
@@ -440,6 +431,7 @@ def parse_synctex(source: str | Path | bytes) -> SyncTexMap:
 
 
 # --------------------------------------------------------- 源码位置 → 行号
+
 
 def line_of(starts: Sequence[int], offset: int) -> int:
     """字符偏移 → 1-based 行号（薄封装 :func:`tongtu.texlex.line_number`）。"""
@@ -754,9 +746,7 @@ def build(
 
     info = scan_pdf(pdf) if pdf is not None else PdfInfo()
     if pdf is not None and not info.parsed:
-        warnings.append(
-            "PDF 里读不到 /MediaBox（对象流压缩或不是真 PDF），页面尺寸用兜底值"
-        )
+        warnings.append("PDF 里读不到 /MediaBox（对象流压缩或不是真 PDF），页面尺寸用兜底值")
 
     mapping = SyncTexMap()
     tag: int | None = None

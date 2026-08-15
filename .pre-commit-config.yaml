@@ -1,0 +1,21 @@
+# 全部 hook 经 uv 调用项目环境里的工具，版本以 pyproject.toml / uv.lock 为唯一源，
+# 不另外维护 pre-commit 自己的工具版本。
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: diction-lint
+        name: diction lint
+        entry: uv run python scripts/diction_lint.py
+        language: system
+        types: [text]
+        pass_filenames: true

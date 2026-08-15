@@ -118,9 +118,7 @@ ZH_TEX = (
     "\\end{document}\n"
 )
 
-PNG = bytes.fromhex(
-    "89504e470d0a1a0a0000000d49484452000000640000005008060000"
-) + b"\x00" * 20
+PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000640000005008060000") + b"\x00" * 20
 
 
 def _write(path: Path, payload) -> Path:
@@ -182,8 +180,16 @@ def test_export_assembles_the_contract_files(paper):
     assert result.ok, result.message
     out = paper.out
     for name in (
-        "zh.tex", "zh.pdf", "blocks.json", "chunks.json", "brief.json",
-        "glossary.json", "anchors.json", "report.json", "report.html", "report-data.js",
+        "zh.tex",
+        "zh.pdf",
+        "blocks.json",
+        "chunks.json",
+        "brief.json",
+        "glossary.json",
+        "anchors.json",
+        "report.json",
+        "report.html",
+        "report-data.js",
     ):
         assert (out / name).is_file(), f"产物包缺 {name}"
     assert (out / "figures" / "fig-001.png").is_file()
@@ -234,9 +240,7 @@ def test_untranslated_captions_stay_empty():
     stream = "⟦BLK-1⟧\n⟦CAP-0⟧ The residual plot.\n"
 
     assert export_stage.caption_translations(stream, BLOCKS) == {}
-    assert export_stage.caption_translations(ZH_STREAM, BLOCKS) == {
-        "The residual plot.": "残差图。"
-    }
+    assert export_stage.caption_translations(ZH_STREAM, BLOCKS) == {"The residual plot.": "残差图。"}
 
 
 # ------------------------------------------------------------------ 自包含包

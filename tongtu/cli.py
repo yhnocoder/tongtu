@@ -20,8 +20,8 @@ import shutil
 import subprocess
 import sys
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from . import __version__
 from .stages import STAGES
@@ -81,9 +81,7 @@ def _list_font_families() -> list[str] | None:
         return None
     for argv in ([fc_list, "--format", "%{family}\n"], [fc_list]):
         try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=20, check=False
-            )
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
         except (OSError, subprocess.SubprocessError):
             continue
         if proc.returncode == 0:
@@ -97,8 +95,7 @@ def _probe_fonts() -> Check:
         return Check(
             "中文字体链",
             _UNKNOWN,
-            "fc-list 不可用，无法探测；请自行确认 "
-            f"{' / '.join(FONT_CHAIN)} 之一可用",
+            f"fc-list 不可用，无法探测；请自行确认 {' / '.join(FONT_CHAIN)} 之一可用",
         )
     haystack = "\n".join(families).lower()
     found = [name for name in FONT_CHAIN if name.lower() in haystack]
@@ -107,8 +104,7 @@ def _probe_fonts() -> Check:
     return Check(
         "中文字体链",
         _MISSING,
-        f"探测链全部落空（{' → '.join(FONT_CHAIN)}）；"
-        "装一款中文字体，或用仓库随附的霞鹜文楷",
+        f"探测链全部落空（{' → '.join(FONT_CHAIN)}）；装一款中文字体，或用仓库随附的霞鹜文楷",
     )
 
 
@@ -140,8 +136,7 @@ def run_doctor(out=None) -> int:
         print("\n环境就绪。", file=stream)
         return 0
     print(
-        "\n未通过："
-        + "、".join(f"{c.name}（{'无法探测' if c.status == _UNKNOWN else '缺失'}）" for c in failed),
+        "\n未通过：" + "、".join(f"{c.name}（{'无法探测' if c.status == _UNKNOWN else '缺失'}）" for c in failed),
         file=stream,
     )
     print("TeX 环境安装指引见 docs/ARCHITECTURE.md §10（或直接用参考镜像）。", file=stream)
@@ -368,10 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         choices=list(agent_names()),
         default=None,
-        help=(
-            f"agent 运行时：{' / '.join(agent_names())}"
-            f"（默认 {DEFAULT_AGENT}；也可用 ${AGENT_ENV}）"
-        ),
+        help=(f"agent 运行时：{' / '.join(agent_names())}（默认 {DEFAULT_AGENT}；也可用 ${AGENT_ENV}）"),
     )
     # 模型标识进翻译缓存 key（架构 §4），故真运行时要求显式给：换模型必须换缓存，
     # 靠运行时自己的配置文件下发模型会让缓存分不清新旧译文。mock / pseudo 忽略它。

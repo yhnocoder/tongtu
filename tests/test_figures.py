@@ -34,7 +34,6 @@ import gen_assets  # noqa: E402  —— 与入库图同源的生成器，测试�
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_fixtures import flatten  # noqa: E402  —— fixture 的近似 flat 视图，两处共用
 
-
 # --------------------------------------------------------------------------- #
 # 夹具
 # --------------------------------------------------------------------------- #
@@ -103,9 +102,7 @@ def png(width: int = 40, height: int = 24) -> bytes:
 
 
 def pdf(width: int = 144, height: int = 108) -> bytes:
-    return gen_assets.build_pdf(
-        width=width, height=height, rects=[(4, 4, width - 8, height - 8, (0.5, 0.5, 0.5))]
-    )
+    return gen_assets.build_pdf(width=width, height=height, rects=[(4, 4, width - 8, height - 8, (0.5, 0.5, 0.5))])
 
 
 # --------------------------------------------------------------------------- #
@@ -182,8 +179,7 @@ def test_parse_graphicspath_and_lookup(tmp_path):
     # 真实论文把 \graphicspath 写在导言区——mask 把整个导言区收进 BLK-0，故块清单里找得到。
     workdir, result = build_source(
         tmp_path,
-        "\\begin{figure}\n\\includegraphics{plot}\n\\caption{Elsewhere.}\\label{fig:e}\n"
-        "\\end{figure}",
+        "\\begin{figure}\n\\includegraphics{plot}\n\\caption{Elsewhere.}\\label{fig:e}\n\\end{figure}",
         {"art/plot.png": png()},
         preamble="\\graphicspath{{art/}}",
     )
@@ -204,8 +200,7 @@ def test_parse_graphicspath_and_lookup(tmp_path):
 def test_collect_figures_reports_missing_file(tmp_path):
     workdir, result = build_source(
         tmp_path,
-        "\\begin{figure}\n\\includegraphics{ghost}\n\\caption{Nothing.}\\label{fig:g}\n"
-        "\\end{figure}",
+        "\\begin{figure}\n\\includegraphics{ghost}\n\\caption{Nothing.}\\label{fig:g}\n\\end{figure}",
     )
     warnings: list[str] = []
     (spec,) = fg.collect_figures(workdir, result, warnings=warnings)
@@ -256,9 +251,7 @@ def test_subfigure_block_yields_one_record_per_image(tmp_path):
         "  \\caption{Both of them.}\\label{fig:both}\n"
         "\\end{figure}\n"
     )
-    workdir, result = build_source(
-        tmp_path, tex, {"figs/left.pdf": pdf(), "figs/right.png": png()}
-    )
+    workdir, result = build_source(tmp_path, tex, {"figs/left.pdf": pdf(), "figs/right.png": png()})
     specs = fg.collect_figures(workdir, result)
     assert [s.id for s in specs] == ["fig-001", "fig-002"]
     assert [s.rel_path for s in specs] == ["figs/left.pdf", "figs/right.png"]
@@ -270,8 +263,7 @@ def test_subfigure_block_yields_one_record_per_image(tmp_path):
 def test_figure_without_own_label_falls_back_to_block_label(tmp_path):
     workdir, result = build_source(
         tmp_path,
-        "\\begin{figure}\n\\label{fig:only}\n\\includegraphics{a.png}\n"
-        "\\caption{No label of its own.}\n\\end{figure}",
+        "\\begin{figure}\n\\label{fig:only}\n\\includegraphics{a.png}\n\\caption{No label of its own.}\n\\end{figure}",
         {"a.png": png()},
     )
     (spec,) = fg.collect_figures(workdir, result)
@@ -287,8 +279,7 @@ def test_unknown_category_blocks_are_scanned_too(tmp_path):
     """`.sty` 里自定义的浮动体环境被 mask 保守地记成 unknown——里面的图照样要收。"""
     workdir, result = build_source(
         tmp_path,
-        "\\begin{myfloat}\n\\includegraphics{x.png}\n\\caption{Custom float.}"
-        "\\label{fig:x}\n\\end{myfloat}",
+        "\\begin{myfloat}\n\\includegraphics{x.png}\n\\caption{Custom float.}\\label{fig:x}\n\\end{myfloat}",
         {"x.png": png()},
     )
     (block,) = [b for b in result.blocks if b.environment == "myfloat"]
@@ -378,9 +369,7 @@ def test_cache_survives_id_shift(tmp_path):
     """前面插一张图会让后面的 id 全部平移——图本身没变就不该重渲。"""
     body = "\\begin{{figure}}\n\\includegraphics{{{name}}}\n\\caption{{{cap}}}\\end{{figure}}"
     assets = {"a.png": png(width=12), "b.png": png(width=14)}
-    workdir, first_mask = build_source(
-        tmp_path, body.format(name="a.png", cap="A"), assets
-    )
+    workdir, first_mask = build_source(tmp_path, body.format(name="a.png", cap="A"), assets)
     renderer = FakeRenderer()
     fg.figures(workdir, first_mask, renderer=renderer)
     assert renderer.names == ["a.png"]
@@ -456,9 +445,7 @@ def test_stale_pngs_are_swept(tmp_path):
     fg.figures(workdir, result, renderer=FakeRenderer())
     (out / "fig-042.png").write_bytes(png())
     fg.figures(workdir, result, renderer=FakeRenderer())
-    assert sorted(p.name for p in out.iterdir()) == sorted(
-        [fg.CACHE_NAME, fg.FIGURES_JSON, "fig-001.png"]
-    )
+    assert sorted(p.name for p in out.iterdir()) == sorted([fg.CACHE_NAME, fg.FIGURES_JSON, "fig-001.png"])
 
 
 # --------------------------------------------------------------------------- #

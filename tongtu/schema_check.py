@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-from functools import lru_cache
+from functools import cache
 from importlib.resources import files
 from pathlib import Path
 
@@ -64,9 +64,7 @@ def _type_ok(value, name: str) -> bool:
     return isinstance(value, expected)
 
 
-def validate_schema(
-    instance, schema: dict, root: dict | None = None, path: str = "$"
-) -> list[str]:
+def validate_schema(instance, schema: dict, root: dict | None = None, path: str = "$") -> list[str]:
     """返回不合规之处（空列表 = 通过）。支持自家 schema 用到的那些关键字。"""
     root = schema if root is None else root
     errors: list[str] = []
@@ -110,11 +108,7 @@ def validate_schema(
             errors.extend(validate_schema(item, schema["items"], root, f"{path}[{i}]"))
 
     if "oneOf" in schema:
-        passed = [
-            branch
-            for branch in schema["oneOf"]
-            if not validate_schema(instance, branch, root, path)
-        ]
+        passed = [branch for branch in schema["oneOf"] if not validate_schema(instance, branch, root, path)]
         if len(passed) != 1:
             errors.append(f"{path}: oneOf 命中 {len(passed)} 个分支（应恰为 1）")
 
@@ -138,12 +132,10 @@ def find_schema_dir() -> Path:
         packaged = None
     if packaged is not None and _looks_like_schema_dir(packaged):
         return packaged
-    raise SchemaError(
-        f"找不到产物契约 schema 目录（源码树 {SCHEMA_DIRNAME}/ 或包内 {PACKAGED_SCHEMAS}/）"
-    )
+    raise SchemaError(f"找不到产物契约 schema 目录（源码树 {SCHEMA_DIRNAME}/ 或包内 {PACKAGED_SCHEMAS}/）")
 
 
-@lru_cache(maxsize=None)
+@cache
 def load_schema(name: str) -> dict:
     """读一份产物 schema（`"brief"` → `docs/schemas/brief.schema.json`）。"""
     path = find_schema_dir() / f"{name}.schema.json"

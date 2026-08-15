@@ -73,9 +73,7 @@ def test_golden_masked_stream(path):
 def test_golden_blocks_json(path):
     src = read(path)
     result = mask(src)
-    data = result.to_blocks_json(
-        source_path=f"tests/data/mask/{path.name}", roundtrip_ok=roundtrip_check(src)
-    )
+    data = result.to_blocks_json(source_path=f"tests/data/mask/{path.name}", roundtrip_ok=roundtrip_check(src))
     _golden(
         GOLDEN / f"{path.stem}.blocks.json",
         json.dumps(data, ensure_ascii=False, indent=1, sort_keys=False) + "\n",

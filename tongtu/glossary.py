@@ -34,13 +34,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 from . import CONTRACT_VERSION, prompts
-from .schema_check import SchemaError, check as schema_check
+from .schema_check import SchemaError
+from .schema_check import check as schema_check
 
 __all__ = [
     "CONFIG_DIRNAME",
@@ -131,7 +132,7 @@ class Term:
         return data
 
     @classmethod
-    def from_json(cls, data: Mapping, *, source: str = "") -> "Term":
+    def from_json(cls, data: Mapping, *, source: str = "") -> Term:
         return cls(
             term=str(data["term"]),
             translation=str(data["translation"]),
@@ -167,7 +168,7 @@ class NoTranslate:
         return data
 
     @classmethod
-    def from_json(cls, data: Mapping, *, source: str = "") -> "NoTranslate":
+    def from_json(cls, data: Mapping, *, source: str = "") -> NoTranslate:
         return cls(
             term=str(data["term"]),
             match=str(data.get("match", "")),
@@ -196,7 +197,7 @@ class Style:
         return data
 
     @classmethod
-    def from_json(cls, data: Mapping) -> "Style":
+    def from_json(cls, data: Mapping) -> Style:
         return cls(
             style_version=str(data.get("style_version", DEFAULT_STYLE_VERSION)),
             tone=str(data.get("tone", "")),
@@ -204,16 +205,12 @@ class Style:
             rules=tuple(str(r) for r in data.get("rules", ())),
         )
 
-    def overlay(self, other: "Style", *, other_had_version: bool) -> "Style":
+    def overlay(self, other: Style, *, other_had_version: bool) -> Style:
         """后者覆盖前者，**逐字段**：后者没写的字段保留前者的值。"""
         return Style(
             style_version=other.style_version if other_had_version else self.style_version,
             tone=other.tone or self.tone,
-            translator_notes=(
-                other.translator_notes
-                if other.translator_notes is not None
-                else self.translator_notes
-            ),
+            translator_notes=(other.translator_notes if other.translator_notes is not None else self.translator_notes),
             rules=other.rules or self.rules,
         )
 
@@ -224,7 +221,7 @@ class Layer:
 
     layer: str
     path: str
-    glossary: "Glossary"
+    glossary: Glossary
 
     def to_json(self) -> dict:
         return {
@@ -270,12 +267,10 @@ class Glossary:
         return data
 
     @classmethod
-    def from_json(cls, data: Mapping, *, source: str = "") -> "Glossary":
+    def from_json(cls, data: Mapping, *, source: str = "") -> Glossary:
         style_raw = data.get("style") or {}
         return cls(
-            do_not_translate=tuple(
-                NoTranslate.from_json(d, source=source) for d in data.get("do_not_translate", ())
-            ),
+            do_not_translate=tuple(NoTranslate.from_json(d, source=source) for d in data.get("do_not_translate", ())),
             terms=tuple(Term.from_json(t, source=source) for t in data.get("terms", ())),
             style=Style.from_json(style_raw),
             style_version_set="style_version" in style_raw,
@@ -353,9 +348,7 @@ def merge(layers: Sequence[Layer]) -> Glossary:
             dnt[entry.key] = replace(entry, source=entry.source or layer.layer)
         for entry in layer.glossary.terms:
             terms[entry.key] = replace(entry, source=entry.source or layer.layer)
-        style = style.overlay(
-            layer.glossary.style, other_had_version=layer.glossary.style_version_set
-        )
+        style = style.overlay(layer.glossary.style, other_had_version=layer.glossary.style_version_set)
         style_set = style_set or layer.glossary.style_version_set
     return Glossary(
         do_not_translate=tuple(sorted(dnt.values(), key=lambda d: d.key)),
@@ -433,20 +426,14 @@ def with_agent_decisions(
                 term=name,
                 translation=translation,
                 aliases=tuple(str(a) for a in raw.get("aliases", ()) if str(a).strip()),
-                keep_original=raw.get("keep_original")
-                if isinstance(raw.get("keep_original"), bool)
-                else None,
+                keep_original=raw.get("keep_original") if isinstance(raw.get("keep_original"), bool) else None,
                 note=str(raw.get("note", "")),
                 source="agent",
                 decided_at=stamp,
             )
         )
     for raw in do_not_translate:
-        name = (
-            str(raw.get("term") or "").strip()
-            if isinstance(raw, Mapping)
-            else str(raw or "").strip()
-        )
+        name = str(raw.get("term") or "").strip() if isinstance(raw, Mapping) else str(raw or "").strip()
         if not name or name.lower() in known_dnt:
             continue
         known_dnt.add(name.lower())
@@ -462,9 +449,7 @@ def with_agent_decisions(
         )
 
     return Glossary(
-        do_not_translate=tuple(
-            sorted([*base.do_not_translate, *added_dnt], key=lambda d: d.key)
-        ),
+        do_not_translate=tuple(sorted([*base.do_not_translate, *added_dnt], key=lambda d: d.key)),
         terms=tuple(sorted([*base.terms, *added_terms], key=lambda t: t.key)),
         style=base.style,
         merged_from=base.merged_from,
@@ -505,13 +490,7 @@ def hit_terms(text: str, mapping: Mapping[str, str] | None) -> tuple[tuple[str, 
     if not mapping:
         return ()
     lowered = text.lower()
-    return tuple(
-        sorted(
-            (term, str(value))
-            for term, value in mapping.items()
-            if term and term.lower() in lowered
-        )
-    )
+    return tuple(sorted((term, str(value)) for term, value in mapping.items() if term and term.lower() in lowered))
 
 
 def relevant_terms(chunk_text: str, glossary: Glossary | None) -> tuple[tuple[str, str], ...]:
@@ -532,9 +511,7 @@ def content_hash(glossary: Glossary) -> str:
     出同样的决策时不该把全部块的翻译一起失效掉。
     """
     payload = {
-        "do_not_translate": [
-            {"term": d.term, "match": d.match} for d in glossary.do_not_translate
-        ],
+        "do_not_translate": [{"term": d.term, "match": d.match} for d in glossary.do_not_translate],
         "terms": [
             {
                 "term": t.term,
@@ -551,4 +528,4 @@ def content_hash(glossary: Glossary) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")

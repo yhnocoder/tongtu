@@ -35,6 +35,7 @@ import re
 from pathlib import Path
 
 import pytest
+from test_e2e_identity import CONTRACT_FILES, CONTRACT_SCHEMAS, FIXTURES, MODES, PAPERS, RUN_STAGES
 
 from tongtu import CONTRACT_VERSION
 from tongtu.agent import get_agent
@@ -44,8 +45,6 @@ from tongtu.schema_check import load_schema, validate_schema
 from tongtu.stages.compile import LOG_NAME
 from tongtu.stages.inject_cjk import BEGIN_MARK, inject
 from tongtu.workdir import Workdir
-
-from test_e2e_identity import CONTRACT_FILES, CONTRACT_SCHEMAS, FIXTURES, MODES, PAPERS, RUN_STAGES
 
 #: 中日韩统一表意文字（含扩展 A）——「译文里到底有没有中文」的机械判据。
 CJK_RE = re.compile(r"[㐀-䶿一-鿿]")
@@ -85,9 +84,7 @@ def test_pseudo_translation_e2e(paper, tools, tmp_path):
     assert len(with_cjk) >= 2, "至少两块该带上中文，不然这个变体等于没跑"
 
     # --- 中文没把 validate 四层碰坏（这个变体成立的前提）------------------
-    translate_manifest = json.loads(
-        paper_dir.manifest_path("translate").read_text(encoding="utf-8")
-    )
+    translate_manifest = json.loads(paper_dir.manifest_path("translate").read_text(encoding="utf-8"))
     translate_result = translate_manifest["result"]
     assert translate_result["fallback"] == 0, translate_result
     assert translate_result.get("failures_by_check", {}) == {}
@@ -126,9 +123,7 @@ def test_pseudo_translation_e2e(paper, tools, tmp_path):
         assert log_path.is_file(), "真编译该把 latexmk 日志归档进 logs/"
         log = log_path.read_text(encoding="utf-8", errors="replace")
         for char in PSEUDO_PREFIX:
-            assert f"There is no {char} in font" not in log, (
-                f"xelatex 排不出「{char}」——字体链断了，PDF 里是豆腐"
-            )
+            assert f"There is no {char} in font" not in log, f"xelatex 排不出「{char}」——字体链断了，PDF 里是豆腐"
 
     # --- 产物包（与恒等 e2e 同一份契约）----------------------------------
     out = paper_dir.out

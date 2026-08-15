@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
+from collections.abc import Container, Iterator
 from dataclasses import dataclass
-from typing import Container, Iterator
 
 __all__ = [
     "TexLexError",

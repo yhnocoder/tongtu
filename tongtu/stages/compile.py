@@ -68,18 +68,18 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
 
 from ..compiler import (
     DEFAULT_TIMEOUT,
+    LOG_TAIL,
     AssetError,
     AssetLinks,
-    CompileRunResult,
     Compiler,
+    CompileRunResult,
     FixupRequest,
-    LOG_TAIL,
     SessionFn,
     latexmk_compiler,
     link_assets,
@@ -366,7 +366,7 @@ class _Unit:
     src_at: list[int]
 
     @classmethod
-    def of(cls, chunk: TranslatedChunk) -> "_Unit":
+    def of(cls, chunk: TranslatedChunk) -> _Unit:
         trans_pieces, trans_at = paragraph_pieces(chunk.translation)
         src_pieces, src_at = paragraph_pieces(chunk.source)
         return cls(chunk, trans_pieces, trans_at, src_pieces, src_at)
@@ -415,9 +415,7 @@ class _Unit:
         return "".join(pieces)
 
 
-def normalize_units(
-    masked_translated_stream, mask_result: MaskResult
-) -> tuple[TranslatedChunk, ...]:
+def normalize_units(masked_translated_stream, mask_result: MaskResult) -> tuple[TranslatedChunk, ...]:
     """把各种形状的译文输入规范成块序列（见模块文档「输入形态」）。
 
     认得：`str`、`TranslatedChunk`、`(id, source, translation)` 三元组、
@@ -432,12 +430,8 @@ def normalize_units(
             ),
         )
     if isinstance(masked_translated_stream, Mapping):
-        raise CompileError(
-            "译文块清单不能是 mapping（块的顺序是有意义的）：请给 TranslatedChunk 序列"
-        )
-    if not isinstance(masked_translated_stream, Sequence) and not isinstance(
-        masked_translated_stream, Iterable
-    ):
+        raise CompileError("译文块清单不能是 mapping（块的顺序是有意义的）：请给 TranslatedChunk 序列")
+    if not isinstance(masked_translated_stream, Sequence) and not isinstance(masked_translated_stream, Iterable):
         raise CompileError(f"无法识别的译文输入：{type(masked_translated_stream).__name__}")
 
     units: list[TranslatedChunk] = []
@@ -450,9 +444,7 @@ def normalize_units(
                     TranslatedChunk(
                         id=str(item.get("id") or f"c{index:03d}"),
                         source=item["source"] if "source" in item else item["original"],
-                        translation=(
-                            item["translation"] if "translation" in item else item["text"]
-                        ),
+                        translation=(item["translation"] if "translation" in item else item["text"]),
                         section=item.get("section"),
                     )
                 )
@@ -532,12 +524,11 @@ class _Driver:
         else:
             if "fonts" in self.assets.linked or "fonts" in self.assets.copied:
                 self.warnings.append(
-                    "源码里也有 fonts/ 目录，已被仓库字体目录覆盖"
-                    "（inject_cjk 的 Path={fonts/} 指的是仓库字体）"
+                    "源码里也有 fonts/ 目录，已被仓库字体目录覆盖（inject_cjk 的 Path={fonts/} 指的是仓库字体）"
                 )
 
     def stream(self, states: Sequence) -> str:
-        return "".join(unit.render(state) for unit, state in zip(self.units, states))
+        return "".join(unit.render(state) for unit, state in zip(self.units, states, strict=True))
 
     def write(self, states: Sequence) -> None:
         """掩码流 → unmask 回填 → inject 注入 → 落 `build/zh-raw.tex` 与 `build/zh/zh.tex`。"""
@@ -580,10 +571,7 @@ class _Driver:
                 json.dumps(
                     {
                         "tex": ZH_TEX,
-                        "blocks": {
-                            key: [start, end]
-                            for key, (start, end) in sorted(self.block_spans.items())
-                        },
+                        "blocks": {key: [start, end] for key, (start, end) in sorted(self.block_spans.items())},
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -626,8 +614,7 @@ class _Driver:
         """原文自身即带错却出了 PDF → 放宽判据为「错误数不超过它」。"""
         self.tolerate = identity.error_count
         self.warnings.append(
-            f"恒等回填（全原文）自身即带 {identity.error_count} 个 ! 错误但出了 PDF，"
-            "判据放宽为「译文不比原文更糟」"
+            f"恒等回填（全原文）自身即带 {identity.error_count} 个 ! 错误但出了 PDF，判据放宽为「译文不比原文更糟」"
         )
 
     def probe_fails(self, states: Sequence) -> bool:
@@ -780,9 +767,7 @@ def compile_zh(
     )
     joined = "".join(unit.source for unit in units)
     if joined != mask_result.masked:
-        driver.warnings.append(
-            "块原文拼接与 mask 的掩码流不一致（分块或译文流对不上），二分仍按块原文进行"
-        )
+        driver.warnings.append("块原文拼接与 mask 的掩码流不一致（分块或译文流对不上），二分仍按块原文进行")
 
     fallbacks: list[Fallback] = []
     retranslated: list[str] = []
@@ -835,10 +820,7 @@ def compile_zh(
         if session is None:
             return finish(
                 FAILED,
-                message=(
-                    f"{reason}；没有修复会话（关节⑥）可用，无法继续"
-                    f"（第一个错误：{result.first_error}）"
-                ),
+                message=(f"{reason}；没有修复会话（关节⑥）可用，无法继续（第一个错误：{result.first_error}）"),
             )
         driver.write(states)  # 让 agent 看到要交付的那一份，而不是二分中途的配置
         session(
@@ -860,10 +842,7 @@ def compile_zh(
             return finish(OK_WITH_FALLBACK if fallbacks else OK)
         return finish(
             FAILED,
-            message=(
-                f"{reason}；修复会话之后仍编不过"
-                f"（第一个错误：{after.first_error or result.first_error}）"
-            ),
+            message=(f"{reason}；修复会话之后仍编不过（第一个错误：{after.first_error or result.first_error}）"),
         )
 
     # --- 分诊：全局问题 vs 坏段 ------------------------------------------
@@ -921,8 +900,7 @@ def compile_zh(
         if not unit.splittable:
             if unit.paragraph_count and len(unit.trans_at) != len(unit.src_at):
                 driver.warnings.append(
-                    f"块 {unit.id} 的原译段落数对不上"
-                    f"（{len(unit.src_at)} vs {len(unit.trans_at)}），只能整块回退"
+                    f"块 {unit.id} 的原译段落数对不上（{len(unit.src_at)} vs {len(unit.trans_at)}），只能整块回退"
                 )
             bad_paragraphs[index] = None
             continue
@@ -932,9 +910,7 @@ def compile_zh(
         def para_probe(subset: list[int], _index: int = index, _unit: _Unit = unit) -> bool:
             keep = set(subset)
             states = _copy_states(base)
-            states[_index] = {
-                p: _unit.source_paragraph(p) for p in range(_unit.paragraph_count) if p not in keep
-            }
+            states[_index] = {p: _unit.source_paragraph(p) for p in range(_unit.paragraph_count) if p not in keep}
             return driver.probe_fails(states)
 
         bad_paragraphs[index] = driver.locate(paragraphs, para_probe)
@@ -965,9 +941,7 @@ def compile_zh(
                 chunk_id=unit.id,
                 para_index=para,
                 source=unit.chunk.source if para is None else unit.source_paragraph(para),
-                translation=(
-                    unit.chunk.translation if para is None else unit.translation_paragraph(para)
-                ),
+                translation=(unit.chunk.translation if para is None else unit.translation_paragraph(para)),
                 detail=detail,
                 section=unit.chunk.section,
             )
