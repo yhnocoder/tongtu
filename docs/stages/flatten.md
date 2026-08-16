@@ -35,19 +35,19 @@ latexpand --keep-comments --fatal <主文件相对路径>
 - `--keep-comments`：latexpand 默认剥掉注释与 `\end{document}` 之后的内容，这是有损变换；mask 阶段把注释当作 block 处理，flatten 不做任何有损变换。实测确认该选项下注释里的 `\input` 不被展开，原样保留。
 - `--fatal`：`\input` 指向的文件找不到时立刻失败（状态 `expand_failed`），不静默留下残缺产物。arXiv 源在 arXiv 编译通过，文件本应齐全；实测十一篇无一触发。
 - latexpand 不在 PATH → 状态 `expand_failed`，message 说明需要安装 TeX 发行版（latexpand 随 TeX Live 分发）。`tongtu doctor` 的对应检查项等编译工具面接线时一并实现。
-- `\usepackage` 不展开（不传 `--expand-usepackage`）：`.sty` 与 `.cls` 是排版资产不是翻译对象，展开只会把样式代码灌进下游的 mask 与 survey 输入。因此 **`flat.tex` 不是自包含文件**：正文与参考文献已内联，类文件、样式文件、图源仍留在 `src/`，由 baseline 编译时指向 `src/` 提供。
+- `\usepackage` 不展开（不传 `--expand-usepackage`）：`.sty` 与 `.cls` 是排版资产不是翻译对象，展开只会把样式代码灌进下游的 mask 与 survey 输入。因此 **`flat.tex` 不是自包含文件**：正文与参考文献已内联，类文件、样式文件、图源仍留在 `src/`，由 precompile 编译时指向 `src/` 提供。
 
 ## bbl 内联
 
 主文件同目录存在同主干 `.bbl`（`main.tex` → `main.bbl`）时，把它内联进 flat.tex——这对应 arXiv 的编译约定：参考文献不从 `.bib` 现编，直接用作者上传的预编译 bbl（按主文件名匹配）。
 
-内联由 flatten 自己做，不用 latexpand 的 `--expand-bbl`：后者按字面子串匹配 `\bibliography{…}`，不识别注释语义，实测（2412.19437）把注释行 `% \bibliography{main}` 也展开了，产出重复且不可编译的参考文献段；上游对此没有可用参数，v1.7.2 即当前最新版。自研内联在 latexpand 展开完成后执行：逐行扫描 flat.tex，找注释外的 `\bibliography{…}` 命令（判注释同主文件判定：每行第一个未转义 `%` 之前的部分）；恰一处 → 以 bbl 文件内容整体替换该命令；零处或多处 → 不内联，记 warning，交 baseline 裁决。字节级操作，不做编码转换。
+内联由 flatten 自己做，不用 latexpand 的 `--expand-bbl`：后者按字面子串匹配 `\bibliography{…}`，不识别注释语义，实测（2412.19437）把注释行 `% \bibliography{main}` 也展开了，产出重复且不可编译的参考文献段；上游对此没有可用参数，v1.7.2 即当前最新版。自研内联在 latexpand 展开完成后执行：逐行扫描 flat.tex，找注释外的 `\bibliography{…}` 命令（判注释同主文件判定：每行第一个未转义 `%` 之前的部分）；恰一处 → 以 bbl 文件内容整体替换该命令；零处或多处 → 不内联，记 warning，交 precompile 裁决。字节级操作，不做编码转换。
 
-没有同主干 `.bbl` 时不内联也不警告：带 `.bib` 的源走 bibtex 的路径，由 baseline 的 latexmk 处理。biblatex（`\addbibresource` 加 biber）暂不支持，真实遇到再加。
+没有同主干 `.bbl` 时不内联也不警告：带 `.bib` 的源走 bibtex 的路径，由 precompile 的 latexmk 处理。biblatex（`\addbibresource` 加 biber）暂不支持，真实遇到再加。
 
 ## 出口判据
 
-机械三条：latexpand 退出码 0；输出非空且含 `\begin{document}` 与 `\end{document}`（字节包含检查）；`flat.tex` 与状态 `ok` 的 manifest 落盘。展开后仍残留的注释外 `\input` / `\include` 只记 warning 不判失败——flatten 的出口判据是形式检查，展开语义对不对由 baseline 编译裁决。
+机械三条：latexpand 退出码 0；输出非空且含 `\begin{document}` 与 `\end{document}`（字节包含检查）；`flat.tex` 与状态 `ok` 的 manifest 落盘。展开后仍残留的注释外 `\input` / `\include` 只记 warning 不判失败——flatten 的出口判据是形式检查，展开语义对不对由 precompile 编译裁决。
 
 ## 状态与退出码
 

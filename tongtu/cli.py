@@ -1,14 +1,15 @@
 """`tongtu` CLI 命令面。
 
-`stage fetch` 与 `stage flatten` 已接线，走真实的阶段驱动器；其余命令为占位实现：只解析并校验参数、
-说明将要执行的动作，不运行 pipeline。run / validate / doctor / `tex compile` 的
-退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
+`stage fetch`、`stage flatten`、`stage precompile` 与 `doctor` 已接线，走真实的阶段驱动器与环境检查；
+其余命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline。run / validate /
+`tex compile` 的退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
 （99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -20,9 +21,12 @@ from rich.table import Table
 from . import __version__
 from .artifacts.fetch import FetchStatus
 from .artifacts.flatten import FlattenManifest, FlattenStatus
+from .artifacts.precompile import PrecompileManifest, PrecompileStatus
+from .assets import asset_path
 from .stages import STAGES
 from .stages import fetch as fetch_stage
 from .stages import flatten as flatten_stage
+from .stages import precompile as precompile_stage
 from .workdir import WorkdirError
 
 # 模块级退出码常量是退出码的集中登记处：新增退出码在此定义并注释含义。
@@ -51,6 +55,15 @@ DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
     ("epstopdf", "EPS 图源接入 xelatex 的转换链"),
     ("中文字体", "font fallback chain（霞鹜文楷随仓库分发）"),
 )
+
+#: DOCTOR_CHECKS 里字体检查项的名字：这一项查字体文件，其余各项按可执行文件查 PATH。
+FONT_CHECK_NAME = "中文字体"
+
+#: 字体目录；`fonts/` 随仓库分发，两种布局下的定位交给 assets。
+FONTS_DIR = asset_path("fonts")
+
+#: 字体目录里必须存在的字体文件（霞鹜文楷 Light / Medium，用途见 fonts/README.md）。
+REQUIRED_FONT_FILENAMES: tuple[str, ...] = ("LXGWWenKai-Light.ttf", "LXGWWenKai-Medium.ttf")
 
 #: `tongtu stage` 的阶段名选项，取值即 tongtu.stages.STAGES。
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
@@ -205,15 +218,55 @@ def stage(
     if name.value == flatten_stage.STAGE_NAME:
         # flatten 判定不出主文件时才需要 agent，该介入点推迟实现，--agent 与 --model 不参与执行。
         raise _run_stage_flatten(paper, workdir, force, json_output)
+    if name.value == precompile_stage.STAGE_NAME:
+        # precompile 编不过时拉起修复会话，模型标识透传给驱动器；agent 运行时目前唯一，
+        # 适配层还没有注册表，--agent 无消费方。
+        raise _run_stage_precompile(paper, workdir, force, json_output, model)
     raise _stub_exit(
         "stage", name=name.value, paper=paper, workdir=workdir, force=force, json=json_output, agent=agent, model=model
     )
 
 
-def _run_stage_fetch(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
-    """`stage fetch` 的接线：识别论文参数、调驱动器、打印结果、映射退出码。"""
+def _warn_json_ignored(json_output: bool) -> None:
+    """`--json` 的事件流 schema 尚未定义，三个已接线的阶段都先提示忽略。"""
     if json_output:
         error_console.print("--json：事件流 schema 尚未定义，本次忽略该选项")
+
+
+def _workdir_name_from_paper(paper: str) -> str:
+    """由论文参数得出工作目录名：本地目录形态取 basename，编号与链接形态解析成编号。
+
+    flatten 与 precompile 都不访问网络也不读源目录内容，论文参数只用来定位工作目录。参数
+    不合法时抛 `PaperArgumentError` 或 `WorkdirError`，由调用方转 typer 的用法错误。
+    """
+    paper_input = fetch_stage.parse_paper_argument(paper)
+    if paper_input.source_dir is not None:
+        return paper_input.source_dir.name
+    return paper_input.arxiv_id
+
+
+def _print_skipped(stage_name: str, status: str, manifest_path: Path) -> None:
+    """命中跳过时的两行人读输出：结论状态与 manifest 路径。"""
+    console.print(f"{stage_name} 跳过：manifest 已有结论（状态 {status}），--force 可重新执行")
+    console.print(f"  manifest  {manifest_path}")
+
+
+def _upstream_exit_code(*, ok: bool, pdf_only_chain: bool) -> int:
+    """flatten 与 precompile 共用的退出码映射：ok 退 0，上游判定为 PDF 退 3，其余失败态退 1。
+
+    `pdf_only_chain` 指本阶段的失败源自上游把源判定成 PDF 而非 LaTeX 源码，调用方据此改道
+    degraded path；该退出码在业务分支段（3–9），跨子命令同码同义。
+    """
+    if ok:
+        return 0
+    if pdf_only_chain:
+        return EXIT_PDF_ONLY
+    return EXIT_FAILURE
+
+
+def _run_stage_fetch(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage fetch` 的接线：识别论文参数、调驱动器、打印结果、映射退出码。"""
+    _warn_json_ignored(json_output)
     try:
         paper_input = fetch_stage.parse_paper_argument(paper)
         if paper_input.source_dir is not None:
@@ -225,8 +278,7 @@ def _run_stage_fetch(paper: str, workdir: Path | None, force: bool, json_output:
     manifest = result.manifest
     manifest_path = result.workdir.manifest_path(fetch_stage.STAGE_NAME)
     if result.skipped:
-        console.print(f"fetch 跳过：manifest 已有结论（状态 {manifest.status}），--force 可重新执行")
-        console.print(f"  manifest  {manifest_path}")
+        _print_skipped(fetch_stage.STAGE_NAME, manifest.status, manifest_path)
         return typer.Exit(_fetch_exit_code(manifest.status))
     console.print(f"fetch：状态 {manifest.status}")
     table = Table(show_header=False, box=None, pad_edge=False)
@@ -263,19 +315,15 @@ def _run_stage_flatten(paper: str, workdir: Path | None, force: bool, json_outpu
     flatten 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
     basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。
     """
-    if json_output:
-        error_console.print("--json：事件流 schema 尚未定义，本次忽略该选项")
+    _warn_json_ignored(json_output)
     try:
-        paper_input = fetch_stage.parse_paper_argument(paper)
-        workdir_name = paper_input.source_dir.name if paper_input.source_dir is not None else paper_input.arxiv_id
-        result = flatten_stage.flatten(workdir_name, workdir, force=force)
+        result = flatten_stage.flatten(_workdir_name_from_paper(paper), workdir, force=force)
     except (fetch_stage.PaperArgumentError, WorkdirError) as error:
         raise typer.BadParameter(str(error)) from error
     manifest = result.manifest
     manifest_path = result.workdir.manifest_path(flatten_stage.STAGE_NAME)
     if result.skipped:
-        console.print(f"flatten 跳过：manifest 已有结论（状态 {manifest.status}），--force 可重新执行")
-        console.print(f"  manifest  {manifest_path}")
+        _print_skipped(flatten_stage.STAGE_NAME, manifest.status, manifest_path)
         return typer.Exit(_flatten_exit_code(manifest))
     console.print(f"flatten：状态 {manifest.status}")
     table = Table(show_header=False, box=None, pad_edge=False)
@@ -298,16 +346,81 @@ def _run_stage_flatten(paper: str, workdir: Path | None, force: bool, json_outpu
 
 
 def _flatten_exit_code(manifest: FlattenManifest) -> int:
-    """flatten 状态到退出码的映射；命中跳过时对已存结论取同样的映射。
+    """flatten 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is FlattenStatus.OK,
+        pdf_only_chain=(
+            manifest.status is FlattenStatus.FETCH_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
+        ),
+    )
 
-    上游 fetch 判定为 pdf_only 时退 3（业务分支段，跨子命令同码同义），调用方据此改道
-    degraded path；其余失败态退 1。
+
+def _run_stage_precompile(
+    paper: str, workdir: Path | None, force: bool, json_output: bool, model: str | None
+) -> typer.Exit:
+    """`stage precompile` 的接线：定位工作目录、调驱动器、打印编译结果与基线数据、映射退出码。
+
+    precompile 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。`--model` 透传给
+    驱动器，由它交给修复会话的 agent 运行时。
     """
-    if manifest.status is FlattenStatus.OK:
-        return 0
-    if manifest.status is FlattenStatus.FETCH_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY:
-        return EXIT_PDF_ONLY
-    return EXIT_FAILURE
+    _warn_json_ignored(json_output)
+    try:
+        result = precompile_stage.precompile(_workdir_name_from_paper(paper), workdir, force=force, model=model)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(precompile_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(precompile_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_precompile_exit_code(manifest))
+    console.print(f"precompile：状态 {manifest.status}")
+    compiled = manifest.status is PrecompileStatus.OK
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    # 五个计数只在编译通过时可信，失败态一律打「—」。
+    table.add_row("  pages", str(manifest.pages) if compiled else "—")
+    table.add_row("  overfull_hboxes", str(manifest.overfull_hboxes) if compiled else "—")
+    table.add_row("  undefined_references", str(manifest.undefined_references) if compiled else "—")
+    table.add_row("  undefined_citations", str(manifest.undefined_citations) if compiled else "—")
+    table.add_row("  missing_characters", str(manifest.missing_characters) if compiled else "—")
+    table.add_row("  耗时", f"{manifest.duration_seconds:.1f} 秒" if manifest.duration_seconds else "—")
+    pdf_path = result.workdir.build / precompile_stage.PRECOMPILE_DIRNAME / precompile_stage.PDF_FILENAME
+    precompile_path = result.workdir.build / precompile_stage.PRECOMPILE_FILENAME
+    if compiled:
+        table.add_row("  flat.pdf", f"{pdf_path}（{manifest.pdf_bytes} 字节）")
+        table.add_row("  precompile.tex", f"{precompile_path}（{manifest.precompile_bytes} 字节）")
+    else:
+        table.add_row("  flat.pdf", "未产出")
+        table.add_row("  precompile.tex", "未产出")
+    if manifest.fix_session:
+        table.add_row(
+            "  修复会话",
+            f"已拉起（{manifest.session_stop_reason}，{manifest.session_duration_seconds:.0f} 秒，"
+            f"模型 {manifest.session_model}）",
+        )
+    else:
+        table.add_row("  修复会话", "未拉起")
+    for changed in manifest.changed_files:
+        table.add_row("  changed_file", changed)
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_precompile_exit_code(manifest))
+
+
+def _precompile_exit_code(manifest: PrecompileManifest) -> int:
+    """precompile 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is PrecompileStatus.OK,
+        pdf_only_chain=(
+            manifest.status is PrecompileStatus.FLATTEN_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
+        ),
+    )
 
 
 @app.command()
@@ -330,10 +443,37 @@ def validate(
 @app.command()
 def doctor() -> None:
     """检查 xelatex / latexmk / latexpand / pdftocairo / epstopdf 与中文字体，逐项报告缺失。"""
-    console.print(f"tongtu doctor：占位实现，环境检查未执行（退出码 {EXIT_STUB}）")
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径超宽时折行，不截断
+    missing: list[str] = []
     for name, purpose in DOCTOR_CHECKS:
-        console.print(f"  [未检查] {name} —— {purpose}")
-    raise typer.Exit(EXIT_STUB)
+        found, detail = _check_fonts() if name == FONT_CHECK_NAME else _check_executable(name)
+        if not found:
+            missing.append(name)
+        table.add_row(f"  [{'通过' if found else '缺失'}]", f"{name} —— {purpose}", detail)
+    console.print(table)
+    if missing:
+        console.print(f"环境有缺失：{'、'.join(missing)}")
+        raise typer.Exit(EXIT_FAILURE)
+    console.print("环境齐全。")
+
+
+def _check_executable(name: str) -> tuple[bool, str]:
+    """在 PATH 里查可执行文件，返回（是否找到、找到的路径或缺失说明）。"""
+    path = shutil.which(name)
+    if path is None:
+        return False, f"PATH 里找不到 {name}"
+    return True, path
+
+
+def _check_fonts() -> tuple[bool, str]:
+    """查字体目录下的中文字体文件，返回（是否齐全、字体目录路径或缺失说明）。"""
+    absent = [name for name in REQUIRED_FONT_FILENAMES if not (FONTS_DIR / name).is_file()]
+    if absent:
+        return False, f"{FONTS_DIR} 下缺 {'、'.join(absent)}"
+    return True, str(FONTS_DIR)
 
 
 @app.command()

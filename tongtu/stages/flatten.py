@@ -45,11 +45,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from pydantic import ValidationError
-
-from .. import workdir
+from .. import manifests, workdir
 from ..artifacts.fetch import FetchManifest, FetchStatus
 from ..artifacts.flatten import FlattenManifest, FlattenStatus
+from ..processes import OUTPUT_EXCERPT_CHARS
 from .fetch import STAGE_NAME as FETCH_STAGE_NAME
 
 #: 阶段名，也是 stage manifest 的文件名主干。
@@ -86,9 +85,6 @@ BIBLIOGRAPHY_COMMAND_RE = re.compile(rb"\\bibliography\s*\{[^}]*\}")
 COMMENT_CHAR = b"%"
 BACKSLASH = b"\\"
 
-#: latexpand 失败时摘进 message 的 stderr 字符数上限；完整 stderr 逐行记入 warnings。
-STDERR_MESSAGE_CHARS = 500
-
 
 @dataclass(frozen=True)
 class FlattenResult:
@@ -117,10 +113,11 @@ def flatten(
     paper_workdir = workdir.Workdir(workdir.resolve(workdir_name, workdir_path))
     paper_workdir.create()  # 前置条件不满足时也要写 manifest，先确保四区存在
 
-    fetch_manifest = _load_fetch_manifest(paper_workdir.manifest_path(FETCH_STAGE_NAME))
+    # 上游 fetch manifest 读不到或不可解析都转 fetch_missing，两种情形对本阶段含义相同。
+    fetch_manifest = manifests.load_manifest(paper_workdir.manifest_path(FETCH_STAGE_NAME), FetchManifest)
     if fetch_manifest is None:
         # 算不出输入 hash，跳过判定无从成立，直接给结论。
-        _flat_path(paper_workdir).unlink(missing_ok=True)
+        flat_path(paper_workdir).unlink(missing_ok=True)
         return _write_result(
             paper_workdir,
             FlattenManifest(
@@ -135,7 +132,7 @@ def flatten(
         if existing is not None:
             return FlattenResult(manifest=existing, workdir=paper_workdir, skipped=True)
 
-    _flat_path(paper_workdir).unlink(missing_ok=True)
+    flat_path(paper_workdir).unlink(missing_ok=True)
     if fetch_manifest.status is not FetchStatus.OK:
         return _write_result(
             paper_workdir,
@@ -158,7 +155,7 @@ def flatten(
             status=FlattenStatus.EXPAND_FAILED,
             fetch_files_sha256=fetch_files_sha256,
             fetch_status=str(fetch_manifest.status),
-            message=_describe_error(error),
+            message=manifests.describe_error(error),
         )
     return _write_result(paper_workdir, manifest)
 
@@ -200,7 +197,7 @@ def _expand(paper_workdir: workdir.Workdir, fetch_manifest: FetchManifest, fetch
             command=command,
             warnings=warnings,
             message=(
-                f"执行 latexpand 失败（{_describe_error(error)}）。latexpand 随 TeX Live 分发，"
+                f"执行 latexpand 失败（{manifests.describe_error(error)}）。latexpand 随 TeX Live 分发，"
                 "确认已安装 TeX 发行版、latexpand 在 PATH 里，且工作目录的 src/ 存在。"
             ),
         )
@@ -215,7 +212,8 @@ def _expand(paper_workdir: workdir.Workdir, fetch_manifest: FetchManifest, fetch
             fetch_status=fetch_status,
             command=command,
             warnings=warnings,
-            message=f"latexpand 退出码 {completed.returncode}；stderr：{stderr_text.strip()[:STDERR_MESSAGE_CHARS]}",
+            # message 只摘 stderr 的前若干字符，完整 stderr 已逐行记入 warnings。
+            message=f"latexpand 退出码 {completed.returncode}；stderr：{stderr_text.strip()[:OUTPUT_EXCERPT_CHARS]}",
         )
 
     output, bbl_file, bbl_warnings = _inline_bbl(completed.stdout, src, main_file)
@@ -237,7 +235,7 @@ def _expand(paper_workdir: workdir.Workdir, fetch_manifest: FetchManifest, fetch
     residual_lines = _count_residual_input_lines(output)
     if residual_lines:
         warnings.append(f"展开后仍有 {residual_lines} 行在注释外含 \\input{{ 或 \\include{{，这些文件没有被展开")
-    _flat_path(paper_workdir).write_bytes(output)
+    flat_path(paper_workdir).write_bytes(output)
     return FlattenManifest(
         status=FlattenStatus.OK,
         main_file=main_file,
@@ -268,7 +266,7 @@ def _scan_candidates(src: Path, tex_files: list[str]) -> tuple[list[str], set[st
         try:
             content = (src / relative).read_bytes()
         except OSError as error:
-            warnings.append(f"主文件判定时读不到 {relative}：{_describe_error(error)}")
+            warnings.append(f"主文件判定时读不到 {relative}：{manifests.describe_error(error)}")
             continue
         has_document_class = False
         has_begin_document = False
@@ -374,44 +372,26 @@ def _fetch_files_hash(files: dict[str, str]) -> str:
     return hashlib.sha256(listing.encode("utf-8")).hexdigest()
 
 
-def _load_fetch_manifest(path: Path) -> FetchManifest | None:
-    """读上游 fetch manifest；缺失或不可解析返回 None（调用方转 fetch_missing）。"""
-    try:
-        return FetchManifest.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError):
-        return None
-
-
 def _load_skippable_manifest(paper_workdir: workdir.Workdir, fetch_files_sha256: str) -> FlattenManifest | None:
     """读已有 flatten manifest；可解析、状态 ok、输入 hash 一致且 flat.tex 在，返回它，否则返回 None。"""
-    try:
-        manifest = FlattenManifest.model_validate_json(
-            paper_workdir.manifest_path(STAGE_NAME).read_text(encoding="utf-8")
-        )
-    except (OSError, ValidationError):
+    manifest = manifests.load_manifest(paper_workdir.manifest_path(STAGE_NAME), FlattenManifest)
+    if manifest is None:
         return None
     if manifest.status is not FlattenStatus.OK:
         return None
     if manifest.fetch_files_sha256 != fetch_files_sha256:
         return None
-    if not _flat_path(paper_workdir).is_file():
+    if not flat_path(paper_workdir).is_file():
         return None
     return manifest
 
 
-def _flat_path(paper_workdir: workdir.Workdir) -> Path:
-    """展开结果的路径。"""
+def flat_path(paper_workdir: workdir.Workdir) -> Path:
+    """展开结果的路径；下游 precompile 取同一个文件，由本模块统一给出。"""
     return paper_workdir.build / FLAT_FILENAME
 
 
 def _write_result(paper_workdir: workdir.Workdir, manifest: FlattenManifest) -> FlattenResult:
     """写出 manifest 并组装返回值；除跳过外的每次执行（含失败）都经此处落盘。"""
-    path = paper_workdir.manifest_path(STAGE_NAME)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    manifests.write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return FlattenResult(manifest=manifest, workdir=paper_workdir, skipped=False)
-
-
-def _describe_error(error: Exception) -> str:
-    """异常统一格式化成「类型名：信息」，记入 manifest 的 message。"""
-    return f"{type(error).__name__}：{error}"

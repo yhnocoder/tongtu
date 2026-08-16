@@ -42,9 +42,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import ValidationError
 
-from .. import __version__, workdir
+from .. import __version__, manifests, workdir
 from ..artifacts.fetch import FetchKind, FetchManifest, FetchStatus
 
 #: 阶段名，也是 stage manifest 的文件名主干。
@@ -175,7 +174,7 @@ def fetch_remote(
         payload = (download or _download_eprint)(url)
     except Exception as error:  # 网络失败类型多样，统一转状态
         manifest = FetchManifest(
-            status=FetchStatus.DOWNLOAD_FAILED, source=arxiv_id, url=url, message=_describe_error(error)
+            status=FetchStatus.DOWNLOAD_FAILED, source=arxiv_id, url=url, message=manifests.describe_error(error)
         )
         return _write_result(paper_workdir, manifest)
     if not payload:
@@ -205,7 +204,7 @@ def fetch_remote(
             url=url,
             payload_sha256=payload_sha256,
             payload_bytes=len(payload),
-            message=_describe_error(error),
+            message=manifests.describe_error(error),
         )
     return _write_result(paper_workdir, manifest)
 
@@ -257,7 +256,10 @@ def fetch_local(source_dir: Path, workdir_path: Path | None = None) -> FetchResu
             manifest = _manifest_from_src(paper_workdir, source=str(source), kind="local")
         except Exception as error:  # 拷贝失败类型多样，统一转状态
             manifest = FetchManifest(
-                status=FetchStatus.UNPACK_FAILED, source=str(source), kind="local", message=_describe_error(error)
+                status=FetchStatus.UNPACK_FAILED,
+                source=str(source),
+                kind="local",
+                message=manifests.describe_error(error),
             )
     return _write_result(paper_workdir, manifest)
 
@@ -422,9 +424,8 @@ def _verdict(
 
 def _load_reusable_manifest(path: Path) -> FetchManifest | None:
     """读已有 manifest；可解析且状态为 ok / pdf_only（上次已有结论）时返回它，否则返回 None（重新执行）。"""
-    try:
-        manifest = FetchManifest.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError):
+    manifest = manifests.load_manifest(path, FetchManifest)
+    if manifest is None:
         return None
     if manifest.status in (FetchStatus.OK, FetchStatus.PDF_ONLY):
         return manifest
@@ -433,9 +434,7 @@ def _load_reusable_manifest(path: Path) -> FetchManifest | None:
 
 def _write_result(paper_workdir: workdir.Workdir, manifest: FetchManifest) -> FetchResult:
     """写出 manifest 并组装返回值；除跳过外的每次执行（含失败）都经此处落盘。"""
-    path = paper_workdir.manifest_path(STAGE_NAME)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    manifests.write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return FetchResult(manifest=manifest, workdir=paper_workdir, skipped=False)
 
 
@@ -443,8 +442,3 @@ def _reset_src(paper_workdir: workdir.Workdir) -> None:
     """把 src/ 整目录删除后重建四区，避免与上次执行的残留混杂。"""
     shutil.rmtree(paper_workdir.src, ignore_errors=True)
     paper_workdir.create()
-
-
-def _describe_error(error: Exception) -> str:
-    """异常统一格式化成「类型名：信息」，记入 manifest 的 message。"""
-    return f"{type(error).__name__}：{error}"

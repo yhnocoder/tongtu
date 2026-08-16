@@ -140,12 +140,9 @@ uv run python examples/gen_assets.py --check   # 只比对，不写盘
 压缩结果，理论上随 zlib 版本可变，比结构才是稳的。改图请改 `gen_assets.py` 的 `ASSETS`
 清单再复跑，不要手工替换二进制。
 
-## 已知问题（等编译回环与后续重建处理）
+## 已知问题（等后续重建处理）
 
-1. **本机无 TeX，三篇均未真编译过。** 目前只做过 LaTeX 语法自查（配平、环境闭合、
-   宏包限于 TeX Live full 必有）。「编译通过」的裁决权在参考镜像（架构 §6 运行环境
-   节），编译回环落地后红了再修。
-2. **`\appendices` 的识别是 chunk 阶段重建时的注意项。** conference 篇用的是 IEEEtran
+1. **`\appendices` 的识别是 chunk 阶段重建时的注意项。** conference 篇用的是 IEEEtran
    的 `\appendices` 命令；此前实现的附录正则 `\\appendix(?:es)?` 匹配 `\appendix` 与
    （并不存在的）`\appendixes`，**不匹配**真实命令 `\appendices`，导致该篇附录段落被
    当作正文聚合。论文源码保留 `\appendices` 原样（IEEEtran 的惯用写法，example 应当
