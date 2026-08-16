@@ -2,7 +2,7 @@
 name = "tongtu"
 description = "基于 LaTeX 源码的 arXiv 论文英译中引擎"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dynamic = ["version"]
 
 dependencies = [
@@ -46,7 +46,7 @@ packages = ["tongtu"]
 "skill" = "tongtu/data/skill"
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]

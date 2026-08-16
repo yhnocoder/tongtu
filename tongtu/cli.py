@@ -1,12 +1,9 @@
-"""`tongtu` CLI 命令面（架构 §6）。
+"""`tongtu` CLI 命令面。
 
-命令与参数以架构 §6 为准；`tex` 子命令面（编译修复会话的工具面，不面向人）见架构
-§3 compile 节。
-
-当前全部命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline。
-run / validate / doctor / `tex compile` 的退出码是机器判据，占位结果不得被误当成
-真实结论，故占位命令统一以 ``EXIT_STUB``（3）退出；`--help` 退 0、用法错误退 2，
-这两类行为是真实的。
+`stage fetch` 已接线，走真实的阶段驱动器；其余命令为占位实现：只解析并校验参数、
+说明将要执行的动作，不运行 pipeline。run / validate / doctor / `tex compile` 的
+退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
+（99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
 """
 
 from __future__ import annotations
@@ -21,11 +18,24 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
+from .artifacts.fetch import FetchStatus
 from .stages import STAGES
+from .stages import fetch as fetch_stage
+from .workdir import WorkdirError
 
-#: 占位实现的统一退出码。区别于 0（成功）、1（运行失败）与 2（用法错误），
-#: 使占位结果在任何脚本化调用里都不可能被读成真实结论。
-EXIT_STUB = 3
+# 模块级退出码常量是退出码的集中登记处：新增退出码在此定义并注释含义。
+
+#: 一般失败：未能出包、下载或解包失败、校验有失败层、环境有缺失、编译失败。
+EXIT_FAILURE = 1
+
+#: 业务分支段（3–9，跨子命令同码同义）的首个登记：源是 PDF 而非 LaTeX 源码，
+#: 走 degraded path。
+EXIT_PDF_ONLY = 3
+
+#: 占位实现的统一退出码。取值远离成功（0）、一般失败（1）、用法错误（2）与业务
+#: 分支段（3–9），使占位结果在任何脚本化调用里都不可能被读成真实结论；命令逐个
+#: 接线后此码退役。
+EXIT_STUB = 99
 
 #: chunk id 形状：`c` 后至少三位数字，如 c012。
 _CHUNK_ID_RE = re.compile(r"^c[0-9]{3,}$")
@@ -44,6 +54,7 @@ DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
 
 console = Console()
+error_console = Console(stderr=True)
 
 app = typer.Typer(
     add_completion=False,
@@ -178,14 +189,67 @@ def retranslate(
 @app.command()
 def stage(
     name: Annotated[StageName, typer.Argument(help="阶段名")],
-    paper: Annotated[str, typer.Argument(metavar="ID", help="arXiv id（或本地源码目录，供 fetch 用）")],
+    paper: Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")],
     workdir: WorkdirOpt = None,
+    force: Annotated[bool, typer.Option("--force", help="无视已有 manifest 结论重新执行")] = False,
     json_output: JsonOpt = False,
     agent: AgentOpt = None,
     model: ModelOpt = None,
 ) -> None:
-    """单阶段入口，调试用：上游阶段从工作目录装载已有产物，目标阶段无视 manifest 必算。"""
-    raise _stub_exit("stage", name=name.value, paper=paper, workdir=workdir, json=json_output, agent=agent, model=model)
+    """单阶段入口，调试用：上游阶段从工作目录装载已有产物；重跑语义见各阶段设计，--force 强制重算。"""
+    if name.value == fetch_stage.STAGE_NAME:
+        # fetch 无 agent 介入，--agent 与 --model 不参与执行。
+        raise _run_stage_fetch(paper, workdir, force, json_output)
+    raise _stub_exit(
+        "stage", name=name.value, paper=paper, workdir=workdir, force=force, json=json_output, agent=agent, model=model
+    )
+
+
+def _run_stage_fetch(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage fetch` 的接线：识别论文参数、调驱动器、打印结果、映射退出码。"""
+    if json_output:
+        error_console.print("--json：事件流 schema 尚未定义，本次忽略该选项")
+    try:
+        paper_input = fetch_stage.parse_paper_argument(paper)
+        if paper_input.source_dir is not None:
+            result = fetch_stage.fetch_local(paper_input.source_dir, workdir)
+        else:
+            result = fetch_stage.fetch_remote(paper_input.arxiv_id, workdir, force=force)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(fetch_stage.STAGE_NAME)
+    if result.skipped:
+        console.print(f"fetch 跳过：manifest 已有结论（状态 {manifest.status}），--force 可重新执行")
+        console.print(f"  manifest  {manifest_path}")
+        return typer.Exit(_fetch_exit_code(manifest.status))
+    console.print(f"fetch：状态 {manifest.status}")
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    table.add_row("  kind", manifest.kind or "—")
+    table.add_row("  src", str(result.workdir.src))
+    table.add_row(
+        "  文件数", f"{len(manifest.files)}（.tex {len(manifest.tex_files)} 个，共 {manifest.tex_chars} 字符）"
+    )
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    for member_name in manifest.rejected:
+        table.add_row("  rejected", member_name)
+    console.print(table)
+    return typer.Exit(_fetch_exit_code(manifest.status))
+
+
+def _fetch_exit_code(status: FetchStatus) -> int:
+    """fetch 状态到退出码的映射；命中跳过时对已存结论的状态取同样的映射。"""
+    if status is FetchStatus.OK:
+        return 0
+    if status is FetchStatus.PDF_ONLY:
+        return EXIT_PDF_ONLY
+    return EXIT_FAILURE
 
 
 @app.command()

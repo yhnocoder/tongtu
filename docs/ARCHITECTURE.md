@@ -47,7 +47,7 @@ flowchart TD
 
 | 阶段 | 描述 | agent（触发 → 授权） | 结束判定 |
 |---|---|---|---|
-| fetch | e-print 下载解包；PDF-only 检测 | — | 源码树落 `src/`（PDF-only → 报错标记 degraded path） |
+| [fetch](stages/fetch.md) | e-print 下载解包；PDF-only 检测 | — | 源码树落 `src/`（PDF-only → 报错标记 degraded path） |
 | flatten | latexpand 展开 | 主文件歧义 → 判定主文件 ① | 单文件 `flat.tex` |
 | baseline | latexmk 原样编译原文，隔离 toolchain 问题 | 失败 → workdir 内修 toolchain ② | 原文 PDF 编译通过；仍失败 → 终止（toolchain 问题，非翻译问题） |
 | mask | 把 non-translatable environment、注释、caption 换成 placeholder，只留需要翻译的文本 | 未知环境 → text/non-translatable environment 分类 ③；不确定 → 保守整体掩码 | `unmask(mask(x)) == x` 恒等；`blocks.json` 完整 |
@@ -233,17 +233,7 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 
 **missing glyph 是硬判据**。xelatex 遇到字体里没有的字形会直接丢掉——这就是 tofu 的来源——只在日志留一行 `Missing character`，前提是 `\tracinglostchars ≥ 2`；2021 年后的 LaTeX 内核默认即 2，inject_cjk 仍在 preamble 显式写入 `\tracinglostchars=2`，不依赖内核版本。出口脚本扫描日志：missing glyph 落在 CJK 区段（含全角标点）→ 判失败——它只有 font fallback chain 没接上一个原因，而页数判据看不见它；非 CJK missing glyph、`Overfull \hbox` 行数与未定义引用数则取相对 baseline 的增量，进 report 作 warning，不设硬门——「多难看才算坏」没有机械答案，这部分仍靠会话内 agent 看渲染页。检查与 §7 pseudo-translation e2e 的 missing glyph 断言共用一份实现，与 validate 的三个调用方是同一条纪律。
 
-**工具面**：会话内只有这几个动作，`zh.tex` 与编译日志之外的文件 agent 看不到。
-
-```
-tongtu tex read [--preamble | --chunk <id> | --lines A-B]
-tongtu tex patch --old <文本> --new <文本>          # preamble
-tongtu tex patch --chunk <id> --old … --new …      # 正文，该 chunk 状态记 edited
-tongtu tex compile                                  # 编译一次，返回错误列表与日志摘要
-tongtu tex render --page N                          # 渲染某页为图，供 agent 看排版
-tongtu tex fallback <chunk-id> [--paragraph N]      # 该段回退原文
-tongtu tex retranslate <chunk-id>                   # 重译一次（复用hook⑤）
-```
+**工具面**：会话内的动作只有 `tongtu tex` 子命令面这几个，`zh.tex` 与编译日志之外的文件 agent 看不到。命令清单见 [CLI.md](CLI.md)（`tex retranslate` 复用hook⑤），分区权限规则见下。
 
 **按区域分区权限，metadata 只来自显式动作**：
 
@@ -397,27 +387,7 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 
 ## 6. 调用与运行
 
-接口的另一半：CLI 命令面，以及它对运行环境的要求。
-
-### CLI 命令面（草案）
-
-```
-tongtu run <arxiv-id | dir>  [--glossary FILE]...  [--workdir DIR]  [--force]  [--json]
-tongtu retranslate <id>  (--chunks c012,c045 | --term WORD | --all)
-tongtu stage <name> <id>          # 单阶段入口，调试用
-tongtu validate <src> <dst>       # 四层 validation，逐项报告失败
-tongtu doctor                     # 检查 xelatex/latexmk/latexpand/pdftocairo/epstopdf 与字体，逐项报告缺失
-tongtu preview <id>               # 打开 inspection page
-
-tongtu tex <cmd> …                # 编译修复会话的工具面，不面向人；清单与权限规则见 §3 compile 节
-```
-
-- `run` 幂等：重复执行按 manifest 与翻译缓存跳过已完成部分；`--force` 无视缓存 full rerun。
-- `--json`：向 stdout 输出机器可读事件流（阶段起止、chunk 进度、最终结果）。它属于 wenshu 容器调度侧消费的 CLI 调用约定，schema 一期前冻结。
-- 退出码：0 = artifact package 完整产出（含有回退 chunk 的情形，详情在 report.json）；非 0 = 未能出包。
-- `validate` 有三个调用方，同一份实现：agent 在翻译会话内自查、脚本在出口终审、开发者手工排查（§3 translate 节）。
-- 另有一组 `tongtu tex …` 是**编译修复会话的工具面**，不面向人：agent 通过它读写 `zh.tex`、编译、看渲染页、回退或重译某 chunk，动作与 metadata 一并记账。命令清单与分区权限规则见 §3 compile 节。
-- `retranslate` 的失效语义见 §4 返工触发表。**边界行为还没想**：chunk id 写错、术语没命中任何 chunk、失效后要不要连带重编译，这些当前只有实现里的做法，没做设计。
+接口的另一半是 CLI 约定：命令清单、参数语义、退出码与 `--json` 事件流的权威定义在 [CLI.md](CLI.md)，wenshu 集成只依赖产物契约（§5）与该文档。本节保留对运行环境的要求。
 
 ### 运行环境
 
@@ -443,7 +413,7 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 
 ## 附录 A：决策记录
 
-每条：**决策 / 曾考虑的替代 / 否决理由**。正面论证在正文对应小节，这里只记为什么不走另一条路。编号被代码注释引用，只增不改。
+每条：**决策 / 曾考虑的替代 / 否决理由**。正面论证在正文对应小节，这里只记为什么不走另一条路。编号供文档间引用，只增不改。
 
 1. **脚本编排，脚本在固定hook拉起 agent。** 曾考虑：agent 为主体、SKILL 驱动流程（v2 形态）。否决理由：确定性控制流是缓存、断点续跑、CI 与可调试性（同一输入走同一条路径）的共同前提；一个流程能固化到写进 SKILL.md 的程度，就已经能固化成代码，而代码不会偷懒；让 agent 自由编排的三种失败模式（重复造轮子 / 偷工减料不可检测 / 自我验证不可信）在编排层同样成立。SKILL 因此降级为 prompt 资产。阶段图为什么对所有论文相同见 §3。
 2. **返工 = chunk 级失效重算，不存在阶段级回跳。** 曾考虑：显式的阶段回退控制流。否决理由：全部返工场景（校验失败、编译失败、改术语表、改文风）都能归结为「失效受影响 chunk + 重算子图」，再给阶段回跳留位置就是两套机制并存。失效范围见 §4。
@@ -471,7 +441,7 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 
 ## 附录 B：Open Questions
 
-多为实测校准项，非设计阻塞。已定的条目落入正文，编号保留供代码引用。
+多为实测校准项，非设计阻塞。已定的条目落入正文，编号保留供文档间引用。
 
 1. **chunk soft limit / hard limit 的具体数值**（掩码后文本 token 计）：软 ~4k、硬 ~8k 起步，三篇 fixture 校准（观测指标：validate 重试率、长生成漂移、术语一致性）。
 2. **identity translation 的中文路径覆盖**：曾在 pseudo-translation 变体与专门的中文 fixture 之间取舍。**已定**（零期收尾）：pseudo-translation 变体，见 §7 第 2 层。
