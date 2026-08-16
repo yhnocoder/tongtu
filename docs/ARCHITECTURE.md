@@ -38,6 +38,10 @@ flowchart TD
 
 带圈数字是 agent hook（见下表）。
 
+上图是阶段序列。下图是同一条 pipeline 的 artifact 数据流，逐阶段标出读写的文件，并标出三条跨越多个阶段的依赖：`blocks.json` 从 mask 一直用到 compile 与 figures，`src/` 被 figures 直接读取，precompile 的基线数据到 compile 出口才被比对。
+
+![通途 build path 的 artifact 数据流](assets/build-path.svg)
+
 **所有阶段都由脚本驱动。** 脚本拉起 agent 只有两个原语，签名与约束见下文 agent 适配层节：
 
 - `ask(prompt, text, model) -> text`：单次问答，不给工具、不留状态，用于主文件判定、环境分类与术语决策。
@@ -49,8 +53,8 @@ flowchart TD
 |---|---|---|---|
 | [fetch](stages/fetch.md) | e-print 下载解包；PDF-only 检测 | — | 源码树落 `src/`（PDF-only → 报错标记 degraded path） |
 | [flatten](stages/flatten.md) | latexpand 展开 | 主文件歧义 → 判定主文件 ① | 单文件 `flat.tex` |
-| [precompile](stages/precompile.md) | latexmk 编译原文，编不过则修复到通过；产出下游输入 `precompile.tex` 与基线数据 | 编译失败 → 修复会话 ②（源码与引擎的不匹配，`work`） | 原文编译通过（必要时经修复会话，脚本复验终审）；复验仍失败 → 终止（引擎或源码问题，非翻译问题） |
-| mask | 把 non-translatable environment、注释、caption 换成 placeholder，只留需要翻译的文本 | 未知环境 → text/non-translatable environment 分类 ③；不确定 → 保守整体掩码 | `unmask(mask(x)) == x` 恒等；`blocks.json` 完整 |
+| [precompile](stages/precompile.md) | latexmk 编译原文，编不过则修复到通过；产出下游输入 `precompile.tex`，基线数据（页数与三类日志计数）写入 `build/manifests/precompile.json` | 编译失败 → 修复会话 ②（源码与引擎的不匹配，`work`） | 原文编译通过（必要时经修复会话，脚本复验终审）；复验仍失败 → 终止（引擎或源码问题，非翻译问题） |
+| [mask](stages/mask.md) | 把 non-translatable environment、注释、caption 换成 placeholder，产出**掩码文本**（`masked.tex`：placeholder 与待译文本相间的单一字符序列，chunk 首尾相接拼起来逐字符等于它） | 未知环境 → text/non-translatable environment 分类 ③；不确定 → 保守整体掩码 | `unmask(mask(x)) == x` 恒等；`blocks.json` 完整 |
 | survey | 一次读完全文，产出 outline 与术语决策，供后续每个 chunk 复用 | 读完全文 → outline（brief）生成 + 术语预扫与新词译法决策 ④（`ask`） | `brief.json` 与结构化术语表通过 artifact model 校验 |
 | chunk | 章节树优先分块：`\section` 为首选单元，小节聚合至 soft limit token 数，超大节在小节/段落边界下分至 hard limit；绝不切入环境或段落内部 | — | chunk 清单（每个 chunk = 完整段落序列） |
 | translate | chunk 循环、上下文组装、缓存查询；每个 chunk 拉起一次会话，出口跑 validate 终审 | 单 chunk 翻译（`work` 原语）⑤ | validate 全绿（placeholder / control sequence multiset / 括号与 inline math / 段落数） |
@@ -78,6 +82,10 @@ WorkOutcome:
     detail        # 仅 error 时非空：运行时的错误现场，进 report
 ```
 
+上表按阶段列结束判定，下图按 hook 列同一件事，并给出六个 hook 共同的调用形状：脚本判断触发条件、拉起 agent、agent 在会话内自行行动、脚本读产物独立复验。
+
+![脚本与 agent 的职责边界，以及六个 hook 的触发与终审判据](assets/agent-boundary.svg)
+
 两者的差别不止于有无状态：`ask` 要的是纯函数式判断，`work` 要的是能读写工作目录并执行命令的会话运行时。`work` 多出的 `budget` 与 `trace_path` 两个参数，对应的正是它多出来的这部分能力。
 
 - `work` 的 `stop_reason` 只说明会话如何终止，**不表示修好了**；终审权在事后的校验脚本与编译，不采信 agent 的自述。各运行时自己的终止原因由适配层映射到这四个值，映射不上的归 `error`，现场写进 `detail`。
@@ -87,50 +95,6 @@ WorkOutcome:
 - **日志路径由脚本决定**：`logs/` 是工作目录布局的一部分（§5），文件名按 hook、chunk 与尝试次数拼出。`ask` 的提示词与返回文本脚本本来就有，由脚本自己写；`work` 的中间过程脚本看不见，故以 `trace_path` 入参交给适配层写。会话 trace 的内容是 start-state hash + command sequence（参数、返回、耗时与 token）+ end-state hash，既是审计记录，也是固化规则（§2 原则 3）的原料。
 - **用量不进返回值**：轮数、token 与耗时由运行时对象累计，export 组装 report 时读一次。两个原语的用量口径因此统一在一处，`ask` 也不必为了统计包成结构体。
 - **MockAgent**：`ask` 原样返回；`work` 在翻译场景把原文写到译文路径，在编译场景调一次 `tex compile` 后退出。CI 编译层（§7）依赖它。
-
-### mask —— 把不该翻译的部分换成 placeholder
-
-**要解决的问题**：模型有可能改坏不该改的文本。公式里的 `\alpha` 被当成词翻译，表格的 `&` 造成对齐错位，`\label` 被改名，这类错误要到编译阶段才暴露。mask 在交给模型之前把这些部分整块摘出去，只留下需要翻译的文本；摘出去的内容逐字节存进 `blocks.json`，翻完原样填回。
-
-**输入 → 输出**：`build/flat.tex` → `build/masked.tex`（带掩码的原文，交给 LLM 翻译）+ `blocks.json`（被摘出去的 block）。两者在同一次遍历中产出，backfill 时以 `blocks.json` 为准。
-
-```latex
-% flat.tex
-Figure~\ref{fig:arch} shows the pipeline.
-\begin{figure}[t]
-  \includegraphics{arch.pdf}
-  \caption{System overview.}
-\end{figure}
-% TODO: cite the original paper here
-The loss is $\mathcal{L} = \sum_i \ell_i$.
-```
-
-```latex
-% masked.tex
-Figure~\ref{fig:arch} shows the pipeline.
-⟦BLK-7⟧
-⟦CAP-2⟧ System overview.
-⟦BLK-8⟧
-The loss is $\mathcal{L} = \sum_i \ell_i$.
-```
-
-注意：
-- `\ref` 与 inline math 留在原文中：它们是句子的组成部分，掩掉模型就读不懂这句话了。完整性交给外层 safety net（本节第 4 条）
-- 整个 figure 被写成 `⟦BLK-7⟧`，但它内部的 caption 被摘出来，变成单独一行 `⟦CAP-2⟧`——caption 是需要翻译的文本，需要被提炼出来
-- 注释同样是一个 block（`⟦BLK-8⟧`）
-
-**掩码同时划定翻译范围**：non-translatable environment 内部的文本一律不译——表格的表头与单元格、公式里的 `\text{…}` 都随所在 block 保留原文，换来的是对齐、数学与代码不可能被改坏。preamble 整体也是一个 block，从中抽出的可译槽位只有 abstract（个别文档类要求摘要写在 `\begin{document}` 之前）；`\title` 不抽成槽位，标题保留英文原题——找论文、对引用都靠原题。需要翻译的只有正文散文、caption 与摘要。
-
-**通用性从哪来**。论文之间的 LaTeX 写法差异很大，mask 的可靠性不依赖解析规则覆盖全部情况，而由四层机制承担：
-
-1. **词法解析**。LaTeX 的花括号嵌套与 verbatim 语义超出正则表达能力，mask 用 LaTeX lexer 识别环境与分组（解析器选型见附录 C）。
-2. **枚举完备，分类保守**。解析器可以完备枚举文档中出现的全部 `\begin{X}` 环境名，这一步不需要先验知识（词法扫一遍即可，verbatim 体与注释里的 `\begin` 不计入）。分类才需要知识，来源按优先级四级下沉：文档自带的 `\newtheorem` / `\newenvironment` 声明 → 数据文件形式的分类表 → hook③由 agent 判断 → 保守默认，即整体掩码并记 `category=unknown`。保守默认的代价是该 block 不被翻译并记入 report，源码不受破坏。agent 的分类结论按固化规则（§2 原则 3）记入分类表。
-3. **运行时往返自检**。mask 完成后立即 unmask 并与原文逐字节比对，恒等才放行，不等则报出首处差异。解析缺陷在第一次 LLM 调用之前暴露，且每篇论文都会跑这一遍。
-4. **外层还有两道拦截**。即便有遗漏，validate 的 control sequence multiset 比对与编译循环仍会拦下，最后的 safety net 是回退原文。
-
-**不设强制的「agent 复核掩码结果」步骤**：那是「自我验证不可信」的变体（复核通过的效力等同于「我检查过了」），且逐篇付费。脚本只在环境分类这一处需要判断的地方拉起 agent。
-
-> 逐条实现机制见 `tongtu/stages/mask.py` 模块文档，字段定义见 blocks 的 artifact model（§5 artifact contract 节），决策见附录 A.10。
 
 ### survey —— 一次读完全文，产出全篇共享的上下文
 
@@ -166,7 +130,7 @@ survey view 不是 masked.tex 原样，而是按 block 类型参数化 backfill�
 **怎么分**：
 
 1. **章节树优先**。全文最浅的标题层级（一般是 `\section`，book 类是 `\chapter`）为首选单元。相邻小节按文档顺序聚合到 soft limit token 数；超大节在子标题边界下分（`\subsection` → `\subsubsection`），仍超限才退到段落边界。
-2. **不切入环境或段落内部**。掩码流里 non-translatable environment 已是 placeholder，但文本环境（itemize、定理环境）原样留着，内部可能含空行；分段器带环境深度计数，深度大于 0 的空行不分段。单个段落即使超过 hard limit 也独占一个 chunk，不被切开。
+2. **不切入环境或段落内部**。掩码文本里 non-translatable environment 已是 placeholder，但文本环境（itemize、定理环境）原样留着，内部可能含空行；分段器带环境深度计数，深度大于 0 的空行不分段。单个段落即使超过 hard limit 也独占一个 chunk，不被切开。
 3. **first chunk 与附录自成一体**。`\section` 之前的正文（前导正文与摘要的 caption 行）成为 first chunk，不与正文章节聚合；`\appendix` 之后的 chunk 标记 `is_appendix`，也不与正文 chunk 聚合。
 4. **stray chunk 并入前一个 chunk**。聚合完成后从后往前扫一遍，token 数低于 `tail_min`（默认 soft limit 的四分之一）的 chunk 并入前一个 chunk，条件是同属正文或同属附录、两者都不是 first chunk、合并后不超 hard limit。倒序遍历使连续 stray chunk 能级联合并。最常触发它的是文末的致谢与结论。
 
@@ -221,7 +185,7 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 
 ### compile —— backfill、inject，然后交给会话编到出 PDF
 
-**要解决的问题**：译文是掩码流，不能直接编译；英文 preamble 排不出中文；而编译错误的种类是开放的，package 冲突、字体缺失、float 溢出、documentclass 不认识的选项，每篇论文遇到的都不一样。更麻烦的是「编译通过」不等于「排得对」：tofu、图跑飞、双栏串行、line breaking 难看，这些只有看渲染结果才知道。
+**要解决的问题**：译文是掩码文本，不能直接编译；英文 preamble 排不出中文；而编译错误的种类是开放的，package 冲突、字体缺失、float 溢出、documentclass 不认识的选项，每篇论文遇到的都不一样。更麻烦的是「编译通过」不等于「排得对」：tofu、图跑飞、双栏串行、line breaking 难看，这些只有看渲染结果才知道。
 
 **输入 → 输出**：译文 chunk + `blocks.json` → `zh.tex` + `zh.pdf` + `build/zh-spans.json`（每个 chunk 在 `zh.tex` 里的字符区间，export 的 anchors 消费）。
 
@@ -272,8 +236,8 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 **关键取舍**：
 
 - **不在生产侧执行消费者的约束**。视觉 API 的长边上限（约 1568px）是那一个消费者的数字，焊进 artifact package 意味着换个消费者就要重新生成，而位图源缩过之后原图信息找不回来。需要缩的一方自己缩。
-- **不依赖翻译侧 artifact**。只读 `src/` 与 `blocks.json`，翻译侧任何返工都不触发重渲染，这是 figures 独立成阶段的理由（§4）。引用段落从掩码流扫 `\ref` 家族映射回段落，掩码流缺席时该字段留空。
-- **caption 译文由 export 并入**。本阶段元数据里的 caption 取自 `blocks.json`，是原文；译后 caption 埋在某个 chunk 译文的掩码流里，边界只有 unmask 知道，不该让包外消费者解析掩码流。compile backfill 时顺手落出的 caption 译文中间 artifact（compile 节），由 export 组装时并入 figures 元数据——figures 阶段与逐图缓存不受翻译返工影响的性质不变。
+- **不依赖翻译侧 artifact**。只读 `src/` 与 `blocks.json`，翻译侧任何返工都不触发重渲染，这是 figures 独立成阶段的理由（§4）。引用段落从掩码文本扫 `\ref` 家族映射回段落，掩码文本缺席时该字段留空。
+- **caption 译文由 export 并入**。本阶段元数据里的 caption 取自 `blocks.json`，是原文；译后 caption 埋在某个 chunk 译文的掩码文本里，边界只有 unmask 知道，不该让包外消费者解析掩码文本。compile backfill 时顺手落出的 caption 译文中间 artifact（compile 节），由 export 组装时并入 figures 元数据——figures 阶段与逐图缓存不受翻译返工影响的性质不变。
 - **渲染工具是 toolchain 要求，不是可选项**。矢量转位图要 pdftocairo / epstopdf，它们与 xelatex 同级，由 `tongtu doctor` 检查、`run` 开跑前校验，缺了就报错。不做静默 degrade：一张没渲出来的图会让 artifact 默默缺内容，而调用方看不出区别。
 
 **引用与配对的口径**：`\includegraphics` 的每一次出现算一条记录（subfigure 因此产出多条，共享 `block_id`）。文件名按 LaTeX 的规矩解析——有已知扩展名就用它，否则按 pdf → png → jpg 的顺序在 `src/` 与 `\graphicspath` 目录里试。caption 按 block 内位置配对：图对应其后第一个必选 caption 槽位，`[短标题]` 不参与配对；label 取本图与下一张图之间的第一个 `\label`，没有则回落到 block 级 label。
@@ -344,7 +308,7 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 ~/.local/share/tongtu/<arxiv_id>/     # $TONGTU_HOME / --workdir 覆盖；云容器内为 /work
 ├── src/          # e-print 原始解包，只读不改
 ├── build/        # pipeline 工作区，可整体删除（重建时从 out/chunks.json 命中缓存）
-│   ├── flat.tex  precompile.tex  precompile/  masked.tex  chunks/  zh/
+│   ├── flat.tex  precompile.tex  precompile/  masked.tex  blocks.json  chunks/  zh/
 │   └── manifests/
 ├── out/          # artifact package（见 artifact contract）
 ├── logs/         # agent 会话 trace、编译日志（审计与固化判据的数据来源）
@@ -403,7 +367,7 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 
 test pyramid，按成本分三层：
 
-1. **文本层**（秒级；无 TeX、无 LLM）：mask / unmask / validate / chunk 皆为纯文本变换，golden-file 测试打底；外加 mask/unmask 往返恒等的性质测试，同一自检在生产环境对每篇论文运行时也会执行（§3 mask 节第 3 条）。正确性验证的主体在这一层。**PR 必过。**
+1. **文本层**（秒级；无 TeX、无 LLM）：mask / unmask / validate / chunk 皆为纯文本变换，golden-file 测试打底；外加 mask/unmask 往返恒等的性质测试，同一自检在生产环境对每篇论文运行时也会执行（[stages/mask.md](stages/mask.md) 的 unmask 与往返自检节）。正确性验证的主体在这一层。**PR 必过。**
 2. **编译层**（分钟级；有 TeX、无 LLM）：**identity translation**。MockAgent 在翻译场景把原文写到译文路径、在编译会话里调一次 `tex compile` 即退出，三篇 fixture 论文全 pipeline 跑到底，产出 PDF + anchors 并通过 artifact model 校验。零 LLM 成本覆盖mask、inject、compile loop、export、索引全链路。**PR 必过。**
 3. **LLM 层**（**手动触发**；限预算）：真模型跑 1–3 篇，report.json 统计入 quality dashboard。**它只做质量监控，不是每次 PR 都跑**。
 
@@ -424,7 +388,7 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 7. **test pyramid + identity translation 列为 PR 必过。** 曾考虑：LLM 层也设为 PR 必过。否决理由：模型抖动会变成 PR 阻塞，而 quality regression 不需要卡在合并路径上。identity translation 入选是因为它以零 LLM 成本覆盖编译全链路，相当于把零期交付判据搬进 CI。分层见 §7。
 8. **inspection page 入 artifact package，通途不做前后端。** 曾考虑：给通途做独立前后端架构（展示 + 文枢完成前自用）。否决理由：backend 必然复制文枢的信箱职责，也会侵蚀「artifact contract + CLI」这条仓库边界；零期的真实需求静态页已经全部满足；交互阅读器若要提前，就提前动工文枢 web 端读本地 artifact package，不在通途另起炉灶。用途与边界见 §5 inspection page 节。
 9. **figures 独立成阶段，不依赖翻译侧 artifact。** 曾考虑：并入 export。否决理由：并入之后翻译侧的任何返工都会连带触发图片重渲染，只有独立 manifest 加逐图 hash 缓存才切得断这条依赖。「PDF/EPS 图无法用于 artifact」的顾虑为什么不成立见 §3 figures 节。
-10. **mask = 解析器 + 分类表 + 保守默认 + 往返自检，不设强制 agent 复核。** 曾考虑：正则匹配；agent 复核掩码结果。否决理由：LaTeX 不是正则语言，正则方案先天不成立；agent 复核是「自我验证不可信」的变体（复核通过的效力等同于「我检查过了」），且逐篇付费。四层机制见 §3 mask 节。
+10. **mask = 解析器 + 分类表 + 保守默认 + 往返自检，不设强制 agent 复核。** 曾考虑：正则匹配；agent 复核掩码结果。否决理由：LaTeX 不是正则语言，正则方案先天不成立；agent 复核是「自我验证不可信」的变体（复核通过的效力等同于「我检查过了」），且逐篇付费。四层机制见 [stages/mask.md](stages/mask.md)「通用性从哪来」节。
 11. **survey 阶段：一次读完全文产出 brief + 术语，一致性靠稳定的共享上下文。** 曾考虑：无全局上下文逐 chunk 直译；glossary 独立成阶段；前一个 chunk 的译文链式传入后一个 chunk 的提示词。否决理由：逐 chunk 直译挡不住跨章节的记号、指称与语体漂移，而术语表只能约束词这类硬指标；glossary 独立成阶段要再付一次全文 token，它与 outline 同属「读全文一次」的 artifact；链式传入译文会让 cache invalidation 顺着 chunk 的先后顺序一路传下去，并行退化为串行。读全文的输入与产出见 §3。
 12. **章节优先的大 chunk 分块，翻译粒度与回退粒度解耦。** 曾考虑：段落级小 chunk；固定 token 窗口切割。否决理由：小 chunk 切断节内衔接，而节内衔接是翻译质量的主要来源；固定窗口会切进环境或段落内部。代价是编辑术语时会失效整节，token 成本可接受。粒度约束见 §3。
 13. **assemble 并入 compile，「documentclass 适配」与「编译修复」合为一个hook。** 曾考虑：独立 assemble 阶段（unmask + inject_cjk）。否决理由：原 assemble 的结束判定一栏写的是「终审权在 compile」，而没有自身结束判定的阶段在本模型下不构成独立阶段；修复会话的常见动作是「改 inject 配置/preamble → 重编译」，这个循环本身跨越两者，合并后它在单一阶段驱动器内闭合；unmask + inject 是廉价文本操作，无独立缓存价值，中间 artifact `zh-raw.tex` 仍落 `build/` 供调试。适配与修复并成一个hook，是因为它们是同一件事（让这个 documentclass 编译通过）、同一个终审方式（编译循环）。

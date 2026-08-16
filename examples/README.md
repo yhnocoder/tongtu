@@ -117,7 +117,7 @@
 | `two_column` | | ✓ | ✓ |
 | `verbatim_env` | ✓ | | |
 
-三条与 mask 分类来源一一对应的覆盖点值得单独点名（架构 §3.1 第 2 条的优先级链）：
+三条与 mask 分类来源一一对应的覆盖点值得单独点名（[docs/stages/mask.md](../docs/stages/mask.md) 环境分类节的四级下沉）：
 
 * `theorem_env_usage` / `custom_env_declared` —— 文档**自带声明**（`\newtheorem` /
   `\newenvironment`）判出的散文环境，`decided_by` 为 `newtheorem` / `newenvironment`；

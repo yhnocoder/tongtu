@@ -1,6 +1,6 @@
 """`tongtu` CLI 命令面。
 
-`stage fetch`、`stage flatten`、`stage precompile` 与 `doctor` 已接线，走真实的阶段驱动器与环境检查；
+`stage fetch`、`stage flatten`、`stage precompile`、`stage mask` 与 `doctor` 已接线，走真实的阶段驱动器与环境检查；
 其余命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline。run / validate /
 `tex compile` 的退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
 （99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
@@ -21,11 +21,14 @@ from rich.table import Table
 from . import __version__
 from .artifacts.fetch import FetchStatus
 from .artifacts.flatten import FlattenManifest, FlattenStatus
+from .artifacts.mask import MaskManifest, MaskStatus
 from .artifacts.precompile import PrecompileManifest, PrecompileStatus
 from .assets import asset_path
+from .masking import BlockCategory
 from .stages import STAGES
 from .stages import fetch as fetch_stage
 from .stages import flatten as flatten_stage
+from .stages import mask as mask_stage
 from .stages import precompile as precompile_stage
 from .workdir import WorkdirError
 
@@ -222,6 +225,9 @@ def stage(
         # precompile 编不过时拉起修复会话，模型标识透传给驱动器；agent 运行时目前唯一，
         # 适配层还没有注册表，--agent 无消费方。
         raise _run_stage_precompile(paper, workdir, force, json_output, model)
+    if name.value == mask_stage.STAGE_NAME:
+        # mask 是纯文本变换，未知环境交给 agent 分类的介入点推迟实现，--agent 与 --model 不参与执行。
+        raise _run_stage_mask(paper, workdir, force, json_output)
     raise _stub_exit(
         "stage", name=name.value, paper=paper, workdir=workdir, force=force, json=json_output, agent=agent, model=model
     )
@@ -252,7 +258,7 @@ def _print_skipped(stage_name: str, status: str, manifest_path: Path) -> None:
 
 
 def _upstream_exit_code(*, ok: bool, pdf_only_chain: bool) -> int:
-    """flatten 与 precompile 共用的退出码映射：ok 退 0，上游判定为 PDF 退 3，其余失败态退 1。
+    """flatten、precompile 与 mask 共用的退出码映射：ok 退 0，上游判定为 PDF 退 3，其余失败态退 1。
 
     `pdf_only_chain` 指本阶段的失败源自上游把源判定成 PDF 而非 LaTeX 源码，调用方据此改道
     degraded path；该退出码在业务分支段（3–9），跨子命令同码同义。
@@ -419,6 +425,71 @@ def _precompile_exit_code(manifest: PrecompileManifest) -> int:
         ok=manifest.status is PrecompileStatus.OK,
         pdf_only_chain=(
             manifest.status is PrecompileStatus.FLATTEN_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
+        ),
+    )
+
+
+def _run_stage_mask(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage mask` 的接线：定位工作目录、调驱动器、打印掩码结果、映射退出码。
+
+    mask 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。
+    """
+    _warn_json_ignored(json_output)
+    try:
+        result = mask_stage.mask(_workdir_name_from_paper(paper), workdir, force=force)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(mask_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(mask_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_mask_exit_code(manifest))
+    console.print(f"mask：状态 {manifest.status}")
+    masked = manifest.status is MaskStatus.OK
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    table.add_row("  blocks", str(manifest.blocks_total) if masked else "—")
+    table.add_row("  captions", str(manifest.captions_total) if masked else "—")
+    table.add_row("  unknown 环境", _unknown_environments(manifest) if masked else "—")
+    table.add_row("  掩码保留比", f"{manifest.masked_chars_ratio:.1%}" if masked else "—")
+    if masked:
+        table.add_row(
+            "  precompile.tex",
+            f"{mask_stage.precompile_path(result.workdir)}（{manifest.precompile_chars} 字符）",
+        )
+        table.add_row("  masked.tex", f"{mask_stage.masked_path(result.workdir)}（{manifest.masked_chars} 字符）")
+        table.add_row("  blocks.json", str(mask_stage.blocks_path(result.workdir)))
+    else:
+        table.add_row("  precompile.tex", "—")
+        table.add_row("  masked.tex", "未产出")
+        table.add_row("  blocks.json", "未产出")
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_mask_exit_code(manifest))
+
+
+def _unknown_environments(manifest: MaskManifest) -> str:
+    """列出走保守默认整块掩码的环境名与它们的成块数；成块数为 0 的不列（未损失覆盖率）。"""
+    listed = [
+        f"{name}（{decision.blocks} 块）"
+        for name, decision in manifest.environments.items()
+        if decision.category == BlockCategory.UNKNOWN and decision.blocks > 0
+    ]
+    return "、".join(listed) if listed else "—"
+
+
+def _mask_exit_code(manifest: MaskManifest) -> int:
+    """mask 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is MaskStatus.OK,
+        pdf_only_chain=(
+            manifest.status is MaskStatus.PRECOMPILE_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
         ),
     )
 
