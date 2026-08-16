@@ -21,22 +21,6 @@ jobs:
       - run: uv sync
       - name: lint
         run: uv run pre-commit run --all-files --show-diff-on-failure
-      - run: uv run pytest
 
-  compile:
-    name: compile
-    runs-on: ubuntu-latest
-    container: texlive/texlive:latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: uv sync
-      - name: check latex compiler
-        run: |
-          uv run tongtu doctor || true
-          latexmk --version | head -1
-          latexpand --version | head -1
-      - run: uv run pytest -m compile
+# 测试与编译层作业随重构移除：当前没有测试套件（先调通 example 的 happy path，
+# 定型后再补测试），编译回环落地后恢复在参考镜像里跑 example 的作业。

@@ -1,8 +1,8 @@
-# fixture 论文
+# example 论文
 
-`tests/fixtures/papers/` 下的三篇**自造最小模板论文**，是编译层 e2e（架构 §12 层 2：
-MockAgent 恒等翻译、三篇全流水线跑到底、产出 PDF + anchors 并过 schema 校验）的输入，
-也是文本层冒烟测试 `tests/test_fixtures.py` 的对象。
+`examples/papers/` 下的三篇**自造最小模板论文**，是可运行 example 的输入：零期交付
+判据即「三篇不同模板论文本地出全套产物包」，mock 运行时（恒等翻译）下全流水线跑到底
+就是最直接的回归检查。
 
 ## 约定：真实 arXiv 论文不入库
 
@@ -21,7 +21,7 @@ MockAgent 恒等翻译、三篇全流水线跑到底、产出 PDF + anchors 并�
 
 | 目录 | id | documentclass | 栏 | 侧重 |
 |---|---|---|:--:|---|
-| `article/` | `fixture-article` | `article`（11pt, a4paper） | 1 | **多文件源码树**：`main.tex` + `macros.tex` + `sections/×4` 经 `\input`，`refs.bib` 走 bibtex——练 flatten。`\title` 在前导区（唯一一篇产出 title CAP 槽位）；`\newtheorem` 与 `\newenvironment` 声明驱动分类；verbatim + lstlisting；caption 可选参数 |
+| `article/` | `fixture-article` | `article`（11pt, a4paper） | 1 | **多文件源码树**：`main.tex` + `macros.tex` + `sections/×4` 经 `\input`，`refs.bib` 走 bibtex——练 flatten。`\title` 在前导区（与 revtex 篇互补）；`\newtheorem` 与 `\newenvironment` 声明驱动分类；verbatim + lstlisting；caption 可选参数 |
 | `revtex/` | `fixture-revtex` | `revtex4-2`（aps, prd, twocolumn） | 2 | **物理双栏**：`\title`/abstract 在 `\begin{document}` 之后（与 article 篇互补）；`widetext` 是类自带、分类表外的环境——练**保守整块掩码**；`ruledtabular` 嵌套 `tabular`；`\caption{\label{...}...}` 的 revtex 惯用写法；手写 `thebibliography`，不走 bibtex |
 | `conference/` | `fixture-conference` | `IEEEtran`（conference） | 2 | **双栏会议**：跨栏浮动体 `figure*`（练星号变体继承）；`IEEEkeywords`；`\appendices`；本地 `fixturestyle.sty` 提供的 `sidenote` 环境——latexpand 默认不展开 `\usepackage`，故它在 flat 视图里同样是分类表外的未知环境；`refs.bib` 与预编译 `main.bbl` 同时入库，bibtex 与 `latexpand --expand-bbl` 两条路径都走得通 |
 
@@ -30,7 +30,7 @@ MockAgent 恒等翻译、三篇全流水线跑到底、产出 PDF + anchors 并�
 
 ## `MANIFEST.json`
 
-每篇一份，供 e2e 断言「覆盖点没有缩水」。字段：
+每篇一份，是该篇覆盖点的机器可读清单。字段：
 
 | 字段 | 说明 |
 |---|---|
@@ -44,10 +44,9 @@ MockAgent 恒等翻译、三篇全流水线跑到底、产出 PDF + anchors 并�
 | `coverage` | **机器可读的覆盖点清单**（排序、去重），词表见下 |
 | `notes` | 人话说明，包括已知问题 |
 
-`coverage` 的每个键在 `tests/test_fixtures.py` 的 `PROBES` 里有**探针**：正则或 mask 的
-分类结论。`test_claimed_coverage_is_real` 保证「声明了就必须真的在源码里」（MANIFEST 不许
-说谎），`test_coverage_matrix_is_complete` 保证「三篇的并集 == 全部词表」（谁删了覆盖点
-而没改 MANIFEST，测试即失败）。加新覆盖点 = 加探针 + 改 MANIFEST，两边缺一不可。
+覆盖点与源码的一致性此前由测试探针保证：声明的覆盖点必须真在源码里、三篇的并集等于
+全部词表。测试套件随重构移除，重建测试时恢复这两端校验；在那之前改动论文源码需同步
+维护 MANIFEST。
 
 ## 覆盖矩阵
 
@@ -107,28 +106,27 @@ MockAgent 恒等翻译、三篇全流水线跑到底、产出 PDF + anchors 并�
 
 ## 图片资产的再生
 
-`figures/` 下的 PNG 与 PDF 由 `tests/fixtures/gen_assets.py` 现场生成（零第三方依赖：
+`figures/` 下的 PNG 与 PDF 由 `examples/gen_assets.py` 现场生成（零第三方依赖：
 `zlib` + `struct` 手写 PNG chunk 与 CRC32、手写 PDF 1.4 的对象表 / xref / trailer）。
 生成物**提交进仓库**（CI 不跑生成器），但随时可复跑：
 
 ```sh
-uv run python tests/fixtures/gen_assets.py           # 重新写出全部资产
-uv run python tests/fixtures/gen_assets.py --check   # 只比对，不写盘
+uv run python examples/gen_assets.py           # 重新写出全部资产
+uv run python examples/gen_assets.py --check   # 只比对，不写盘
 ```
 
 比对口径：**PDF 逐字节**，**PNG 比结构**（IHDR + 解压后的像素流）——PNG 的 IDAT 是 zlib
 压缩结果，理论上随 zlib 版本可变，比结构才是稳的。改图请改 `gen_assets.py` 的 `ASSETS`
 清单再复跑，不要手工替换二进制。
 
-## 已知问题（等编译层与后续里程碑处理）
+## 已知问题（等编译回环与后续重建处理）
 
-1. **本机无 TeX，三篇均未真编译过。** 本文件与 `tests/test_fixtures.py` 只保证
-   LaTeX 语法自查（配平、环境闭合、宏包限于 TeX Live full 必有）与文本层恒等。
-   「编译通过」的裁决权在参考镜像（架构 §10），CI 编译层落地后红了再修。
-2. **`\appendices` 不被 chunk 识别为附录。** conference 篇用的是 IEEEtran 的
-   `\appendices` 命令，而 `tongtu/stages/chunk.py` 的 `_APPENDIX_RE` 写的是
-   `\\appendix(?:es)?` —— 它匹配 `\appendix` 与（并不存在的）`\appendixes`，**不匹配**
-   真实命令 `\appendices`。后果是 conference 篇的附录段落 `is_appendix` 为假、附录块会
-   与正文块聚合。fixture 保留 `\appendices` 原样（这是 IEEEtran 的惯用写法，fixture 应当
-   照实反映真实论文），修在 `chunk.py` 侧。`\begin{appendices}`（appendix 宏包）与
-   `\appendix`（article / revtex）两条路径目前是好的。
+1. **本机无 TeX，三篇均未真编译过。** 目前只做过 LaTeX 语法自查（配平、环境闭合、
+   宏包限于 TeX Live full 必有）。「编译通过」的裁决权在参考镜像（架构 §10），编译
+   回环落地后红了再修。
+2. **`\appendices` 的识别是 chunk 阶段重建时的注意项。** conference 篇用的是 IEEEtran
+   的 `\appendices` 命令；此前实现的附录正则 `\\appendix(?:es)?` 匹配 `\appendix` 与
+   （并不存在的）`\appendixes`，**不匹配**真实命令 `\appendices`，导致该篇附录段落被
+   当作正文聚合。论文源码保留 `\appendices` 原样（IEEEtran 的惯用写法，example 应当
+   照实反映真实论文），识别要覆盖 `\appendices`、`\begin{appendices}`（appendix 宏包）
+   与 `\appendix`（article / revtex）三条路径。

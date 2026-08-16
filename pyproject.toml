@@ -38,26 +38,12 @@ path = "tongtu/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["tongtu"]
 
-# 随仓库分发的中文字体（霞鹜文楷 Light/Medium，OFL-1.1）打进 wheel：inject_cjk 注入的是
-# 相对路径 `Path={fonts/}`，compile 把字体目录链进 build 目录，缺它则中文全是豆腐。
-# 源码树里 `fonts/` 在仓库根（README 的规划结构），wheel 里落到包内 `tongtu/data/fonts/`，
-# 查找链见 `tongtu.compiler.find_fonts`。
+# 随仓库分发的资产打进 wheel 的 `tongtu/data/`：中文字体（霞鹜文楷 Light/Medium，
+# OFL-1.1，缺它则中文全是豆腐）与 prompt 资产（`skill/`，每个介入点一个标准 Skill
+# 目录）。消费方随对应阶段重建接回。
 [tool.hatch.build.targets.wheel.force-include]
 "fonts" = "tongtu/data/fonts"
-# prompt 资产（关节③④⑤⑥ 的规则，PHASE0 §3.4）：源码树里在仓库根 `skill/`，每个关节一个
-# 标准 Skill 目录（`skill/<name>/SKILL.md`，可带 `references/`），整棵树原样打进 wheel 的
-# `tongtu/data/skill/`。查找链见 `tongtu.prompts.find_skill_dir`。
 "skill" = "tongtu/data/skill"
-# 产物契约 schema：survey 在**运行时**校验 brief / glossary（架构 §3 survey 行的出口判据），
-# 故 schema 不能只活在源码树里。查找链见 `tongtu.schema_check.find_schema_dir`。
-"docs/schemas" = "tongtu/data/schemas"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
-markers = [
-  "compile: 编译层 e2e（架构 §12 层 2）——需要真 latexmk / latexpand，本机没装即 skip，CI 在参考镜像里跑 `pytest -m compile`",
-]
 
 [tool.ruff]
 target-version = "py311"

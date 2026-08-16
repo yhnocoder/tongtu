@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""fixture 论文的图片资产生成器（零第三方依赖，纯 zlib/struct 手写）。
+"""example 论文的图片资产生成器（零第三方依赖，纯 zlib/struct 手写）。
 
-三篇 fixture 论文（`tests/fixtures/papers/`）里的 `\\includegraphics` 需要真图文件：
-figures 阶段要拿它们练预渲染，编译层 e2e 要拿它们练 xelatex 的图片路径。真实论文的
+三篇 example 论文（`examples/papers/`）里的 `\\includegraphics` 需要真图文件：
+figures 阶段要拿它们练预渲染，编译回环要拿它们练 xelatex 的图片路径。真实论文的
 图不入库（license，见 `README.md`），所以这里现场造两种**最小的合法文件**：
 
 * **PNG**：8-bit truecolor（color type 2），逐行 filter 0，IDAT 走 `zlib.compress`。
@@ -12,12 +12,11 @@ figures 阶段要拿它们练预渲染，编译层 e2e 要拿它们练 xelatex �
 
 生成物**提交进仓库**（CI 不跑本脚本），但随时可复跑再生：
 
-    uv run python tests/fixtures/gen_assets.py          # 写回各论文的 figures/
-    uv run python tests/fixtures/gen_assets.py --check  # 只比对，不写盘
+    uv run python examples/gen_assets.py          # 写回各论文的 figures/
+    uv run python examples/gen_assets.py --check  # 只比对，不写盘
 
-PNG 的字节流含 zlib 压缩结果，理论上随 zlib 版本可变；`--check` 与
-`tests/test_fixtures.py` 因此对 PNG 比对**结构等价**（IHDR + 解压后的像素流），
-对 PDF 比对逐字节。
+PNG 的字节流含 zlib 压缩结果，理论上随 zlib 版本可变；`--check` 因此对 PNG 比对
+**结构等价**（IHDR + 解压后的像素流），对 PDF 比对逐字节。
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ PAPERS = Path(__file__).resolve().parent / "papers"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 #: 生成清单：相对 `papers/` 的路径 → (类型, 参数)。
-#: 尺寸刻意小（图只是占位，视觉内容不承载任何信息），但都是合法可解码的文件。
+#: 尺寸取小值（图只是占位，视觉内容不承载任何信息），但都是合法可解码的文件。
 ASSETS: dict[str, tuple[str, dict]] = {
     "article/figures/pipeline.pdf": (
         "pdf",

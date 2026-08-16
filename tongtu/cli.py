@@ -3,36 +3,31 @@
 命令与参数以架构 §6 为准；`tex` 子命令面（编译修复会话的工具面，不面向人）见架构
 §3 compile 节。
 
-当前全部命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline，
-接线顺序见 docs/BACKLOG.md。run / validate / doctor / `tex compile` 的退出码是机器
-判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``（3）退出；
-`--help` 退 0、用法错误退 2，这两类行为是真实的。`run --json` 输出的事件流经
-artifact model 构造，流的形状即接线后的真实形状，内容如实记录「什么都没做」
-（阶段 skipped、结果 failed）。
+当前全部命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline。
+run / validate / doctor / `tex compile` 的退出码是机器判据，占位结果不得被误当成
+真实结论，故占位命令统一以 ``EXIT_STUB``（3）退出；`--help` 退 0、用法错误退 2，
+这两类行为是真实的。
 """
 
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
-from uuid import uuid4
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .artifacts.events import ResultEvent, StageEndEvent, StageStartEvent
 from .stages import STAGES
 
 #: 占位实现的统一退出码。区别于 0（成功）、1（运行失败）与 2（用法错误），
 #: 使占位结果在任何脚本化调用里都不可能被读成真实结论。
 EXIT_STUB = 3
 
-#: chunk id 形状，与 artifact model（tongtu/artifacts/chunks.py）的 pattern 一致。
+#: chunk id 形状：`c` 后至少三位数字，如 c012。
 _CHUNK_ID_RE = re.compile(r"^c[0-9]{3,}$")
 
 #: doctor 检查项（架构 §6）：名字 → 用途。
@@ -78,7 +73,7 @@ WorkdirOpt = Annotated[
 ]
 JsonOpt = Annotated[
     bool,
-    typer.Option("--json", help="向 stdout 输出机器可读事件流（事件类型以 artifact model 定义，架构 §6）"),
+    typer.Option("--json", help="向 stdout 输出机器可读事件流（JSON Lines，架构 §6；事件类型随 run 接线定义）"),
 ]
 AgentOpt = Annotated[
     str | None, typer.Option("--agent", metavar="NAME", help="agent 运行时适配器（注册表在 tongtu/agent/）")
@@ -115,27 +110,6 @@ def _stub_exit(command: str, **fields: object) -> typer.Exit:
     return typer.Exit(EXIT_STUB)
 
 
-def _emit_stub_events(paper: str) -> None:
-    """按 `--json` 契约向 stdout 输出一条完整事件流（JSON Lines，事件类型见 artifacts/events.py）。"""
-    ts = datetime.now(UTC)
-    run_id = uuid4().hex[:12]
-    arxiv_id = None if ("/" in paper or Path(paper).exists()) else paper
-    for name in STAGES:
-        start = StageStartEvent(ts=ts, run_id=run_id, arxiv_id=arxiv_id, stage=name)
-        end = StageEndEvent(ts=ts, run_id=run_id, arxiv_id=arxiv_id, stage=name, status="skipped", duration_ms=0)
-        print(start.model_dump_json(exclude_none=True))
-        print(end.model_dump_json(exclude_none=True))
-    result = ResultEvent(
-        ts=ts,
-        run_id=run_id,
-        arxiv_id=arxiv_id,
-        status="failed",
-        exit_code=EXIT_STUB,
-        error="占位实现：pipeline 未接入",
-    )
-    print(result.model_dump_json(exclude_none=True))
-
-
 # --------------------------------------------------------------------- 主命令面
 
 
@@ -150,10 +124,16 @@ def run(
     model: ModelOpt = None,
 ) -> None:
     """跑完整 pipeline。幂等：重复执行按 manifest 与翻译缓存跳过已完成部分。"""
-    if json_output:
-        _emit_stub_events(paper)
-        raise typer.Exit(EXIT_STUB)
-    raise _stub_exit("run", paper=paper, workdir=workdir, glossary=glossary, force=force, agent=agent, model=model)
+    raise _stub_exit(
+        "run",
+        paper=paper,
+        workdir=workdir,
+        glossary=glossary,
+        force=force,
+        json=json_output,
+        agent=agent,
+        model=model,
+    )
 
 
 @app.command()
