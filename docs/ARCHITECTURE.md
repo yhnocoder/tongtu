@@ -48,7 +48,7 @@ flowchart TD
 | 阶段 | 描述 | agent（触发 → 授权） | 结束判定 |
 |---|---|---|---|
 | [fetch](stages/fetch.md) | e-print 下载解包；PDF-only 检测 | — | 源码树落 `src/`（PDF-only → 报错标记 degraded path） |
-| flatten | latexpand 展开 | 主文件歧义 → 判定主文件 ① | 单文件 `flat.tex` |
+| [flatten](stages/flatten.md) | latexpand 展开 | 主文件歧义 → 判定主文件 ① | 单文件 `flat.tex` |
 | baseline | latexmk 原样编译原文，隔离 toolchain 问题 | 失败 → workdir 内修 toolchain ② | 原文 PDF 编译通过；仍失败 → 终止（toolchain 问题，非翻译问题） |
 | mask | 把 non-translatable environment、注释、caption 换成 placeholder，只留需要翻译的文本 | 未知环境 → text/non-translatable environment 分类 ③；不确定 → 保守整体掩码 | `unmask(mask(x)) == x` 恒等；`blocks.json` 完整 |
 | survey | 一次读完全文，产出 outline 与术语决策，供后续每个 chunk 复用 | 读完全文 → outline（brief）生成 + 术语预扫与新词译法决策 ④（`ask`） | `brief.json` 与结构化术语表通过 artifact model 校验 |

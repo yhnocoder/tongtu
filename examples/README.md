@@ -23,14 +23,14 @@
 |---|---|---|:--:|---|
 | `article/` | `fixture-article` | `article`（11pt, a4paper） | 1 | **多文件源码树**：`main.tex` + `macros.tex` + `sections/×4` 经 `\input`，`refs.bib` 走 bibtex——练 flatten。`\title` 在前导区（与 revtex 篇互补）；`\newtheorem` 与 `\newenvironment` 声明驱动分类；verbatim + lstlisting；caption 可选参数 |
 | `revtex/` | `fixture-revtex` | `revtex4-2`（aps, prd, twocolumn） | 2 | **物理双栏**：`\title`/abstract 在 `\begin{document}` 之后（与 article 篇互补）；`widetext` 是类自带、分类表外的环境——练**保守整块掩码**；`ruledtabular` 嵌套 `tabular`；`\caption{\label{...}...}` 的 revtex 惯用写法；手写 `thebibliography`，不走 bibtex |
-| `conference/` | `fixture-conference` | `IEEEtran`（conference） | 2 | **双栏会议**：跨栏浮动体 `figure*`（练星号变体继承）；`IEEEkeywords`；`\appendices`；本地 `fixturestyle.sty` 提供的 `sidenote` 环境——latexpand 默认不展开 `\usepackage`，故它在 flat 视图里同样是分类表外的未知环境；`refs.bib` 与预编译 `main.bbl` 同时入库，bibtex 与 `latexpand --expand-bbl` 两条路径都走得通 |
+| `conference/` | `fixture-conference` | `IEEEtran`（conference） | 2 | **双栏会议**：跨栏浮动体 `figure*`（练星号变体继承）；`IEEEkeywords`；`\appendices`；本地 `fixturestyle.sty` 提供的 `sidenote` 环境——latexpand 默认不展开 `\usepackage`，故它在 flat 视图里同样是分类表外的未知环境；`refs.bib` 与预编译 `main.bbl` 同时入库，bibtex 与 bbl 内联两条路径都走得通 |
 
 规模均为 2–4 页。选 `IEEEtran` 而非 `acmart` 作会议版式：TeX Live full 里两者都有，但
 `IEEEtran` 的必需命令集更小更稳（`acmart` 对 `\acmConference`、CCS 概念等有一串强制项）。
 
 ## 真实论文试跑对象（源码不入库）
 
-自造论文覆盖版式与语法，真实论文覆盖真实 e-print 的下载形态与源码杂质。以下两篇是
+自造论文覆盖版式与语法，真实论文覆盖真实 e-print 的下载形态与源码杂质。以下八篇是
 各阶段重建过程中的固定试跑对象；按「真实 arXiv 论文不入库」的约定，源码不进仓库，
 用 `tongtu stage fetch <arxiv_id>` 按需拉取即可（工作目录默认在 `~/.local/share/tongtu/`，
 本就不在仓库内）：
@@ -38,9 +38,16 @@
 | arXiv id | 定位 |
 |---|---|
 | `2002.05202` | 第一篇：结构简单（单个 `main.tex` 加预编译 `main.bbl`），v2 原型完整处理过，有既往结果可对照 |
-| `1701.06538` | 第二篇：结构比前者复杂，`2002.05202` 走通之后再加入 |
+| `1701.06538` | 第二篇：单个 `main.tex`，但图源格式多（PNG、PDF、EPS 并存）、随源码带多个本地 `.sty` |
+| `2412.19437` | 多级 `\input`（`content/`、`tables/`）加自定义 `deepseek.cls`；`main.tex` 里同时有生效的与注释掉的 `\bibliography` 行，是 bbl 内联注释判定的实测用例 |
+| `2106.04426` | 主文件名是 `neurips_2021.tex` 而非 `main.tex`；图形源码 `figs/model.tex` 经 `\input` 内联 |
+| `2409.19606` | 主文件名是 `iclr2025_conference.tex`；根目录另有多个辅 `.tex`（`app.tex`、`math_commands.tex` 等），主文件判定不受干扰 |
+| `2512.02556` | `sections/` 与 `tables/` 深层结构；有 `.bib` 无 `.bbl`，参考文献走 bibtex |
+| `2512.24880` | 有 `.bib` 无 `.bbl`；正文直接使用 @-命令（`\c@figure`），latexpand 对此报 `--makeatletter` 警告，是「警告如实记录、不拦产出」的实测用例 |
+| `2604.15804` | 主文件名是 `colm2024_conference.tex`；`content/contributor/` 两级嵌套 `\input`，无 `.bbl` |
 
-顺序约定：每个阶段先在三篇自造论文上走通，再上 `2002.05202`，最后 `1701.06538`。
+顺序约定：每个阶段先在三篇自造论文上走通，再按表内自上而下的顺序上真实论文
+（`2002.05202` 最先）。
 
 ## `MANIFEST.json`
 

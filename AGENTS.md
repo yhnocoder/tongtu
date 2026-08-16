@@ -12,8 +12,8 @@
 
 - 零期重建中（分支 zeh/stage1）：Phase0 的一次性实现验收未通过，已整体删除，只保留 dummy CLI 与阶段名清单，按阶段序逐个重建。
 - 工作方式：每个阶段先出设计讨论稿（输入、输出、出口判据、产物模型），拍板后动手。docs/ 设计文档是权威（总纲 ARCHITECTURE.md、命令面 CLI.md、各阶段 stages/），允许边建边修，改它们先经确认。
-- 回归检查：happy path 调通前不写测试。examples/ 三篇自造论文加两篇真实论文（2002.05202、1701.06538，源码不入库）跑通全流水线即回归判据。
-- 进度：fetch 已实现并接线（`tongtu stage fetch`，设计见 docs/stages/fetch.md）；下一个阶段：flatten。
+- 回归检查：happy path 调通前不写测试。examples/ 三篇自造论文加八篇真实论文（清单与各自覆盖的形态见 examples/README.md，源码不入库）跑通全流水线即回归判据。
+- 进度：fetch、flatten 已实现并接线（`tongtu stage fetch` / `tongtu stage flatten`，设计见 docs/stages/ 下对应文档）；下一个阶段：baseline。
 
 
 ## 这是一个自用的项目

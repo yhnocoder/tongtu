@@ -1,6 +1,6 @@
 """`tongtu` CLI 命令面。
 
-`stage fetch` 已接线，走真实的阶段驱动器；其余命令为占位实现：只解析并校验参数、
+`stage fetch` 与 `stage flatten` 已接线，走真实的阶段驱动器；其余命令为占位实现：只解析并校验参数、
 说明将要执行的动作，不运行 pipeline。run / validate / doctor / `tex compile` 的
 退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
 （99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
@@ -19,8 +19,10 @@ from rich.table import Table
 
 from . import __version__
 from .artifacts.fetch import FetchStatus
+from .artifacts.flatten import FlattenManifest, FlattenStatus
 from .stages import STAGES
 from .stages import fetch as fetch_stage
+from .stages import flatten as flatten_stage
 from .workdir import WorkdirError
 
 # 模块级退出码常量是退出码的集中登记处：新增退出码在此定义并注释含义。
@@ -200,6 +202,9 @@ def stage(
     if name.value == fetch_stage.STAGE_NAME:
         # fetch 无 agent 介入，--agent 与 --model 不参与执行。
         raise _run_stage_fetch(paper, workdir, force, json_output)
+    if name.value == flatten_stage.STAGE_NAME:
+        # flatten 判定不出主文件时才需要 agent，该介入点推迟实现，--agent 与 --model 不参与执行。
+        raise _run_stage_flatten(paper, workdir, force, json_output)
     raise _stub_exit(
         "stage", name=name.value, paper=paper, workdir=workdir, force=force, json=json_output, agent=agent, model=model
     )
@@ -248,6 +253,59 @@ def _fetch_exit_code(status: FetchStatus) -> int:
     if status is FetchStatus.OK:
         return 0
     if status is FetchStatus.PDF_ONLY:
+        return EXIT_PDF_ONLY
+    return EXIT_FAILURE
+
+
+def _run_stage_flatten(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage flatten` 的接线：由论文参数定位工作目录、调驱动器、打印结果、映射退出码。
+
+    flatten 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。
+    """
+    if json_output:
+        error_console.print("--json：事件流 schema 尚未定义，本次忽略该选项")
+    try:
+        paper_input = fetch_stage.parse_paper_argument(paper)
+        workdir_name = paper_input.source_dir.name if paper_input.source_dir is not None else paper_input.arxiv_id
+        result = flatten_stage.flatten(workdir_name, workdir, force=force)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(flatten_stage.STAGE_NAME)
+    if result.skipped:
+        console.print(f"flatten 跳过：manifest 已有结论（状态 {manifest.status}），--force 可重新执行")
+        console.print(f"  manifest  {manifest_path}")
+        return typer.Exit(_flatten_exit_code(manifest))
+    console.print(f"flatten：状态 {manifest.status}")
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    table.add_row("  main_file", manifest.main_file or "—")
+    table.add_row("  bbl", f"已内联 {manifest.bbl_file}" if manifest.bbl_file else "未内联")
+    flat_path = result.workdir.build / flatten_stage.FLAT_FILENAME
+    if manifest.status is FlattenStatus.OK:
+        table.add_row("  flat.tex", f"{flat_path}（{manifest.flat_bytes} 字节）")
+    else:
+        table.add_row("  flat.tex", "未写出")
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_flatten_exit_code(manifest))
+
+
+def _flatten_exit_code(manifest: FlattenManifest) -> int:
+    """flatten 状态到退出码的映射；命中跳过时对已存结论取同样的映射。
+
+    上游 fetch 判定为 pdf_only 时退 3（业务分支段，跨子命令同码同义），调用方据此改道
+    degraded path；其余失败态退 1。
+    """
+    if manifest.status is FlattenStatus.OK:
+        return 0
+    if manifest.status is FlattenStatus.FETCH_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY:
         return EXIT_PDF_ONLY
     return EXIT_FAILURE
 
