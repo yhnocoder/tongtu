@@ -1,489 +1,642 @@
-"""`tongtu` 命令行入口（架构 §6）。
+"""`tongtu` CLI 命令面。
 
-    tongtu run <arxiv-id | dir>  [--glossary FILE]...  [--workdir DIR]  [--force]  [--json]
-    tongtu retranslate <id>  (--chunks c012,c045 | --term WORD | --all)
-    tongtu stage <name> <id>          # 单阶段入口，调试用
-    tongtu doctor                     # 检查 xelatex/latexmk/latexpand/字体，缺啥说啥
-    tongtu preview <id>               # 打开检验页
-
-零期状态：`doctor`（M0）、`run` 与 `stage`（M2）、`retranslate`（M3）、`preview`（M4）
-全部已实现。
-退出码约定：0 = 成功（`doctor` 全部命中 / `run` 产物包完整产出，含有回退块的情形；
-`preview` 打不开浏览器但打印了路径也算成功）；1 = 检查未通过或运行失败；2 = 用法错误。
+`stage fetch`、`stage flatten`、`stage precompile`、`stage mask` 与 `doctor` 已接线，走真实的阶段驱动器与环境检查；
+其余命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline。run / validate /
+`tex compile` 的退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
+（99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
 """
 
 from __future__ import annotations
 
-import argparse
-import os
+import re
 import shutil
-import subprocess
-import sys
-import unicodedata
-from collections.abc import Sequence
-from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.table import Table
 
 from . import __version__
+from .artifacts.fetch import FetchStatus
+from .artifacts.flatten import FlattenManifest, FlattenStatus
+from .artifacts.mask import MaskManifest, MaskStatus
+from .artifacts.precompile import PrecompileManifest, PrecompileStatus
+from .assets import asset_path
+from .masking import BlockCategory
 from .stages import STAGES
+from .stages import fetch as fetch_stage
+from .stages import flatten as flatten_stage
+from .stages import mask as mask_stage
+from .stages import precompile as precompile_stage
+from .workdir import WorkdirError
 
-#: doctor 探测的可执行文件：名字 → 用途说明。
-REQUIRED_TOOLS: tuple[tuple[str, str], ...] = (
-    ("xelatex", "编译引擎（中文排版必需）"),
+# 模块级退出码常量是退出码的集中登记处：新增退出码在此定义并注释含义。
+
+#: 一般失败：未能出包、下载或解包失败、校验有失败层、环境有缺失、编译失败。
+EXIT_FAILURE = 1
+
+#: 业务分支段（3–9，跨子命令同码同义）的首个登记：源是 PDF 而非 LaTeX 源码，
+#: 走 degraded path。
+EXIT_PDF_ONLY = 3
+
+#: 占位实现的统一退出码。取值远离成功（0）、一般失败（1）、用法错误（2）与业务
+#: 分支段（3–9），使占位结果在任何脚本化调用里都不可能被读成真实结论；命令逐个
+#: 接线后此码退役。
+EXIT_STUB = 99
+
+#: chunk id 形状：`c` 后至少三位数字，如 c012。
+_CHUNK_ID_RE = re.compile(r"^c[0-9]{3,}$")
+
+#: doctor 检查项（架构 §6）：名字 → 用途。
+DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
+    ("xelatex", "编译引擎（latexmk -xelatex）"),
     ("latexmk", "编译回环驱动"),
     ("latexpand", "flatten 阶段展开多文件源码"),
+    ("pdftocairo", "figures 矢量源转位图"),
+    ("epstopdf", "EPS 图源接入 xelatex 的转换链"),
+    ("中文字体", "font fallback chain（霞鹜文楷随仓库分发）"),
 )
 
-#: 中文字体探测链（架构 §10）：Hiragino → Noto Sans CJK → 霞鹜文楷。
-FONT_CHAIN: tuple[str, ...] = (
-    "Hiragino Sans GB",
-    "Noto Sans CJK SC",
-    "LXGW WenKai",
+#: DOCTOR_CHECKS 里字体检查项的名字：这一项查字体文件，其余各项按可执行文件查 PATH。
+FONT_CHECK_NAME = "中文字体"
+
+#: 字体目录；`fonts/` 随仓库分发，两种布局下的定位交给 assets。
+FONTS_DIR = asset_path("fonts")
+
+#: 字体目录里必须存在的字体文件（霞鹜文楷 Light / Medium，用途见 fonts/README.md）。
+REQUIRED_FONT_FILENAMES: tuple[str, ...] = ("LXGWWenKai-Light.ttf", "LXGWWenKai-Medium.ttf")
+
+#: `tongtu stage` 的阶段名选项，取值即 tongtu.stages.STAGES。
+StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
+
+console = Console()
+error_console = Console(stderr=True)
+
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="基于 LaTeX 源码的 arXiv 论文英译中引擎。",
 )
 
-_NOT_IMPLEMENTED = "零期施工中，见 docs/PHASE0.md 里程碑"
-
-_OK, _MISSING, _UNKNOWN = "ok", "missing", "unknown"
-
-_MARK = {_OK: "[ok]", _MISSING: "[缺失]", _UNKNOWN: "[未知]"}
-
-
-@dataclass
-class Check:
-    """一条 doctor 检查结果。"""
-
-    name: str
-    status: str  # _OK / _MISSING / _UNKNOWN
-    detail: str
-
-    @property
-    def passed(self) -> bool:
-        return self.status == _OK
-
-
-# --------------------------------------------------------------------------- doctor
-
-
-def _probe_tools() -> list[Check]:
-    checks = []
-    for tool, purpose in REQUIRED_TOOLS:
-        path = shutil.which(tool)
-        if path:
-            checks.append(Check(tool, _OK, path))
-        else:
-            checks.append(Check(tool, _MISSING, f"未在 PATH 中找到——{purpose}"))
-    return checks
-
-
-def _list_font_families() -> list[str] | None:
-    """用 fc-list 列出系统字体族名；fc-list 不可用或调用失败返回 None。"""
-    fc_list = shutil.which("fc-list")
-    if not fc_list:
-        return None
-    for argv in ([fc_list, "--format", "%{family}\n"], [fc_list]):
-        try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if proc.returncode == 0:
-            return proc.stdout.splitlines()
-    return None
-
-
-def _probe_fonts() -> Check:
-    families = _list_font_families()
-    if families is None:
-        return Check(
-            "中文字体链",
-            _UNKNOWN,
-            f"fc-list 不可用，无法探测；请自行确认 {' / '.join(FONT_CHAIN)} 之一可用",
-        )
-    haystack = "\n".join(families).lower()
-    found = [name for name in FONT_CHAIN if name.lower() in haystack]
-    if found:
-        return Check("中文字体链", _OK, "、".join(found))
-    return Check(
-        "中文字体链",
-        _MISSING,
-        f"探测链全部落空（{' → '.join(FONT_CHAIN)}）；装一款中文字体，或用仓库随附的霞鹜文楷",
-    )
-
-
-def _display_width(text: str) -> int:
-    """终端显示宽度：CJK 全角字符算两列（对齐 doctor 的输出列）。"""
-    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
-
-
-def _pad(text: str, width: int) -> str:
-    return text + " " * max(0, width - _display_width(text))
-
-
-def run_doctor(out=None) -> int:
-    """探测本机运行环境。全部命中返回 0，否则返回 1。"""
-    stream = sys.stdout if out is None else out
-    checks = [*_probe_tools(), _probe_fonts()]
-
-    print(f"tongtu doctor (v{__version__})", file=stream)
-    mark_width = max(_display_width(m) for m in _MARK.values())
-    name_width = max(_display_width(c.name) for c in checks)
-    for check in checks:
-        print(
-            f"{_pad(_MARK[check.status], mark_width)} {_pad(check.name, name_width)}  {check.detail}",
-            file=stream,
-        )
-
-    failed = [c for c in checks if not c.passed]
-    if not failed:
-        print("\n环境就绪。", file=stream)
-        return 0
-    print(
-        "\n未通过：" + "、".join(f"{c.name}（{'无法探测' if c.status == _UNKNOWN else '缺失'}）" for c in failed),
-        file=stream,
-    )
-    print("TeX 环境安装指引见 docs/ARCHITECTURE.md §10（或直接用参考镜像）。", file=stream)
-    return 1
-
-
-# ------------------------------------------------------------------------ argparse
-
-
-def _not_implemented(command: str) -> int:
-    print(f"tongtu {command}：{_NOT_IMPLEMENTED}", file=sys.stderr)
-    return 2
-
-
-# ------------------------------------------------------------------- run / stage
-
-
-def _agent(args: argparse.Namespace) -> dict:
-    """`--agent` / `--model` 透传给 `Pipeline(agent=...)`；没给就让编排器用它的默认（MockAgent）。
-
-    名字解析（显式 → `$TONGTU_AGENT` → mock）在 :func:`tongtu.agent.get_agent` 里，这里
-    不重复一套口径。`--model` 同样只是转交：要不要模型、给不给默认，由各运行时自己定
-    （codex 要求显式给——模型标识进翻译缓存 key；mock / pseudo 丢弃）。
-    """
-    from .agent import AGENT_ENV, get_agent
-
-    name = getattr(args, "agent", None) or os.environ.get(AGENT_ENV)
-    model = (getattr(args, "model", None) or "").strip()
-    if not name and not model:
-        return {}
-    try:
-        return {"agent": get_agent(name, **({"model": model} if model else {}))}
-    except RuntimeError as exc:
-        # 运行时拒绝被构造（如 codex 没给模型）。对 CLI 而言这与「未知 agent 名」同类：
-        # 用法错误，退 2；上层只认 ValueError，故在此换个类型，消息原样带出去。
-        raise ValueError(str(exc)) from exc
-
-
-def run_run(args: argparse.Namespace) -> int:
-    """`tongtu run`：跑完整流水线，退出码即 `PipelineResult.exit_code`（架构 §6）。"""
-    from .pipeline import run_pipeline
-    from .workdir import WorkdirError
-
-    try:
-        result = run_pipeline(
-            args.target,
-            workdir=args.workdir,
-            force=args.force,
-            json_events=args.json,
-            glossary=tuple(args.glossary or ()),
-            **_agent(args),
-        )
-    except WorkdirError as exc:
-        print(f"tongtu run：{exc}", file=sys.stderr)
-        return 2
-    except ValueError as exc:  # 未知 agent 名 = 用法错误
-        print(f"tongtu run：{exc}", file=sys.stderr)
-        return 2
-    return result.exit_code
-
-
-def run_retranslate(args: argparse.Namespace) -> int:
-    """`tongtu retranslate <id>`：块级失效重算（架构 §4 返工触发表）。
-
-    退出码同 `run`（0 = 出包）；块 id 写错、术语没命中任何块这类**用法错误**退 2。
-    """
-    from .pipeline import retranslate
-    from .workdir import WorkdirError
-
-    chunks = tuple(part.strip() for part in (args.chunks or "").split(",") if part.strip())
-    if args.chunks is not None and not chunks:
-        print("tongtu retranslate：--chunks 要求至少一个块 id（形如 c012,c045）", file=sys.stderr)
-        return 2
-    try:
-        result = retranslate(
-            args.id,
-            workdir=args.workdir,
-            chunks=chunks,
-            term=(args.term or "").strip(),
-            all_chunks=bool(args.all),
-            json_events=args.json,
-            glossary=tuple(args.glossary or ()),
-            **_agent(args),
-        )
-    except WorkdirError as exc:
-        print(f"tongtu retranslate：{exc}", file=sys.stderr)
-        return 2
-    except ValueError as exc:  # 未知块 id / 未知 agent 名 = 用法错误
-        print(f"tongtu retranslate：{exc}", file=sys.stderr)
-        return 2
-    return result.exit_code
-
-
-def run_stage_cmd(args: argparse.Namespace) -> int:
-    """`tongtu stage <name> <id>`：单阶段调试入口。
-
-    上游阶段一律**从工作目录装载**（不重算），目标阶段无视 manifest 必算。占位跳过的阶段
-    （`SKIPPED_STAGES`，M4 起为空）退 2。
-    """
-    from .pipeline import SKIPPED_STAGES, run_stage
-    from .workdir import WorkdirError
-
-    if args.name in SKIPPED_STAGES:
-        print(
-            f"tongtu stage {args.name}：{_NOT_IMPLEMENTED}（{SKIPPED_STAGES[args.name]}）",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        result = run_stage(
-            args.name,
-            args.id,
-            workdir=args.workdir,
-            json_events=args.json,
-            **_agent(args),
-        )
-    except WorkdirError as exc:
-        print(f"tongtu stage {args.name}：{exc}", file=sys.stderr)
-        return 2
-    except ValueError as exc:  # 未知 agent 名 = 用法错误
-        print(f"tongtu stage {args.name}：{exc}", file=sys.stderr)
-        return 2
-    outcome = result.stage(args.name)
-    return 0 if outcome is not None and outcome.ok else 1
-
-
-# ------------------------------------------------------------------------ preview
-
-
-def run_preview(args: argparse.Namespace, opener=None, server=None) -> int:
-    """`tongtu preview <id>`：打开产物包里的静态检验页（架构 §11、PHASE0 §1 第 4 条）。
-
-    退出码语义刻意宽松：**打不开浏览器不算失败**。headless 容器、SSH 会话里
-    `webbrowser.open` 必然返回 False，此时打印路径并退 0——用户拿着路径照样能开，
-    而把它判成错误只会让脚本化调用平添一个要特判的非零退出码。真正的失败只有一种：
-    产物包里没有 `report.html`（还没跑过 `tongtu run`）。
-
-    `--serve` 起一个本地 http.server：`file://` 下 PDF 走内嵌 base64，而 http 下页面会
-    走相对路径 fetch 那条快路（省掉 33% 体积的解码），大包用它更跟手。
-    """
-    import webbrowser
-
-    from .report_page import PAGE_NAME
-    from .workdir import WorkdirError, open_workdir
-
-    try:
-        paper = open_workdir(arxiv_id=args.id, workdir=args.workdir, create=False)
-    except WorkdirError as exc:
-        print(f"tongtu preview：{exc}", file=sys.stderr)
-        return 2
-    page = paper.out / PAGE_NAME
-    if not page.is_file():
-        print(
-            f"tongtu preview：没有 {page}——先跑 `tongtu run {args.id}` 出产物包",
-            file=sys.stderr,
-        )
-        return 1
-
-    if getattr(args, "serve", False):
-        return _serve(page, opener=opener, server=server)
-
-    url = page.resolve().as_uri()
-    opened = False
-    try:
-        opened = (opener or webbrowser.open)(url)
-    except Exception:  # noqa: BLE001 —— 没有浏览器不是错误
-        opened = False
-    print(url if opened else f"打不开浏览器，检验页在：{page}")
-    return 0
-
-
-def _serve(page, *, opener=None, server=None) -> int:
-    """在产物包目录上起一个本地 http.server，打开检验页（Ctrl-C 退出）。"""
-    import functools
-    import http.server
-    import webbrowser
-
-    directory = str(page.parent)
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
-    factory = server or (lambda: http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler))
-    httpd = factory()
-    host, port = httpd.server_address[0], httpd.server_address[1]
-    url = f"http://{host}:{port}/{page.name}"
-    print(f"检验页：{url}（Ctrl-C 退出）")
-    try:
-        (opener or webbrowser.open)(url)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        print()
-    finally:
-        httpd.server_close()
-    return 0
-
-
-def build_parser() -> argparse.ArgumentParser:
-    # --json 既可放在子命令前也可放在其后。默认值统一为 SUPPRESS：子命令与主 parser 共享
-    # 同一个 action 对象，任何一侧设了真实默认值都会把另一侧已解析的 True 覆盖回去。
-    # 属性缺省由 parse_args() 补 False。
-    global_opts = argparse.ArgumentParser(add_help=False)
-    global_opts.add_argument(
-        "--json",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="向 stdout 输出机器可读事件流（schema：docs/schemas/events.schema.json）",
-    )
-
-    workdir_opts = argparse.ArgumentParser(add_help=False)
-    workdir_opts.add_argument(
-        "--workdir",
-        metavar="DIR",
-        help="论文工作目录（默认 $TONGTU_HOME/<id> 或 ~/.local/share/tongtu/<id>）",
-    )
-
-    # agent 运行时（架构 §9/§13）。默认 mock 是有意的：真运行时要花钱、要拉外部进程，
-    # 必须显式选择。choices 直接取自适配层的注册表，不在此另抄一份。
-    from .agent import AGENT_ENV, DEFAULT_AGENT, agent_names
-
-    agent_opts = argparse.ArgumentParser(add_help=False)
-    agent_opts.add_argument(
-        "--agent",
-        metavar="NAME",
-        choices=list(agent_names()),
-        default=None,
-        help=(f"agent 运行时：{' / '.join(agent_names())}（默认 {DEFAULT_AGENT}；也可用 ${AGENT_ENV}）"),
-    )
-    # 模型标识进翻译缓存 key（架构 §4），故真运行时要求显式给：换模型必须换缓存，
-    # 靠运行时自己的配置文件下发模型会让缓存分不清新旧译文。mock / pseudo 忽略它。
-    agent_opts.add_argument(
-        "--model",
-        metavar="ID",
-        default=None,
-        help="模型标识，透传给 agent 运行时（--agent codex 必须给；mock / pseudo 忽略）",
-    )
-
-    parser = argparse.ArgumentParser(
-        prog="tongtu",
-        parents=[global_opts],
-        description="基于 LaTeX 源码的 arXiv 论文英译中引擎",
-    )
-    parser.add_argument("--version", action="version", version=f"tongtu {__version__}")
-
-    sub = parser.add_subparsers(dest="command", metavar="<command>")
-
-    p_run = sub.add_parser(
+tex_app = typer.Typer(
+    no_args_is_help=True,
+    help="编译修复会话的工具面，不面向人；权限规则见架构 §3 compile 节。",
+)
+# 不面向人，故不出现在顶层 help；`tongtu tex --help` 仍可用。
+app.add_typer(tex_app, name="tex", hidden=True)
+
+# ------------------------------------------------------------- 共享参数类型
+
+PaperArg = Annotated[str, typer.Argument(metavar="ID", help="arXiv id（或本地源码目录名）")]
+GlossaryOpt = Annotated[
+    list[Path] | None,
+    typer.Option("--glossary", metavar="FILE", help="input glossary，可多次；优先级高于论文目录内与全局表"),
+]
+WorkdirOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--workdir", metavar="DIR", help="论文工作目录（默认 $TONGTU_HOME/<id> 或 ~/.local/share/tongtu/<id>）"
+    ),
+]
+JsonOpt = Annotated[
+    bool,
+    typer.Option("--json", help="向 stdout 输出机器可读事件流（JSON Lines，架构 §6；事件类型随 run 接线定义）"),
+]
+AgentOpt = Annotated[
+    str | None, typer.Option("--agent", metavar="NAME", help="agent 运行时适配器（注册表在 tongtu/agent/）")
+]
+ModelOpt = Annotated[
+    str | None,
+    typer.Option("--model", metavar="ID", help="模型标识，透传给 agent 运行时；模型标识进翻译缓存 key（架构 §4）"),
+]
+ChunkIdArg = Annotated[str, typer.Argument(metavar="CHUNK_ID", help="chunk id，形如 c012")]
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        console.print(f"tongtu {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: Annotated[
+        bool, typer.Option("--version", help="打印版本号并退出", callback=_print_version, is_eager=True)
+    ] = False,
+) -> None:
+    """基于 LaTeX 源码的 arXiv 论文英译中引擎。"""
+
+
+def _stub_exit(command: str, **fields: object) -> typer.Exit:
+    """打印占位说明与解析结果，返回统一退出码的 Exit。命令接线后随之删除。"""
+    console.print(f"tongtu {command}：占位实现，未执行任何操作（退出码 {EXIT_STUB}）")
+    table = Table(show_header=False, box=None, pad_edge=False)
+    for key, value in fields.items():
+        table.add_row(f"  {key}", "—" if value in (None, [], ()) else str(value))
+    console.print(table)
+    return typer.Exit(EXIT_STUB)
+
+
+# --------------------------------------------------------------------- 主命令面
+
+
+@app.command()
+def run(
+    paper: Annotated[str, typer.Argument(metavar="ARXIV_ID|DIR", help="arXiv id 或本地源码目录")],
+    glossary: GlossaryOpt = None,
+    workdir: WorkdirOpt = None,
+    force: Annotated[bool, typer.Option("--force", help="无视缓存 full rerun")] = False,
+    json_output: JsonOpt = False,
+    agent: AgentOpt = None,
+    model: ModelOpt = None,
+) -> None:
+    """跑完整 pipeline。幂等：重复执行按 manifest 与翻译缓存跳过已完成部分。"""
+    raise _stub_exit(
         "run",
-        parents=[global_opts, workdir_opts, agent_opts],
-        help="跑完整流水线（幂等：按 manifest 与翻译缓存跳过已完成部分）",
+        paper=paper,
+        workdir=workdir,
+        glossary=glossary,
+        force=force,
+        json=json_output,
+        agent=agent,
+        model=model,
     )
-    p_run.add_argument("target", metavar="<arxiv-id | dir>", help="arXiv id 或本地源码目录")
-    p_run.add_argument(
-        "--glossary",
-        metavar="FILE",
-        action="append",
-        default=[],
-        help="输入术语表，可多次；优先级高于论文目录内与全局表",
-    )
-    p_run.add_argument("--force", action="store_true", help="无视缓存全量重跑")
 
-    p_re = sub.add_parser(
+
+@app.command()
+def retranslate(
+    paper: PaperArg,
+    chunks: Annotated[str | None, typer.Option("--chunks", metavar="c012,c045", help="指定 chunk id，逗号分隔")] = None,
+    term: Annotated[str | None, typer.Option("--term", metavar="WORD", help="重翻命中该术语的 chunk")] = None,
+    all_chunks: Annotated[
+        bool, typer.Option("--all", help="full retranslation（改 style rules / 换模型时的显式操作）")
+    ] = False,
+    glossary: GlossaryOpt = None,
+    workdir: WorkdirOpt = None,
+    json_output: JsonOpt = False,
+    agent: AgentOpt = None,
+    model: ModelOpt = None,
+) -> None:
+    """chunk 级失效重算（incremental retranslation），失效语义见架构 §4 返工触发表。"""
+    if sum([chunks is not None, term is not None, all_chunks]) != 1:
+        raise typer.BadParameter("--chunks / --term / --all 三者必须恰好给一个")
+    chunk_ids: list[str] = []
+    if chunks is not None:
+        chunk_ids = [part.strip() for part in chunks.split(",") if part.strip()]
+        if not chunk_ids:
+            raise typer.BadParameter("--chunks 要求至少一个 chunk id（形如 c012,c045）")
+        bad = [c for c in chunk_ids if not _CHUNK_ID_RE.fullmatch(c)]
+        if bad:
+            raise typer.BadParameter(f"chunk id 形如 c012，不合法：{'、'.join(bad)}")
+    raise _stub_exit(
         "retranslate",
-        parents=[global_opts, workdir_opts, agent_opts],
-        help="块级失效重算（增量重翻）",
-        description=(
-            "删掉对应的翻译记忆条目，再重算受影响子图：translate 必算（没被失效的块直接"
-            "命中缓存），compile 及下游按 manifest 判。上游阶段一律从工作目录装载，不重算。"
+        paper=paper,
+        chunks=chunk_ids or None,
+        term=term,
+        all=all_chunks,
+        glossary=glossary,
+        workdir=workdir,
+        json=json_output,
+        agent=agent,
+        model=model,
+    )
+
+
+@app.command()
+def stage(
+    name: Annotated[StageName, typer.Argument(help="阶段名")],
+    paper: Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")],
+    workdir: WorkdirOpt = None,
+    force: Annotated[bool, typer.Option("--force", help="无视已有 manifest 结论重新执行")] = False,
+    json_output: JsonOpt = False,
+    agent: AgentOpt = None,
+    model: ModelOpt = None,
+) -> None:
+    """单阶段入口，调试用：上游阶段从工作目录装载已有产物；重跑语义见各阶段设计，--force 强制重算。"""
+    if name.value == fetch_stage.STAGE_NAME:
+        # fetch 无 agent 介入，--agent 与 --model 不参与执行。
+        raise _run_stage_fetch(paper, workdir, force, json_output)
+    if name.value == flatten_stage.STAGE_NAME:
+        # flatten 判定不出主文件时才需要 agent，该介入点推迟实现，--agent 与 --model 不参与执行。
+        raise _run_stage_flatten(paper, workdir, force, json_output)
+    if name.value == precompile_stage.STAGE_NAME:
+        # precompile 编不过时拉起修复会话，模型标识透传给驱动器；agent 运行时目前唯一，
+        # 适配层还没有注册表，--agent 无消费方。
+        raise _run_stage_precompile(paper, workdir, force, json_output, model)
+    if name.value == mask_stage.STAGE_NAME:
+        # mask 是纯文本变换，未知环境交给 agent 分类的介入点推迟实现，--agent 与 --model 不参与执行。
+        raise _run_stage_mask(paper, workdir, force, json_output)
+    raise _stub_exit(
+        "stage", name=name.value, paper=paper, workdir=workdir, force=force, json=json_output, agent=agent, model=model
+    )
+
+
+def _warn_json_ignored(json_output: bool) -> None:
+    """`--json` 的事件流 schema 尚未定义，三个已接线的阶段都先提示忽略。"""
+    if json_output:
+        error_console.print("--json：事件流 schema 尚未定义，本次忽略该选项")
+
+
+def _workdir_name_from_paper(paper: str) -> str:
+    """由论文参数得出工作目录名：本地目录形态取 basename，编号与链接形态解析成编号。
+
+    flatten 与 precompile 都不访问网络也不读源目录内容，论文参数只用来定位工作目录。参数
+    不合法时抛 `PaperArgumentError` 或 `WorkdirError`，由调用方转 typer 的用法错误。
+    """
+    paper_input = fetch_stage.parse_paper_argument(paper)
+    if paper_input.source_dir is not None:
+        return paper_input.source_dir.name
+    return paper_input.arxiv_id
+
+
+def _print_skipped(stage_name: str, status: str, manifest_path: Path) -> None:
+    """命中跳过时的两行人读输出：结论状态与 manifest 路径。"""
+    console.print(f"{stage_name} 跳过：manifest 已有结论（状态 {status}），--force 可重新执行")
+    console.print(f"  manifest  {manifest_path}")
+
+
+def _upstream_exit_code(*, ok: bool, pdf_only_chain: bool) -> int:
+    """flatten、precompile 与 mask 共用的退出码映射：ok 退 0，上游判定为 PDF 退 3，其余失败态退 1。
+
+    `pdf_only_chain` 指本阶段的失败源自上游把源判定成 PDF 而非 LaTeX 源码，调用方据此改道
+    degraded path；该退出码在业务分支段（3–9），跨子命令同码同义。
+    """
+    if ok:
+        return 0
+    if pdf_only_chain:
+        return EXIT_PDF_ONLY
+    return EXIT_FAILURE
+
+
+def _run_stage_fetch(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage fetch` 的接线：识别论文参数、调驱动器、打印结果、映射退出码。"""
+    _warn_json_ignored(json_output)
+    try:
+        paper_input = fetch_stage.parse_paper_argument(paper)
+        if paper_input.source_dir is not None:
+            result = fetch_stage.fetch_local(paper_input.source_dir, workdir)
+        else:
+            result = fetch_stage.fetch_remote(paper_input.arxiv_id, workdir, force=force)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(fetch_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(fetch_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_fetch_exit_code(manifest.status))
+    console.print(f"fetch：状态 {manifest.status}")
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    table.add_row("  kind", manifest.kind or "—")
+    table.add_row("  src", str(result.workdir.src))
+    table.add_row(
+        "  文件数", f"{len(manifest.files)}（.tex {len(manifest.tex_files)} 个，共 {manifest.tex_chars} 字符）"
+    )
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    for member_name in manifest.rejected:
+        table.add_row("  rejected", member_name)
+    console.print(table)
+    return typer.Exit(_fetch_exit_code(manifest.status))
+
+
+def _fetch_exit_code(status: FetchStatus) -> int:
+    """fetch 状态到退出码的映射；命中跳过时对已存结论的状态取同样的映射。"""
+    if status is FetchStatus.OK:
+        return 0
+    if status is FetchStatus.PDF_ONLY:
+        return EXIT_PDF_ONLY
+    return EXIT_FAILURE
+
+
+def _run_stage_flatten(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage flatten` 的接线：由论文参数定位工作目录、调驱动器、打印结果、映射退出码。
+
+    flatten 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。
+    """
+    _warn_json_ignored(json_output)
+    try:
+        result = flatten_stage.flatten(_workdir_name_from_paper(paper), workdir, force=force)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(flatten_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(flatten_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_flatten_exit_code(manifest))
+    console.print(f"flatten：状态 {manifest.status}")
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    table.add_row("  main_file", manifest.main_file or "—")
+    table.add_row("  bbl", f"已内联 {manifest.bbl_file}" if manifest.bbl_file else "未内联")
+    flat_path = result.workdir.build / flatten_stage.FLAT_FILENAME
+    if manifest.status is FlattenStatus.OK:
+        table.add_row("  flat.tex", f"{flat_path}（{manifest.flat_bytes} 字节）")
+    else:
+        table.add_row("  flat.tex", "未写出")
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_flatten_exit_code(manifest))
+
+
+def _flatten_exit_code(manifest: FlattenManifest) -> int:
+    """flatten 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is FlattenStatus.OK,
+        pdf_only_chain=(
+            manifest.status is FlattenStatus.FETCH_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
         ),
     )
-    p_re.add_argument("id", metavar="<id>", help="arXiv id（或本地源码目录名）")
-    p_re.add_argument(
-        "--glossary",
-        metavar="FILE",
-        action="append",
-        default=[],
-        help="输入术语表，可多次；优先级高于论文目录内与全局表",
-    )
-    scope = p_re.add_mutually_exclusive_group(required=True)
-    scope.add_argument("--chunks", metavar="c012,c045", help="指定块 id，逗号分隔")
-    scope.add_argument("--term", metavar="WORD", help="重翻命中该术语的块")
-    scope.add_argument("--all", action="store_true", help="全量重翻（改文风/换模型时的显式操作）")
 
-    p_stage = sub.add_parser(
-        "stage",
-        parents=[global_opts, workdir_opts, agent_opts],
-        help="单阶段入口，调试用（上游从工作目录装载，目标阶段必算）",
-        description=(
-            "只跑一个阶段：上游阶段一律从工作目录装载已有产物，不重算；目标阶段无视 "
-            "manifest 必算。可单跑的阶段 = 上游产物已在工作目录里的阶段"
-            "（flatten / baseline / mask / survey / chunk / translate / compile；"
-            "fetch 需要 arXiv id 或本地目录）；figures / export 尚未实现。"
+
+def _run_stage_precompile(
+    paper: str, workdir: Path | None, force: bool, json_output: bool, model: str | None
+) -> typer.Exit:
+    """`stage precompile` 的接线：定位工作目录、调驱动器、打印编译结果与基线数据、映射退出码。
+
+    precompile 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。`--model` 透传给
+    驱动器，由它交给修复会话的 agent 运行时。
+    """
+    _warn_json_ignored(json_output)
+    try:
+        result = precompile_stage.precompile(_workdir_name_from_paper(paper), workdir, force=force, model=model)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(precompile_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(precompile_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_precompile_exit_code(manifest))
+    console.print(f"precompile：状态 {manifest.status}")
+    compiled = manifest.status is PrecompileStatus.OK
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    # 五个计数只在编译通过时可信，失败态一律打「—」。
+    table.add_row("  pages", str(manifest.pages) if compiled else "—")
+    table.add_row("  overfull_hboxes", str(manifest.overfull_hboxes) if compiled else "—")
+    table.add_row("  undefined_references", str(manifest.undefined_references) if compiled else "—")
+    table.add_row("  undefined_citations", str(manifest.undefined_citations) if compiled else "—")
+    table.add_row("  missing_characters", str(manifest.missing_characters) if compiled else "—")
+    table.add_row("  耗时", f"{manifest.duration_seconds:.1f} 秒" if manifest.duration_seconds else "—")
+    pdf_path = result.workdir.build / precompile_stage.PRECOMPILE_DIRNAME / precompile_stage.PDF_FILENAME
+    precompile_path = result.workdir.build / precompile_stage.PRECOMPILE_FILENAME
+    if compiled:
+        table.add_row("  flat.pdf", f"{pdf_path}（{manifest.pdf_bytes} 字节）")
+        table.add_row("  precompile.tex", f"{precompile_path}（{manifest.precompile_bytes} 字节）")
+    else:
+        table.add_row("  flat.pdf", "未产出")
+        table.add_row("  precompile.tex", "未产出")
+    if manifest.fix_session:
+        table.add_row(
+            "  修复会话",
+            f"已拉起（{manifest.session_stop_reason}，{manifest.session_duration_seconds:.0f} 秒，"
+            f"模型 {manifest.session_model}）",
+        )
+    else:
+        table.add_row("  修复会话", "未拉起")
+    for changed in manifest.changed_files:
+        table.add_row("  changed_file", changed)
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_precompile_exit_code(manifest))
+
+
+def _precompile_exit_code(manifest: PrecompileManifest) -> int:
+    """precompile 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is PrecompileStatus.OK,
+        pdf_only_chain=(
+            manifest.status is PrecompileStatus.FLATTEN_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
         ),
     )
-    p_stage.add_argument("name", metavar="<name>", choices=list(STAGES), help="阶段名：" + " / ".join(STAGES))
-    p_stage.add_argument("id", metavar="<id>", help="arXiv id（或本地源码目录，供 fetch 用）")
 
-    sub.add_parser(
-        "doctor",
-        parents=[global_opts],
-        help="检查 xelatex / latexmk / latexpand / 中文字体，缺啥说啥",
-    )
 
-    p_preview = sub.add_parser(
-        "preview",
-        parents=[global_opts, workdir_opts],
-        help="打开静态检验页 report.html",
-        description=(
-            "打开产物包里的 out/report.html（PDF.js 渲染 zh.pdf、anchors 热区可点）。"
-            "页面完全静态自包含，双击也能开；headless 环境打不开浏览器时打印路径并退 0。"
+def _run_stage_mask(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage mask` 的接线：定位工作目录、调驱动器、打印掩码结果、映射退出码。
+
+    mask 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。
+    """
+    _warn_json_ignored(json_output)
+    try:
+        result = mask_stage.mask(_workdir_name_from_paper(paper), workdir, force=force)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(mask_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(mask_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_mask_exit_code(manifest))
+    console.print(f"mask：状态 {manifest.status}")
+    masked = manifest.status is MaskStatus.OK
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    table.add_row("  blocks", str(manifest.blocks_total) if masked else "—")
+    table.add_row("  captions", str(manifest.captions_total) if masked else "—")
+    table.add_row("  unknown 环境", _unknown_environments(manifest) if masked else "—")
+    table.add_row("  掩码保留比", f"{manifest.masked_chars_ratio:.1%}" if masked else "—")
+    if masked:
+        table.add_row(
+            "  precompile.tex",
+            f"{mask_stage.precompile_path(result.workdir)}（{manifest.precompile_chars} 字符）",
+        )
+        table.add_row("  masked.tex", f"{mask_stage.masked_path(result.workdir)}（{manifest.masked_chars} 字符）")
+        table.add_row("  blocks.json", str(mask_stage.blocks_path(result.workdir)))
+    else:
+        table.add_row("  precompile.tex", "—")
+        table.add_row("  masked.tex", "未产出")
+        table.add_row("  blocks.json", "未产出")
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_mask_exit_code(manifest))
+
+
+def _unknown_environments(manifest: MaskManifest) -> str:
+    """列出走保守默认整块掩码的环境名与它们的成块数；成块数为 0 的不列（未损失覆盖率）。"""
+    listed = [
+        f"{name}（{decision.blocks} 块）"
+        for name, decision in manifest.environments.items()
+        if decision.category == BlockCategory.UNKNOWN and decision.blocks > 0
+    ]
+    return "、".join(listed) if listed else "—"
+
+
+def _mask_exit_code(manifest: MaskManifest) -> int:
+    """mask 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is MaskStatus.OK,
+        pdf_only_chain=(
+            manifest.status is MaskStatus.PRECOMPILE_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
         ),
     )
-    p_preview.add_argument("id", metavar="<id>", help="arXiv id（或本地源码目录名）")
-    p_preview.add_argument(
-        "--serve",
-        action="store_true",
-        help="起一个本地 http.server 打开（http 下页面走相对路径读 zh.pdf，大包更跟手）",
-    )
-
-    return parser
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """解析命令行，并把未出现的全局 flag 补成确定值。"""
-    args = build_parser().parse_args(argv)
-    args.json = getattr(args, "json", False)
-    return args
+@app.command()
+def validate(
+    src: Annotated[Path, typer.Argument(help="原文 chunk 文件")],
+    dst: Annotated[Path, typer.Argument(help="译文文件")],
+) -> None:
+    """四层 validation，逐项报告失败。
+
+    四层（架构 §3 translate 节）：placeholder multiset / control sequence multiset /
+    括号与 inline math 计数 / 段落数。三个调用方共用同一份实现：agent 在翻译会话内
+    自查、脚本在出口终审、开发者手工排查。
+    """
+    console.print(f"tongtu validate：占位实现，校验未执行（退出码 {EXIT_STUB}）  src={src}  dst={dst}")
+    for layer in ("placeholders", "control_sequences", "braces_and_math", "paragraph_count"):
+        console.print(f"  [未执行] {layer}")
+    raise typer.Exit(EXIT_STUB)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv)
+@app.command()
+def doctor() -> None:
+    """检查 xelatex / latexmk / latexpand / pdftocairo / epstopdf 与中文字体，逐项报告缺失。"""
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径超宽时折行，不截断
+    missing: list[str] = []
+    for name, purpose in DOCTOR_CHECKS:
+        found, detail = _check_fonts() if name == FONT_CHECK_NAME else _check_executable(name)
+        if not found:
+            missing.append(name)
+        table.add_row(f"  [{'通过' if found else '缺失'}]", f"{name} —— {purpose}", detail)
+    console.print(table)
+    if missing:
+        console.print(f"环境有缺失：{'、'.join(missing)}")
+        raise typer.Exit(EXIT_FAILURE)
+    console.print("环境齐全。")
 
-    if args.command is None:
-        build_parser().print_help()
-        return 2
-    if args.command == "doctor":
-        return run_doctor()
-    if args.command == "run":
-        return run_run(args)
-    if args.command == "retranslate":
-        return run_retranslate(args)
-    if args.command == "stage":
-        return run_stage_cmd(args)
-    if args.command == "preview":
-        return run_preview(args)
-    return _not_implemented(args.command)
+
+def _check_executable(name: str) -> tuple[bool, str]:
+    """在 PATH 里查可执行文件，返回（是否找到、找到的路径或缺失说明）。"""
+    path = shutil.which(name)
+    if path is None:
+        return False, f"PATH 里找不到 {name}"
+    return True, path
+
+
+def _check_fonts() -> tuple[bool, str]:
+    """查字体目录下的中文字体文件，返回（是否齐全、字体目录路径或缺失说明）。"""
+    absent = [name for name in REQUIRED_FONT_FILENAMES if not (FONTS_DIR / name).is_file()]
+    if absent:
+        return False, f"{FONTS_DIR} 下缺 {'、'.join(absent)}"
+    return True, str(FONTS_DIR)
+
+
+@app.command()
+def preview(
+    paper: PaperArg,
+    workdir: WorkdirOpt = None,
+    serve: Annotated[
+        bool,
+        typer.Option("--serve", help="起一个本地 http.server 打开（http 下页面走相对路径读 zh.pdf，大文件加载更快）"),
+    ] = False,
+) -> None:
+    """打开 inspection page（out/report.html，完全静态自包含，双击也能开）。"""
+    raise _stub_exit("preview", paper=paper, workdir=workdir, serve=serve)
+
+
+# ------------------------------------------------------- tex 工具面（不面向人）
+
+
+@tex_app.command("read")
+def tex_read(
+    preamble: Annotated[bool, typer.Option("--preamble", help="读 preamble（\\begin{document} 之前）")] = False,
+    chunk: Annotated[str | None, typer.Option("--chunk", metavar="ID", help="读该 chunk 在 zh.tex 中的区间")] = None,
+    lines: Annotated[str | None, typer.Option("--lines", metavar="A-B", help="读行区间，如 120-180")] = None,
+) -> None:
+    """读 zh.tex 的指定区域。"""
+    if sum([preamble, chunk is not None, lines is not None]) != 1:
+        raise typer.BadParameter("--preamble / --chunk / --lines 三者必须恰好给一个")
+    if chunk is not None and not _CHUNK_ID_RE.fullmatch(chunk):
+        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk}")
+    if lines is not None and not re.fullmatch(r"[0-9]+-[0-9]+", lines):
+        raise typer.BadParameter(f"--lines 形如 A-B（如 120-180），不合法：{lines}")
+    raise _stub_exit("tex read", preamble=preamble, chunk=chunk, lines=lines)
+
+
+@tex_app.command("patch")
+def tex_patch(
+    old: Annotated[str, typer.Option("--old", help="被替换的原文文本")],
+    new: Annotated[str, typer.Option("--new", help="替换后的文本")],
+    chunk: Annotated[
+        str | None,
+        typer.Option(
+            "--chunk",
+            metavar="ID",
+            help="正文 patch 必须标注所属 chunk（该 chunk 状态记 edited）；不给则为 preamble patch",
+        ),
+    ] = None,
+) -> None:
+    """patch zh.tex：preamble 自由，正文须标 --chunk（架构 §3 compile 节分区权限）。"""
+    if chunk is not None and not _CHUNK_ID_RE.fullmatch(chunk):
+        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk}")
+    raise _stub_exit("tex patch", old=old, new=new, chunk=chunk)
+
+
+@tex_app.command("compile")
+def tex_compile() -> None:
+    """编译一次，返回错误列表与日志摘要。"""
+    raise _stub_exit("tex compile")
+
+
+@tex_app.command("render")
+def tex_render(
+    page: Annotated[int, typer.Option("--page", min=1, help="页码（1-based）")],
+) -> None:
+    """渲染某页为图，供 agent 检查排版。"""
+    raise _stub_exit("tex render", page=page)
+
+
+@tex_app.command("fallback")
+def tex_fallback(
+    chunk_id: ChunkIdArg,
+    paragraph: Annotated[
+        int | None,
+        typer.Option("--paragraph", min=0, metavar="N", help="只回退该段落（0-based）；不给则整个 chunk 回退"),
+    ] = None,
+) -> None:
+    """该 chunk（或其中一段）回退原文。"""
+    if not _CHUNK_ID_RE.fullmatch(chunk_id):
+        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk_id}")
+    raise _stub_exit("tex fallback", chunk_id=chunk_id, paragraph=paragraph)
+
+
+@tex_app.command("retranslate")
+def tex_retranslate(chunk_id: ChunkIdArg) -> None:
+    """重译一次该 chunk（复用翻译介入点⑤）。"""
+    if not _CHUNK_ID_RE.fullmatch(chunk_id):
+        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk_id}")
+    raise _stub_exit("tex retranslate", chunk_id=chunk_id)
+
+
+def main() -> None:
+    app()
 
 
 if __name__ == "__main__":  # pragma: no cover
-    sys.exit(main())
+    main()

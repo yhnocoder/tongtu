@@ -1,443 +1,444 @@
-"""fetch 阶段：e-print 下载解包 + PDF-only / pdfpages 套壳检测（架构 §3 fetch 行）。
+"""fetch 阶段驱动器：把论文源码落进工作目录的 `src/`。
 
-出口判据是机械的：源码树落 `src/`；**PDF-only 不抛栈**——它不是错误而是一条分支，返回
-`FetchResult(status="pdf_only")` 由顶层标记降级路线（`fallback/`，零期只标记不实现，
-见 PHASE0 §2.2 与 §5）。其余失败（下载失败、解包失败、源不可用）同样走结构化状态，
-调用方按 `status` 分流，不需要 catch 一堆异常类型。
+fetch 是唯一写 `src/` 的阶段；`src/` 的含义是 e-print 内容的原样落盘。
 
-## 分流（迁自 v2 `scripts/fetch.py`，按魔数而非扩展名）
+论文参数按顺序识别为三种形态：本地源码目录（参数在文件系统里存在且是目录；单独的
+`.`、`..`、`~` 是路径导航写法，不作为目录接受）；arXiv 链接（主机名是 arxiv.org
+或其子域，路径前缀 `/abs/`、`/pdf/`、`/html/` 之一，前缀之后的整段剩余路径是编号，
+编号可含斜杠，末尾的 `.pdf` 扩展名去掉，查询串与锚点丢弃）；其余输入按 arXiv 编号
+处理，合法性由 `workdir.normalize_arxiv_id` 判定。
 
-arXiv 的 `e-print` 端点不给文件名也不给可靠的 Content-Type，只能看头几个字节：
+远程下载走 `https://export.arxiv.org/e-print/<编号>`。该端点不给文件名也不给可靠的
+Content-Type，按下载体的头几个字节分流：`%PDF` → `src/main.pdf`；gzip 魔数 → 先按
+tar.gz 解包，打不开则按单个 gzip 压缩文件解压（解压结果再判一次 `%PDF`）；裸 tar →
+解包；其余原样写 `src/main.tex`。原始下载体先写 `build/e-print.bin`，供解包失败时
+排查。不做自动重试，网络失败与空响应体一律记 `download_failed`。
 
-* `%PDF`            → PDF-only，直接进降级路线；
-* `\\x1f\\x8b`（gzip） → 先当 tar.gz 解，`ReadError` 再退回「单个 .tex.gz」；
-* 其余             → 裸 tar（少见）或裸 .tex，落 `src/main.tex`。
+解包安全：逐 tar 成员处理，只放行普通文件与目录，链接（软/硬）、设备文件、FIFO
+一律拒绝；路径安全（绝对路径、`..` 穿越）逐成员交给标准库 `tarfile.data_filter`
+判定。被拒成员名记入 manifest 的 `rejected`，不中断解包。
 
-## 解包安全
+收尾判定对远程与本地两种入口共用：`src/` 里没有 `.tex` 但有 PDF → `pdf_only`；
+两者都没有 → `empty`；有 `.tex` 时再做 PDF 套壳检测——`.tex` 字符总量低于
+`MIN_TEX_CHARS` 视为无实质内容，出现 `\\includepdf` 且总量低于
+`MIN_TEX_CHARS_WITH_INCLUDEPDF` 判定为 pdfpages 套壳，两种情形都记 `pdf_only`。
 
-tar 成员逐个手工落盘而非 `extractall`：Python 3.12 的 `filter="data"` 语义（拒绝绝对
-路径、`..` 穿越、符号链接与设备文件）在 3.11 上不保证可用（`filter=` 参数是 3.11.4 才
-回填的），这里自己实现同等约束，被拒的成员进 `FetchResult.rejected` 供 report 记录。
-
-## PDF 套壳
-
-有些「源码」只是 pdfpages 套壳（v2 遇到过 1412.6980），等同 PDF-only。v2 在展平后按
-`flat.tex` 体量判定；这里前移到解包后按 `src/` 下全部 `.tex` 的**字符总量**判定——判据
-等价（展平就是把这些文件拼起来），但能在 flatten 之前就分流，省一次 latexpand 调用。
+重跑语义：远程入口在已有 manifest 可解析且状态为 ok / pdf_only 时直接跳过，不访问
+网络；状态是失败类或 manifest 解析不了则重新执行；`force` 无视已有结论。本地目录
+入口不做跳过判定，每次都重新拷贝与判定。从头执行前把 `src/` 整目录删除重建。驱动
+器不向调用方抛异常：失败一律转 manifest 状态，异常的类型名与信息记入 `message`。
 """
 
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import shutil
 import tarfile
-import urllib.request
-import zlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
-from urllib.parse import quote
+from pathlib import Path
+from urllib.parse import urlsplit
 
-from .. import __version__
-from ..workdir import Workdir
+import httpx
 
-__all__ = [
-    "EPRINT_URL",
-    "USER_AGENT",
-    "RAW_NAME",
-    "STATUSES",
-    "Fetcher",
-    "FetchResult",
-    "eprint_url",
-    "urllib_fetcher",
-    "fetch",
-    "unpack",
-    "ingest_local",
-    "detect_pdf_shell",
-]
+from .. import __version__, manifests, workdir
+from ..artifacts.fetch import FetchKind, FetchManifest, FetchStatus
 
-#: e-print 端点。旧式 id（`hep-th/9901001`）带斜杠，原样进路径。
-EPRINT_URL = "https://export.arxiv.org/e-print/{arxiv_id}"
+#: 阶段名，也是 stage manifest 的文件名主干。
+STAGE_NAME = "fetch"
 
-USER_AGENT = f"tongtu/{__version__} (+https://github.com/yhnocoder/tongtu)"
+#: e-print 下载端点；编号可含斜杠，原样进 URL 路径。
+EPRINT_URL_TEMPLATE = "https://export.arxiv.org/e-print/{arxiv_id}"
 
-#: 默认下载超时（秒）。
-DEFAULT_TIMEOUT = 60.0
+#: 下载超时秒数。不做自动重试，超时即转 download_failed。
+DOWNLOAD_TIMEOUT_SECONDS = 60.0
 
-#: 原始下载体落在 `build/` 而非 `src/`——它是可丢弃的中间物，`src/` 只放源码树。
-RAW_NAME = "e-print.bin"
+#: 下载请求的 User-Agent，标明工具版本与仓库地址。
+DOWNLOAD_USER_AGENT = f"tongtu/{__version__} (+https://github.com/yhnocoder/tongtu)"
 
-#: 单文件形态（裸 .tex 或 .tex.gz）落盘时的文件名。
-SINGLE_NAME = "main.tex"
+#: 原始下载体在 build/ 下的文件名，解包前写出。
+EPRINT_PAYLOAD_FILENAME = "e-print.bin"
 
-# 状态常量。ok 之外都不是异常，调用方按状态分流。
-OK = "ok"
-PDF_ONLY = "pdf_only"  # → fallback/ 降级路线
-EMPTY = "empty"  # 解包成功但树里没有 .tex 也没有 .pdf
-DOWNLOAD_FAILED = "download_failed"
-UNPACK_FAILED = "unpack_failed"
-SOURCE_MISSING = "source_missing"  # 本地目录不存在 / arXiv id 非法
+#: PDF 文件的头四个字节。
+PDF_MAGIC = b"%PDF"
 
-STATUSES: tuple[str, ...] = (
-    OK,
-    PDF_ONLY,
-    EMPTY,
-    DOWNLOAD_FAILED,
-    UNPACK_FAILED,
-    SOURCE_MISSING,
-)
+#: gzip 流的头两个字节。
+GZIP_MAGIC = b"\x1f\x8b"
 
-#: 套壳判据（迁自 v2）：全部 .tex 字符总量低于此值 = 没有实质内容。
-SHELL_MIN_CHARS = 1000
+#: PDF 套壳检测阈值：全部 .tex 字符总量低于此值视为无实质内容。
+MIN_TEX_CHARS = 1000
 
-#: 有 `\includepdf` 且字符总量低于此值 = pdfpages 套壳。
-SHELL_INCLUDEPDF_CHARS = 5000
+#: PDF 套壳检测阈值：.tex 里出现 \includepdf 时要求的更高字符总量，低于即判定为 pdfpages 套壳。
+MIN_TEX_CHARS_WITH_INCLUDEPDF = 5000
 
-#: `tongtu run <dir>` 拷贝本地源码目录时跳过的名字。
-IGNORED_LOCAL: frozenset[str] = frozenset({".git", ".svn", ".hg", "__pycache__", ".DS_Store"})
+#: 本地目录拷贝时跳过的目录与文件名（版本控制目录与系统缓存文件）。
+COPY_SKIP_NAMES = frozenset({".git", ".svn", ".hg", "__pycache__", ".DS_Store"})
 
-#: 下载原语：URL → 字节。默认实现走 urllib；测试注入假实现，不打网络。
-Fetcher = Callable[[str], bytes]
+#: 不作为本地目录接受的字面参数：它们是路径导航写法，接受会把当前目录、上级目录
+#: 或主目录整棵当成论文源码；这类参数落到编号判定后被拒绝。
+PATH_NAVIGATION_LITERALS = frozenset({".", "..", "~"})
+
+
+class PaperArgumentError(ValueError):
+    """arXiv 链接解析失败（主机不对、路径无编号前缀、前缀之后没有编号）。"""
+
+
+@dataclass(frozen=True)
+class PaperInput:
+    """论文参数的识别结果：arXiv 编号（含从链接解析出的）或本地源码目录，两个字段恰有其一非 None。"""
+
+    arxiv_id: str | None = None
+    source_dir: Path | None = None
 
 
 @dataclass(frozen=True)
 class FetchResult:
-    """fetch 的结构化结果。`status` 是唯一的分流依据，异常一律转成状态。"""
+    """驱动器的返回值：manifest、工作目录与是否命中跳过。"""
 
-    status: str
-    src: Path
-    kind: str = ""  # tar.gz / tar / gz / tex / pdf / local
-    files: tuple[str, ...] = ()  # src/ 下的相对路径（posix 形式，已排序）
-    tex_files: tuple[str, ...] = ()
-    tex_chars: int = 0
-    payload_bytes: int = 0
-    raw_path: Path | None = None
-    rejected: tuple[str, ...] = ()  # 被安全策略拦下的 tar 成员
-    warnings: tuple[str, ...] = ()
-    message: str = ""
-    url: str = ""
-
-    @property
-    def ok(self) -> bool:
-        return self.status == OK
-
-    @property
-    def fallback(self) -> bool:
-        """真——顶层应把本篇标记到降级路线（`fallback/`）而不是当失败。"""
-        return self.status == PDF_ONLY
-
-    def to_json(self) -> dict:
-        """给 manifest / report 用的扁平记录（路径一律相对工作目录无关的字符串）。"""
-        data: dict = {
-            "status": self.status,
-            "kind": self.kind,
-            "files": list(self.files),
-            "tex_files": list(self.tex_files),
-            "tex_chars": self.tex_chars,
-            "payload_bytes": self.payload_bytes,
-        }
-        if self.url:
-            data["url"] = self.url
-        if self.rejected:
-            data["rejected"] = list(self.rejected)
-        if self.warnings:
-            data["warnings"] = list(self.warnings)
-        if self.message:
-            data["message"] = self.message
-        return data
+    manifest: FetchManifest
+    workdir: workdir.Workdir
+    skipped: bool
 
 
-# --------------------------------------------------------------------------- 下载
+# ------------------------------------------------------------------ 输入识别
 
 
-def eprint_url(arxiv_id: str) -> str:
-    """arXiv id → e-print URL。id 非法时抛 `ValueError`（调用方一般先经 workdir 规范化）。"""
-    raw = (arxiv_id or "").strip()
-    if not raw or any(ch.isspace() for ch in raw) or ".." in raw or raw.startswith("/"):
-        raise ValueError(f"非法 arXiv id：{arxiv_id!r}")
-    return EPRINT_URL.format(arxiv_id=quote(raw, safe="/.-_"))
+def parse_arxiv_url(url: str) -> str:
+    """从 arXiv 链接解析出编号。
 
-
-def urllib_fetcher(url: str, *, timeout: float = DEFAULT_TIMEOUT) -> bytes:
-    """默认下载实现：零第三方依赖，带 UA（arXiv 对无 UA 请求不友好）。"""
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-        return response.read()
-
-
-def fetch(
-    arxiv_id: str,
-    workdir: Workdir,
-    *,
-    fetcher: Fetcher | None = None,
-    url: str | None = None,
-) -> FetchResult:
-    """下载 e-print 并解包到 `workdir.src`。
-
-    * `fetcher`：`Callable[[str], bytes]`，默认 `urllib_fetcher`。注入点在这里——
-      测试与离线复跑不需要网络。
-    * `url`：覆盖端点（镜像站 / 本地文件服务），默认由 `arxiv_id` 生成。
-
-    任何失败都返回结构化状态，不抛栈；`status == "pdf_only"` 表示应走降级路线。
+    主机名须是 arxiv.org 或其子域；路径前缀接受 `/abs/`、`/pdf/`、`/html/` 三种，
+    取前缀之后的整段剩余路径作为编号（编号可含斜杠）；末尾的 `.pdf` 扩展名去掉；
+    查询串与锚点丢弃。解析失败抛 PaperArgumentError。
     """
-    try:
-        target = url or eprint_url(arxiv_id)
-    except ValueError as exc:
-        return FetchResult(status=SOURCE_MISSING, src=workdir.src, message=str(exc))
-
-    workdir.create()
-    get = fetcher or urllib_fetcher
-    try:
-        payload = get(target)
-    except Exception as exc:  # 网络错误五花八门（URLError/OSError/超时…），统一转状态
-        return FetchResult(
-            status=DOWNLOAD_FAILED,
-            src=workdir.src,
-            url=target,
-            message=f"下载失败（{type(exc).__name__}）：{exc}",
-        )
-    if not payload:
-        return FetchResult(status=DOWNLOAD_FAILED, src=workdir.src, url=target, message="下载得到空响应")
-
-    raw = workdir.build / RAW_NAME
-    raw.write_bytes(payload)
-    return unpack(payload, workdir, url=target, raw_path=raw)
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if host != "arxiv.org" and not host.endswith(".arxiv.org"):
+        raise PaperArgumentError(f"不是 arxiv.org 链接：{url}")
+    for prefix in ("/abs/", "/pdf/", "/html/"):
+        if parts.path.startswith(prefix):
+            arxiv_id = parts.path[len(prefix) :].rstrip("/").removesuffix(".pdf")
+            if not arxiv_id:
+                raise PaperArgumentError(f"链接的路径前缀之后没有编号：{url}")
+            return arxiv_id
+    raise PaperArgumentError(f"链接路径不含 /abs/、/pdf/、/html/ 前缀：{url}")
 
 
-# --------------------------------------------------------------------------- 解包
+def parse_paper_argument(paper: str) -> PaperInput:
+    """按顺序识别论文参数：本地源码目录 → arXiv 链接 → arXiv 编号。
 
-
-def unpack(
-    payload: bytes,
-    workdir: Workdir,
-    *,
-    url: str = "",
-    raw_path: Path | None = None,
-) -> FetchResult:
-    """按魔数分流并解包到 `workdir.src`（下载与解包分离，便于离线复跑与测试）。"""
-    src = workdir.src
-    src.mkdir(parents=True, exist_ok=True)
-    common = dict(payload_bytes=len(payload), raw_path=raw_path, url=url)
-
-    if payload[:4] == b"%PDF":
-        return _finalize(src, kind="pdf", forced_pdf=True, **common)
-
-    rejected: tuple[str, ...] = ()
-    if payload[:2] == b"\x1f\x8b":
-        try:
-            rejected = _extract_tar(payload, src)
-            kind = "tar.gz"
-        except tarfile.ReadError:
-            # 不是 tar：那就是单个 .tex.gz（arXiv 对单文件投稿的常见形态）
-            try:
-                data = gzip.decompress(payload)
-            except (OSError, EOFError, zlib.error) as exc:
-                return FetchResult(status=UNPACK_FAILED, src=src, kind="gz", message=f"gzip 解压失败：{exc}", **common)
-            if data[:4] == b"%PDF":
-                return _finalize(src, kind="gz", forced_pdf=True, **common)
-            (src / SINGLE_NAME).write_bytes(data)
-            kind = "gz"
-        except (tarfile.TarError, OSError) as exc:
-            return FetchResult(status=UNPACK_FAILED, src=src, kind="tar.gz", message=f"解包失败：{exc}", **common)
-    elif tarfile.is_tarfile(io.BytesIO(payload)):
-        try:
-            rejected = _extract_tar(payload, src)
-        except (tarfile.TarError, OSError) as exc:
-            return FetchResult(status=UNPACK_FAILED, src=src, kind="tar", message=f"解包失败：{exc}", **common)
-        kind = "tar"
+    目录之外的两种形态都归结为编号：链接解析失败抛 PaperArgumentError，编号不合法
+    由 `workdir.normalize_arxiv_id` 抛 WorkdirError。
+    """
+    if paper not in PATH_NAVIGATION_LITERALS:
+        path = Path(paper).expanduser()
+        if path.is_dir():
+            return PaperInput(source_dir=path)
+    if paper.startswith(("http://", "https://")):
+        arxiv_id = parse_arxiv_url(paper)
     else:
-        (src / SINGLE_NAME).write_bytes(payload)
-        kind = "tex"
+        arxiv_id = paper
+    workdir.normalize_arxiv_id(arxiv_id)  # 只做合法性判定，目录名转换在 workdir.resolve 里
+    return PaperInput(arxiv_id=arxiv_id)
 
-    return _finalize(src, kind=kind, rejected=rejected, **common)
+
+# ------------------------------------------------------------------ 阶段驱动器
 
 
-def _extract_tar(payload: bytes, dest: Path) -> tuple[str, ...]:
-    """把 tar 成员逐个安全落盘，返回被拒成员名。
+def fetch_remote(
+    arxiv_id: str,
+    workdir_path: Path | None = None,
+    *,
+    force: bool = False,
+    download: Callable[[str], bytes] | None = None,
+) -> FetchResult:
+    """远程入口：下载 e-print、按魔数分流解包、收尾判定，写出 manifest。
 
-    只放行普通文件与目录；绝对路径、`..` 穿越、符号 / 硬链接、设备文件一律拒绝——
-    链接是 `filter="data"` 也要拦的逃逸手段（软链指到 `/etc` 再往里写就出去了）。
+    已有 manifest 可解析且状态为 ok / pdf_only 时直接跳过，不访问网络，返回已存
+    结论；`force` 无视已有结论。`download` 替换默认的 httpx 下载实现，供测试与
+    离线复跑注入。
+    """
+    paper_workdir = workdir.Workdir(workdir.resolve(arxiv_id, workdir_path))
+    if not force:
+        existing = _load_reusable_manifest(paper_workdir.manifest_path(STAGE_NAME))
+        if existing is not None:
+            return FetchResult(manifest=existing, workdir=paper_workdir, skipped=True)
+
+    url = EPRINT_URL_TEMPLATE.format(arxiv_id=arxiv_id)
+    _reset_src(paper_workdir)
+    payload_path = paper_workdir.build / EPRINT_PAYLOAD_FILENAME
+    payload_path.unlink(missing_ok=True)  # 上次执行的下载体不残留，避免排查时读到旧字节
+
+    try:
+        payload = (download or _download_eprint)(url)
+    except Exception as error:  # 网络失败类型多样，统一转状态
+        manifest = FetchManifest(
+            status=FetchStatus.DOWNLOAD_FAILED, source=arxiv_id, url=url, message=manifests.describe_error(error)
+        )
+        return _write_result(paper_workdir, manifest)
+    if not payload:
+        manifest = FetchManifest(
+            status=FetchStatus.DOWNLOAD_FAILED, source=arxiv_id, url=url, message="下载成功但响应体为空。"
+        )
+        return _write_result(paper_workdir, manifest)
+
+    payload_path.write_bytes(payload)
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    try:
+        kind, rejected, warnings = _unpack_payload(payload, paper_workdir.src)
+        manifest = _manifest_from_src(
+            paper_workdir,
+            source=arxiv_id,
+            kind=kind,
+            url=url,
+            payload_sha256=payload_sha256,
+            payload_bytes=len(payload),
+            rejected=rejected,
+            warnings=warnings,
+        )
+    except Exception as error:  # 解包失败类型多样，统一转状态
+        manifest = FetchManifest(
+            status=FetchStatus.UNPACK_FAILED,
+            source=arxiv_id,
+            url=url,
+            payload_sha256=payload_sha256,
+            payload_bytes=len(payload),
+            message=manifests.describe_error(error),
+        )
+    return _write_result(paper_workdir, manifest)
+
+
+def fetch_local(source_dir: Path, workdir_path: Path | None = None) -> FetchResult:
+    """本地目录入口：把源目录拷贝进 `src/` 后做收尾判定，写出 manifest。
+
+    不做跳过判定，每次都重新拷贝与判定。工作目录名默认取源目录的 basename，
+    `workdir_path` 覆盖。源目录恰好是本工作目录的 `src/` 自身时不清空不拷贝，
+    直接收尾判定；源目录在 `src/` 内部更深层、或与工作目录是同一目录时拒绝执行。
+    """
+    source = Path(source_dir).expanduser().absolute()
+    paper_workdir = workdir.Workdir(workdir.resolve(source.name, workdir_path))
+    paper_workdir.create()
+    if not source.is_dir():
+        manifest = FetchManifest(
+            status=FetchStatus.SOURCE_MISSING,
+            source=str(source),
+            kind="local",
+            message=f"源目录不存在或不是目录：{source}",
+        )
+        return _write_result(paper_workdir, manifest)
+
+    source_real = source.resolve()
+    src_real = paper_workdir.src.resolve()
+    if source_real == src_real:
+        # 源目录就是本工作目录的 src/：内容已在位，不清空不拷贝。
+        manifest = _manifest_from_src(paper_workdir, source=str(source), kind="local")
+    elif source_real == paper_workdir.path.resolve():
+        manifest = FetchManifest(
+            status=FetchStatus.UNPACK_FAILED,
+            source=str(source),
+            kind="local",
+            message="源目录与工作目录是同一目录，无法把它拷贝进自身的 src/。",
+        )
+    elif source_real.is_relative_to(src_real):
+        manifest = FetchManifest(
+            status=FetchStatus.UNPACK_FAILED,
+            source=str(source),
+            kind="local",
+            message="源目录在本工作目录的 src/ 内部；执行前要整目录清空 src/，会把源目录一并删除，故拒绝执行。",
+        )
+    else:
+        _reset_src(paper_workdir)
+        try:
+            shutil.copytree(
+                source, paper_workdir.src, ignore=_copy_ignore(paper_workdir.path.resolve()), dirs_exist_ok=True
+            )
+            manifest = _manifest_from_src(paper_workdir, source=str(source), kind="local")
+        except Exception as error:  # 拷贝失败类型多样，统一转状态
+            manifest = FetchManifest(
+                status=FetchStatus.UNPACK_FAILED,
+                source=str(source),
+                kind="local",
+                message=manifests.describe_error(error),
+            )
+    return _write_result(paper_workdir, manifest)
+
+
+# ------------------------------------------------------------------ 下载与解包
+
+
+def _download_eprint(url: str) -> bytes:
+    """默认下载实现：httpx，60 秒超时，跟随重定向，非 2xx 抛异常。"""
+    response = httpx.get(
+        url,
+        headers={"User-Agent": DOWNLOAD_USER_AGENT},
+        timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def _unpack_payload(payload: bytes, src: Path) -> tuple[FetchKind, list[str], list[str]]:
+    """按魔数分流下载体并写进 src/，返回（kind、被拒成员名、warnings）。
+
+    分流顺序：`%PDF` → src/main.pdf；gzip 魔数 → 先按 tar.gz 解包，打不开则按单个
+    gzip 压缩文件解压（解压结果再判一次 `%PDF`）；裸 tar → 解包；其余原样写
+    src/main.tex。失败抛异常，由调用方转 unpack_failed。
+    """
+    if payload[:4] == PDF_MAGIC:
+        (src / "main.pdf").write_bytes(payload)
+        return "pdf", [], []
+    if payload[:2] == GZIP_MAGIC:
+        try:
+            archive = tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz")
+        except tarfile.ReadError:
+            archive = None
+        if archive is not None:
+            with archive:
+                rejected, warnings = _extract_tar_members(archive, src)
+            return "tar.gz", rejected, warnings
+        decompressed = gzip.decompress(payload)
+        if decompressed[:4] == PDF_MAGIC:
+            (src / "main.pdf").write_bytes(decompressed)
+        else:
+            (src / "main.tex").write_bytes(decompressed)
+        return "gz", [], []
+    try:
+        archive = tarfile.open(fileobj=io.BytesIO(payload), mode="r:")
+    except tarfile.ReadError:
+        archive = None
+    if archive is not None:
+        with archive:
+            rejected, warnings = _extract_tar_members(archive, src)
+        return "tar", rejected, warnings
+    (src / "main.tex").write_bytes(payload)
+    return "tex", [], []
+
+
+def _extract_tar_members(archive: tarfile.TarFile, dest: Path) -> tuple[list[str], list[str]]:
+    """逐成员解包，返回（被拒成员名、warnings）。
+
+    只放行普通文件与目录；路径安全逐成员交给标准库 `tarfile.data_filter` 判定
+    （`extract` 的 filter="data"）。被拒成员记名后继续，不中断解包。
     """
     rejected: list[str] = []
-    root = dest.resolve()
-    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
-        for member in archive:
-            target = _safe_target(root, member.name)
-            if target is None:
-                rejected.append(member.name)
-                continue
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            if not member.isfile():
-                rejected.append(member.name)  # 链接 / 设备 / FIFO
-                continue
-            stream = archive.extractfile(member)
-            if stream is None:
-                rejected.append(member.name)
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "wb") as handle:
-                shutil.copyfileobj(stream, handle)
-    return tuple(rejected)
-
-
-def _safe_target(root: Path, name: str) -> Path | None:
-    """成员名 → 落盘路径；越界返回 None。`root` 必须已 `resolve()`。"""
-    if not name:
-        return None
-    pure = PurePosixPath(name.replace("\\", "/"))
-    if pure.is_absolute():
-        return None
-    parts = [part for part in pure.parts if part not in ("", ".")]
-    if not parts or any(part == ".." for part in parts):
-        return None
-    target = root.joinpath(*parts)
-    # parents 里可能已有别的东西（不会有符号链接——链接成员一律不落盘），仍做一次兜底
-    try:
-        resolved = Path(target).resolve()
-    except OSError:
-        return None
-    if resolved != root and not resolved.is_relative_to(root):
-        return None
-    return target
-
-
-# ----------------------------------------------------------------------- 本地目录
-
-
-def ingest_local(
-    directory: str | Path,
-    workdir: Workdir,
-    *,
-    ignore: Iterable[str] = IGNORED_LOCAL,
-) -> FetchResult:
-    """`tongtu run <dir>`：把本地源码目录拷进 `src/`，其余判定与下载路径完全一致。
-
-    拷贝而非软链或原地使用：`src/` 的契约是「e-print 原始解包，只读不改」，工作目录
-    必须自足（可打包、可在别的机器续跑），也不能让流水线写回用户的目录。
-    """
-    source = Path(directory).expanduser()
-    if not source.is_dir():
-        return FetchResult(
-            status=SOURCE_MISSING,
-            src=workdir.src,
-            kind="local",
-            message=f"本地源码目录不存在：{source}",
-        )
-
-    workdir.create()
-    src = workdir.src
-    skipped = frozenset(ignore)
-    if source.resolve() == src.resolve():
-        # 已经就地在 src/ 里（重跑同一工作目录），不做无谓的自拷贝
-        return _finalize(src, kind="local")
-
-    workdir_root = workdir.path.resolve()
-
-    def _ignore(dirpath: str, names: list[str]) -> set[str]:
-        drop = {name for name in names if name in skipped}
-        for name in names:
-            # 工作目录嵌在源码目录里（`tongtu run .` + 默认 workdir）时不要自吞
-            if Path(dirpath, name).resolve() == workdir_root:
-                drop.add(name)
-        return drop
-
-    try:
-        shutil.copytree(source, src, dirs_exist_ok=True, ignore=_ignore)
-    except (shutil.Error, OSError) as exc:
-        return FetchResult(status=UNPACK_FAILED, src=src, kind="local", message=f"拷贝本地源码失败：{exc}")
-    return _finalize(src, kind="local")
-
-
-# ----------------------------------------------------------------------- 结果判定
-
-
-def detect_pdf_shell(src: Path, tex_files: Iterable[str]) -> tuple[str | None, int]:
-    """套壳检测，返回 (原因或 None, .tex 字符总量)。判据迁自 v2（见模块文档）。"""
-    total = 0
-    includepdf = False
-    for name in tex_files:
-        text = (src / name).read_text(encoding="utf-8", errors="ignore")
-        total += len(text)
-        if "\\includepdf" in text:
-            includepdf = True
-    if total < SHELL_MIN_CHARS:
-        return f"源码 .tex 总量仅 {total} 字符，无实质内容", total
-    if includepdf and total < SHELL_INCLUDEPDF_CHARS:
-        return f"源码是 pdfpages 套壳（\\includepdf，共 {total} 字符）", total
-    return None, total
-
-
-def _list_files(root: Path) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file() and not path.is_symlink()
-        )
-    )
-
-
-def _finalize(
-    src: Path,
-    *,
-    kind: str,
-    forced_pdf: bool = False,
-    rejected: tuple[str, ...] = (),
-    payload_bytes: int = 0,
-    raw_path: Path | None = None,
-    url: str = "",
-) -> FetchResult:
-    """列文件、判 PDF-only / 套壳 / 空树，组装结果。"""
-    files = _list_files(src)
-    tex_files = tuple(name for name in files if name.lower().endswith(".tex"))
+    for member in archive:
+        if not (member.isreg() or member.isdir()):
+            rejected.append(member.name)
+            continue
+        try:
+            archive.extract(member, path=dest, filter="data")
+        except tarfile.FilterError:
+            rejected.append(member.name)
     warnings: list[str] = []
     if rejected:
-        warnings.append(f"解包时拒绝了 {len(rejected)} 个不安全成员：{list(rejected[:5])}")
+        warnings.append(
+            f"解包拒绝了 {len(rejected)} 个 tar 成员（不是普通文件或目录，或路径不安全），名单见 rejected 字段"
+        )
+    return rejected, warnings
 
-    common = dict(
-        src=src,
+
+def _copy_ignore(workdir_real: Path) -> Callable[[str, list[str]], set[str]]:
+    """生成 copytree 的 ignore 回调：跳过版本控制目录与系统缓存文件；工作目录嵌在
+    源目录内时跳过工作目录自身，不把它拷进 src/。"""
+
+    def ignore(parent: str, names: list[str]) -> set[str]:
+        skipped = {name for name in names if name in COPY_SKIP_NAMES}
+        for name in names:
+            if name not in skipped and (Path(parent) / name).resolve() == workdir_real:
+                skipped.add(name)
+        return skipped
+
+    return ignore
+
+
+# ------------------------------------------------------------------ 收尾判定与落盘
+
+
+def _manifest_from_src(
+    paper_workdir: workdir.Workdir,
+    *,
+    source: str,
+    kind: FetchKind,
+    url: str = "",
+    payload_sha256: str = "",
+    payload_bytes: int = 0,
+    rejected: list[str] | None = None,
+    warnings: list[str] | None = None,
+) -> FetchManifest:
+    """收尾判定：遍历 src/ 全树（跳过符号链接），算逐文件 sha256 与 .tex 统计，得出状态。"""
+    src = paper_workdir.src
+    files: dict[str, str] = {}
+    tex_files: list[str] = []
+    tex_chars = 0
+    has_includepdf = False
+    paths = sorted(src.rglob("*"), key=lambda path: path.relative_to(src).as_posix())
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(src).as_posix()
+        with path.open("rb") as stream:
+            files[relative] = hashlib.file_digest(stream, "sha256").hexdigest()
+        if path.suffix.lower() == ".tex":
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            tex_files.append(relative)
+            tex_chars += len(text)
+            has_includepdf = has_includepdf or "\\includepdf" in text
+    status, message = _verdict(files, tex_files, tex_chars, has_includepdf)
+    return FetchManifest(
+        status=status,
+        source=source,
         kind=kind,
+        url=url,
+        payload_sha256=payload_sha256,
+        payload_bytes=payload_bytes,
         files=files,
         tex_files=tex_files,
-        payload_bytes=payload_bytes,
-        raw_path=raw_path,
-        rejected=rejected,
-        url=url,
+        tex_chars=tex_chars,
+        rejected=list(rejected or []),
+        warnings=list(warnings or []),
+        message=message,
     )
 
-    if forced_pdf:
-        return FetchResult(
-            status=PDF_ONLY,
-            message="e-print 是 PDF 而非 LaTeX 源码（PDF-only），走降级路线",
-            warnings=tuple(warnings),
-            **common,
-        )
 
+def _verdict(
+    files: dict[str, str], tex_files: list[str], tex_chars: int, has_includepdf: bool
+) -> tuple[FetchStatus, str]:
+    """按判定顺序得出状态：没有 .tex 先看有没有 PDF；有 .tex 再做 PDF 套壳检测。"""
     if not tex_files:
-        has_pdf = any(name.lower().endswith(".pdf") for name in files)
-        if has_pdf:
-            return FetchResult(
-                status=PDF_ONLY,
-                message="源码树里没有 .tex，只有 PDF，等同 PDF-only，走降级路线",
-                warnings=tuple(warnings),
-                **common,
-            )
-        return FetchResult(
-            status=EMPTY,
-            message="源码树里没有 .tex 文件" + ("（且解包全部成员被拒）" if rejected else ""),
-            warnings=tuple(warnings),
-            **common,
+        if any(name.lower().endswith(".pdf") for name in files):
+            return FetchStatus.PDF_ONLY, "src/ 里没有 .tex 文件、只有 PDF，走 degraded path。"
+        return FetchStatus.EMPTY, "src/ 里既没有 .tex 文件也没有 PDF。"
+    if tex_chars < MIN_TEX_CHARS:
+        return FetchStatus.PDF_ONLY, (
+            f".tex 字符总量 {tex_chars} 低于 {MIN_TEX_CHARS}，没有实质文本内容，按 PDF 套壳处理，走 degraded path。"
         )
-
-    reason, tex_chars = detect_pdf_shell(src, tex_files)
-    if reason is not None:
-        return FetchResult(
-            status=PDF_ONLY,
-            tex_chars=tex_chars,
-            message=f"{reason}，等同 PDF-only，走降级路线",
-            warnings=tuple(warnings),
-            **common,
+    if has_includepdf and tex_chars < MIN_TEX_CHARS_WITH_INCLUDEPDF:
+        return FetchStatus.PDF_ONLY, (
+            f".tex 里出现 \\includepdf 且字符总量 {tex_chars} 低于 {MIN_TEX_CHARS_WITH_INCLUDEPDF}，"
+            "判定为 pdfpages 套壳，走 degraded path。"
         )
+    return FetchStatus.OK, ""
 
-    return FetchResult(status=OK, tex_chars=tex_chars, warnings=tuple(warnings), **common)
+
+def _load_reusable_manifest(path: Path) -> FetchManifest | None:
+    """读已有 manifest；可解析且状态为 ok / pdf_only（上次已有结论）时返回它，否则返回 None（重新执行）。"""
+    manifest = manifests.load_manifest(path, FetchManifest)
+    if manifest is None:
+        return None
+    if manifest.status in (FetchStatus.OK, FetchStatus.PDF_ONLY):
+        return manifest
+    return None
+
+
+def _write_result(paper_workdir: workdir.Workdir, manifest: FetchManifest) -> FetchResult:
+    """写出 manifest 并组装返回值；除跳过外的每次执行（含失败）都经此处落盘。"""
+    manifests.write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
+    return FetchResult(manifest=manifest, workdir=paper_workdir, skipped=False)
+
+
+def _reset_src(paper_workdir: workdir.Workdir) -> None:
+    """把 src/ 整目录删除后重建四区，避免与上次执行的残留混杂。"""
+    shutil.rmtree(paper_workdir.src, ignore_errors=True)
+    paper_workdir.create()

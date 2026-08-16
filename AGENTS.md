@@ -6,12 +6,15 @@
 - **总原则：agent 负责判断，脚本负责验证。** 翻译、修编译错交给 agent；正确性只认校验脚本全绿与 PDF 编译通过，agent 的「我检查过了」无效力。
 - **论文工作目录不在仓库内**：默认 `~/.local/share/tongtu/<arxiv_id>/`（`$TONGTU_HOME` / `--workdir` 覆盖）。测试与试验不要在仓库里创建论文目录。
 - agent 运行时可插拔：流水线只依赖薄接口（headless 拉起、读写文件、执行命令、联网、可指定模型），适配层在 `tongtu/agent/`，不绑定具体产品。
-- 状态：零期施工中，v2 原型（arxiv-translator）迁入中；设计文档随迁移落地到 `docs/`。
+- 状态：零期重建中，各阶段按阶段序逐个重建，进展见下「当前状态」。
 
 ## 当前状态
 
-- AI 完成了 Phase0
-- 我正在验收，发现非常多不符合我要求的地方，正在 docs/ARCHITECTURE.md 里先把需求和 Spec 描述清楚。
+- 零期重建中（分支 zeh/stage1）：Phase0 的一次性实现验收未通过，已整体删除，只保留 dummy CLI 与阶段名清单，按阶段序逐个重建。
+- 工作方式：每个阶段先出设计讨论稿（输入、输出、出口判据、产物模型），拍板后动手。docs/ 设计文档是权威（总纲 ARCHITECTURE.md、命令面 CLI.md、各阶段 stages/），允许边建边修，改它们先经确认。
+- 回归检查：happy path 调通前不写测试。examples/ 三篇自造论文加八篇真实论文（清单与各自覆盖的形态见 examples/README.md，源码不入库）跑通全流水线即回归判据。
+- 进度：fetch、flatten、precompile、mask 已实现并接线（`tongtu stage <名字>`，设计见 docs/stages/ 下对应文档）；下一个阶段：survey。survey 是第一个需要 `ask` 原语的阶段，agent 适配层（`tongtu/agent/`，目前只有 `work`）需随之补齐。
+
 
 ## 这是一个自用的项目
 
@@ -27,6 +30,6 @@
 
 1. 禁止用比喻、拟人来命名或解释机制。说它是什么、做什么，不说它「像什么」。
 2. 禁止口语衬词与轻佻语气。写动作本身：「同时写出」而非「顺手落一份」，「检查环境」而非「探一眼」。
-3. 不要过于缩写，如 「PDF.js 随包分发」而非「PDF.js 随包」。
-4. 标识符只许描述功能，不许起绰号。跨文件的新术语先在 docs/ARCHITECTURE.md 给出定义，代码沿用文档的名字，反向不成立。
+3. 不要过于缩写，如 「PDF.js 随包分发」而非「PDF.js 随包」。也不要使用各类自造缩写，不要为了省事写简写：「新式 2401.01234[v2] 原样」这类压缩句不是合格的中文，应写成完整句子（「新式编号如 2401.01234，可带版本号后缀，直接用作目录名」）。多写几个字，让含义更清晰。
+4. 标识符只许描述功能，不许起绰号。跨文件的新术语先在 docs/ 对应的权威文档给出定义（总纲 ARCHITECTURE.md、命令面 CLI.md、各阶段 stages/<name>.md），代码沿用文档的名字，反向不成立。
 5. 措辞自查无效力，判据是 `scripts/diction_lint.py`（denylist 在 `scripts/diction_denylist.toml`，本地 hook 与 CI 跑同一份）。抓到新口癖就往 denylist 加一条，清单只增不删；存量违例记录在 `scripts/diction_baseline.json` 基线，命中数只许减少，清理一批后跑 `--update-baseline` 收紧。
