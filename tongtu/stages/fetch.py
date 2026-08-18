@@ -2,8 +2,8 @@
 
 fetch 是唯一写 `src/` 的阶段；`src/` 的含义是 e-print 内容的原样落盘。
 
-论文参数按顺序识别为三种形态：本地源码目录（参数在文件系统里存在且是目录；单独的
-`.`、`..`、`~` 是路径导航写法，不作为目录接受）；arXiv 链接（主机名是 arxiv.org
+论文参数按顺序识别为三种形态：本地源码目录（参数在文件系统里存在且是目录；空串与
+单独的 `.`、`..`、`~` 是路径导航写法，不作为目录接受）；arXiv 链接（主机名是 arxiv.org
 或其子域，路径前缀 `/abs/`、`/pdf/`、`/html/` 之一，前缀之后的整段剩余路径是编号，
 编号可含斜杠，末尾的 `.pdf` 扩展名去掉，查询串与锚点丢弃）；其余输入按 arXiv 编号
 处理，合法性由 `workdir.normalize_arxiv_id` 判定。
@@ -77,8 +77,9 @@ MIN_TEX_CHARS_WITH_INCLUDEPDF = 5000
 COPY_SKIP_NAMES = frozenset({".git", ".svn", ".hg", "__pycache__", ".DS_Store"})
 
 #: 不作为本地目录接受的字面参数：它们是路径导航写法，接受会把当前目录、上级目录
-#: 或主目录整棵当成论文源码；这类参数落到编号判定后被拒绝。
-PATH_NAVIGATION_LITERALS = frozenset({".", "..", "~"})
+#: 或主目录整棵当成论文源码；这类参数落到编号判定后被拒绝。空串也在其中——
+#: `Path("")` 归一成 `.`，不排除的话空参数与写 `.` 的后果相同。
+PATH_NAVIGATION_LITERALS = frozenset({"", ".", "..", "~"})
 
 
 class PaperArgumentError(ValueError):
@@ -125,16 +126,30 @@ def parse_arxiv_url(url: str) -> str:
     raise PaperArgumentError(f"链接路径不含 /abs/、/pdf/、/html/ 前缀：{url}")
 
 
+def _as_source_directory(paper: str) -> Path | None:
+    """论文参数指向的本地源码目录；不是目录、是路径导航写法、或用户名展不开时返回 None。
+
+    `Path.expanduser()` 在 `~用户名` 里的用户不存在时抛 RuntimeError。那个参数不是目录，
+    按编号继续判定，由 `normalize_arxiv_id` 拒绝并转成用法错误，不让异常穿出到调用方。
+    """
+    if paper in PATH_NAVIGATION_LITERALS:
+        return None
+    try:
+        path = Path(paper).expanduser()
+    except RuntimeError:
+        return None
+    return path if path.is_dir() else None
+
+
 def parse_paper_argument(paper: str) -> PaperInput:
     """按顺序识别论文参数：本地源码目录 → arXiv 链接 → arXiv 编号。
 
     目录之外的两种形态都归结为编号：链接解析失败抛 PaperArgumentError，编号不合法
     由 `workdir.normalize_arxiv_id` 抛 WorkdirError。
     """
-    if paper not in PATH_NAVIGATION_LITERALS:
-        path = Path(paper).expanduser()
-        if path.is_dir():
-            return PaperInput(source_dir=path)
+    source_dir = _as_source_directory(paper)
+    if source_dir is not None:
+        return PaperInput(source_dir=source_dir)
     if paper.startswith(("http://", "https://")):
         arxiv_id = parse_arxiv_url(paper)
     else:

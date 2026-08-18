@@ -1,0 +1,61 @@
+name: papers
+
+# 编译层真实论文组：从 arXiv 拉八篇中首编即过的六篇跑到 mask，加 PDF-only 套壳一篇验证退出码
+# 3 分流，再加 `2412.19437` 只跑到 flatten（它首编失败、整篇属 LLM 层，但 flatten 那部分判据
+# 与编译无关）。
+# 分层与判据见 docs/ci/README.md。
+#
+# 不在合并路径上，理由是它的失败有一部分与代码无关（arXiv 不可用、论文出新版本），而真实
+# 论文的回归不需要在合并前知道。每日一次加手动触发即可。
+#
+# 真实论文源码不入库（examples/README.md 的约定，防的是公开仓库的分发义务）。这里在 runner
+# 上下载、跑完即弃，不构成分发；下载结果进 Actions 缓存，同样不对外分发。
+
+on:
+  schedule:
+    # 每日 03:00 UTC。
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: papers
+  cancel-in-progress: false
+
+jobs:
+  papers:
+    name: compile layer (real papers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    # 与 ci.yml 的 compile 作业同样直接在环境镜像里跑，理由见那里。
+    container:
+      image: ghcr.io/${{ github.repository }}:env
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # 缓存 e-print 下载结果，key 取论文清单所在文件的 hash：该文件变动才重新下载，
+      # 平时不向 arXiv 发请求。八篇解包后不到 10MB，缓存本身的开销可忽略。
+      # 路径在容器内：container 模式下各 step 都在容器里执行，工作目录不必挂进挂出，
+      # 属主也始终是同一个用户，不再需要事后交还属主。
+      - name: Restore e-print cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/tongtu-home
+          key: eprint-${{ hashFiles('tests/compile/test_real_papers.py') }}
+          restore-keys: eprint-
+
+      - name: 装项目本体
+        run: uv sync --frozen
+
+      # 测试对 fetch 之后的阶段一律强制重算，缓存命中不会让编译跳过。
+      - name: compile layer (real papers)
+        env:
+          TONGTU_TEST_HOME: ${{ runner.temp }}/tongtu-home
+        run: |
+          mkdir -p "$TONGTU_TEST_HOME"
+          pytest -q -m "compile and network"

@@ -101,7 +101,7 @@ WorkOutcome:
 - 编译场景下 agent 不直接访问文件系统，读写 `zh.tex`、编译、看渲染页、回退或重译都经由 `tongtu tex …` 工具面，动作与 metadata 一并记账（compile 节）。
 - **日志路径由脚本决定，日志由适配层写**：`logs/` 是工作目录布局的一部分（§5），文件名按 hook、chunk 与尝试次数拼出，以入参交给适配层（`ask` 的 `log_path`、`work` 的 `trace_path`）——重试、usage 与终止原因只有适配层知道。`ask` 的调用日志是单个 JSON 文件：请求要素、返回正文、usage、finish_reason 与耗时，失败的调用同样落日志。`work` 的会话 trace 内容是 start-state hash + command sequence（参数、返回、耗时与 token）+ end-state hash，既是审计记录，也是固化规则（§2 原则 3）的原料。
 - **用量不进返回值**：每次调用的 token 与耗时落 `logs/`（`ask` 的调用日志、`work` 的 trace），export 组装 report 时从 `logs/` 汇总一次。两个原语的用量口径因此统一在一处；各阶段是独立进程，日志文件跨得过进程边界，进程内的累计对象跨不过。
-- **MockAgent**：`ask` 无 schema 时原样返回 `text`，给出 schema 时返回按 schema 生成的确定性默认对象（strict 约束下原样返回不符合形状）；`work` 在翻译场景把原文写到译文路径，在编译场景调一次 `tex compile` 后退出。CI 编译层（§7）依赖它。
+- **MockAgent**：`ask` 无 schema 时原样返回 `text`，给出 schema 时返回按 schema 生成的确定性默认对象（strict 约束下原样返回不符合形状）；`work` 在翻译场景把原文写到译文路径，在编译场景调一次 `tex compile` 后退出。当前无消费者——CI 的编译层跑的是原文编译，不进翻译路径，不经 agent；MockAgent 的第一个消费者是全流水线的 identity translation，待 survey 起各阶段建成后接线。
 
 ### survey —— 一次读完全文，产出全篇共享的上下文
 
@@ -372,13 +372,21 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 
 ## 7. 测试与 CI/CD
 
-test pyramid，按成本分三层：
+**按外部依赖分层**：一个测试需要 TeX、需要网络、需要接入模型，决定它能否进 CI、进哪个作业、是否设为合并必过。单元与集成的区分不改变执行环境，对作业编排没有指导作用。
 
-1. **文本层**（秒级；无 TeX、无 LLM）：mask / unmask / validate / chunk 皆为纯文本变换，golden-file 测试打底；外加 mask/unmask 往返恒等的性质测试，同一自检在生产环境对每篇论文运行时也会执行（[stages/mask.md](stages/mask.md) 的 unmask 与往返自检节）。正确性验证的主体在这一层。**PR 必过。**
-2. **编译层**（分钟级；有 TeX、无 LLM）：**identity translation**。MockAgent 在翻译场景把原文写到译文路径、在编译会话里调一次 `tex compile` 即退出，三篇 fixture 论文全 pipeline 跑到底，产出 PDF + anchors 并通过 artifact model 校验。零 LLM 成本覆盖mask、inject、compile loop、export、索引全链路。**PR 必过。**
-3. **LLM 层**（**手动触发**；限预算）：真模型跑 1–3 篇，report.json 统计入 quality dashboard。**它只做质量监控，不是每次 PR 都跑**。
+| 层 | 外部依赖 | 执行环境 | 合并必过 |
+|---|---|---|---|
+| 文本层 | 无 | runner，秒级 | 是 |
+| 编译层 | TeX；真实论文组另需网络 | 参考镜像，分钟级 | 自造论文组是，真实论文组否 |
+| LLM 层 | TeX、网络、模型 | 手动触发，计费 | 否 |
 
-fixtures：自造最小模板论文（article / revtex / 双栏会议，各数页）入仓库；真实 arXiv 论文只在 LLM 层按需拉取、不入库，以保持 license 干净。
+**测试用例取自各阶段设计稿的「验收与试跑对象」一节，不另行设计**：那些条目本就是机械可判的断言，精确到 manifest 的字段取值。
+
+编译层随阶段推进逐步加长——当前到 mask，全部阶段建成后即 **identity translation**（MockAgent 在翻译场景把原文写到译文路径、在编译会话里调一次 `tex compile` 即退出，fixture 论文全 pipeline 跑到底，产出 PDF + anchors 并通过 artifact model 校验）。identity translation 是这一层的终点形态，不是它的定义。
+
+fixtures：自造最小模板论文（article / revtex / 双栏会议，各数页）入仓库；真实 arXiv 论文按需拉取、不入库，以保持 license 干净。CI 在 runner 上下载、跑完即弃，不构成分发，约定不受影响。
+
+> 各层的具体内容、CI 作业结构、执行环境与缓存安排见 [ci/README.md](ci/README.md)。
 
 ---
 
@@ -411,6 +419,7 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 23. **第三方依赖逐个按准入标准评估，不沿用 v2 的零依赖做法。** 曾考虑：延续「零第三方依赖」。否决理由：零依赖的真实收益只覆盖核心文本层——标准库在那里够用，字节级处理需要完全的控制权，这两点保留为准入标准的一部分；作为全局原则它不成立：uv 与 lock 文件已把安装与复现成本降到可忽略，高频使用、持续更新的工具吸收依赖演进属于日常维护而非风险。准入标准与清单见附录 C。
 24. **precompile（原 baseline）承担「修到原文编译通过」，修复交 agent 会话 + prompt example，产出成为下游输入。** 曾考虑：纯验证阶段（编不过即终止，hook② 推迟）；确定性引擎适配规则集先行、agent 推迟。否决理由：需要引擎适配的论文只有在本阶段完成适配才有基线数据，compile 的「页数与基线相当」判据才有参照系——把修复推到 compile 阶段等于让终审失去参照系，且修复动作会与翻译错误混在同一会话里，破坏本阶段存在的理由；确定性规则集是需要维护的框架代码，example 进 prompt 后新模式的维护动作是零代码，修复成果又烙进输出产物随 manifest 缓存持久，会话成本不随重跑重复发生。实测语料（1701.06538 的 `\pdfoutput` 与缺失图源、2412.19437 的 CJKutf8）证明失败是源码级而非环境级，「修 toolchain」的原表述随之修正为「修源码与引擎的不匹配」。机制见 stages/precompile.md。
 25. **`ask` 走 API 直调（OpenCode Go 端点 + openai SDK + 服务端 schema 约束），不与 `work` 同走 agent CLI 运行时。** 曾考虑：两个原语都走 Claude Code CLI（本附录 C 的原选型）；httpx 手写请求与重试；prompt 约束 JSON 输出、消费方解析失败再喂回重问。否决理由：运行时侧的纯函数约束要靠权限配置禁掉工具才成立，而能否禁得掉是待验证项（原附录 B 第 7 条的 `ask` 侧），API 直调不提供工具，约束由构造成立；单次问答用不上会话运行时的能力（多轮、文件读写、命令执行），进程拉起与配置面是纯开销；服务端 response_format 在 OpenCode Go 的 chat/completions 端点实测真实生效（json_object 与 json_schema strict 均可，模型思考在响应的独立字段，不混入正文），比 prompt 约束省掉消费方的一层解析重问代码；openai SDK 直接沿用默认的超时与重试语义，比 httpx 手写少维护一份传输代码，符合 A.23 的准入标准。零期只接 chat/completions 一个端点家族，走其他端点家族的模型（Qwen、MiniMax、Grok 系）要用时再扩适配层。
+26. **测试按外部依赖分层，编译层随阶段推进逐步加长；测试用例取自各阶段设计稿的验收条目。** 曾考虑：延续「happy path 调通前不写测试」，把测试整体推迟到全部阶段建成；编译层维持 identity translation 的定义。否决理由：那条推迟规则来自零期重建的起点——Phase0 照一份未定稿的总纲一次性实现，验收未通过，代码与测试一并删除；但失效的原因是架构未定稿就一次性实现，测试是被牵连的一方。改为逐阶段先出设计稿、拍板再动手之后，已拍板阶段的接口不再大幅漂移（masking.py 自落地后未再改动），推迟规则的前提只对尚未设计的阶段成立。更直接的理由是各阶段的「验收与试跑对象」一节本就是机械可判的断言清单（精确到 manifest 的字段取值，如 `fix_session` 为 false、`decided_by` 取 `newtheorem`），此前的落地方式是阶段完成时人工跑一遍、跑完不留下可重复执行的东西，而每个新阶段落地都在改动已完成阶段共用的代码，这类改动打坏上游阶段时没有任何自动检查会报告。编译层维持 identity translation 的定义则把这一层的起点绑在全部阶段建成之后，而它从第一个需要 TeX 的阶段起即成立，identity translation 因此降为该层的终点形态。A.7 否决的「LLM 层也设为 PR 必过」不受影响：承担合并必过的具体对象由 identity translation 变为编译层自造论文组，两者同为零模型成本覆盖编译链路的测试。分层与作业结构见 [ci/README.md](ci/README.md)。
 
 ## 附录 B：Open Questions
 
