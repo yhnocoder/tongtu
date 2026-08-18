@@ -10,6 +10,7 @@ dependencies = [
     "typer>=0.12",         # CLI 命令面
     "rich>=13",            # 进度显示与 doctor 结果的人读输出
     "httpx>=0.27",         # fetch 下载
+    "openai>=1.60",        # ask 原语的 API 直调（OpenCode Go 的 OpenAI 兼容端点）
     "pypdfium2>=4.30",     # anchors 的 pdf-scan 来源
 ]
 

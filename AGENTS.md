@@ -13,7 +13,7 @@
 - 零期重建中（分支 zeh/stage1）：Phase0 的一次性实现验收未通过，已整体删除，只保留 dummy CLI 与阶段名清单，按阶段序逐个重建。
 - 工作方式：每个阶段先出设计讨论稿（输入、输出、出口判据、产物模型），拍板后动手。docs/ 设计文档是权威（总纲 ARCHITECTURE.md、命令面 CLI.md、各阶段 stages/），允许边建边修，改它们先经确认。
 - 回归检查：happy path 调通前不写测试。examples/ 三篇自造论文加八篇真实论文（清单与各自覆盖的形态见 examples/README.md，源码不入库）跑通全流水线即回归判据。
-- 进度：fetch、flatten、precompile、mask 已实现并接线（`tongtu stage <名字>`，设计见 docs/stages/ 下对应文档）；下一个阶段：survey。survey 是第一个需要 `ask` 原语的阶段，agent 适配层（`tongtu/agent/`，目前只有 `work`）需随之补齐。
+- 进度：fetch、flatten、precompile、mask 已实现并接线（`tongtu stage <名字>`，设计见 docs/stages/ 下对应文档）；agent 适配层的两个原语已齐——`work` 走 Claude Code CLI，`ask` 走 API 直调（`tongtu/agent/opencode.py`，设计见 docs/ARCHITECTURE.md §3 agent 适配层节；MockAgent 无消费者，随测试接线时按该节设计补建）。下一个阶段：survey，第一个消费 `ask` 的阶段。
 
 
 ## 这是一个自用的项目

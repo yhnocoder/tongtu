@@ -44,8 +44,8 @@ flowchart TD
 
 **所有阶段都由脚本驱动。** 脚本拉起 agent 只有两个原语，签名与约束见下文 agent 适配层节：
 
-- `ask(prompt, text, model) -> text`：单次问答，不给工具、不留状态，用于主文件判定、环境分类与术语决策。
-- `work(prompt, workdir, model, budget, trace_path) -> WorkOutcome`：多轮会话，可读写 workdir、执行命令、联网，用于逐 chunk 翻译与各类修复。
+- `ask(prompt, text, model, schema, log_path) -> AskOutcome`：单次问答，API 直调，无工具、无状态，用于主文件判定、环境分类与术语决策。
+- `work(prompt, workdir, model, budget, trace_path) -> WorkOutcome`：多轮会话，agent CLI 运行时拉起，可读写 workdir、执行命令、联网，用于逐 chunk 翻译与各类修复。
 
 表中「agent」指：该阶段的脚本在特定触发条件下拉起一次有明确结束判定的 agent 调用，拿回结果后由脚本校验与推进，控制流不移交。「结束判定」一列是每个阶段完成与否的判定条件；有 agent 调用的阶段，这一判定同样由脚本做出。
 
@@ -64,14 +64,21 @@ flowchart TD
 
 六个涉及到 agent 的 stage（主文件、toolchain、环境分类、读全文与术语、翻译、适配与修复）用于覆盖论文之间的少见差异。**阶段图对所有论文相同**，PDF-only 在顶层分支到 degraded path，阶段序列本身不重排。
 
-### agent 适配层 —— 两个原语，运行时可插拔
+### agent 适配层 —— 两个原语，两种传输
 
-代码在 `agent/` 子模块，首发运行时是 Claude Code CLI（附录 C），流水线只依赖这层接口：
+代码在 `agent/` 子模块。两个原语分属两种传输，各自独立可替换：`ask` 走 API 直调（OpenCode Go，附录 C），`work` 走 agent CLI 运行时（首发 Claude Code CLI，附录 C）。流水线只依赖这层接口：
 
 ```
-ask(prompt, text, model) -> text
+ask(prompt, text, model, schema, log_path) -> AskOutcome
     # 单次问答：主文件判定、环境分类、读全文与术语决策。
-    # 要求：不给工具、不留状态——输出只能是这三个参数的函数。
+    # prompt 作 system message，text 作 user message，一次请求一次响应；
+    # 无工具、无状态，输出只是输入的函数（模型自身的随机性除外）。
+    # schema（JSON Schema）给出时映射为服务端结构化输出约束（response_format）。
+
+AskOutcome:
+    status   # ok | error
+    text     # ok 时为返回正文；schema 给出时是符合该 schema 的 JSON 字符串
+    detail   # 仅 error 时非空：失败现场，进 manifest
 
 work(prompt, workdir, model, budget, trace_path) -> WorkOutcome
     # 多轮会话：逐 chunk 翻译、修 toolchain、修编译错、documentclass 适配。
@@ -86,15 +93,15 @@ WorkOutcome:
 
 ![脚本与 agent 的职责边界，以及六个 hook 的触发与终审判据](assets/agent-boundary.svg)
 
-两者的差别不止于有无状态：`ask` 要的是纯函数式判断，`work` 要的是能读写工作目录并执行命令的会话运行时。`work` 多出的 `budget` 与 `trace_path` 两个参数，对应的正是它多出来的这部分能力。
+两者的差别不止于有无状态：`ask` 要的是纯函数式判断，一次 API 调用即可承载；`work` 要的是能读写工作目录并执行命令的会话运行时。`work` 多出的 `budget` 参数对应的正是会话才有的轮数与墙钟上限。
 
 - `work` 的 `stop_reason` 只说明会话如何终止，**不表示修好了**；终审权在事后的校验脚本与编译，不采信 agent 的自述。各运行时自己的终止原因由适配层映射到这四个值，映射不上的归 `error`，现场写进 `detail`。
-- **`ask` 必须禁工具**，只读沙箱不够。它一旦读了工作目录里的文件，输出就不再只是 `(prompt, text, model)` 的函数，而 §4 的缓存 key 正按这个假设建立（survey 的产出进 `brief_hash`，`brief_hash` 进每个 chunk 的翻译 key）。这是正确性约束，与 compile 工具面那一侧的约束力问题（工具面能否真的限定住 agent 的动作范围）性质不同，见附录 B 第 7 条。
+- **`ask` 的纯函数约束由构造成立**：API 直调的请求里不存在工具，也没有会话状态，输出只能是入参的函数——§4 的缓存 key 正按这个假设建立（survey 的产出进 `brief_hash`，`brief_hash` 进每个 chunk 的翻译 key）。若 `ask` 能读工作目录里的文件，这个假设即被破坏；选型从「与 `work` 同走运行时」改为 API 直调的决策见附录 A.25。
 - 翻译场景下脚本给出 chunk 文件与译文输出路径，agent 在会话内自行翻译、跑 `tongtu validate`、按输出修改，写完退出；脚本读文件再跑一遍 validate 做终审（translate 节）。
 - 编译场景下 agent 不直接访问文件系统，读写 `zh.tex`、编译、看渲染页、回退或重译都经由 `tongtu tex …` 工具面，动作与 metadata 一并记账（compile 节）。
-- **日志路径由脚本决定**：`logs/` 是工作目录布局的一部分（§5），文件名按 hook、chunk 与尝试次数拼出。`ask` 的提示词与返回文本脚本本来就有，由脚本自己写；`work` 的中间过程脚本看不见，故以 `trace_path` 入参交给适配层写。会话 trace 的内容是 start-state hash + command sequence（参数、返回、耗时与 token）+ end-state hash，既是审计记录，也是固化规则（§2 原则 3）的原料。
-- **用量不进返回值**：轮数、token 与耗时由运行时对象累计，export 组装 report 时读一次。两个原语的用量口径因此统一在一处，`ask` 也不必为了统计包成结构体。
-- **MockAgent**：`ask` 原样返回；`work` 在翻译场景把原文写到译文路径，在编译场景调一次 `tex compile` 后退出。CI 编译层（§7）依赖它。
+- **日志路径由脚本决定，日志由适配层写**：`logs/` 是工作目录布局的一部分（§5），文件名按 hook、chunk 与尝试次数拼出，以入参交给适配层（`ask` 的 `log_path`、`work` 的 `trace_path`）——重试、usage 与终止原因只有适配层知道。`ask` 的调用日志是单个 JSON 文件：请求要素、返回正文、usage、finish_reason 与耗时，失败的调用同样落日志。`work` 的会话 trace 内容是 start-state hash + command sequence（参数、返回、耗时与 token）+ end-state hash，既是审计记录，也是固化规则（§2 原则 3）的原料。
+- **用量不进返回值**：每次调用的 token 与耗时落 `logs/`（`ask` 的调用日志、`work` 的 trace），export 组装 report 时从 `logs/` 汇总一次。两个原语的用量口径因此统一在一处；各阶段是独立进程，日志文件跨得过进程边界，进程内的累计对象跨不过。
+- **MockAgent**：`ask` 无 schema 时原样返回 `text`，给出 schema 时返回按 schema 生成的确定性默认对象（strict 约束下原样返回不符合形状）；`work` 在翻译场景把原文写到译文路径，在编译场景调一次 `tex compile` 后退出。CI 编译层（§7）依赖它。
 
 ### survey —— 一次读完全文，产出全篇共享的上下文
 
@@ -296,7 +303,7 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 | 用途 | 环境变量 | 默认路径 | 存放内容 |
 |---|---|---|---|
 | 数据目录 | `$TONGTU_HOME` | `~/.local/share/tongtu/` | 逐篇论文的工作目录（`src/` `build/` `out/` `logs/`，见下「工作目录布局」） |
-| 配置目录 | `$XDG_CONFIG_HOME`（未设则退化为 `~/.config`） | `~/.config/tongtu/` | 跨论文的全局配置，目前只有全局术语表 `glossary.json` |
+| 配置目录 | `$XDG_CONFIG_HOME`（未设则退化为 `~/.config`） | `~/.config/tongtu/` | 跨论文的全局配置：全局术语表 `glossary.json` 与 OpenCode 密钥的 `credentials.json`（通途写入、0600 权限、可手改） |
 
 两者的区分标准是内容性质，不是路径来源：数据目录放的是运行产生的、和某一篇论文绑定的东西，配置目录放的是用户手改的、和论文无关的东西——这也是为什么全局术语表不进数据目录，论文的输入术语表反而和 `src/`、`build/`、`out/`、`logs/` 同级放在工作目录里（见下「术语表」节）。
 
@@ -403,6 +410,7 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 22. **artifact 契约以 pydantic model 为字段级权威，JSON Schema 不入仓库。** 曾考虑：手写 `docs/schemas/*.schema.json` 为权威定义、dataclass 手写序列化（原方案）；model 为权威但把生成的 schema 提交入仓、CI 校验两者同步。否决理由：手写 schema 与手写序列化代码是两份手工维护物，对产物跑 schema 校验只能抓到部分漂移——model 读不出的字段、与 schema 不一致的默认值都不会暴露；契约变更的审阅在 model 代码的 diff 上同样成立，提交生成物只是多一处需要保持同步的拷贝；语言中立的契约文件在出现仓库外的消费者之前没有读者，且随时可由 model 重新生成。机制见 §5 artifact contract 节。
 23. **第三方依赖逐个按准入标准评估，不沿用 v2 的零依赖做法。** 曾考虑：延续「零第三方依赖」。否决理由：零依赖的真实收益只覆盖核心文本层——标准库在那里够用，字节级处理需要完全的控制权，这两点保留为准入标准的一部分；作为全局原则它不成立：uv 与 lock 文件已把安装与复现成本降到可忽略，高频使用、持续更新的工具吸收依赖演进属于日常维护而非风险。准入标准与清单见附录 C。
 24. **precompile（原 baseline）承担「修到原文编译通过」，修复交 agent 会话 + prompt example，产出成为下游输入。** 曾考虑：纯验证阶段（编不过即终止，hook② 推迟）；确定性引擎适配规则集先行、agent 推迟。否决理由：需要引擎适配的论文只有在本阶段完成适配才有基线数据，compile 的「页数与基线相当」判据才有参照系——把修复推到 compile 阶段等于让终审失去参照系，且修复动作会与翻译错误混在同一会话里，破坏本阶段存在的理由；确定性规则集是需要维护的框架代码，example 进 prompt 后新模式的维护动作是零代码，修复成果又烙进输出产物随 manifest 缓存持久，会话成本不随重跑重复发生。实测语料（1701.06538 的 `\pdfoutput` 与缺失图源、2412.19437 的 CJKutf8）证明失败是源码级而非环境级，「修 toolchain」的原表述随之修正为「修源码与引擎的不匹配」。机制见 stages/precompile.md。
+25. **`ask` 走 API 直调（OpenCode Go 端点 + openai SDK + 服务端 schema 约束），不与 `work` 同走 agent CLI 运行时。** 曾考虑：两个原语都走 Claude Code CLI（本附录 C 的原选型）；httpx 手写请求与重试；prompt 约束 JSON 输出、消费方解析失败再喂回重问。否决理由：运行时侧的纯函数约束要靠权限配置禁掉工具才成立，而能否禁得掉是待验证项（原附录 B 第 7 条的 `ask` 侧），API 直调不提供工具，约束由构造成立；单次问答用不上会话运行时的能力（多轮、文件读写、命令执行），进程拉起与配置面是纯开销；服务端 response_format 在 OpenCode Go 的 chat/completions 端点实测真实生效（json_object 与 json_schema strict 均可，模型思考在响应的独立字段，不混入正文），比 prompt 约束省掉消费方的一层解析重问代码；openai SDK 直接沿用默认的超时与重试语义，比 httpx 手写少维护一份传输代码，符合 A.23 的准入标准。零期只接 chat/completions 一个端点家族，走其他端点家族的模型（Qwen、MiniMax、Grok 系）要用时再扩适配层。
 
 ## 附录 B：Open Questions
 
@@ -414,10 +422,11 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 4. **anchors 三来源叠加的实现次序与 hotspot 容差**：零期拿真实论文实测后定。M4 已把它们收成 `tongtu/anchors.py` 的模块级常量（`SOURCE_PRIORITY` / `RECT_PADDING_PT` / `BAND_MERGE_TOLERANCE_PT` / `SYNCTEX_SCALE` 与页级降级的页码估计），改一个数即可重新校准；synctex 缺席时一律退化为页级锚点并如实标注 `source` 与 `confidence`，不伪造精确矩形。
 5. **brief 各字段粒度与 neighboring context 段数**：三篇 fixture 校准。
 6. **survey view 的 token 规模**：数学类 block 之外再 backfill 表格与算法（§3 survey 节）会明显增大读全文输入，大结果表尤甚。三篇 fixture 实测读全文输入 token 数，确认「一次读全文即可，不做 map-reduce」在常见论文规模下成立。若超出预算，可选的收缩手段有：表格只 backfill 表头与首列、超长表格按阈值降级回 placeholder。
-7. **agent 运行时能否只给指定工具、不给 shell**：两处依赖它，性质不同——`ask` 侧是**正确性**约束（禁掉工具，输出才只是 `(prompt, text, model)` 的函数，§4 的缓存 key 才成立，见 §3 agent 适配层节），compile 工具面侧是**约束力**问题（§3 compile 节）：工具面是 `tongtu tex` 这组 CLI 子命令，agent 要调用它就得有 Bash，而拿到通用 shell 之后它可以绕开工具面直接改 `zh.tex`，「`zh.tex` 与编译日志之外的文件 agent 看不到」随之落空，工具面只剩记账作用。Claude Code 这边的具体路径是 Bash 权限的命令前缀规则：只允许 `tongtu tex` 开头的命令，禁掉其余 Bash 与 Read / Edit / Glob 等文件工具。待验证的因此是两件具体的事——前缀规则能否可靠拦住命令拼接与替换，以及禁掉文件工具之后 agent 是否还能正常完成修复。做不到时的退路：`ask` 侧改走纯 API 调用（不提供工具即无从违规），compile 侧上容器隔离（`zh.tex` 挂在容器外，经 CLI 中转），但那样本地开发也要跑容器，与 §6 运行环境节「本地原生为主」有张力。
+7. **compile 工具面能否真正约束住 agent**（§3 compile 节的**约束力**问题）：工具面是 `tongtu tex` 这组 CLI 子命令，agent 要调用它就得有 Bash，而拿到通用 shell 之后它可以绕开工具面直接改 `zh.tex`，「`zh.tex` 与编译日志之外的文件 agent 看不到」随之落空，工具面只剩记账作用。Claude Code 这边的具体路径是 Bash 权限的命令前缀规则：只允许 `tongtu tex` 开头的命令，禁掉其余 Bash 与 Read / Edit / Glob 等文件工具。待验证的因此是两件具体的事——前缀规则能否可靠拦住命令拼接与替换，以及禁掉文件工具之后 agent 是否还能正常完成修复。做不到时的退路是容器隔离（`zh.tex` 挂在容器外，经 CLI 中转），但那样本地开发也要跑容器，与 §6 运行环境节「本地原生为主」有张力。本条原来还含 `ask` 侧的禁工具问题（正确性约束），已随 `ask` 改走 API 直调消解（A.25）。
 8. **编译修复会话的 budget**：编译次数上限，开发阶段起步 30 次，拿真实论文的次数分布校准。
 9. **SVG 是否加进 figures 输出**：pdf2svg / mutool convert 在三篇 fixture 上的保真度（字体处理、透明度、裁剪路径）决定取舍，见附录 A.19。
 10. **同一论文版次更新的 incremental retranslation**：arXiv v2 出来后 survey 重跑、brief 变，全部 chunk 失效，翻译记忆等于归零。显式推迟：当前读的以老论文为主，场景还没出现过；`chunks.json` 的要素快照与 `key_version`（§4）已为它留了迁移口子，且不绑 arXiv——将来非 arXiv 来源同样适用。真实遇到追新版的需求再设计，可选方向：brief 分字段参与 key、记忆按要素降级匹配。
+11. **`ask` 的非流式请求能否承住长生成**：survey 的一次调用输入是全文视图、输出是完整 brief，非流式请求要在网关超时之内拿到整个响应。真实论文实测后定；出现网关超时再改流式，其余语义不变。
 
 ## 附录 C：选型清单
 
@@ -425,10 +434,10 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 |---|---|
 | CLI 语言与依赖管理 | Python 3 + uv |
 | 第三方依赖准入 | 运行时依赖须在「替我们维护的复杂度」上明确胜过标准库，且收益须超过该依赖自身的演进成本（A.23）；核心文本层（词法状态机 / validate / chunk 切分）不引第三方依赖 |
-| 运行时依赖 | pydantic（artifact model，§5）、typer（CLI 命令面）、rich（进度显示与 `doctor` 结果的人读输出，`--json` 事件流不经过它）、httpx（fetch 下载）、pypdfium2（anchors 的 pdf-scan 来源；fixture 上验证后定，备选 pdfplumber，PyMuPDF 因 AGPL 许可不用）、Anthropic SDK（「agent 运行时」行的退路启用时引入） |
+| 运行时依赖 | pydantic（artifact model，§5）、typer（CLI 命令面）、rich（进度显示与 `doctor` 结果的人读输出，`--json` 事件流不经过它）、httpx（fetch 下载）、openai SDK（`ask` 的 API 直调，A.25）、pypdfium2（anchors 的 pdf-scan 来源；fixture 上验证后定，备选 pdfplumber，PyMuPDF 因 AGPL 许可不用） |
 | 开发依赖 | pytest、hypothesis（mask/unmask 往返恒等的性质测试，随机输入打词法状态机）、syrupy（golden-file 快照管理） |
 | mask 解析器 | 自研零依赖词法状态机（继承 v2；TexSoup 在真实论文上 parse 失败率高，已弃用，pylatexenc 备选），叠加往返自检 |
-| agent 运行时 | 首发用 Claude Code CLI，两个原语都走运行时。适配层（§3 agent 适配层节）隔离，切换零成本。`ask` 一篇论文只调用个位数次（survey 固定 1 次，主文件与环境分类按需触发，可能都是 0），进程拉起开销不构成改走纯 API 的理由；改走 API 的触发条件有两个：拿不到内容层的结构化输出约束，或 `ask` 侧禁不掉工具（附录 B 第 7 条） |
+| agent 适配层 | 两个原语分属两种传输，适配层（§3 agent 适配层节）隔离，各自独立可替换（A.25）。`work` 走 agent CLI 运行时，首发 Claude Code CLI；`ask` 走 API 直调：OpenCode Go 的 chat/completions 端点（OpenAI 兼容），openai SDK（超时与重试用 SDK 默认值），默认模型 deepseek-v4-flash。密钥按「越显式越优先」的顺序解析：环境变量 `OPENCODE_API_KEY`（容器与 CI 的传入路径）→ 配置目录 `credentials.json` 里录入的密钥（§5 目录约定节）→ 本机 opencode 登录凭证里 Go 订阅条目的密钥（opencode 的内部存储而非文档化契约，形状变了这一路解析不到，由前两级顶上） |
 | 编译 | latexmk -xelatex -interaction=nonstopmode |
 | 镜像 | TeX Live full（~6GB 不裁剪：package 需求不可预测，为省磁盘而引入新的失败类型不划算，继承 v2 结论） |
 | inspection page | PDF.js vendor 随 artifact package（优先自包含，体积成问题再调整） |
