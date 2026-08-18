@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   papers:
-    name: compile layer (real papers)
+    name: papers
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -49,11 +49,11 @@ jobs:
           key: eprint-${{ hashFiles('tests/compile/test_real_papers.py') }}
           restore-keys: eprint-
 
-      - name: 装项目本体
+      - name: uv sync
         run: uv sync --frozen
 
       # 测试对 fetch 之后的阶段一律强制重算，缓存命中不会让编译跳过。
-      - name: compile layer (real papers)
+      - name: pytest (with real papers)
         env:
           TONGTU_TEST_HOME: ${{ runner.temp }}/tongtu-home
         run: |

@@ -69,9 +69,9 @@ jobs:
       # 镜像里只有依赖，项目本体由本次 checkout 提供，装进镜像里那个 venv
       # （UV_PROJECT_ENVIRONMENT=/opt/tongtu/.venv）。依赖已就位，这一步是秒级的。
       # uv.lock 若在本 PR 里改过，缺的依赖也在这一步补上，镜像旧一版不影响正确性。
-      - name: 装项目本体
+      - name: uv sync
         run: uv sync --frozen
 
       # `not network` 排除真实论文组：那一组由 papers.yml 承担。
-      - name: compile layer (fixture papers)
+      - name: pytest (without real papers)
         run: pytest -q -m "compile and not network"
