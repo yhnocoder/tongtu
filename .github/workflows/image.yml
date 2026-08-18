@@ -92,7 +92,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ env.IMAGE }}:env
           cache-from: type=gha
-          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,mode=max' }}
+          # 条件写成「非 PR 时给值」而不是「PR 时给空」：Actions 的 && / || 返回操作数本身，
+          # 空字符串是 falsy，`A && '' || B` 在 A 真假两种取值下都返回 B，条件等于没写。
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
           provenance: false
 
       # tag 即版本：v1.2.3 → 1.2.3 / 1.2 / latest。手动触发只打 `tag` 输入那一个名字。
@@ -123,7 +125,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,mode=max' }}
+          # 条件写成「非 PR 时给值」而不是「PR 时给空」：Actions 的 && / || 返回操作数本身，
+          # 空字符串是 falsy，`A && '' || B` 在 A 真假两种取值下都返回 B，条件等于没写。
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
           provenance: false
 
       - name: Record

@@ -1,8 +1,11 @@
 .DS_Store
-.env
+.env*
+credentials.json
+auth.json
 *.log
 __pycache__/
 .venv/
 *.egg-info/
 .pytest_cache/
+.hypothesis/
 .ruff_cache/
