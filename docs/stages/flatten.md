@@ -22,7 +22,7 @@ flatten 从 fetch manifest 装载上游结论，不重扫源码树：fetch manif
 1. 候选恰一个 → 主文件。历史语料九篇与验收十一篇全部停在这一步（主文件名并不总是 `main.tex`：`arxiv.tex`、`neurips_2021.tex`、`iclr2025_conference.tex`、`colm2024_conference.tex` 都出现过，单候选规则对名字无假设）。
 2. 候选多于一个 → 只留内容含 `\begin{document}` 的候选；筛完恰一个 → 主文件；筛成空集则退回筛选前的集合继续下一条。
 3. 仍多于一个 → 恰有一个基名是 `main.tex` → 主文件。
-4. 仍多于一个 → 状态 `main_ambiguous`，message 列出全部候选。这里是 hook① 的位置（`ask` 原语判定主文件，见 ARCHITECTURE §3 agent 适配层节）；实测语料中没有一篇走到这一步，agent 调用与适配层因此推迟实现，重启条件 = 真实遇到规则收敛不到唯一候选的论文。
+4. 仍多于一个 → 状态 `main_ambiguous`，message 列出全部候选。这里是 hook① 的位置（`ask` 原语判定主文件，见 ARCHITECTURE §3 agent 适配层节）；实测语料中没有一篇走到这一步，本阶段的 agent 调用因此推迟接线（`ask` 原语本身已实现），重启条件 = 真实遇到规则收敛不到唯一候选的论文。
 5. 候选为空 → 状态 `main_not_found`。不拉 agent：源码里没有 `\documentclass`，agent 也无从指认主文件。
 
 ## latexpand 展开

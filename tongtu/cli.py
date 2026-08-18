@@ -18,7 +18,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__
+from . import __version__, config
+from .agent import opencode
 from .artifacts.fetch import FetchStatus
 from .artifacts.flatten import FlattenManifest, FlattenStatus
 from .artifacts.mask import MaskManifest, MaskStatus
@@ -57,10 +58,13 @@ DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
     ("pdftocairo", "figures 矢量源转位图"),
     ("epstopdf", "EPS 图源接入 xelatex 的转换链"),
     ("中文字体", "font fallback chain（霞鹜文楷随仓库分发）"),
+    ("OpenCode 密钥", "ask 原语的 API 直调（环境变量 / 录入的密钥 / opencode 登录态，三处任一）"),
 )
 
-#: DOCTOR_CHECKS 里字体检查项的名字：这一项查字体文件，其余各项按可执行文件查 PATH。
+#: DOCTOR_CHECKS 里两个特例检查项的名字：字体项查字体文件，密钥项按三级顺序解析，
+#: 其余各项按可执行文件查 PATH。
 FONT_CHECK_NAME = "中文字体"
+KEY_CHECK_NAME = "OpenCode 密钥"
 
 #: 字体目录；`fonts/` 随仓库分发，两种布局下的定位交给 assets。
 FONTS_DIR = asset_path("fonts")
@@ -513,14 +517,19 @@ def validate(
 
 @app.command()
 def doctor() -> None:
-    """检查 xelatex / latexmk / latexpand / pdftocairo / epstopdf 与中文字体，逐项报告缺失。"""
+    """检查 xelatex / latexmk / latexpand / pdftocairo / epstopdf、中文字体与 OpenCode 密钥，逐项报告缺失。"""
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column()
     table.add_column()
     table.add_column(overflow="fold")  # 路径超宽时折行，不截断
     missing: list[str] = []
     for name, purpose in DOCTOR_CHECKS:
-        found, detail = _check_fonts() if name == FONT_CHECK_NAME else _check_executable(name)
+        if name == FONT_CHECK_NAME:
+            found, detail = _check_fonts()
+        elif name == KEY_CHECK_NAME:
+            found, detail = _check_opencode_key()
+        else:
+            found, detail = _check_executable(name)
         if not found:
             missing.append(name)
         table.add_row(f"  [{'通过' if found else '缺失'}]", f"{name} —— {purpose}", detail)
@@ -545,6 +554,22 @@ def _check_fonts() -> tuple[bool, str]:
     if absent:
         return False, f"{FONTS_DIR} 下缺 {'、'.join(absent)}"
     return True, str(FONTS_DIR)
+
+
+def _check_opencode_key() -> tuple[bool, str]:
+    """按三级顺序解析 OpenCode 密钥，返回（是否找到、找到的来源或三处的清单）。"""
+    resolved = opencode.resolve_api_key()
+    if resolved is None:
+        return False, (
+            f"三处都没有：环境变量 {opencode.API_KEY_ENV}、{config.credentials_path()}、"
+            f"{opencode.OPENCODE_AUTH_PATH}（opencode 里 /connect 登录 Go 订阅后产生）"
+        )
+    source_labels = {
+        opencode.KEY_SOURCE_ENV: f"环境变量 {opencode.API_KEY_ENV}",
+        opencode.KEY_SOURCE_STORED: str(config.credentials_path()),
+        opencode.KEY_SOURCE_OPENCODE_LOGIN: f"本机 opencode 登录态（{opencode.OPENCODE_AUTH_PATH.expanduser()}）",
+    }
+    return True, source_labels[resolved.source]
 
 
 @app.command()

@@ -9,7 +9,7 @@ tongtu run <论文>  [--glossary FILE]...  [--workdir DIR]  [--force]  [--json]
 tongtu retranslate <编号>  (--chunks c012,c045 | --term WORD | --all)
 tongtu stage <name> <论文>  [--force]      # 单阶段入口，调试用
 tongtu validate <src> <dst>                # 四层 validation，逐项报告失败
-tongtu doctor                              # 检查 xelatex/latexmk/latexpand/pdftocairo/epstopdf 与字体，逐项报告缺失
+tongtu doctor                              # 检查 xelatex/latexmk/latexpand/pdftocairo/epstopdf、字体与 OpenCode 密钥，逐项报告缺失
 tongtu preview <编号>                      # 打开 inspection page
 
 tongtu tex <cmd> …                         # 编译修复会话的工具面，不面向人（见下节）
@@ -20,7 +20,8 @@ tongtu tex <cmd> …                         # 编译修复会话的工具面，
 - `stage`：单阶段调试入口。重跑语义按各阶段自己的设计（见 `stages/` 下对应文档）；`--force` 无视已有结论重新执行。已接线：fetch、flatten、precompile、mask；其余阶段为占位实现（退出码 99）。precompile 编译失败时拉起 agent 修复会话（`--model` 透传给运行时，默认见 stages/precompile.md）。
 - `validate` 有三个调用方，同一份实现：agent 在翻译会话内自查、脚本在出口终审、开发者手工排查（[ARCHITECTURE.md](ARCHITECTURE.md) §3 translate 节）。
 - `retranslate` 的失效语义见 [ARCHITECTURE.md](ARCHITECTURE.md) §4 返工触发表。**边界行为还没想**：chunk id 写错、术语没命中任何 chunk、失效后要不要连带重编译，这些当前只有实现里的做法，没做设计。
-- `doctor` 已接线：xelatex / latexmk / latexpand / pdftocairo / epstopdf 按 PATH 查找，中文字体查仓库 `fonts/` 下的霞鹜文楷字体文件；逐项报告，全部通过退 0，有缺失退 1。
+- `doctor` 已接线：xelatex / latexmk / latexpand / pdftocairo / epstopdf 按 PATH 查找，中文字体查仓库 `fonts/` 下的霞鹜文楷字体文件，OpenCode 密钥按环境变量 `$OPENCODE_API_KEY` → `~/.config/tongtu/credentials.json` → 本机 opencode 登录态的顺序解析并报告来源；逐项报告，全部通过退 0，有缺失退 1。
+- **密钥 preflight（随需要 `ask` 的命令接线，行为已定）**：`stage survey` 与 `run` 开跑前解析一次密钥。解析到环境变量或录入的密钥 → 静默；解析到 opencode 登录态 → 首次打一行提示（此后静默，标记位在 `credentials.json`）；三处都没有且处于交互终端 → 提示两条路：去 opencode 里 `/connect` 登录 Go 订阅后回车重查，或当场录入密钥（隐藏输入，先打一次 `/models` 验证有效再存入 `credentials.json`）；非交互环境（无 TTY 或 `--json`）不提问，按失败语义进 manifest。
 
 ## 退出码
 
