@@ -9,7 +9,18 @@ ci/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+.hypothesis/
 *.egg-info/
-.env
 *.log
 .DS_Store
+
+# 凭证与本机配置一律不进构建上下文。`.env*` 而不是 `.env`：`.env.local` 这类变体同样要挡。
+# 密钥的三处来源（环境变量、~/.config/tongtu/credentials.json、opencode 登录态）本就都在
+# 仓库外，这几条是防「有人把密钥文件放进仓库目录」这一种情形。
+.env*
+credentials.json
+auth.json
+
+# `.claude/` 含本机的 Claude Code 设置，其 `worktrees/` 下还有整个仓库的工作副本（本机实测
+# 196MB）。上面的 `ci/` 只匹配上下文根下的同名目录，匹配不到 `.claude/worktrees/ci`。
+.claude/
