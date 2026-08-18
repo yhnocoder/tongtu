@@ -1,8 +1,9 @@
 """跨论文的全局配置目录，与其中 credentials 文件的读写。
 
 配置目录放与论文无关的全局内容：`$XDG_CONFIG_HOME/tongtu/`，环境变量未设时退化为
-`~/.config/tongtu/`。目录内规划两样内容：全局术语表 `glossary.json`（随 survey 阶段
-接线）与本模块管理的 `credentials.json`。
+`~/.config/tongtu/`。目录内两样内容：全局 input glossary `glossary.json`（survey 三层合并
+里最低的一层，解析与合并在 `tongtu/glossary.py`，本模块只给出它的路径）与本模块管理的
+`credentials.json`。
 
 `credentials.json` 由通途写入（0600 权限），也可手改，字段两个：
 
@@ -20,6 +21,8 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from .glossary import GLOSSARY_FILENAME
 
 #: 配置目录根的环境变量名与未设时的默认根。
 CONFIG_ROOT_ENV = "XDG_CONFIG_HOME"
@@ -57,6 +60,11 @@ def config_dir(env: Mapping[str, str] | None = None) -> Path:
 def credentials_path(env: Mapping[str, str] | None = None) -> Path:
     """credentials.json 的路径（不保证文件存在）。"""
     return config_dir(env) / CREDENTIALS_FILENAME
+
+
+def glossary_path(env: Mapping[str, str] | None = None) -> Path:
+    """全局 input glossary 的路径（不保证文件存在）；它是 survey 三层合并里最低的一层。"""
+    return config_dir(env) / GLOSSARY_FILENAME
 
 
 def load_credentials(env: Mapping[str, str] | None = None) -> Credentials:

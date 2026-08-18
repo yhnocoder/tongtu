@@ -1,6 +1,7 @@
 """`tongtu` CLI 命令面。
 
-`stage fetch`、`stage flatten`、`stage precompile`、`stage mask` 与 `doctor` 已接线，走真实的阶段驱动器与环境检查；
+`stage fetch`、`stage flatten`、`stage precompile`、`stage mask`、`stage survey` 与 `doctor` 已接线，走真实的
+阶段驱动器与环境检查；
 其余命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline。run / validate /
 `tex compile` 的退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
 （99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
@@ -24,6 +25,7 @@ from .artifacts.fetch import FetchStatus
 from .artifacts.flatten import FlattenManifest, FlattenStatus
 from .artifacts.mask import MaskManifest, MaskStatus
 from .artifacts.precompile import PrecompileManifest, PrecompileStatus
+from .artifacts.survey import AbstractSource, GlossaryInputRecord, SurveyManifest, SurveyStatus
 from .assets import asset_path
 from .masking import BlockCategory
 from .stages import STAGES
@@ -31,6 +33,7 @@ from .stages import fetch as fetch_stage
 from .stages import flatten as flatten_stage
 from .stages import mask as mask_stage
 from .stages import precompile as precompile_stage
+from .stages import survey as survey_stage
 from .workdir import WorkdirError
 
 # 模块级退出码常量是退出码的集中登记处：新增退出码在此定义并注释含义。
@@ -212,13 +215,18 @@ def retranslate(
 def stage(
     name: Annotated[StageName, typer.Argument(help="阶段名")],
     paper: Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")],
+    glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
     force: Annotated[bool, typer.Option("--force", help="无视已有 manifest 结论重新执行")] = False,
     json_output: JsonOpt = False,
     agent: AgentOpt = None,
     model: ModelOpt = None,
 ) -> None:
-    """单阶段入口，调试用：上游阶段从工作目录装载已有产物；重跑语义见各阶段设计，--force 强制重算。"""
+    """单阶段入口，调试用：上游阶段从工作目录装载已有产物；重跑语义见各阶段设计，--force 强制重算。
+
+    `--glossary` 与 `run` 同语义（命令行层术语表），消费方是 survey 与它的下游阶段；survey
+    之前的四个阶段不读术语表，给了也不参与执行。
+    """
     if name.value == fetch_stage.STAGE_NAME:
         # fetch 无 agent 介入，--agent 与 --model 不参与执行。
         raise _run_stage_fetch(paper, workdir, force, json_output)
@@ -232,8 +240,19 @@ def stage(
     if name.value == mask_stage.STAGE_NAME:
         # mask 是纯文本变换，未知环境交给 agent 分类的介入点推迟实现，--agent 与 --model 不参与执行。
         raise _run_stage_mask(paper, workdir, force, json_output)
+    if name.value == survey_stage.STAGE_NAME:
+        # survey 零期零模型调用（术语预扫的 hook④ 推迟），--agent 与 --model 不参与执行。
+        raise _run_stage_survey(paper, glossary or [], workdir, force, json_output)
     raise _stub_exit(
-        "stage", name=name.value, paper=paper, workdir=workdir, force=force, json=json_output, agent=agent, model=model
+        "stage",
+        name=name.value,
+        paper=paper,
+        glossary=glossary,
+        workdir=workdir,
+        force=force,
+        json=json_output,
+        agent=agent,
+        model=model,
     )
 
 
@@ -495,6 +514,80 @@ def _mask_exit_code(manifest: MaskManifest) -> int:
         pdf_only_chain=(
             manifest.status is MaskStatus.PRECOMPILE_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
         ),
+    )
+
+
+def _run_stage_survey(
+    paper: str, glossary_paths: list[Path], workdir: Path | None, force: bool, json_output: bool
+) -> typer.Exit:
+    """`stage survey` 的接线：定位工作目录、调驱动器、打印合并与照录结果、映射退出码。
+
+    survey 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。`--glossary` 按给出
+    顺序透传，靠后的优先。
+    """
+    _warn_json_ignored(json_output)
+    try:
+        result = survey_stage.survey(
+            _workdir_name_from_paper(paper), workdir, glossary_paths=glossary_paths, force=force
+        )
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(survey_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(survey_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_survey_exit_code(manifest))
+    console.print(f"survey：状态 {manifest.status}")
+    surveyed = manifest.status is SurveyStatus.OK
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    for record in manifest.glossary_inputs:
+        table.add_row(f"  {record.layer} 术语表", _glossary_input(record))
+    table.add_row("  terms", str(manifest.terms_total) if surveyed else "—")
+    table.add_row("  do_not_translate", str(manifest.do_not_translate_total) if surveyed else "—")
+    table.add_row("  过滤掉的词条", _filtered_terms(manifest) if surveyed else "—")
+    if surveyed:
+        table.add_row(
+            "  abstract",
+            f"{manifest.abstract_source}（{manifest.abstract_chars} 字符）"
+            if manifest.abstract_source is not AbstractSource.ABSENT
+            else "未提取到（不是失败）",
+        )
+        table.add_row("  glossary.json", str(survey_stage.glossary_file_path(result.workdir)))
+        table.add_row("  brief.json", str(survey_stage.brief_path(result.workdir)))
+    else:
+        table.add_row("  abstract", "—")
+        table.add_row("  glossary.json", "未产出")
+        table.add_row("  brief.json", "未产出")
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_survey_exit_code(manifest))
+
+
+def _glossary_input(record: GlossaryInputRecord) -> str:
+    """一层术语表输入的人读说明：读到了写路径，文件不在写明不存在，命令行未给出写未给出。"""
+    if not record.path:
+        return "未给出"
+    return record.path if record.present else f"{record.path}（不存在）"
+
+
+def _filtered_terms(manifest: SurveyManifest) -> str:
+    """列出合并后未在全文命中、被过滤掉的词与它们的来源层。"""
+    listed = [f"{entry.word}（{entry.decided_by}）" for entry in manifest.filtered]
+    return "、".join(listed) if listed else "—"
+
+
+def _survey_exit_code(manifest: SurveyManifest) -> int:
+    """survey 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is SurveyStatus.OK,
+        pdf_only_chain=(manifest.status is SurveyStatus.MASK_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY),
     )
 
 
