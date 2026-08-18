@@ -1,8 +1,14 @@
 # docker/
 
 通途的**参考镜像**：TeX Live full + 图渲染工具 + 通途本体。构建定义在
-[`Dockerfile`](Dockerfile)，发布流水线在
-[`.github/workflows/release-image.yml`](../.github/workflows/release-image.yml)。
+[`Dockerfile`](Dockerfile)，构建与发布流水线在
+[`.github/workflows/image.yml`](../.github/workflows/image.yml)。
+
+`Dockerfile` 分三层，其中两层作为 target 对外：`env` 是环境（TeX Live full + Python 依赖 +
+字体，不含仓库代码），CI 的编译层作业以它为 container 跑测试；`runtime` 是完整镜像，即下表
+三个角色里说的那个。分层的理由是耗时：编译层作业若在作业内构建镜像，即便 buildx 缓存全部
+命中，也仍要下载 6GB 级的缓存层并把镜像导出到本地 docker daemon，实测占去作业八成时间。
+两个 target 各自何时构建、何时推送，见 [`image.yml`](../.github/workflows/image.yml) 的头部注释。
 
 ## 三个角色（架构 §10）
 

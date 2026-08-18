@@ -1,9 +1,14 @@
 # 通途参考镜像（架构 §10：docker 的三个角色 —— 云部署单元 / CI 环境 / 参考环境）。
 #
-# 双层构建，两层的变化频率差着数量级：
+# 三层构建，各层的变化频率差着数量级：
 #   base    基底层：TeX Live full + 图渲染工具 + uv 与受管 Python。几乎不变，层缓存常年命中。
-#   runtime 代码层：仓库本体 + venv + 字体注册。每次改代码只重跑这一层，TeX 不重拉。
-# 两层之间不 COPY 产物（TeX 树 6GB 级，多阶段裁剪没意义），分层的目的就是缓存边界。
+#   env     环境层：Python 依赖 + 字体注册。随 uv.lock 与 fonts/ 变，不含仓库代码。
+#   runtime 代码层：仓库本体 + 项目安装 + 构建期自检。每次改代码只重跑这一层。
+# 各层之间不 COPY 产物（TeX 树 6GB 级，多阶段裁剪没意义），分层的目的就是缓存边界。
+#
+# env 层单独成 target 是给 CI 用的：编译层作业以 `ghcr.io/<owner>/<repo>:env` 为 container
+# 直接跑测试，代码由 checkout 提供，不必每次搬运 6GB 镜像。构建与推送见
+# .github/workflows/image.yml。
 #
 # 构建上下文是**仓库根**，不是 docker/：
 #     docker build -f docker/Dockerfile -t tongtu:dev .
@@ -71,8 +76,8 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv-instal
     && uv python install "${PYTHON_VERSION}" \
     && uv python find "${PYTHON_VERSION}"
 
-# =========================================================== 代码层（每次改码重跑）
-FROM base AS runtime
+# =========================================================== 环境层（随 uv.lock 与 fonts/ 变）
+FROM base AS env
 
 WORKDIR /opt/tongtu
 
@@ -82,14 +87,13 @@ WORKDIR /opt/tongtu
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
-# 仓库本体。.dockerignore 挡掉 .git / .venv / 各种缓存（尤其 .venv：开发机的 venv 混进
-# 镜像会让 uv 面对一个解释器对不上的环境）。
-COPY . .
-RUN uv sync --frozen
+# 字体随环境层进镜像而不是留给代码层：字体文件是几乎不变的二进制，与依赖同属「环境」。
+# CI 的编译层以本层为 container 跑测试，代码由 checkout 提供、`/opt/tongtu` 下只有环境，
+# 因此 fontconfig 指向的这份必须在本层就位。
+COPY fonts/ ./fonts/
 
-# 仓库字体注册进 fontconfig，使探测链第三档（LXGW WenKai）在镜像内真实可命中。
-# 不拷贝字体文件（50MB+ 白白多一份）——给 fontconfig 指一条目录即可；编译时 xeCJK 用的
-# 仍是 `Path={fonts/}` 相对路径那条链（fonts/README.md），两者互不干扰。
+# 字体注册进 fontconfig，使探测链第三档（LXGW WenKai）在镜像内真实可命中。编译时 xeCJK
+# 用的仍是 `Path={fonts/}` 相对路径那条链（fonts/README.md），两者互不干扰。
 # 末尾的 fc-list 断言让「注册失败」在构建时就炸，而不是等到某篇论文排出一页豆腐。
 # 断言走临时文件而不是 `fc-list | grep -q`：SHELL 开了 pipefail，grep -q 命中即退出会
 # 给左边发 SIGPIPE，好好的自检会变成假失败。
@@ -108,11 +112,24 @@ RUN printf '%s\n' \
 # 为 /work），论文目录落 /work/<arxiv_id>，宿主挂进来即可续跑。
 ENV PATH="/opt/tongtu/.venv/bin:${PATH}" \
     TONGTU_HOME=/work
+
+# =========================================================== 代码层（每次改码重跑）
+FROM env AS runtime
+
+WORKDIR /opt/tongtu
+
+# 仓库本体。.dockerignore 挡掉 .git / .venv / 各种缓存（尤其 .venv：开发机的 venv 混进
+# 镜像会让 uv 面对一个解释器对不上的环境）。
+COPY . .
+RUN uv sync --frozen
+
 WORKDIR /work
 
 # 构建时自检：xelatex / latexmk / latexpand 三件套 + 中文字体探测链全绿，这个镜像才成立。
-# 三个程序的在位判断本来就是 doctor 干的活（tongtu/cli.py 的 REQUIRED_TOOLS），这里不另
-# 抄一遍 `xxx --version`——那既重复又容易被某个工具「--version 退非零」坑成假失败。
+# 三个程序的在位判断本来就是 doctor 干的活（tongtu/cli.py 的 DOCTOR_TOOLCHAIN_CHECKS），
+# 这里不另抄一遍 `xxx --version`——那既重复又容易被某个工具「--version 退非零」坑成假失败。
+# doctor 的退出码只对工具链与字体那一组负责，OpenCode 密钥缺失不计入（docs/CLI.md）：这个
+# 镜像是要推 GHCR 的可分发产物，构建它的机器不该需要运行期凭证。
 RUN tongtu --version \
     && tongtu doctor
 
