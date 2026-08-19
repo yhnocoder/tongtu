@@ -339,12 +339,12 @@ def _enumerate_environments(text: str, table: Mapping[str, TableEntry]) -> tuple
         if text[position] == "$":
             position += 1
             continue
-        name, after_name = _read_control_sequence(text, position)
+        name, after_name = read_control_sequence(text, position)
         if name == "verb":
-            position = _skip_verb(text, after_name)
+            position = skip_verb(text, after_name)
             continue
         if name == "begin":
-            environment, after = _read_environment_name(text, after_name)
+            environment, after = read_environment_name(text, after_name)
             if environment is None:
                 position = after_name
                 continue
@@ -494,12 +494,12 @@ class _MaskRun:
             if self.text[position] == "$":
                 position += 1
                 continue
-            name, after_name = _read_control_sequence(self.text, position)
+            name, after_name = read_control_sequence(self.text, position)
             if name == "verb":
-                position = _skip_verb(self.text, after_name)
+                position = skip_verb(self.text, after_name)
                 continue
             if name == "begin":
-                environment, after = _read_environment_name(self.text, after_name)
+                environment, after = read_environment_name(self.text, after_name)
                 if environment == DOCUMENT_ENVIRONMENT:
                     return after
                 position = after_name if environment is None else after
@@ -524,14 +524,14 @@ class _MaskRun:
             if self.text[position] == "$":
                 position += 1
                 continue
-            name, after_name = _read_control_sequence(self.text, position)
+            name, after_name = read_control_sequence(self.text, position)
             if name == "verb":
-                position = _skip_verb(self.text, after_name)
+                position = skip_verb(self.text, after_name)
                 continue
             if name != "begin":
                 position = after_name
                 continue
-            environment, after = _read_environment_name(self.text, after_name)
+            environment, after = read_environment_name(self.text, after_name)
             if environment is None:
                 position = after_name
                 continue
@@ -571,21 +571,21 @@ class _MaskRun:
             if character == "$":
                 position = self._mask_dollar(position)
                 continue
-            name, after_name = _read_control_sequence(self.text, position)
+            name, after_name = read_control_sequence(self.text, position)
             if name == "verb":
-                position = _skip_verb(self.text, after_name)
+                position = skip_verb(self.text, after_name)
                 continue
             if name == "[":
                 position = self._mask_display_math(position, after_name, "\\]")
                 continue
             if name == "(":
-                position = _skip_to_delimiter(self.text, after_name, "\\)", "\\(")
+                position = skip_to_delimiter(self.text, after_name, "\\)", "\\(")
                 continue
             if name == "begin":
                 position = self._mask_environment(position, after_name)
                 continue
             if name == "end":
-                environment, after = _read_environment_name(self.text, after_name)
+                environment, after = read_environment_name(self.text, after_name)
                 if environment == DOCUMENT_ENVIRONMENT:
                     self._emit_block(
                         position, self.length, BlockCategory.POSTAMBLE, environment="", decided_by=None, slots=[]
@@ -633,17 +633,17 @@ class _MaskRun:
             end = _find_display_dollar_close(self.text, position + 2)
             self._emit_block(position, end, BlockCategory.MATH, environment="", decided_by=None, slots=[])
             return end
-        return _find_inline_dollar_close(self.text, position + 1)
+        return find_inline_dollar_close(self.text, position + 1)
 
     def _mask_display_math(self, start: int, body_start: int, closing: str) -> int:
         r"""`\[ … \]` 整段成块，category 记 math。"""
-        end = _skip_to_delimiter(self.text, body_start, closing, "\\[")
+        end = skip_to_delimiter(self.text, body_start, closing, "\\[")
         self._emit_block(start, end, BlockCategory.MATH, environment="", decided_by=None, slots=[])
         return end
 
     def _mask_environment(self, start: int, after_name: int) -> int:
         r"""`\begin{X}`：分类为掩码的环境整段成块，text 环境留在掩码文本里、体内继续扫描。"""
-        environment, after = _read_environment_name(self.text, after_name)
+        environment, after = read_environment_name(self.text, after_name)
         if environment is None or environment == DOCUMENT_ENVIRONMENT:
             return after_name if environment is None else after
         decision = self._decision_for(environment)
@@ -668,10 +668,10 @@ class _MaskRun:
 
         命令后没有必选参数组时不成块（没有可译文本），扫描从命令名之后继续。
         """
-        position = _skip_optional_arguments(self.text, after_name)
+        position = skip_optional_arguments(self.text, after_name)
         if position >= self.length or self.text[position] != "{":
             return after_name
-        end = _match_group(self.text, position)
+        end = match_group(self.text, position)
         self._emit_block(start, end, BlockCategory.METADATA, environment="", decided_by=None, slots=[])
         return end
 
@@ -700,12 +700,12 @@ class _MaskRun:
             if self.text[position] == "%":
                 position = _skip_comment(self.text, position)
                 continue
-            command, after_name = _read_control_sequence(self.text, position)
+            command, after_name = read_control_sequence(self.text, position)
             if command == "verb":
-                position = _skip_verb(self.text, after_name)
+                position = skip_verb(self.text, after_name)
                 continue
             if command == "begin":
-                environment, after = _read_environment_name(self.text, after_name)
+                environment, after = read_environment_name(self.text, after_name)
                 if environment is None:
                     position = after_name
                     continue
@@ -721,7 +721,7 @@ class _MaskRun:
                 )
                 continue
             if command == "end":
-                environment, after = _read_environment_name(self.text, after_name)
+                environment, after = read_environment_name(self.text, after_name)
                 if environment is None:
                     position = after_name
                     continue
@@ -801,9 +801,13 @@ class _MaskRun:
 
 
 # ------------------------------------------------------------------ 词法原语
+#
+# 本节的函数对外公开：chunk 阶段的扫描层复用同一份词法规则（控制序列、环境名、可选参数
+# 与花括号参数组的读取，inline math 与 \verb 的跳过）。同一条规则两处各写一遍，日后差一个
+# 字符就是边界错位。
 
 
-def _read_control_sequence(text: str, position: int) -> tuple[str, int]:
+def read_control_sequence(text: str, position: int) -> tuple[str, int]:
     r"""读位置 position 处的控制序列（该处是反斜杠），返回（名字、结束位置）。
 
     反斜杠之后是字母时名字取最长字母串（`\begin` → `begin`），否则名字是紧随的单个字符
@@ -820,7 +824,7 @@ def _read_control_sequence(text: str, position: int) -> tuple[str, int]:
     return text[start], start + 1
 
 
-def _read_environment_name(text: str, position: int) -> tuple[str | None, int]:
+def read_environment_name(text: str, position: int) -> tuple[str | None, int]:
     r"""读 `\begin` / `\end` 之后的 `{环境名}`，返回（环境名、`}` 之后的位置）。
 
     环境名字符集为字母、数字与 `@`，可带尾随星号。花括号里不是这个形状（例如宏定义里的
@@ -865,11 +869,11 @@ def _read_caption_slot(text: str, command: str, position: int) -> tuple[_Caption
         cursor = _skip_argument_space(text, cursor)
         if cursor >= len(text) or text[cursor] != "{":
             return None, cursor
-        cursor = _match_group(text, cursor)
-    cursor = _skip_optional_arguments(text, cursor)
+        cursor = match_group(text, cursor)
+    cursor = skip_optional_arguments(text, cursor)
     if cursor >= len(text) or text[cursor] != "{":
         return None, cursor
-    end = _match_group(text, cursor)
+    end = match_group(text, cursor)
     return _CaptionSlot(start=cursor + 1, end=end - 1, kind=CaptionKind.CAPTION), end
 
 
@@ -878,7 +882,7 @@ def _skip_comment(text: str, position: int) -> int:
     return _line_end(text, position)
 
 
-def _skip_verb(text: str, position: int) -> int:
+def skip_verb(text: str, position: int) -> int:
     r"""跳过 `\verb` 的定界符与体内内容，返回结束定界符之后的位置。
 
     `\verb*` 的星号先跳过；定界符是紧随其后的单个字符，体内内容不解析，只为定位结束定界符。
@@ -916,7 +920,7 @@ def _skip_argument_space(text: str, position: int) -> int:
     return cursor
 
 
-def _skip_optional_arguments(text: str, position: int) -> int:
+def skip_optional_arguments(text: str, position: int) -> int:
     """跳过命令的可选参数（可以有多组 `[…]`），返回它们之后的位置。"""
     cursor = position
     while True:
@@ -926,7 +930,7 @@ def _skip_optional_arguments(text: str, position: int) -> int:
         cursor = _match_bracket(text, cursor)
 
 
-def _match_group(text: str, position: int) -> int:
+def match_group(text: str, position: int) -> int:
     """从 `{` 起匹配到配对的 `}`，返回它之后的位置。
 
     转义的花括号（`\\{`）不计入配对，注释里的花括号跳过。到文件尾仍未配对即不平衡，抛
@@ -963,7 +967,7 @@ def _match_delimited(text: str, position: int, opening: str, closing: str) -> in
     raise MaskError(f"从偏移 {position} 起的 {opening}…{closing} 到文件尾仍未配对，花括号不平衡")
 
 
-def _skip_to_delimiter(text: str, position: int, closing: str, opening: str) -> int:
+def skip_to_delimiter(text: str, position: int, closing: str, opening: str) -> int:
     r"""跳到 `\]` 或 `\)` 这类反斜杠定界符之后，返回它之后的位置。
 
     逐个控制序列步进，`\\` 因此不会被误读成定界符的反斜杠。找不到即结构错误。
@@ -980,7 +984,7 @@ def _skip_to_delimiter(text: str, position: int, closing: str, opening: str) -> 
     raise MaskError(f"从偏移 {position} 起的 {opening} 到文件尾仍未找到配对的 {closing}")
 
 
-def _find_inline_dollar_close(text: str, position: int) -> int:
+def find_inline_dollar_close(text: str, position: int) -> int:
     r"""找 inline math 的配对未转义 `$`，返回它之后的位置；找不到即结构错误。"""
     cursor = position
     length = len(text)

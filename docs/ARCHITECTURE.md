@@ -20,7 +20,7 @@ flowchart TD
     flatten["flatten ①<br/>latexpand 展开"]
     precompile["precompile ②<br/>原文编译与修复"]
     mask["mask ③<br/>non-translatable environment 换 placeholder"]
-    survey["survey ④<br/>读全文 → brief + 术语"]
+    survey["survey ④<br/>术语表合并过滤 + abstract 照录"]
     chunk["chunk<br/>章节树分块"]
     translate["translate ⑤<br/>逐 chunk 翻译 + validate"]
     compile["compile ⑥<br/>backfill → inject → 编译循环"]
@@ -55,8 +55,8 @@ flowchart TD
 | [flatten](stages/flatten.md) | latexpand 展开 | 主文件歧义 → 判定主文件 ① | 单文件 `flat.tex` |
 | [precompile](stages/precompile.md) | latexmk 编译原文，编不过则修复到通过；产出下游输入 `precompile.tex`，基线数据（页数与三类日志计数）写入 `build/manifests/precompile.json` | 编译失败 → 修复会话 ②（源码与引擎的不匹配，`work`） | 原文编译通过（必要时经修复会话，脚本复验终审）；复验仍失败 → 终止（引擎或源码问题，非翻译问题） |
 | [mask](stages/mask.md) | 把 non-translatable environment、注释、caption 换成 placeholder，产出**掩码文本**（`masked.tex`：placeholder 与待译文本相间的单一字符序列，chunk 首尾相接拼起来逐字符等于它） | 未知环境 → text/non-translatable environment 分类 ③；不确定 → 保守整体掩码 | `unmask(mask(x)) == x` 恒等；`blocks.json` 完整 |
-| survey | 一次读完全文，产出 outline 与术语决策，供后续每个 chunk 复用 | 读完全文 → outline（brief）生成 + 术语预扫与新词译法决策 ④（`ask`） | `brief.json` 与结构化术语表通过 artifact model 校验 |
-| chunk | 章节树优先分块：`\section` 为首选单元，小节聚合至 soft limit token 数，超大节在小节/段落边界下分至 hard limit；绝不切入环境或段落内部 | — | chunk 清单（每个 chunk = 完整段落序列） |
+| [survey](stages/survey.md) | 三层 input glossary 合并、按全文命中过滤成 resolved glossary；abstract 照录成 `brief.json`。均为确定性操作，产物供 translate 消费 | 术语预扫与新词译法决策 ④（`ask`，推迟，重启条件见 stages/survey.md） | resolved glossary 与 `brief.json` 落盘并通过 artifact model 校验，合并不变量成立 |
+| [chunk](stages/chunk.md) | 章节树优先分块：首选标题层级划出的一节即一个 chunk，超过 `SPLIT_ABOVE` 的节向深层下分，不足 `MERGE_BELOW` 的碎片与相邻 chunk 合并；不切入不透明环境与段落内部（透明环境与切点定义见 stages/chunk.md） | — | chunk 文件与 manifest 落盘；按序拼接逐字符等于 masked.tex |
 | translate | chunk 循环、上下文组装、缓存查询；每个 chunk 拉起一次会话，出口跑 validate 终审 | 单 chunk 翻译（`work` 原语）⑤ | validate 全绿（placeholder / control sequence multiset / 括号与 inline math / 段落数） |
 | compile | 脚本 backfill 与 inject 出一份可编译的起点，编译修复交给会话（工具面见 compile 节） | 编译不过 → 修复会话 ⑥（会话内可调 retranslate 复用⑤） | `zh.pdf` 存在、非空、页数与 precompile 基线相当、日志无 CJK missing glyph（回退段记入 report，保证总能产出 PDF） |
 | figures | 图源整理：位图原样带走，矢量转位图并保留原件；caption 与引用段落收集。**只读 `src/` 与 `blocks.json`，不依赖翻译侧 artifact，可同时跑** | — | 图文件 + 元数据齐全 |
@@ -96,66 +96,18 @@ WorkOutcome:
 两者的差别不止于有无状态：`ask` 要的是纯函数式判断，一次 API 调用即可承载；`work` 要的是能读写工作目录并执行命令的会话运行时。`work` 多出的 `budget` 参数对应的正是会话才有的轮数与墙钟上限。
 
 - `work` 的 `stop_reason` 只说明会话如何终止，**不表示修好了**；终审权在事后的校验脚本与编译，不采信 agent 的自述。各运行时自己的终止原因由适配层映射到这四个值，映射不上的归 `error`，现场写进 `detail`。
-- **`ask` 的纯函数约束由构造成立**：API 直调的请求里不存在工具，也没有会话状态，输出只能是入参的函数——§4 的缓存 key 正按这个假设建立（survey 的产出进 `brief_hash`，`brief_hash` 进每个 chunk 的翻译 key）。若 `ask` 能读工作目录里的文件，这个假设即被破坏；选型从「与 `work` 同走运行时」改为 API 直调的决策见附录 A.25。
+- **`ask` 的纯函数约束由构造成立**：API 直调的请求里不存在工具，也没有会话状态，输出只能是入参的函数——§4 的缓存 key 正按这个假设建立（hook④ 接线后 survey 的术语决策进 resolved glossary，命中词条进每个 chunk 的翻译 key）。若 `ask` 能读工作目录里的文件，这个假设即被破坏；选型从「与 `work` 同走运行时」改为 API 直调的决策见附录 A.25。
 - 翻译场景下脚本给出 chunk 文件与译文输出路径，agent 在会话内自行翻译、跑 `tongtu validate`、按输出修改，写完退出；脚本读文件再跑一遍 validate 做终审（translate 节）。
 - 编译场景下 agent 不直接访问文件系统，读写 `zh.tex`、编译、看渲染页、回退或重译都经由 `tongtu tex …` 工具面，动作与 metadata 一并记账（compile 节）。
 - **日志路径由脚本决定，日志由适配层写**：`logs/` 是工作目录布局的一部分（§5），文件名按 hook、chunk 与尝试次数拼出，以入参交给适配层（`ask` 的 `log_path`、`work` 的 `trace_path`）——重试、usage 与终止原因只有适配层知道。`ask` 的调用日志是单个 JSON 文件：请求要素、返回正文、usage、finish_reason 与耗时，失败的调用同样落日志。`work` 的会话 trace 内容是 start-state hash + command sequence（参数、返回、耗时与 token）+ end-state hash，既是审计记录，也是固化规则（§2 原则 3）的原料。
 - **用量不进返回值**：每次调用的 token 与耗时落 `logs/`（`ask` 的调用日志、`work` 的 trace），export 组装 report 时从 `logs/` 汇总一次。两个原语的用量口径因此统一在一处；各阶段是独立进程，日志文件跨得过进程边界，进程内的累计对象跨不过。
 - **MockAgent**：`ask` 无 schema 时原样返回 `text`，给出 schema 时返回按 schema 生成的确定性默认对象（strict 约束下原样返回不符合形状）；`work` 在翻译场景把原文写到译文路径，在编译场景调一次 `tex compile` 后退出。当前无消费者——CI 的编译层跑的是原文编译，不进翻译路径，不经 agent；MockAgent 的第一个消费者是全流水线的 identity translation，待 survey 起各阶段建成后接线。
 
-### survey —— 一次读完全文，产出全篇共享的上下文
-
-**要解决的问题**：掩码与分块之后，翻译每个 chunk 时模型只看到一小段被挖空的正文，跨章节的记号约定、专名指称与语体因此容易失配。survey 花一次全文 token 读完论文，产出后续每个 chunk 都复用的共享上下文。
-
-**输入 → 输出**：`build/masked.tex` 的 **survey view** + 三层合并后的 input glossary（§5 术语表节）→ `brief.json`（full-text outline）+ `glossary.json`（本篇术语表）。brief 里有原文 abstract、章节结构树与每节摘要、记号约定、专名的统一指称方式、本篇 register。
-
-术语表既是输入也是约束：已有条目直接生效，survey 只对表里没有的词做新决策，新决策叠在 input glossary 上，用户条目优先（§5 术语表节）。
-
-survey view 不是 masked.tex 原样，而是按 block 类型参数化 backfill，组织成比原文干净，但同样信息丰富的形式：
-
-- 数学类 block（equation、align 等）、表格、算法 backfill 原文：记号定义大多写在行间公式与算法体里，brief 的「记号与命名约定」正需要它们；表头与行列标签是方法名、数据集名、指标名的密集来源，术语预扫要靠它们
-- 图、tikz、verbatim 保持 placeholder：绘图指令与代码本身不含读全文所需的信息，却占掉大量 token（图要表达什么写在 caption 里，而 caption 在 masked.tex 中本就可见）
-- 附录与参考文献整段剔除；附录不进这一遍读全文，但后续仍正常翻译
-
-正文规模因此可控，一次读完全文即可，不需要先分 chunk 后汇总。
-
-**关键取舍**：
-
-- **abstract 取原文，不取译文**。用译文会让全部 chunk 对它形成级联依赖，改一次摘要译文就要 full retranslation。这一段由程序从源码里取，不让模型抄一遍，省 token 也避免被改写。
-- **术语预扫与 outline 在同一次读全文中完成**。两者都要读完全文，分成两个阶段就要付两次全文 token。
-- **chunk 间一致性靠 brief 与术语表，不靠链式传译文**。前一个 chunk 的译文若进后一个 chunk 的提示词，cache invalidation 会顺着 chunk 的先后顺序一路传下去，并行翻译退化为串行。
-- **brief.json 不阻塞 pipeline**。模型返回的 JSON 解析失败就把错误喂回去重试一次；仍失败则 degrade 为确定性骨架，章节树从标题命令扫出来、abstract 照录、其余留空，记 `degraded=True` 与 warnings，pipeline 继续往下走。
-
-> 逐条实现机制见 `tongtu/stages/survey.py` 模块文档，字段定义见 brief 的 artifact model（§5 artifact contract 节），决策见附录 A.11。
-
-### chunk —— 决定一次翻译多大一个 chunk
-
-**要解决的问题**：一次交给模型多少内容。chunk 小了切断节内衔接，而节内衔接是翻译质量的主要来源；chunk 大了单次生成会风格漂移、偷工减料、触及输出上限。
-
-**输入 → 输出**：`build/masked.tex` → chunk 清单（`build/chunks/<id>.tex` 与 manifest）。chunk 首尾相接，拼起来逐字节等于 masked.tex，compile 的 backfill 与按 chunk 定位依赖这一条。
-
-**怎么分**：
-
-1. **章节树优先**。全文最浅的标题层级（一般是 `\section`，book 类是 `\chapter`）为首选单元。相邻小节按文档顺序聚合到 soft limit token 数；超大节在子标题边界下分（`\subsection` → `\subsubsection`），仍超限才退到段落边界。
-2. **不切入环境或段落内部**。掩码文本里 non-translatable environment 已是 placeholder，但文本环境（itemize、定理环境）原样留着，内部可能含空行；分段器带环境深度计数，深度大于 0 的空行不分段。单个段落即使超过 hard limit 也独占一个 chunk，不被切开。
-3. **first chunk 与附录自成一体**。`\section` 之前的正文（前导正文与摘要的 caption 行）成为 first chunk，不与正文章节聚合；`\appendix` 之后的 chunk 标记 `is_appendix`，也不与正文 chunk 聚合。
-4. **stray chunk 并入前一个 chunk**。聚合完成后从后往前扫一遍，token 数低于 `tail_min`（默认 soft limit 的四分之一）的 chunk 并入前一个 chunk，条件是同属正文或同属附录、两者都不是 first chunk、合并后不超 hard limit。倒序遍历使连续 stray chunk 能级联合并。最常触发它的是文末的致谢与结论。
-
-soft limit 4000 / hard limit 8000（掩码后文本 token 计）是起步值，待 fixture 校准（附录 B 第 1 条）。token 数由零依赖近似估算得出，只用于分块决策，不进缓存 key，也不做预算承诺。
-
-**关键取舍**：
-
-- **chunk 大，定位与回退单元小**，两者由段落数比对解耦。节间衔接在论文中本来就弱（每节相对独立），需要跨节保持一致的只有术语与记号，交给 glossary 与 brief。
-- **约束粒度的是输出，不是输入**。译文长度约等于原文，所以上限设在输出侧：soft limit（小节聚合）与 hard limit（超大节下分）。
-- **chunk 变大不会让回退粒度变粗**。validate 强制原译段落一一对应，任何 chunk 都可确定性拆回段落对，于是回退原文的最小单位可以细到段落而不是整节——编译修复会话里能只回退出问题的那一段，同 chunk 其余段落照旧（`tex fallback` 不带 `--paragraph` 时仍是整个 chunk 回退，粒度由 agent 按现场定，见 compile 节工具面）。
-
-> 逐条实现机制见 `tongtu/stages/chunk.py` 模块文档，决策见附录 A.12。
-
 ### translate —— 按 chunk 逐一翻译，结构一致由 validation 判定
 
 **要解决的问题**：把每个 chunk 译成中文，同时保证译文与原文结构完全一致。placeholder 少一个、control sequence 多一个、两段被并成一段，backfill 之后都会编译失败或丢内容，而模型的「我检查过了」在这里没有效力。
 
-**输入 → 输出**：chunk 正文 + brief + 命中术语 + neighboring context → 译文 chunk + `chunks.json`（翻译记忆）。brief 与 resolved glossary 都是 survey 阶段的产出；`style_version` 随 resolved glossary 一起进来，但它的值来自三层合并的用户配置而非 survey 的决策（§5 术语表节），所以改 style rules 不必重跑 survey。
+**输入 → 输出**：chunk 正文 + brief + 命中术语 + neighboring context → 译文 chunk + `chunks.json`（翻译记忆）。brief 与 resolved glossary 都是 survey 阶段的产出（[stages/survey.md](stages/survey.md)）；`style` 随 resolved glossary 一起进来，是用户写的一段额外要求，原样进提示词，内容来自三层合并的用户配置（§5 术语表节）。
 
 **循环归 agent，终审归脚本**：
 
@@ -174,7 +126,7 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 1. **placeholder**：`⟦BLK-3⟧` / `⟦CAP-2⟧` multiset 相等，外加残缺自检（`⟦` 与 `⟧` 的数量必须与完整 placeholder 数吻合，拦截 `⟦BLK-3⟧⟧` 这类碎片）
 2. **control sequence**：`\cmd`（含星号变体）与 `\符号` multiset 相等
 3. **括号与 inline math**：未转义的 `{` `}` `$` 计数分别相等
-4. **段落数**：空行分段的段落数相等，防简译与跳段
+4. **段落数**：含可译文本的段落数相等，防简译与跳段。一段剥除 placeholder、`\begin{X}` 与 `\end{X}` 整体、其余控制序列的命令名（参数保留）之后仍有非空白字符才计入；只含 placeholder 或只含 `\maketitle`、`\newpage` 这类命令的段落不计入，模型在这些位置合并空行对排版没有影响。口径定义与实测证据见 [stages/chunk.md](stages/chunk.md) 段落计数的两个口径节
 
 层名与 report artifact model 的 `validation.failures_by_check` 键一一对应。validate 同时是 CLI 子命令 `tongtu validate`，agent 在会话内调的与脚本在出口调的是同一份实现。
 
@@ -183,7 +135,7 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 - **重试循环不由脚本驱动**。agent 在会话内翻译、跑 validate、按输出改，改到自己认为可以为止；脚本不采信这个判断，会话退出后自己再跑一遍 validate 终审。
 - **缓存查询在拉起会话之前**。命中直接取译文，不拉 agent。缓存粒度是 chunk，所以必须保持一个 chunk 一次调用；把整篇交给一次会话会让 incremental retranslation 退化为全量（§4）。
 - **空白由驱动器保管**。送进会话的是去掉首尾空白的 chunk 正文，写回时由代码把首尾空白原样接上。译文 chunk 拼接后的形状因此由代码保证，而不是指望模型不动空白；validate 也只比对正文，段落数这一层才不会被首尾换行搅混。
-- **neighboring context 只用原文**。前一个 chunk 的译文不进后一个 chunk 的提示词，理由见 survey 节。
+- **neighboring context 只用原文**。前一个 chunk 的译文不进后一个 chunk 的提示词，理由见附录 A.11。
 - **术语一致性零期不进 validate**。四层校验只管结构；命中术语是否用了 canonical translation、不译词是否原样保留，零期靠提示词与 cache invalidation（§4）约束，不设机械校验——代价是编辑术语触发的 incremental retranslation 没有机械手段确认新译法真的生效。将来若加，方向是不译词的保留作硬判据、canonical translation 作 report warning。
 - **出口 validate 与会话内的重译共用一份实现**。编译修复会话调 `tex retranslate` 时走同一个 validate，否则编译阶段救活的那一段就绕过了 validation。
 - **不通过不终止 pipeline**。该 chunk 回退原文并记入 report，与 compile 里 `fallback` 是同一条纪律：保证总能产出 PDF。
@@ -255,7 +207,7 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 
 **degraded path 还没想**：PDF-only、`pdfpages` 套壳、非 arXiv 的 PDF 这三类，零期只在 fetch 阶段检测并标记，到此为止。degraded pipeline 的阶段与 artifact 形态都未设计，背景见 [`fallback/README.md`](../fallback/README.md)。
 
-**并发还没想**：零期整条 pipeline 串行执行，chunk 级翻译与 figures 都没有并行。缓存 key 不含前一个 chunk 的译文（survey 节），为将来并行留了余地，但调度方式、并发度、失败重试与并发怎么交互都未设计。表中 figures 那格写的「可同时跑」指它与翻译侧没有数据依赖，不是现在真的同时在跑。
+**并发还没想**：零期整条 pipeline 串行执行，chunk 级翻译与 figures 都没有并行。缓存 key 不含前一个 chunk 的译文（附录 A.11），为将来并行留了余地，但调度方式、并发度、失败重试与并发怎么交互都未设计。表中 figures 那格写的「可同时跑」指它与翻译侧没有数据依赖，不是现在真的同时在跑。
 
 **开发者 safety net**：导致 pipeline 终止的疑难问题，零期的处理方式是开发者对着 workdir 开交互式 agent 会话排查；这属于开发者的排查手段，不做成产品功能。
 
@@ -269,21 +221,22 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
           + neighbor_src                # 提示词携带的 neighboring context（前后各若干段，随源码固定）
           + relevant_terms(chunk)       # glossary 术语条目中在本 chunk 命中的子集（排序）
-          + brief_hash                  # survey 产出的 full-text outline 内容 hash
-          + style_version               # 全局 style rules 版本号
+          + brief_hash                  # survey 产出的 brief.json 内容 hash（照录的全局语境）
+          + style_hash                  # resolved glossary 的 style 文本 hash（用户写的额外要求）
           + prompt_version              # SKILL / prompt 资产版本
           + model_id )
 ```
 
-术语表分两部分参与 key：**术语条目**按 chunk 内命中计入，改一个词只失效含它的 chunk；**全局 style rules** 单列 `style_version`，bump 即触发 full retranslation，是显式操作。
+术语表分两部分参与 key：**术语条目**按 chunk 内命中计入，改一个词只失效含它的 chunk；**style**（用户写给译者的一段额外要求）指不到具体位置，只能整段参与，故按内容 hash 单列 `style_hash`，改动它即触发 full retranslation。改 style 是用户手动编辑配置文件的动作，本身已经显式，不再要求另加版本号确认（决策见附录 A.27）。
 
 | 返工触发 | 失效范围 | 路径 |
 |---|---|---|
 | validate 失败 | 单 chunk | translate 内环重试 |
 | 编译失败 | agent 在修复会话内定位到的 chunk 或段落 | 会话内 `retranslate`；仍不过则 `fallback` 回退原文 |
 | 编辑某术语条目 | 命中该术语的 chunk | incremental retranslation → 重编译 |
-| 改 style rules / 升级 prompt / 换模型 | 全部 chunk | 显式 full retranslation |
-| 重跑 survey 且 brief 内容变化 | 全部 chunk | 显式操作（survey 自身按 manifest 缓存，输入未变不重跑，brief 不会意外漂移） |
+| 编辑 style（写给译者的额外要求） | 全部 chunk | `style_hash` 变化即自动失效重翻 |
+| 升级 prompt 资产 / 换模型 | 全部 chunk | 显式 full retranslation |
+| 重跑 survey 且 brief 内容变化 | 全部 chunk | 只随上游源码变化发生：brief 是确定性照录，重跑不漂移 |
 | 改 pipeline 代码 | 对应阶段起的下游 | manifest 判定重算 |
 
 **「重编译」在零期 = 重新拉起修复会话**。hook⑥是非确定性会话，它的成果（preamble 适配）不是任何输入的函数，零期也不持久化：chunk 失效后的重编译从 unmask + inject 的新起点重来，上次会话修过的问题要重新修；`edited` chunk 被重翻覆盖后同理。把这件事变便宜是下一阶段的事：trace 即 command sequence、确定性命令可重放（附录 A.18），攒够真实论文的 trace 后，重编译可以先不拉会话、重放上次的确定性修复或命中已沉淀的适配表，失败再拉会话。取舍见附录 A.21，落地项见 BACKLOG。
@@ -331,9 +284,9 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 | `blocks.json` | 每个 non-translatable environment 的类型、label、原始 TeX、源码位置 |
 | `anchors.json` | 交互地图：公式/图/表/章节在 PDF 中的页码与矩形区域 |
 | `chunks.json` | **翻译记忆**：每个 chunk `源码hash → 译文 + 模型/prompt 版本/相关术语快照/状态(translated\|fallback\|edited)`，incremental retranslation 的全部状态，另记 `key_version`（缓存 key 构成算法的版本号，供将来重算 key 迁移记忆，§4）。`edited` = 编译修复会话内经标注 patch 改过的 chunk |
-| `brief.json` | **full-text outline**：论文原文 abstract **照录**（不生成）+ 章节结构树与每节摘要、记号与命名约定、register。首要用途是按 chunk 翻译的全局上下文；随包分发后 read path 的 AI 摘要与会话预热可直接复用 |
+| `brief.json` | **全局语境**：论文原文 abstract **照录**（程序提取，不经模型）。用途是按 chunk 翻译的全局上下文；将来的扩展字段落在此文件（[stages/survey.md](stages/survey.md)） |
 | `figures/` + 元数据 | 图源整理 artifact：位图源（png/jpg/webp）原样带走，矢量源（pdf/eps）转一份位图并保留矢量原件（按固定 DPI，起步 150）；元数据含 caption（原文与译文，译文由 export 从 backfill 结果并入）、全文引用段落清单、原始尺寸与 `format` 字段 |
-| `glossary.json` | 本篇 resolved glossary（含 agent 新决策） |
+| `glossary.json` | 本篇 resolved glossary：三层输入合并并按全文命中过滤后的词条与 style（[stages/survey.md](stages/survey.md)；hook④ 接线后含 agent 新决策） |
 | `report.json` | 回退 chunk、校验统计、编译警告、agent hook的干预记录、契约版本号 |
 | `report.html` | **inspection page**（见 inspection page 节） |
 | `zh.synctex.gz` | 源码行 ↔ PDF 坐标映射 |
@@ -350,10 +303,10 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 
 ### 术语表
 
-- **预扫描、合并与新词决策统一发生在 survey 阶段**（§3 survey 节），与 full-text outline 在同一次读全文中完成。
-- **三层合并**，后者覆盖前者：顺序为全局配置目录下的 `glossary.json`（见「目录约定」节）→ 论文目录内 input glossary `<workdir>/glossary.json`（与 `src/`/`build/`/`out/`/`logs/` 同级，**不放进 `src/`**：那是只读的 e-print 树，混入会污染 fetch 的树 hash）→ `--glossary` 命令行（可多次，靠后的优先）。合并语义：`terms` 条目级覆盖（同名后者胜）、`do_not_translate` 取并集、`style` 逐字段覆盖。
-- **input glossary**（用户可编辑）与**resolved glossary**（artifact `glossary.json`，本篇实际生效决策）分离；用户条目优先于 agent 决策。
-- 结构三段：do-not-translate list / 术语 canonical translation / style rules（`style_version` 所在，含译者注开关）。
+- **合并与全文命中过滤发生在 survey 阶段**（[stages/survey.md](stages/survey.md)，合并语义与过滤规则的权威）。零期术语全部来自用户输入；模型预扫（hook④）推迟，接线后 agent 决策层的优先级低于全部用户层。
+- **三层合并**，优先级从低到高：全局配置目录下的 `glossary.json`（见「目录约定」节）→ 论文目录内 input glossary `<workdir>/glossary.json`（与 `src/`/`build/`/`out/`/`logs/` 同级，**不放进 `src/`**：那是只读的 e-print 树，混入会污染 fetch 的树 hash）→ `--glossary` 命令行（可多次，靠后的优先）。合并语义：词条按词覆盖且跨区段覆盖——`do_not_translate` 视为「译法 = 保留原文」的词条，高层可推翻低层，不做并集；`style` 整段覆盖（语义见下「结构三段」条）。
+- **input glossary**（用户可编辑）与**resolved glossary**（artifact `glossary.json`，本篇实际生效的词条与 style）分离；resolved 只含在掩码文本中命中的词条，未命中的记入 survey manifest 的过滤清单。
+- 结构三段：do-not-translate list / 术语 canonical translation / **style**——一段写给译者的额外要求，用户手写、原样进翻译提示词（译者注要不要、专名标注偏好这类话都写在这里）。三者的分界是失效粒度：能落到一个词的进词条，按 chunk 命中失效；指不到具体位置、对全篇一律生效的进 style，整段进 key（§4）。引擎自带的翻译标准（反翻译腔规则集、专名保留、代码与公式原样等）不属于 style，它们随 prompt 资产分发，跟 `prompt_version` 走。style 的合并是整段覆盖：写了这一段的最高层整段胜出，不与低层拼接；最高层写空白即本篇不要低层配的那段要求。决策见附录 A.27。
 - 云上传入：wenshu 把 R2 中的表落成文件递给容器，仍是「文件 + CLI」，不新增接口形态。
 
 ## 6. 调用与运行
@@ -398,14 +351,14 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 2. **返工 = chunk 级失效重算，不存在阶段级回跳。** 曾考虑：显式的阶段回退控制流。否决理由：全部返工场景（校验失败、编译失败、改术语表、改文风）都能归结为「失效受影响 chunk + 重算子图」，再给阶段回跳留位置就是两套机制并存。失效范围见 §4。
 3. **翻译记忆入 artifact contract（`chunks.json`）。** 曾考虑：中间 artifact 全存 R2；全丢弃。否决理由：两者都没区分「可丢弃缓存」与「增量重翻所需状态」。后者随 artifact package 走，云上编辑术语表就是拉包 → 失效 → 只重翻受影响 chunk → 回传，容器保持一次性；全存 R2 等于把一次性容器变成有状态服务。
 4. **通途不感知 R2 / Cloudflare。** 否决理由：开源 CLI 不能依赖特定云，上传与调度是 wenshu 侧职责。接口形态见 §2 原则 5。
-5. **缓存 key 的构成，以及术语表分两部分参与。** 论证见 §4，此条只保留编号供引用。
+5. **缓存 key 的构成，以及术语表分两部分参与。** 论证见 §4，此条只保留编号供引用。**style 参与 key 的方式已被 A.27 修正**（`style_version` 显式 bump 改为 style 文本的内容 hash），术语条目按 chunk 命中计入的部分不变。
 6. **docker 为三角色（云部署 / CI / 参考环境），非运行前提；本地原生为主形态。** 曾考虑：强制 docker 运行。否决理由：CLI 对 toolchain 的全部要求是 TeX 在 PATH，强制容器只换来 macOS 上被虚拟机拖慢的编译迭代；环境确定性靠「终审权固定在参考镜像」就能拿到，不必牺牲本地速度；TeX Live 体积原生与镜像相当，无一方更省。三角色分工见 §6 运行环境节。
 7. **test pyramid + identity translation 列为 PR 必过。** 曾考虑：LLM 层也设为 PR 必过。否决理由：模型抖动会变成 PR 阻塞，而 quality regression 不需要卡在合并路径上。identity translation 入选是因为它以零 LLM 成本覆盖编译全链路，相当于把零期交付判据搬进 CI。分层见 §7。
 8. **inspection page 入 artifact package，通途不做前后端。** 曾考虑：给通途做独立前后端架构（展示 + 文枢完成前自用）。否决理由：backend 必然复制文枢的信箱职责，也会侵蚀「artifact contract + CLI」这条仓库边界；零期的真实需求静态页已经全部满足；交互阅读器若要提前，就提前动工文枢 web 端读本地 artifact package，不在通途另起炉灶。用途与边界见 §5 inspection page 节。
 9. **figures 独立成阶段，不依赖翻译侧 artifact。** 曾考虑：并入 export。否决理由：并入之后翻译侧的任何返工都会连带触发图片重渲染，只有独立 manifest 加逐图 hash 缓存才切得断这条依赖。「PDF/EPS 图无法用于 artifact」的顾虑为什么不成立见 §3 figures 节。
 10. **mask = 解析器 + 分类表 + 保守默认 + 往返自检，不设强制 agent 复核。** 曾考虑：正则匹配；agent 复核掩码结果。否决理由：LaTeX 不是正则语言，正则方案先天不成立；agent 复核是「自我验证不可信」的变体（复核通过的效力等同于「我检查过了」），且逐篇付费。四层机制见 [stages/mask.md](stages/mask.md)「通用性从哪来」节。
-11. **survey 阶段：一次读完全文产出 brief + 术语，一致性靠稳定的共享上下文。** 曾考虑：无全局上下文逐 chunk 直译；glossary 独立成阶段；前一个 chunk 的译文链式传入后一个 chunk 的提示词。否决理由：逐 chunk 直译挡不住跨章节的记号、指称与语体漂移，而术语表只能约束词这类硬指标；glossary 独立成阶段要再付一次全文 token，它与 outline 同属「读全文一次」的 artifact；链式传入译文会让 cache invalidation 顺着 chunk 的先后顺序一路传下去，并行退化为串行。读全文的输入与产出见 §3。
-12. **章节优先的大 chunk 分块，翻译粒度与回退粒度解耦。** 曾考虑：段落级小 chunk；固定 token 窗口切割。否决理由：小 chunk 切断节内衔接，而节内衔接是翻译质量的主要来源；固定窗口会切进环境或段落内部。代价是编辑术语时会失效整节，token 成本可接受。粒度约束见 §3。
+11. **survey 阶段：一次读完全文产出 brief + 术语，一致性靠稳定的共享上下文。** 曾考虑：无全局上下文逐 chunk 直译；glossary 独立成阶段；前一个 chunk 的译文链式传入后一个 chunk 的提示词。否决理由：逐 chunk 直译挡不住跨章节的记号、指称与语体漂移，而术语表只能约束词这类硬指标；glossary 独立成阶段要再付一次全文 token，它与 outline 同属「读全文一次」的 artifact；链式传入译文会让 cache invalidation 顺着 chunk 的先后顺序一路传下去，并行退化为串行。**本条关于 brief 字段构成与读全文机制的部分已被 A.26 修正**；survey 阶段的存在、共享上下文的必要性与不链式传译文的论证仍有效。
+12. **章节优先的大 chunk 分块，翻译粒度与回退粒度解耦。** 曾考虑：段落级小 chunk；固定 token 窗口切割。否决理由：小 chunk 切断节内衔接，而节内衔接是翻译质量的主要来源；固定窗口会切进环境或段落内部。代价是编辑术语时会失效整节，token 成本可接受。粒度约束见 §3。**「不切入环境内部」的表述已由 A.28 精确化**：透明环境对分块透明、可被切点跨越，不切入的是不透明环境与段落内部。
 13. **assemble 并入 compile，「documentclass 适配」与「编译修复」合为一个hook。** 曾考虑：独立 assemble 阶段（unmask + inject_cjk）。否决理由：原 assemble 的结束判定一栏写的是「终审权在 compile」，而没有自身结束判定的阶段在本模型下不构成独立阶段；修复会话的常见动作是「改 inject 配置/preamble → 重编译」，这个循环本身跨越两者，合并后它在单一阶段驱动器内闭合；unmask + inject 是廉价文本操作，无独立缓存价值，中间 artifact `zh-raw.tex` 仍落 `build/` 供调试。适配与修复并成一个hook，是因为它们是同一件事（让这个 documentclass 编译通过）、同一个终审方式（编译循环）。
 14. **figures 单格式 PNG + 按视觉模型上限定长边，暂不做 WebP/GIF/SVG。** 曾考虑：多格式兼容（webp/gif/svg）。否决理由：「分辨率高则体积大、体积小则模糊」属于分辨率策略，与格式无关；GIF 色深劣于 PNG；SVG 视觉 API 不接受，PDF→SVG 转换的保真度问题也多，矢量需求已由 zh.pdf 承担；WebP 的收益只在存储与传输体积，留作后续优化，元数据 `format` 字段已预留。人看高清走 zh.pdf 内嵌的矢量原图，不需要独立的高清位图。**本条已被 A.19 取代。**
 15. **翻译内环交给 agent 自跑，脚本只在出口终审。** 曾考虑：脚本驱动重试，即用单次问答原语 `ask`，拿回译文后由脚本跑 validate、把错误格式化后喂回提示词，至多 N 次。否决理由：那等于我们代替 agent 读工具输出，而 agent 运行时本来就能执行命令；重试计数、错误转译、`max_retries` 都是编排层为此维护的机械代码。§2 原则 3 本来就允许hook内部多轮与执行命令，脚本驱动重试是实现选择而非原则要求，改用 `work` 原语不移交控制流：脚本仍决定何时拉起、拉起几次，出口仍由 validate 终审，不过则该 chunk 回退原文。代价是每个 chunk 一次会话的拉起开销大于单次调用，需实测（见 BACKLOG）。缓存与回退粒度不随之改变：缓存查询在拉起会话之前，一个 chunk 一次调用的约束不变。
@@ -418,24 +371,34 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 22. **artifact 契约以 pydantic model 为字段级权威，JSON Schema 不入仓库。** 曾考虑：手写 `docs/schemas/*.schema.json` 为权威定义、dataclass 手写序列化（原方案）；model 为权威但把生成的 schema 提交入仓、CI 校验两者同步。否决理由：手写 schema 与手写序列化代码是两份手工维护物，对产物跑 schema 校验只能抓到部分漂移——model 读不出的字段、与 schema 不一致的默认值都不会暴露；契约变更的审阅在 model 代码的 diff 上同样成立，提交生成物只是多一处需要保持同步的拷贝；语言中立的契约文件在出现仓库外的消费者之前没有读者，且随时可由 model 重新生成。机制见 §5 artifact contract 节。
 23. **第三方依赖逐个按准入标准评估，不沿用 v2 的零依赖做法。** 曾考虑：延续「零第三方依赖」。否决理由：零依赖的真实收益只覆盖核心文本层——标准库在那里够用，字节级处理需要完全的控制权，这两点保留为准入标准的一部分；作为全局原则它不成立：uv 与 lock 文件已把安装与复现成本降到可忽略，高频使用、持续更新的工具吸收依赖演进属于日常维护而非风险。准入标准与清单见附录 C。
 24. **precompile（原 baseline）承担「修到原文编译通过」，修复交 agent 会话 + prompt example，产出成为下游输入。** 曾考虑：纯验证阶段（编不过即终止，hook② 推迟）；确定性引擎适配规则集先行、agent 推迟。否决理由：需要引擎适配的论文只有在本阶段完成适配才有基线数据，compile 的「页数与基线相当」判据才有参照系——把修复推到 compile 阶段等于让终审失去参照系，且修复动作会与翻译错误混在同一会话里，破坏本阶段存在的理由；确定性规则集是需要维护的框架代码，example 进 prompt 后新模式的维护动作是零代码，修复成果又烙进输出产物随 manifest 缓存持久，会话成本不随重跑重复发生。实测语料（1701.06538 的 `\pdfoutput` 与缺失图源、2412.19437 的 CJKutf8）证明失败是源码级而非环境级，「修 toolchain」的原表述随之修正为「修源码与引擎的不匹配」。机制见 stages/precompile.md。
-25. **`ask` 走 API 直调（OpenCode Go 端点 + openai SDK + 服务端 schema 约束），不与 `work` 同走 agent CLI 运行时。** 曾考虑：两个原语都走 Claude Code CLI（本附录 C 的原选型）；httpx 手写请求与重试；prompt 约束 JSON 输出、消费方解析失败再喂回重问。否决理由：运行时侧的纯函数约束要靠权限配置禁掉工具才成立，而能否禁得掉是待验证项（原附录 B 第 7 条的 `ask` 侧），API 直调不提供工具，约束由构造成立；单次问答用不上会话运行时的能力（多轮、文件读写、命令执行），进程拉起与配置面是纯开销；服务端 response_format 在 OpenCode Go 的 chat/completions 端点实测真实生效（json_object 与 json_schema strict 均可，模型思考在响应的独立字段，不混入正文），比 prompt 约束省掉消费方的一层解析重问代码；openai SDK 直接沿用默认的超时与重试语义，比 httpx 手写少维护一份传输代码，符合 A.23 的准入标准。零期只接 chat/completions 一个端点家族，走其他端点家族的模型（Qwen、MiniMax、Grok 系）要用时再扩适配层。
-26. **测试按外部依赖分层，编译层随阶段推进逐步加长；测试用例取自各阶段设计稿的验收条目。** 曾考虑：延续「happy path 调通前不写测试」，把测试整体推迟到全部阶段建成；编译层维持 identity translation 的定义。否决理由：那条推迟规则来自零期重建的起点——Phase0 照一份未定稿的总纲一次性实现，验收未通过，代码与测试一并删除；但失效的原因是架构未定稿就一次性实现，测试是被牵连的一方。改为逐阶段先出设计稿、拍板再动手之后，已拍板阶段的接口不再大幅漂移（masking.py 自落地后未再改动），推迟规则的前提只对尚未设计的阶段成立。更直接的理由是各阶段的「验收与试跑对象」一节本就是机械可判的断言清单（精确到 manifest 的字段取值，如 `fix_session` 为 false、`decided_by` 取 `newtheorem`），此前的落地方式是阶段完成时人工跑一遍、跑完不留下可重复执行的东西，而每个新阶段落地都在改动已完成阶段共用的代码，这类改动打坏上游阶段时没有任何自动检查会报告。编译层维持 identity translation 的定义则把这一层的起点绑在全部阶段建成之后，而它从第一个需要 TeX 的阶段起即成立，identity translation 因此降为该层的终点形态。A.7 否决的「LLM 层也设为 PR 必过」不受影响：承担合并必过的具体对象由 identity translation 变为编译层自造论文组，两者同为零模型成本覆盖编译链路的测试。分层与作业结构见 [ci/README.md](ci/README.md)。
+25. **`ask` 走 API 直调（OpenCode Go 端点 + openai SDK + 服务端 schema 约束），不与 `work` 同走 agent CLI 运行时。** 曾考虑：两个原语都走 Claude Code CLI（本附录 C 的原选型）；httpx 手写请求与重试；prompt 约束 JSON 输出、消费方解析失败再喂回重问。否决理由：运行时侧的纯函数约束要靠权限配置禁掉工具才成立，而能否禁得掉是待验证项（原附录 B 第 7 条的 `ask` 侧），API 直调不提供工具，约束由构造成立；单次问答用不上会话运行时的能力（多轮、文件读写、命令执行），进程拉起与配置面是纯开销；服务端 response_format 在 OpenCode Go 的 chat/completions 端点实测真实生效（json_object 与 json_schema strict 均可，模型思考在响应的独立字段，不混入正文），比 prompt 约束省掉消费方的一层解析重问代码；openai SDK 直接沿用默认的超时与重试语义，比 httpx 手写少维护一份传输代码，符合 A.23 的准入标准。端点家族的覆盖随选型走：翻译选定的两个模型分属 chat/completions 与 responses 两个家族，适配层按家族分派（差异与实测依据见 [models.md](models.md)），其余家族（Qwen、MiniMax、Grok 系）要用时再扩。
+26. **survey 零期不调模型：术语表纯合并加全文命中过滤，brief 缩为 abstract 照录，hook④ 推迟。** 曾考虑：模型一次读全文，产出 outline（章节结构树与每节摘要、记号约定、专名指称、register）与新词译法决策（A.11 的原方案）；按 block category 参数化 backfill 的 survey view；多次 `ask` 共享全文前缀、分别产出各字段；模型输出失败时降级为确定性骨架继续跑。否决理由：brief 的模型产字段没有可指认的消费方——记号在翻译中改不动（display math 已是 placeholder，inline math 受提示词与 validate 保护），散文侧的一致性全部归结为词条，专名指称即 do-not-translate 与 terms 条目，register 已由全局 style rules 覆盖，每节摘要对逐 chunk 翻译的增益无法指认，而模型产 brief 带来非确定性（`brief_hash` 漂移即全量失效）与降级机制的代码成本；survey view 的两条论据随之失效——翻译只发生在掩码文本上，只在被掩 block 内出现的词永不进入翻译，对它们的术语决策没有消费方，且十一篇语料的 masked.tex 实测 3.2k–101k 字符，整份一次读入没有规模压力，无需构造视图；术语预扫推迟是因为术语不一致可由「补 input glossary + `retranslate --term`」修正，不是不可逆损伤，先拿真实译文确认不一致的频率再决定是否值得这次调用。abstract 照录原文而非译文的理由保留自原方案：取译文会让全部 chunk 对摘要译文形成级联依赖。重启条件与接线形态见 stages/survey.md。
+
+27. **style 是一段自由文本，整段进缓存 key，不设结构化字段与 `style_version`。** 曾考虑：style 是结构化开关集（译者注开关、术语标注方式等具名字段，逐字段覆盖），版本号 `style_version` 单列进 key、bump 才触发 full retranslation（A.5 与 §5 的原方案）。否决理由：具名开关在零期没有消费方——译者注要成为可统计的开关，前提是译文里的译者注有固定的 LaTeX 宏，而那个宏属于 translate 与 compile，还没设计；术语标注方式是 `terms` 词条的呈现形式，不是独立偏好；剩下的偏好用一句话表达即可，而通途只有一个用户，字段校验与统计的收益接近零。`style_version` 单列则埋一个错误路径：改了 style 的内容而没 bump 版本号时，survey 重算、resolved glossary 确实变了，但 translate 的 key 没变，全部 chunk 命中缓存，用户看到的是「开关没生效」而非「忘了 bump」；它防的是无意触发一次全量重翻，而编辑配置文件本身已是显式动作。改为内容 hash 后，改 style 即自动失效重翻，「改了没生效」不再可能发生。代价：report 统计不了译者注（等宏定了再说），style 的字段化若将来需要，是加字段而非改机制。**本条修正 A.5 中 style 参与 key 的方式**，术语条目按 chunk 命中计入的部分不变。
+
+28. **chunk 的透明环境按「体内含首选层级标题」判定，两步定级，透明集定级时求出后固定。** 曾考虑：通用环境深度计数加逐名豁免（只豁免 `appendices` 环境）；体内出现任意标题命令即透明。否决理由：逐名豁免在验收语料上直接失效——`2512.02556` 与 `2512.24880` 的正文 96–97% 被 text 环境 `CJK*` 包住，全部标题命令与 `\appendix` 处于深度 1，分块退化为超过下分线的单一 chunk 且各出口判据全部通过，是静默失败，且同型的包裹环境（`otherlanguage`、`multicols` 等）会逐个重演；「任意标题命令即透明」则会误判 `2409.19606` 的 `proof` 环境（体内有三个 `\subsection*`），下分时把定理证明切成两半。按首选层级判定加透明集固定同时避开两个错误；另设「全文有标题命令而有效深度 0 处一个也没有 → chunk_failed」兜底，防将来出现规则覆盖不到的包裹形态时静默退化。机制见 stages/chunk.md 定级与透明环境节。
+
+29. **chunk 切点落在标题命令自身的偏移，不回退到所在段落的段首。** 曾考虑：节边界 = 含该标题命令的段落的段首，段落内出现标题命令不切。否决理由：十一篇验收语料里八篇存在标题命令前无空行的形态，按段首切会把上一节的末段划进下一个 chunk（article fixture 的 `\end{takeaway}` 紧跟 `\section` 即实例）；行内标题（`2604.15804`、`1701.06538` 各一处）按「段落内不切」会静默丢失节边界；且两条规则在「标题与前文同段」时互相矛盾，没有判据说走哪条。`\section` 在 TeX 里本身终止当前段落，按命令偏移切与排版语义一致，两条规则并成一条。机制见 stages/chunk.md 段落与切点节。
+
+30. **一节就是一个 chunk：不把相邻节攒成大块，只保留下分与碎片合并两条修正。** 曾考虑：以 soft limit 为目标按文档序累加相邻单元、加入下一个会超限就封口（原方案，两级限额 soft 4000 / hard 8000）。否决理由：攒相邻节换不到质量——一节内部的衔接本来就完整，攒块只改善节间衔接，而节间衔接在论文中本来就弱，需要跨节保持一致的只有术语与记号，那由 glossary 与 brief 承担；十一篇实测两种规则的会话次数几乎相同（51 对 54），付出的却是边界含义：按限额攒块时 chunk 边界是「凑够 4000」的产物，而 `tex fallback <chunk-id>` 回退的、改一个术语失效的、validate 不通过丢掉的都是这个边界圈出的范围，让它对齐章节边界是免费的收益。两级限额随之并成一个 `SPLIT_ABOVE`（下分线，5000），它不再是分块目标而是单次翻译会话输出量的安全阀，实测十一篇只触发 12 次；原「stray chunk 并入前一个」的尾部特例推广为通用的碎片合并（低于 `MERGE_BELOW` 1500 即与相邻 chunk 合并，正序一遍加倒序一遍），代价是多一遍线性扫描，换来不写针对具体命令名的分支——`\appendix` 这类区界标记行自成的碎片单元由同一条规则消化。合并不跨 `part`：混合 chunk 会让 `part` 字段失去含义，实测取消区界约束只把 54 个 chunk 降到 42 个。机制见 stages/chunk.md 分块算法节。
+
+31. **测试按外部依赖分层，编译层随阶段推进逐步加长；测试用例取自各阶段设计稿的验收条目。** 曾考虑：延续「happy path 调通前不写测试」，把测试整体推迟到全部阶段建成；编译层维持 identity translation 的定义。否决理由：那条推迟规则来自零期重建的起点——Phase0 照一份未定稿的总纲一次性实现，验收未通过，代码与测试一并删除；但失效的原因是架构未定稿就一次性实现，测试是被牵连的一方。改为逐阶段先出设计稿、拍板再动手之后，已拍板阶段的接口不再大幅漂移（masking.py 自落地后未再改动），推迟规则的前提只对尚未设计的阶段成立。更直接的理由是各阶段的「验收与试跑对象」一节本就是机械可判的断言清单（精确到 manifest 的字段取值，如 `fix_session` 为 false、`decided_by` 取 `newtheorem`），此前的落地方式是阶段完成时人工跑一遍、跑完不留下可重复执行的东西，而每个新阶段落地都在改动已完成阶段共用的代码，这类改动打坏上游阶段时没有任何自动检查会报告。编译层维持 identity translation 的定义则把这一层的起点绑在全部阶段建成之后，而它从第一个需要 TeX 的阶段起即成立，identity translation 因此降为该层的终点形态。A.7 否决的「LLM 层也设为 PR 必过」不受影响：承担合并必过的具体对象由 identity translation 变为编译层自造论文组，两者同为零模型成本覆盖编译链路的测试。分层与作业结构见 [ci/README.md](ci/README.md)。
 
 ## 附录 B：Open Questions
 
 多为实测校准项，非设计阻塞。已定的条目落入正文，编号保留供文档间引用。
 
-1. **chunk soft limit / hard limit 的具体数值**（掩码后文本 token 计）：软 ~4k、硬 ~8k 起步，三篇 fixture 校准（观测指标：validate 重试率、长生成漂移、术语一致性）。
+1. **chunk 的 `SPLIT_ABOVE` / `MERGE_BELOW` 与 token 估算系数的具体数值**（掩码后文本 token 计）：`SPLIT_ABOVE` 5000、`MERGE_BELOW` 1500、`CHARS_PER_TOKEN` 4。**`CHARS_PER_TOKEN` 已校准冻结**：拿三篇论文对同一模型发两次只差一段附带文本的请求，用输入 token 的差值反解出掩码文本真实为 4.15–4.49 字符每 token，取 4 是保守方向（估多 4%–12%，切出的块小于名义限额）。另两个数用真实译文校准（观测指标：validate 重试率、长生成漂移、术语一致性），十一篇实测的形态是 54 个 chunk、下分触发 12 次、尺寸 112–4816、中位 1780。三个常量都参与 chunk 的跳过判定，改动作废全部分块并连带失效翻译记忆。
 2. **identity translation 的中文路径覆盖**：曾在 pseudo-translation 变体与专门的中文 fixture 之间取舍。**已定**（零期收尾）：pseudo-translation 变体，见 §7 第 2 层。
 3. **`--json` 事件流 schema**：一期容器调度前冻结，零期先出草案。
 4. **anchors 三来源叠加的实现次序与 hotspot 容差**：零期拿真实论文实测后定。M4 已把它们收成 `tongtu/anchors.py` 的模块级常量（`SOURCE_PRIORITY` / `RECT_PADDING_PT` / `BAND_MERGE_TOLERANCE_PT` / `SYNCTEX_SCALE` 与页级降级的页码估计），改一个数即可重新校准；synctex 缺席时一律退化为页级锚点并如实标注 `source` 与 `confidence`，不伪造精确矩形。
-5. **brief 各字段粒度与 neighboring context 段数**：三篇 fixture 校准。
-6. **survey view 的 token 规模**：数学类 block 之外再 backfill 表格与算法（§3 survey 节）会明显增大读全文输入，大结果表尤甚。三篇 fixture 实测读全文输入 token 数，确认「一次读全文即可，不做 map-reduce」在常见论文规模下成立。若超出预算，可选的收缩手段有：表格只 backfill 表头与首列、超长表格按阈值降级回 placeholder。
+5. **neighboring context 段数**：三篇 fixture 校准。原并列的「brief 各字段粒度」随 A.26 的裁剪不再是问题：brief 零期只有照录的 abstract。
+6. **survey view 的 token 规模**：**已随 A.26 失效**——survey 不再构造视图，也不调模型；hook④ 将来接线时读的是整份 masked.tex（十一篇实测 3.2k–101k 字符，单次调用没有规模压力）。
 7. **compile 工具面能否真正约束住 agent**（§3 compile 节的**约束力**问题）：工具面是 `tongtu tex` 这组 CLI 子命令，agent 要调用它就得有 Bash，而拿到通用 shell 之后它可以绕开工具面直接改 `zh.tex`，「`zh.tex` 与编译日志之外的文件 agent 看不到」随之落空，工具面只剩记账作用。Claude Code 这边的具体路径是 Bash 权限的命令前缀规则：只允许 `tongtu tex` 开头的命令，禁掉其余 Bash 与 Read / Edit / Glob 等文件工具。待验证的因此是两件具体的事——前缀规则能否可靠拦住命令拼接与替换，以及禁掉文件工具之后 agent 是否还能正常完成修复。做不到时的退路是容器隔离（`zh.tex` 挂在容器外，经 CLI 中转），但那样本地开发也要跑容器，与 §6 运行环境节「本地原生为主」有张力。本条原来还含 `ask` 侧的禁工具问题（正确性约束），已随 `ask` 改走 API 直调消解（A.25）。
 8. **编译修复会话的 budget**：编译次数上限，开发阶段起步 30 次，拿真实论文的次数分布校准。
 9. **SVG 是否加进 figures 输出**：pdf2svg / mutool convert 在三篇 fixture 上的保真度（字体处理、透明度、裁剪路径）决定取舍，见附录 A.19。
 10. **同一论文版次更新的 incremental retranslation**：arXiv v2 出来后 survey 重跑、brief 变，全部 chunk 失效，翻译记忆等于归零。显式推迟：当前读的以老论文为主，场景还没出现过；`chunks.json` 的要素快照与 `key_version`（§4）已为它留了迁移口子，且不绑 arXiv——将来非 arXiv 来源同样适用。真实遇到追新版的需求再设计，可选方向：brief 分字段参与 key、记忆按要素降级匹配。
-11. **`ask` 的非流式请求能否承住长生成**：survey 的一次调用输入是全文视图、输出是完整 brief，非流式请求要在网关超时之内拿到整个响应。真实论文实测后定；出现网关超时再改流式，其余语义不变。
+11. **`ask` 的非流式请求能否承住长生成**：hook④ 接线后 survey 的调用输入是整份掩码文本、输出是术语决策列表（较原设想的完整 brief 已大幅缩小），非流式请求要在网关超时之内拿到整个响应。真实论文实测后定；出现网关超时再改流式，其余语义不变。
 
 ## 附录 C：选型清单
 
@@ -446,7 +409,7 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 | 运行时依赖 | pydantic（artifact model，§5）、typer（CLI 命令面）、rich（进度显示与 `doctor` 结果的人读输出，`--json` 事件流不经过它）、httpx（fetch 下载）、openai SDK（`ask` 的 API 直调，A.25）、pypdfium2（anchors 的 pdf-scan 来源；fixture 上验证后定，备选 pdfplumber，PyMuPDF 因 AGPL 许可不用） |
 | 开发依赖 | pytest、hypothesis（mask/unmask 往返恒等的性质测试，随机输入打词法状态机）、syrupy（golden-file 快照管理） |
 | mask 解析器 | 自研零依赖词法状态机（继承 v2；TexSoup 在真实论文上 parse 失败率高，已弃用，pylatexenc 备选），叠加往返自检 |
-| agent 适配层 | 两个原语分属两种传输，适配层（§3 agent 适配层节）隔离，各自独立可替换（A.25）。`work` 走 agent CLI 运行时，首发 Claude Code CLI；`ask` 走 API 直调：OpenCode Go 的 chat/completions 端点（OpenAI 兼容），openai SDK（超时与重试用 SDK 默认值），默认模型 deepseek-v4-flash。密钥按「越显式越优先」的顺序解析：环境变量 `OPENCODE_API_KEY`（容器与 CI 的传入路径）→ 配置目录 `credentials.json` 里录入的密钥（§5 目录约定节）→ 本机 opencode 登录凭证里 Go 订阅条目的密钥（opencode 的内部存储而非文档化契约，形状变了这一路解析不到，由前两级顶上） |
+| agent 适配层 | 两个原语分属两种传输，适配层（§3 agent 适配层节）隔离，各自独立可替换（A.25）。`work` 走 agent CLI 运行时，首发 Claude Code CLI；`ask` 走 API 直调：OpenCode Go 的 chat/completions 端点（OpenAI 兼容），openai SDK（超时与重试用 SDK 默认值）；翻译类调用的模型与推理强度见 [models.md](models.md)。密钥按「越显式越优先」的顺序解析：环境变量 `OPENCODE_API_KEY`（容器与 CI 的传入路径）→ 配置目录 `credentials.json` 里录入的密钥（§5 目录约定节）→ 本机 opencode 登录凭证里 Go 订阅条目的密钥（opencode 的内部存储而非文档化契约，形状变了这一路解析不到，由前两级顶上） |
 | 编译 | latexmk -xelatex -interaction=nonstopmode |
 | 镜像 | TeX Live full（~6GB 不裁剪：package 需求不可预测，为省磁盘而引入新的失败类型不划算，继承 v2 结论） |
 | inspection page | PDF.js vendor 随 artifact package（优先自包含，体积成问题再调整） |

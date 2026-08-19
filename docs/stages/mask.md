@@ -75,7 +75,7 @@ The loss is $\mathcal{L} = \sum_i \ell_i$.
 
 星号变体继承：`X*` 在声明与分类表里都查不到时按 `X` 查（`figure*` 继承 `figure`）。`document` 是结构标记，不参与分类。text 环境的 `\begin` / `\end` 与体内内容留在掩码文本里（由 validate 的 control sequence 层保护），体内继续扫描，嵌套的 non-translatable 环境照常成块。
 
-**category 词表**：分类表使用 `math` / `table` / `figure` / `tikz` / `code` / `algorithm` / `bibliography` / `box`，保守默认产生 `unknown`，结构性成块产生 `preamble` / `postamble` / `comment` / `metadata`（display math 记 `math`）。category 有两个消费方：survey view 按它决定 backfill 还是保持 placeholder（数学、表格、算法 backfill，图、tikz、code 保持），figures 按它取图 block；category 为 `code` 的环境同时以 verbatim 语义扫描（体内 `%` 与 `\begin` 不解析）。
+**category 词表**：分类表使用 `math` / `table` / `figure` / `tikz` / `code` / `algorithm` / `bibliography` / `box`，保守默认产生 `unknown`，结构性成块产生 `preamble` / `postamble` / `comment` / `metadata`（display math 记 `math`）。category 的消费方是 figures（按它取图 block）；category 为 `code` 的环境同时以 verbatim 语义扫描（体内 `%` 与 `\begin` 不解析）。
 
 ## caption 槽位
 
@@ -117,7 +117,7 @@ unmask 是本阶段自检与 compile 阶段 backfill 共用的实现，语义在
 ## 重跑语义
 
 - **输入 hash 是两个值**：`precompile_sha256`（从 precompile manifest 转录，上游输出 hash 的权威）与 `environments_table_sha256`（分类表文件内容的 sha256）。表也参与的理由：重建期分类表会频繁增补，不参与跳过判定的话，改表之后旧的掩码结果会静默留存。
-- **输出 hash**：`masked_sha256` 与 `blocks_sha256` 都记，都是下游判定「输入未变不重算」的权威——改分类表可能只改 blocks.json 的 category 而不动掩码文本，而 survey 与 figures 消费 category。
+- **输出 hash**：`masked_sha256` 与 `blocks_sha256` 都记，都是下游判定「输入未变不重算」的权威——改分类表可能只改 blocks.json 的 category 而不动掩码文本，而 figures 消费 category、survey 消费 caption 槽位（abstract 照录）。
 - **跳过判定**：mask manifest 存在、可解析、状态 ok、两个输入 hash 与当前值一致、`build/masked.tex` 与 `build/blocks.json` 都存在 → 跳过。不校验产物内容与 manifest 是否一致（初期简化，同 fetch / flatten / precompile）。
 - 失败状态不跳过；`--force` 无视已有结论。每次非跳过的执行开始先删除已有的 `masked.tex` 与 `blocks.json`，失败时不留上次的产物误导下游。
 

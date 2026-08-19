@@ -9,7 +9,10 @@
 独立字段，不混入正文，本模块只取正文。是否采信正文由调用方自己校验，本模块不解析内容。
 
 每次调用写一个 JSON 日志文件到 `log_path`（路径由调用方拼好）：请求要素、返回正文、
-usage、finish_reason 与耗时。失败的调用同样落日志。用量不进返回值，事后统计从日志汇总。
+usage、finish_reason 与耗时。usage 是服务端返回的原样结构，其中
+prompt_tokens_details.cached_tokens 是本次请求命中前缀缓存的 token 数：缓存由服务端自动维护，
+请求侧没有可设的参数，命中与否取决于两次请求的前缀是否逐字节相同。失败的调用同样落日志。
+用量不进返回值，事后统计从日志汇总。
 
 密钥按「越显式越优先」的顺序解析（`resolve_api_key`）：环境变量 `OPENCODE_API_KEY` →
 配置目录 credentials.json 里录入的密钥 → 本机 opencode 登录凭证里 Go 订阅条目的密钥。
@@ -138,7 +141,7 @@ def ask(
 
 def _request(
     prompt: str, text: str, model: str, schema: dict | None
-) -> tuple[AskOutcome, str | None, dict[str, int] | None]:
+) -> tuple[AskOutcome, str | None, dict[str, object] | None]:
     """发出请求并从响应里取正文；返回结局、finish_reason 与 usage（后两者只进日志）。"""
     resolved = resolve_api_key()
     if resolved is None:
@@ -177,13 +180,10 @@ def _request(
 
     choice = response.choices[0] if response.choices else None
     finish_reason = choice.finish_reason if choice is not None else None
-    usage = None
-    if response.usage is not None:
-        usage = {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
+    # usage 整份落日志而不摘字段：缓存命中量在嵌套的 prompt_tokens_details.cached_tokens 里，
+    # 且 responses 端点家族的字段名与此处不同（input_tokens_details.cached_tokens），
+    # 摘字段就得跟着端点分两套。exclude_none 滤掉该模型不适用的项（audio_tokens 等）。
+    usage = None if response.usage is None else response.usage.model_dump(exclude_none=True)
     content = choice.message.content if choice is not None else None
     if not content:
         return (
