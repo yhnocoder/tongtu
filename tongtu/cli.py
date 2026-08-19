@@ -1,8 +1,8 @@
 """`tongtu` CLI 命令面。
 
-`stage fetch`、`stage flatten`、`stage precompile`、`stage mask`、`stage survey` 与 `doctor` 已接线，走真实的
-阶段驱动器与环境检查；
-其余命令为占位实现：只解析并校验参数、说明将要执行的动作，不运行 pipeline。run / validate /
+`stage fetch`、`stage flatten`、`stage precompile`、`stage mask`、`stage survey`、`stage chunk` 与 `doctor` 已接线，
+走真实的阶段驱动器与环境检查；其余命令为占位实现：
+只解析并校验参数、说明将要执行的动作，不运行 pipeline。run / validate /
 `tex compile` 的退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
 （99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections import Counter
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -21,14 +22,17 @@ from rich.table import Table
 
 from . import __version__, config
 from .agent import opencode
+from .artifacts.chunk import ChunkManifest, ChunkStatus
 from .artifacts.fetch import FetchStatus
 from .artifacts.flatten import FlattenManifest, FlattenStatus
 from .artifacts.mask import MaskManifest, MaskStatus
 from .artifacts.precompile import PrecompileManifest, PrecompileStatus
 from .artifacts.survey import AbstractSource, GlossaryInputRecord, SurveyManifest, SurveyStatus
 from .assets import asset_path
+from .chunking import Part
 from .masking import BlockCategory
 from .stages import STAGES
+from .stages import chunk as chunk_stage
 from .stages import fetch as fetch_stage
 from .stages import flatten as flatten_stage
 from .stages import mask as mask_stage
@@ -243,6 +247,9 @@ def stage(
     if name.value == survey_stage.STAGE_NAME:
         # survey 零期零模型调用（术语预扫的 hook④ 推迟），--agent 与 --model 不参与执行。
         raise _run_stage_survey(paper, glossary or [], workdir, force, json_output)
+    if name.value == chunk_stage.STAGE_NAME:
+        # chunk 是纯文本变换，无 agent 介入点，--agent 与 --model 不参与执行。
+        raise _run_stage_chunk(paper, workdir, force, json_output)
     raise _stub_exit(
         "stage",
         name=name.value,
@@ -588,6 +595,65 @@ def _survey_exit_code(manifest: SurveyManifest) -> int:
     return _upstream_exit_code(
         ok=manifest.status is SurveyStatus.OK,
         pdf_only_chain=(manifest.status is SurveyStatus.MASK_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY),
+    )
+
+
+def _run_stage_chunk(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
+    """`stage chunk` 的接线：定位工作目录、调驱动器、打印分块结果、映射退出码。
+
+    chunk 不访问网络也不读源目录内容，论文参数只用来定位工作目录：本地目录形态取它的
+    basename，编号与链接形态解析成编号，两者都作为工作目录名交给驱动器。
+    """
+    _warn_json_ignored(json_output)
+    try:
+        result = chunk_stage.chunk(_workdir_name_from_paper(paper), workdir, force=force)
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(chunk_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(chunk_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_chunk_exit_code(manifest))
+    console.print(f"chunk：状态 {manifest.status}")
+    chunked = manifest.status is ChunkStatus.OK
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")  # 路径与 message 超宽时折行，不截断
+    table.add_row("  chunk 数", _chunk_counts(manifest) if chunked else "—")
+    table.add_row("  token 估算", _token_spread(manifest) if chunked else "—")
+    table.add_row("  首选层级", (manifest.heading_level or "无标题（退化路径）") if chunked else "—")
+    table.add_row("  透明环境", "、".join(manifest.transparent_environments) or "—" if chunked else "—")
+    table.add_row("  appendix", str(manifest.appendix_source) if chunked else "—")
+    table.add_row("  chunks/", str(chunk_stage.chunks_dir(result.workdir)) if chunked else "未产出")
+    table.add_row("  manifest", str(manifest_path))
+    if manifest.message:
+        table.add_row("  message", manifest.message)
+    for line in manifest.warnings:
+        table.add_row("  warning", line)
+    console.print(table)
+    return typer.Exit(_chunk_exit_code(manifest))
+
+
+def _chunk_counts(manifest: ChunkManifest) -> str:
+    """chunk 总数与三个区各自的数量；区的取值词表以 chunking.Part 为准。"""
+    counts = Counter(record.part for record in manifest.chunks)
+    listed = [f"{part} {counts[part]}" for part in Part if counts[part]]
+    return f"{manifest.chunks_total}（{'、'.join(listed)}）"
+
+
+def _token_spread(manifest: ChunkManifest) -> str:
+    """token 估算的最小值、中位数与最大值，供 chars_per_token 与两个上限的校准参考。"""
+    if not manifest.chunks:
+        return "—"
+    estimates = sorted(record.token_estimate for record in manifest.chunks)
+    return f"最小 {estimates[0]}、中位 {estimates[len(estimates) // 2]}、最大 {estimates[-1]}"
+
+
+def _chunk_exit_code(manifest: ChunkManifest) -> int:
+    """chunk 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is ChunkStatus.OK,
+        pdf_only_chain=(manifest.status is ChunkStatus.MASK_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY),
     )
 
 
