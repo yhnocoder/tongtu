@@ -57,16 +57,24 @@ EXIT_STUB = 99
 #: chunk id 形状：`c` 后至少三位数字，如 c012。
 _CHUNK_ID_RE = re.compile(r"^c[0-9]{3,}$")
 
-#: doctor 检查项（架构 §6）：名字 → 用途。
-DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
+#: doctor 检查项（架构 §6）第一组：工具链与字体。缺任一项则编译无法进行，计入退出码。
+DOCTOR_TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
     ("xelatex", "编译引擎（latexmk -xelatex）"),
     ("latexmk", "编译回环驱动"),
     ("latexpand", "flatten 阶段展开多文件源码"),
     ("pdftocairo", "figures 矢量源转位图"),
     ("epstopdf", "EPS 图源接入 xelatex 的转换链"),
     ("中文字体", "font fallback chain（霞鹜文楷随仓库分发）"),
+)
+
+#: doctor 检查项第二组：运行期凭证。如实报告缺失，但不计入退出码——参考镜像是可分发
+#: 产物，构建它的机器不该需要凭证，而凭证缺失也不影响 survey 之前各阶段的编译路径。
+DOCTOR_CREDENTIAL_CHECKS: tuple[tuple[str, str], ...] = (
     ("OpenCode 密钥", "ask 原语的 API 直调（环境变量 / 录入的密钥 / opencode 登录态，三处任一）"),
 )
+
+#: 全部检查项，按输出顺序。
+DOCTOR_CHECKS: tuple[tuple[str, str], ...] = DOCTOR_TOOLCHAIN_CHECKS + DOCTOR_CREDENTIAL_CHECKS
 
 #: DOCTOR_CHECKS 里两个特例检查项的名字：字体项查字体文件，密钥项按三级顺序解析，
 #: 其余各项按可执行文件查 PATH。
@@ -676,12 +684,17 @@ def validate(
 
 @app.command()
 def doctor() -> None:
-    """检查 xelatex / latexmk / latexpand / pdftocairo / epstopdf、中文字体与 OpenCode 密钥，逐项报告缺失。"""
+    """检查 xelatex / latexmk / latexpand / pdftocairo / epstopdf、中文字体与 OpenCode 密钥，逐项报告缺失。
+
+    退出码只对工具链与字体负责：那一组缺任一项则编译无法进行，退 1。运行期凭证缺失如实
+    打印但退 0——参考镜像在构建期跑这个命令自检，而构建镜像的机器不该需要凭证。
+    """
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column()
     table.add_column()
     table.add_column(overflow="fold")  # 路径超宽时折行，不截断
-    missing: list[str] = []
+    missing_toolchain: list[str] = []
+    missing_credentials: list[str] = []
     for name, purpose in DOCTOR_CHECKS:
         if name == FONT_CHECK_NAME:
             found, detail = _check_fonts()
@@ -690,12 +703,16 @@ def doctor() -> None:
         else:
             found, detail = _check_executable(name)
         if not found:
-            missing.append(name)
+            target = missing_credentials if (name, purpose) in DOCTOR_CREDENTIAL_CHECKS else missing_toolchain
+            target.append(name)
         table.add_row(f"  [{'通过' if found else '缺失'}]", f"{name} —— {purpose}", detail)
     console.print(table)
-    if missing:
-        console.print(f"环境有缺失：{'、'.join(missing)}")
+    if missing_toolchain:
+        console.print(f"环境有缺失：{'、'.join(missing_toolchain)}")
         raise typer.Exit(EXIT_FAILURE)
+    if missing_credentials:
+        console.print(f"工具链与字体齐全；{'、'.join(missing_credentials)}未配置，survey 起的阶段无法执行。")
+        return
     console.print("环境齐全。")
 
 

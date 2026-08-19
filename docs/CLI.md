@@ -20,7 +20,9 @@ tongtu tex <cmd> …                         # 编译修复会话的工具面，
 - `stage`：单阶段调试入口。重跑语义按各阶段自己的设计（见 `stages/` 下对应文档）；`--force` 无视已有结论重新执行。已接线：fetch、flatten、precompile、mask、survey、chunk；其余阶段为占位实现（退出码 99）。precompile 编译失败时拉起 agent 修复会话（`--model` 透传给运行时，默认见 stages/precompile.md）。`--glossary` 与 `run` 同语义（命令行层术语表，合并语义见 [stages/survey.md](stages/survey.md)），供 survey 及其下游阶段的单阶段调试传入。
 - `validate` 有三个调用方，同一份实现：agent 在翻译会话内自查、脚本在出口终审、开发者手工排查（[ARCHITECTURE.md](ARCHITECTURE.md) §3 translate 节）。
 - `retranslate` 的失效语义见 [ARCHITECTURE.md](ARCHITECTURE.md) §4 返工触发表。chunk id 是位置序号，只在同一次分块结果（chunk manifest 的 `chunks_sha256`）下有效，重分块后同一 id 指向不同内容（[stages/chunk.md](stages/chunk.md) part 与 chunk id 节）。**边界行为还没想**：chunk id 写错、术语没命中任何 chunk、失效后要不要连带重编译，这些当前只有实现里的做法，没做设计。
-- `doctor` 已接线：xelatex / latexmk / latexpand / pdftocairo / epstopdf 按 PATH 查找，中文字体查仓库 `fonts/` 下的霞鹜文楷字体文件，OpenCode 密钥按环境变量 `$OPENCODE_API_KEY` → `~/.config/tongtu/credentials.json` → 本机 opencode 登录态的顺序解析并报告来源；逐项报告，全部通过退 0，有缺失退 1。
+- `doctor` 已接线：xelatex / latexmk / latexpand / pdftocairo / epstopdf 按 PATH 查找，中文字体查仓库 `fonts/` 下的霞鹜文楷字体文件，OpenCode 密钥按环境变量 `$OPENCODE_API_KEY` → `~/.config/tongtu/credentials.json` → 本机 opencode 登录态的顺序解析并报告来源。
+
+  **检查项分两组，退出码只对第一组负责**：工具链与字体缺任一项则编译无法进行，退 1；运行期凭证（当前只有 OpenCode 密钥）缺失如实打印但退 0。理由是参考镜像在构建期跑 `tongtu doctor` 自检（`docker/Dockerfile`），而镜像是要推 GHCR 的可分发产物，构建它的机器不该需要凭证；survey 定稿为零模型调用后，零期已实现的各阶段都不需要凭证，凭证缺失不影响它们执行。凭证缺失时末行给出说明。
 - **密钥 preflight（随需要 `ask` 的命令接线，行为已定；survey 定稿为零模型调用后，零期暂无需要密钥的命令）**：需要 `ask` 的命令开跑前解析一次密钥。解析到环境变量或录入的密钥 → 静默；解析到 opencode 登录态 → 首次打一行提示（此后静默，标记位在 `credentials.json`）；三处都没有且处于交互终端 → 提示两条路：去 opencode 里 `/connect` 登录 Go 订阅后回车重查，或当场录入密钥（隐藏输入，先打一次 `/models` 验证有效再存入 `credentials.json`）；非交互环境（无 TTY 或 `--json`）不提问，按失败语义进 manifest。
 
 ## 退出码
@@ -35,7 +37,7 @@ tongtu tex <cmd> …                         # 编译修复会话的工具面，
 | `3`–`9` | 业务分支段：既非成功也非失败、调用方要据此改道的结果，跨子命令同码同义。已登记：`3` = PDF-only（源是 PDF 而非 LaTeX 源码，走 degraded path） |
 | `99` | 占位实现：命令尚未接线。接线一个删一个，全部接线后此码退役 |
 
-- 检查类命令（`validate` / `doctor` / `tex compile`）沿用「0 = 通过、1 = 查出问题」的谓词惯例：查出问题是正常业务结果，同样退 1，细节在输出里。
+- 检查类命令（`validate` / `doctor` / `tex compile`）沿用「0 = 通过、1 = 查出问题」的谓词惯例：查出问题是正常业务结果，同样退 1，细节在输出里。`doctor` 的「问题」只算工具链与字体那一组，运行期凭证缺失不计入（见上节）。
 - 增码判据：某调用方需要在不解析输出的前提下按该状态机械分流；达不到的一律归 `1`，细节由输出携带。新码依次取 `3`–`9` 未用值；不使用 `64`–`78`（BSD sysexits 区段）与 `126` 以上（shell 保留区段）。
 - 登记处是本表与 `tongtu/cli.py` 的模块级常量，两处同步修改。
 

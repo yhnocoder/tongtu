@@ -1,0 +1,141 @@
+name: image
+
+# 参考镜像的构建与发布。一份 Dockerfile，两个 target，同一个作业里依次出：
+#   env      环境层：TeX Live full + Python 依赖 + 字体，不含仓库代码。
+#            CI 的编译层作业（ci.yml 的 compile、papers.yml）以它为 container 直接跑测试。
+#   runtime  完整镜像：env 加仓库代码、项目安装与构建期自检。架构 §10 的云部署单元，
+#            wenshu 按 git tag 引用。
+#
+# 两个 target 不拆成两个 workflow：runtime 就建在 env 之上，构建 runtime 必然构建出 env，
+# 拆开会让同一套 6GB 基底层构建两遍，还要抢同一个 buildx 缓存 scope。合在一处之后 env 推
+# 完，runtime 只跑它上面那三层。
+#
+# 触发与产出：
+#   push tag v*        正式发布：推 :env，并推 {{version}} / {{major}}.{{minor}} / latest
+#   push main          推 :env（编译层作业要拉的那个）；runtime 只构建不推，用来验证代码层
+#   pull_request       改动了镜像相关文件时两个 target 都只构建不推，把构建失败拦在合并前
+#   workflow_dispatch  手动：推 :env；runtime 按 push_runtime 决定推不推，tag 名由 tag 输入
+#                      给（默认 dev），不动 latest
+#
+# push 那一条不加 paths 过滤：GitHub 的 paths 过滤会同时作用到 branches 与 tags，加了它打
+# tag 时反而可能不触发。每次合并多跑一次本作业，环境没变时各层全部缓存命中，且不阻塞任何
+# 检查。pull_request 是独立的触发条目，它的 paths 不影响上面那条。
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - docker/Dockerfile
+      - .dockerignore
+      - pyproject.toml
+      - uv.lock
+      - fonts/**
+      - .github/workflows/image.yml
+  workflow_dispatch:
+    inputs:
+      push_runtime:
+        description: 是否推完整镜像（false = 只构建，验证 Dockerfile 用）
+        type: boolean
+        default: true
+      tag:
+        description: 完整镜像的 tag（tag 触发时忽略）
+        type: string
+        default: dev
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      # TeX Live full 基底层体积在 6GB 量级，先删掉本仓库用不到的预装 SDK 腾出磁盘。
+      - name: Remove unused SDKs
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v4
+
+      # PR 上只构建不推，登录这一步也就不需要——fork 发来的 PR 本就拿不到写 packages 的权限。
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # PR 之外的每次触发都推 :env。内容没变时镜像 digest 相同，registry 不重复存储，推送
+      # 是空操作。不 load 到本地 docker daemon：本作业不在本地跑这个镜像，省掉那次 6GB 导出。
+      - name: Build and push env image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: env
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.IMAGE }}:env
+          cache-from: type=gha
+          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,mode=max' }}
+          provenance: false
+
+      # tag 即版本：v1.2.3 → 1.2.3 / 1.2 / latest。手动触发只打 `tag` 输入那一个名字。
+      # push main 时打一个本地名 `main`，配合下面的 push: false，只构建不推。
+      - name: Tag
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ inputs.tag || 'dev' }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=pr,enable=${{ github.event_name == 'pull_request' }}
+
+      # push main 与 PR 上只构建不推：编译层作业已改用 :env，完整镜像不再有人在合并路径上
+      # 构建，代码层（COPY 仓库、uv sync、doctor 自检）若被改坏，不做这一步就要等到打 tag
+      # 才发现。env 层刚构建过，这里只跑它上面那三层，代价很小。
+      - name: Build and push runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: runtime
+          push: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.push_runtime) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,mode=max' }}
+          provenance: false
+
+      - name: Record
+        run: |
+          {
+            echo "### Reference image"
+            echo
+            echo "- Trigger: \`${{ github.event_name }}\` (ref \`${{ github.ref }}\`)"
+            echo "- env image: \`${{ env.IMAGE }}:env\` (pushed: ${{ github.event_name != 'pull_request' }})"
+            echo "- runtime pushed: \`${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.push_runtime) }}\`"
+            echo "- runtime tags:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
