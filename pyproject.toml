@@ -46,6 +46,18 @@ packages = ["tongtu"]
 "fonts" = "tongtu/data/fonts"
 "skill" = "tongtu/data/skill"
 
+# 测试分层与执行环境见 docs/ci/README.md。标记按外部依赖划分：不带标记的是文本层
+# （无外部依赖，秒级），本机直接 `pytest` 跑的就是它；`compile` 需要 TeX 与参考镜像，
+# `llm` 需要接入模型且计费，两者都要显式 `-m` 选中才执行。
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "compile: 需要 TeX 与参考镜像，容器内 `pytest -m compile` 执行",
+    "network: 需要访问 arXiv，与 compile 叠加使用",
+    "llm: 需要接入模型，计费，手动执行",
+]
+addopts = "-m 'not compile and not llm'"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120

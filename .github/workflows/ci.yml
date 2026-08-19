@@ -1,5 +1,16 @@
 name: CI
 
+# 合并路径上的三个作业，分层与判据见 docs/ci/README.md：
+#   lint     runner 上跑 pre-commit（ruff check、ruff format、diction lint）
+#   test     runner 上跑文本层，无外部依赖，秒级
+#   compile  作业内构建参考镜像，容器内跑编译层的自造论文组
+#
+# 编译层在镜像里跑而不在 runner 上装 TeX：TeX 发行版差异会造成实际的行为差别，「编译通过」
+# 以镜像内的结果为准（ARCHITECTURE.md §6）。构建镜像这一步同时验证 Dockerfile 与依赖改动，
+# 不必等到打 tag 发布才发现构建失败。
+#
+# 真实论文组需要网络、失败有一部分与代码无关，走 papers.yml 的定时触发，不在合并路径上。
+
 on:
   push:
     branches: [main]
@@ -10,17 +21,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  text:
-    name: check text
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      # setup-uv 钉到具体版本而不是像其余 action 那样用 major tag：上游不发滚动的 major
+      # tag（只有 v10.0.1 这类完整版本号），写 @v10 会解析不到。
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - run: uv sync
-      - name: lint
+      - name: pre-commit
         run: uv run pre-commit run --all-files --show-diff-on-failure
 
-# 测试与编译层作业随重构移除：当前没有测试套件（先调通 example 的 happy path，
-# 定型后再补测试），编译回环落地后恢复在参考镜像里跑 example 的作业。
+  test:
+    name: text layer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync
+      # 不带 -m：pyproject 的 addopts 默认排除 compile 与 llm，跑到的就是文本层。
+      - name: text layer
+        run: uv run pytest -q
+
+  compile:
+    name: compile layer
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    # 直接在环境镜像里跑，不在作业内构建镜像：构建即便缓存全命中，也仍要下载 6GB 级的
+    # 缓存层并把镜像导出到 docker daemon，实测占去作业八成时间。镜像由 env-image.yml
+    # 在环境变化时推送，这里只拉。
+    container:
+      image: ghcr.io/${{ github.repository }}:env
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # 镜像里只有依赖，项目本体由本次 checkout 提供，装进镜像里那个 venv
+      # （UV_PROJECT_ENVIRONMENT=/opt/tongtu/.venv）。依赖已就位，这一步是秒级的。
+      # uv.lock 若在本 PR 里改过，缺的依赖也在这一步补上，镜像旧一版不影响正确性。
+      - name: uv sync
+        run: uv sync --frozen
+
+      # `not network` 排除真实论文组：那一组由 papers.yml 承担。
+      - name: pytest (without real papers)
+        run: pytest -q -m "compile and not network"
