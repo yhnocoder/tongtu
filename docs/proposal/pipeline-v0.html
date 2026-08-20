@@ -543,7 +543,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
   workdir:  会话的 cwd，也是它能读写的全部范围
   → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail)</pre>
 <p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>（从 tongtu 的实现生成，不入库），agent 跑的是它，不是 <code>tongtu</code>。</p>
-<p style="font-size:13.5px;margin:8px 0 0"><b>会话的约束分四件事，各管一件</b>（issue #20 实测结论，2026-08-20）：① <b>命令放行规则</b>——运行时自带，按子命令逐个判定，复合命令与命令替换绕不过；review 只给 <code>python3 -I validate.py</code>（<code>-I</code> 不把脚本目录放进 sys.path），precompile_fix / compile_fix 只给 <code>latexmk</code>、<code>xelatex</code>、<code>kpsewhich</code>；同时 deny 对 skill 目录的编辑，agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它。② <b>操作系统沙箱</b>——运行时自带，不自己写：<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 在放行之后仍能执行任意代码，靠沙箱把写范围限制在会话 cwd、断网。③ <b>嵌套检查</b>——子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻退出码 2；给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过（有意绕过只能走 ②管住的那条路：嵌套的 run 要写 cwd 之外的工作目录根、要出网，第一个阶段就失败）。④ <b>会话隔离</b>——不加载用户的 hooks / MCP / 插件，子进程 PATH 收成固定清单（TeX bin + 系统 bin）。运行时只认 Claude Code 与 Codex：Codex 的放行规则是 <code>.codex/rules/&lt;role&gt;.rules</code>（<code>prefix_rule</code>），沙箱是 <code>-s workspace-write -c approval_policy="never"</code>；opencode 没有沙箱，在它有之前不作为使用方案。</p>
+
 <span class="label" style="display:block;margin-top:14px">运行时 = 一条命令模板</span>
 <p style="font-size:13.5px;margin:6px 0 0">Claude Code、Codex、opencode 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放哪。所以运行时不写代码，写在配置里（见下）；<code>work</code> 本身只做：拷 skill → 拼命令 → 新进程组跑 → 超时杀组 → stdout 落 trace → 按退出码与超时给 stop_reason。</p>
 <p style="font-size:13.5px;margin:8px 0 0"><b>去掉 <code>budget_exhausted</code></b>：它要解析各运行时的 transcript 才能判，而调用方反正不信 stop_reason、会自己复验，轮数耗尽与其他错误在调用方眼里没有区别。<code>max_turns</code> 仍作为参数传给运行时，只是不再从结果里读回。</p>
@@ -585,6 +585,16 @@ precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = 
 compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }</pre>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0">命令行 <code>--model</code> / <code>--effort</code> 覆盖本次涉及的全部角色；没有 <code>tongtu config</code> 子命令，文件手改。密钥只认环境变量，变量名在服务商条目里声明（现状的 credentials.json 与 opencode 登录态两级来源去掉，少两套逻辑；要方便就把 export 写进 shell 配置）。</p>
 </details>
+<div style="margin-top:18px">
+<span class="label">会话的约束——四件事，各管一件<small style="text-transform:none;letter-spacing:0;margin-left:8px">issue #20 实测结论，2026-08-20</small></span>
+<ol style="margin:8px 0 0;padding-left:22px;font-size:14px;max-width:none">
+<li><b>命令放行规则</b>：运行时自带，按子命令逐个判定，复合命令与命令替换绕不过。review 只给 <code>python3 -I validate.py</code>（<code>-I</code> 不把脚本目录放进 sys.path）；precompile_fix / compile_fix 只给 <code>latexmk</code>、<code>xelatex</code>、<code>kpsewhich</code>。同时 deny 对 skill 目录的编辑：agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它。</li>
+<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 在放行之后仍能执行任意代码，靠沙箱把写范围限制在会话 cwd、断网。</li>
+<li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻退出码 2。给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过——有意绕过只能走第 2 条管住的那条路：嵌套的 run 要写 cwd 之外的工作目录根、要出网，第一个阶段就失败。</li>
+<li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin + 系统 bin）。</li>
+</ol>
+<p style="font-size:13.5px;color:var(--muted);margin:8px 0 0;max-width:none">运行时只认 Claude Code 与 Codex：Codex 的放行规则是 <code>.codex/rules/&lt;role&gt;.rules</code>（<code>prefix_rule</code>），沙箱是 <code>-s workspace-write -c approval_policy="never"</code>；opencode 没有沙箱，在它有之前不作为使用方案。</p>
+</div>
 </div>
 
 <h2>待验证<small>讨论中记下、还没有答案的事</small></h2>
