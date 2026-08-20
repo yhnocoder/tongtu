@@ -61,9 +61,9 @@
 
 chunk 大小因此落在 (0, `SPLIT_ABOVE`]，唯一例外是第 2 条的不可再分单元。实现取向：单遍递归加一个「当前层级」参数，层级序列长度天然限住递归深度，不写通用递归框架——十一篇实测 100 个顶层单元里只有 1 个超过 `SPLIT_ABOVE`，最大段落单元 732 token，第 1、2 条是罕见路径。
 
-**不把多节攒成一个 chunk**，理由是攒了也换不到质量：一节内部的衔接本来就完整，攒相邻节只改善节间衔接，而节间衔接在论文中本来就弱，需要跨节保持一致的只有术语与记号，那由 glossary 与 brief 承担。十一篇实测，按 4000 的上限攒相邻节得到 51 个 chunk、按本节规则得到 54 个，会话次数几乎不变，而边界从「凑够 4000」变成「就是一节」：`tex fallback <chunk-id>` 回退的是一节，改一个术语失效的是一节，validate 不通过丢掉的也是一节。决策见 ARCHITECTURE 附录 A.30。
+**不把多节攒成一个 chunk**，理由是攒了也换不到质量：一节内部的衔接本来就完整，攒相邻节只改善节间衔接，而节间衔接在论文中本来就弱，需要跨节保持一致的只有术语与记号，那由 glossary 与 brief 承担。十一篇实测，按 4000 的上限攒相邻节得到 51 个 chunk、按本节规则得到 54 个，调用次数几乎不变，而边界从「凑够 4000」变成「就是一节」：改一个术语失效的是一节，validate 不通过丢掉的是一节，将来编译侧回退原文时回退的也是一节。决策见 ARCHITECTURE 附录 A.30。
 
-**区界的已知代价**（实测）：附录很小的论文会留下一个低于 `MERGE_BELOW` 的 appendix chunk（实测 112–847 token），因 `part` 不同合并不掉，独占一次翻译会话；front 区每篇都低于 `MERGE_BELOW`（实测 116–636 token），摘要固定独占一次会话。跨区合并零期不做：混合 chunk 会让 `part` 字段失去含义，而实测取消区界约束只把 54 个 chunk 降到 42 个，不值得拿字段语义去换。
+**区界的已知代价**（实测）：附录很小的论文会留下一个低于 `MERGE_BELOW` 的 appendix chunk（实测 112–847 token），因 `part` 不同合并不掉，独占一次翻译调用；front 区每篇都低于 `MERGE_BELOW`（实测 116–636 token），摘要固定独占一次调用。跨区合并零期不做：混合 chunk 会让 `part` 字段失去含义，而实测取消区界约束只把 54 个 chunk 降到 42 个，不值得拿字段语义去换。
 
 ## part 与 chunk id
 
@@ -79,9 +79,9 @@ chunk id = `c` + 三位零填充十进制序号，0 起，按文档序（`c000`�
 
 ## 关键取舍
 
-- **chunk 的边界是章节边界，定位与回退单元小**，两者由段落数比对解耦。一次翻译会话看到的是完整的一节，而出错时能指认的位置细到段落。
-- **`SPLIT_ABOVE` 是安全阀，不是分块目标**。它约束的是单次翻译会话的输出量（译文长度约等于原文，故上限设在输出侧），不表达「chunk 该多大」——该多大由章节结构决定。实测它在十一篇上只触发 12 次下分，正是安全阀该有的样子。
-- **chunk 变大不会让回退粒度变粗**。validate 强制原译段落一一对应，任何 chunk 都可确定性拆回段落对，编译修复会话里回退原文的最小单位细到段落而不是整节（`tex fallback` 不带 `--paragraph` 时仍是整个 chunk 回退，粒度由 agent 按现场定，见 ARCHITECTURE §3 compile 节）。translate 出口 validate 失败时的回退单位零期是整个 chunk；`internal_cuts` 字段为将来按更细边界拆分重试保留了确定性切点，是否消费由 translate 设计定。
+- **chunk 的边界是章节边界，定位与回退单元小**，两者由段落数比对解耦。一次翻译调用看到的是完整的一节，而出错时能指认的位置细到段落。
+- **`SPLIT_ABOVE` 是安全阀，不是分块目标**。它约束的是单次翻译调用的输出量（译文长度约等于原文，故上限设在输出侧），不表达「chunk 该多大」——该多大由章节结构决定。实测它在十一篇上只触发 12 次下分，正是安全阀该有的样子。
+- **chunk 变大不会让回退粒度变粗**。validate 强制原译段落一一对应，任何 chunk 都可确定性拆回段落对，将来编译侧回退原文时，最小单位可以细到段落而不是整节。translate 出口 validate 失败时的回退单位零期是整个 chunk；`internal_cuts` 字段为将来按更细边界拆分重试保留了确定性切点，是否消费由 translate 设计定。compile 阶段零期不实现任何回退路径（[stages/compile.md](compile.md)）。
 - **透明环境可以被切点跨越**。`\begin{CJK*}` 在一个 chunk、配对的 `\end` 在另一个，对流水线没有影响：拼接恒等按构造成立；backfill 是全篇拼接后 unmask；validate 的 control sequence multiset 是同一 chunk 内原译比对，不要求 chunk 自身环境平衡。「不切入环境内部」保护的是语义单元，不是括号平衡（决策见 ARCHITECTURE 附录 A.28）。
 
 ## 出口判据
@@ -103,13 +103,13 @@ chunk id = `c` + 三位零填充十进制序号，0 起，按文档序（`c000`�
 
 manifest 即 `ChunkManifest`。承担契约职责的字段：`status` 是唯一分流依据；`masked_sha256` 是输入 hash；`split_above` / `merge_below` / `chars_per_token` 是参与跳过判定的配置值；`chunks_sha256` 是输出 hash，下游输入判定的权威；`chunks` 是 chunk 记录列表；`chunks_total` 是计数；`heading_level`（首选层级命令名，null 即无标题退化路径）、`transparent_environments`（透明集环境名清单）与 `appendix_source`（`command` / `environment` / `absent`）是定级结论，观察与排查用；`mask_status` 与 `fetch_status` 转录本次看到的上游状态（退出码映射与排查用）；`warnings` 记不阻断的情形，当前只有一类——分块算法第 2 条的终态，即已下分到不可再分的单元仍超过 `SPLIT_ABOVE` 的 chunk，translate 会在这些 chunk 上撞到长生成。
 
-`ChunkRecord` 承担契约职责的字段：`id`；`start` / `end`（在 masked.tex 解码后字符序列中的偏移，文件内容即该区间切片）；`sha256`（chunk 文件内容）；`token_estimate`；`paragraphs`（段落计数，口径见下）；`part`；`headings`（chunk 内有效深度 0 的标题，按文档序，每条含命令名 `level` 与参数原文 `argument`；排查、人工挑 chunk id，以及 translate 拼章节标题树用——摘要 chunk 的附带上下文取全文标题树，依据见 [models.md](../models.md)）；`internal_cuts`（合并进本 chunk 的各单元起始偏移列表，首项等于 `start`，未发生合并时只有这一项；translate 出口 validate 失败后按更细边界拆分重试的确定性切点来源，是否消费由 translate 设计定）；`translatable_chars`（剥除 placeholder 后的非空白字符数；纯 placeholder chunk（附录只有图表的论文会出现）要不要拉翻译会话，translate 据此判断）。
+`ChunkRecord` 承担契约职责的字段：`id`；`start` / `end`（在 masked.tex 解码后字符序列中的偏移，文件内容即该区间切片）；`sha256`（chunk 文件内容）；`token_estimate`；`paragraphs`（段落计数，口径见下）；`part`；`headings`（chunk 内有效深度 0 的标题，按文档序，每条含命令名 `level` 与参数原文 `argument`；排查、人工挑 chunk id，本字段只记本 chunk 内的标题；全文标题树由 survey 用同一份扫描实现（`chunking.document_headings`）直接扫 `masked.tex` 得出，不从本字段汇总，见 [stages/survey.md](survey.md) heading_tree 节）；`internal_cuts`（合并进本 chunk 的各单元起始偏移列表，首项等于 `start`，未发生合并时只有这一项；translate 出口 validate 失败后按更细边界拆分重试的确定性切点来源，是否消费由 translate 设计定）；`translatable_chars`（剥除 placeholder 后的非空白字符数；纯 placeholder chunk（附录只有图表的论文会出现）要不要调 ask 翻译，translate 据此判断）。
 
 **段落计数的两个口径**：本阶段用的是**全部段落**——按空行切分、逐段剥除首尾空白、丢弃空段后计数（`tongtu/chunking.py` 的 `count_paragraphs`），manifest 的 `paragraphs` 字段与出口判据「每个 chunk 段落数至少 1」都按它算。真实语料里连续空行常见（五篇实测各 14–31 处空段），空段若计入，就是在要求译文保持同样多的连续空行，而模型合并连续空行是最常见的无害改动。
 
 translate 的 validate 第 4 层用的是另一个口径：**含可译文本的段落**——一段剥除 placeholder（`masking.TOKEN_RE`）、`\begin{X}` 与 `\end{X}` 整体、其余控制序列的命令名（参数保留）之后，仍有非空白字符才计入。参数保留是为了让 `\section{Introduction}` 里的 Introduction 算作内容，而 `\maketitle` 剥完为空。理由是 placeholder 密集的 chunk 上全部段落口径会误判：`\end{abstract}` 之前与 `\newpage` 前后的空行对排版没有影响（`\end{…}` 自身终止段落，`\newpage` 是命令），模型吞掉这些空行按全部段落口径就是失败，而这些 chunk 里真正要拦的「两段正文被并成一段」并不存在——2409.19606 的 front chunk 全部段落 4 段、含可译文本的段落只有 1 段，2412.19437 的 front chunk 对应 7 段与 2 段。
 
-两个口径不能互相替换。含可译文本的段落口径用在本阶段的出口判据上会把合法输入判成失败：不含可译文本的 chunk 是合法形态（附录只有图表的论文会出现，`translatable_chars` 字段就是为它设的；十一篇语料里 `1701.06538` 只含一行 `\appendix` 的 chunk 按含可译文本的段落口径算出 0 段），而出口判据要拦的是切分实现的缺陷。含可译文本的段落计数随 translate 实现时以 `count_translatable_paragraphs` 加在 `tongtu/chunking.py`，与 `count_paragraphs` 并列，两处调用方各取所需（先例：survey 的全文命中过滤与 translate 的逐 chunk 命中共用 `tongtu/glossary.py`）。
+两个口径不能互相替换。含可译文本的段落口径用在本阶段的出口判据上会把合法输入判成失败：不含可译文本的 chunk 是合法形态（附录只有图表的论文会出现，`translatable_chars` 字段就是为它设的；十一篇语料里 `1701.06538` 只含一行 `\appendix` 的 chunk 按含可译文本的段落口径算出 0 段），而出口判据要拦的是切分实现的缺陷。含可译文本的段落计数在 `tongtu/validation.py` 的 `translatable_paragraphs`：它是四层校验的判据，口径的定义与四层的其余三层同属一处，`chunking` 不必知道 validate 怎么数。两者共用 `chunking.paragraphs` 这一条切段规则（按空行切、剥首尾空白、丢弃空段），区别只在切完之后怎么筛。
 
 ## 验收与试跑对象
 

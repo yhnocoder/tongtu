@@ -1,6 +1,6 @@
 """agent 适配层的接口类型：两个原语（`ask` 与 `work`）的返回值与预算。
 
-`ask(prompt, text, model, schema, log_path) -> AskOutcome` 是流水线做单次问答的唯一入口，
+`ask(prompt, text, model, schema, log_path, effort) -> AskOutcome` 是流水线做单次问答的唯一入口，
 `work(prompt, workdir, model, budget, trace_path) -> WorkOutcome` 是拉起多轮会话的唯一
 入口。各适配器（如 `opencode`、`claude_code`）实现它们，本模块只定义两端的数据类型，
 不含任何传输细节。

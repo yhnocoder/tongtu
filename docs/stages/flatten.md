@@ -34,7 +34,7 @@ latexpand --keep-comments --fatal <主文件相对路径>
 - cwd 是 `src/` 根目录，`\input` 相对路径以此为基准解析，与 TeX 编译时的工作目录一致。stdout 由驱动器捕获，成功才写 `build/flat.tex`（bytes 原样，不做编码转换）；stderr 非空行记入 manifest `warnings`（latexpand 对 @-命令的 `--makeatletter` 建议是常见一例，实测为误报——@-命令本就包在 `\makeatletter…\makeatother` 里——照记不拦）。
 - `--keep-comments`：latexpand 默认剥掉注释与 `\end{document}` 之后的内容，这是有损变换；mask 阶段把注释当作 block 处理，flatten 不做任何有损变换。实测确认该选项下注释里的 `\input` 不被展开，原样保留。
 - `--fatal`：`\input` 指向的文件找不到时立刻失败（状态 `expand_failed`），不静默留下残缺产物。arXiv 源在 arXiv 编译通过，文件本应齐全；实测十一篇无一触发。
-- latexpand 不在 PATH → 状态 `expand_failed`，message 说明需要安装 TeX 发行版（latexpand 随 TeX Live 分发）。`tongtu doctor` 的对应检查项等编译工具面接线时一并实现。
+- latexpand 不在 PATH → 状态 `expand_failed`，message 说明需要安装 TeX 发行版（latexpand 随 TeX Live 分发）。`tongtu doctor` 已把 latexpand 列入检查清单（见 [CLI.md](../CLI.md)）。
 - `\usepackage` 不展开（不传 `--expand-usepackage`）：`.sty` 与 `.cls` 是排版资产不是翻译对象，展开只会把样式代码灌进下游的 mask 与 survey 输入。因此 **`flat.tex` 不是自包含文件**：正文与参考文献已内联，类文件、样式文件、图源仍留在 `src/`，由 precompile 编译时指向 `src/` 提供。
 
 ## bbl 内联

@@ -36,10 +36,10 @@ latexmk -xelatex -interaction=nonstopmode flat.tex
 
 首次编译失败即拉起恰一次 agent 修复会话（架构 §3 阶段表的 hook②，`work` 原语的首个落地）；会话内 agent 自行迭代（改、编、看日志），改到它认为可以为止。
 
-- **现场**：cwd 是编译树 `build/precompile/`，agent 可自由读写树内文件、执行命令。不建工具面：树整体可丢、里面只有原文拷贝，与 compile 阶段 zh.tex 会话的约束力问题（架构附录 B 第 7 条）不是一类风险。
+- **现场**：cwd 是编译树 `build/precompile/`，agent 可自由读写树内文件、执行命令。不建命令集：树整体可丢、里面只有原文拷贝。compile 阶段后来采用了同样的做法（[stages/compile.md](compile.md)，决策见架构附录 A.36），架构附录 B 第 7 条的约束力问题随之关闭。
 - **prompt**：任务说明与约束在 prompt 资产 [`skill/precompile/SKILL.md`](../../skill/precompile/SKILL.md)（含已观测失败模式的 example；新模式的沉淀方式就是往里加 example，规则同 diction denylist——实测抓到才加，不预防性扩张），驱动器拼上本篇的 flat.log 错误行摘录。核心约束：只改树内文件、优先只改 flat.tex、不改动文字内容、只改到能编译为止。
 - **不建确定性修复规则集**。曾考虑：把已观测模式（`\pdfoutput` 注释、CJKutf8 摘除、图扩展名改写）写成确定性预处理规则，agent 会话推迟。否决理由：规则集是需要维护的框架代码，而 example 进 prompt 后新模式的维护动作是零代码；修复成果烙进输出产物、随 manifest 缓存持久（见「重跑语义」），会话成本不随重跑重复发生；规则覆盖不了的失败终究要会话兜底，两套机制并存不如一套。
-- **运行时**：`work` 原语经 agent 适配层（`tongtu/agent/`）拉起，首发运行时 Claude Code CLI，headless。模型默认 `claude-sonnet-5`、reasoning effort xhigh，`--model` 透传覆盖。会话 transcript 原样落 `logs/`；架构里 trace 的精细语义（start-state hash + command sequence + end-state hash）依赖工具面记账，留给 compile 阶段，此处记 transcript 与会话前后编译树相对 `src/` 的文件 hash 比对结果，是零期简化。
+- **运行时**：`work` 原语经 agent 适配层（`tongtu/agent/`）拉起，首发运行时 Claude Code CLI，headless。模型默认 `claude-sonnet-5`、reasoning effort xhigh，`--model` 透传覆盖。会话 transcript 原样落 `logs/`；架构里 trace 的精细语义（start-state hash + command sequence + end-state hash）依赖命令集记账，而零期两个修复会话都不建命令集（架构附录 A.36），此处记 transcript 与会话前后编译树相对 `src/` 的文件 hash 比对结果。
 - **预算**：会话轮数上限 30、墙钟超时上限 900 秒（模块级常量）。轮数上限按两篇失败案例的实测轮数（11 与 15）留一倍余量定出；墙钟上限防会话卡死而非控制成本，给会话内编译大篇幅论文留出时间。超限即终止会话，但不直接判失败——会话可能在超限之前已把问题修完，结论仍由脚本终审给出。
 
 ## 脚本终审（agent 的编译结果不作数）

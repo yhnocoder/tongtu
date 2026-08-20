@@ -5,8 +5,7 @@
       "真跑": 1
     },
     "docs/ARCHITECTURE.md": {
-      "真模型": 1,
-      "纪律": 2,
+      "纪律": 1,
       "顺手": 2
     },
     "scripts/diction_lint.py": {
@@ -14,13 +13,6 @@
     },
     "skill/classify/SKILL.md": {
       "促升": 1,
-      "关节": 1
-    },
-    "skill/repair/SKILL.md": {
-      "促升": 3,
-      "关节": 3
-    },
-    "skill/survey/SKILL.md": {
       "关节": 1
     },
     "skill/translate/SKILL.md": {

@@ -86,6 +86,7 @@ class SurveyManifest(BaseModel):
     )
     abstract_source: AbstractSource = Field(default=AbstractSource.ABSENT, description="摘要照录的来路")
     abstract_chars: int = Field(default=0, description="照录的摘要字符数，观察值")
+    headings_total: int = Field(default=0, description="brief 里章节标题树的条目数，观察值")
     mask_status: str = Field(default="", description="本次读到的 mask manifest 的状态，排查用")
     fetch_status: str = Field(default="", description="mask manifest 记录的 fetch 状态，退出码映射与排查用")
     warnings: list[str] = Field(default_factory=list)
@@ -123,11 +124,25 @@ class GlossaryFile(BaseModel):
     )
 
 
+class BriefHeading(BaseModel):
+    """章节标题树的一条：层级深度、命令名与标题参数原文。"""
+
+    depth: int = Field(description="相对层级深度，全文最浅层级记 1，往深一级加一")
+    level: str = Field(description="标题命令名，如 section、subsection")
+    argument: str = Field(description="标题参数原文，未翻译")
+
+
 class BriefFile(BaseModel):
     """`build/brief.json` 的内容：逐 chunk 翻译共享的全局语境。
 
-    零期只有 `abstract` 一个字段，是论文原文摘要的照录，由程序提取、不经模型；提取不到时为
-    null，不是失败。将来的扩展字段落在这个文件里，`brief_sha256` 的语义不变。
+    两个字段都由程序提取、不经模型：`abstract` 是论文原文摘要的照录，`heading_tree` 是全文
+    章节标题树（`tongtu/chunking.py` 的 `document_headings` 扫 `masked.tex` 得出，与分块用的
+    是同一次扫描口径）。两者提取不到时都为 null，不是失败。translate 只在 front chunk 的提示
+    词里引用 heading_tree，依据见 docs/models.md。将来的扩展字段落在这个文件里，
+    `brief_sha256` 的语义不变。
     """
 
     abstract: str | None = Field(default=None, description="论文原文摘要的照录；提取不到为 null")
+    heading_tree: list[BriefHeading] | None = Field(
+        default=None, description="全文章节标题树，按文档序；掩码文本扫不出标题结构时为 null"
+    )

@@ -48,7 +48,17 @@ brief 零期只有一个字段：`abstract`，论文原文摘要的照录，由�
 
 两条都落空 → `abstract` 为 null，不是失败；来路记入 manifest 的 `abstract_source`（`preamble_slot` / `body_environment` / `absent`）。
 
-将来的全局语境扩展（章节结构树、模型生成的字段）都落在这个文件里，`brief_sha256` 的语义不变。
+### heading_tree
+
+`heading_tree` 是全文章节标题树，由 `tongtu/chunking.py` 的 `document_headings` 扫 `masked.tex` 得出。结构为列表，每条含 `depth`（相对层级深度，全文出现过的最浅层级记 1，往深一级加一——多数论文 section 是 1、subsection 是 2；取相对值而不是层级序列的绝对下标，是因为论文用不用 `\part` / `\chapter` 因文档类而异）、`level`（标题命令名）与 `argument`（标题参数原文）。
+
+**标题结构是分块的输入，不是分块的产物**：chunk 阶段的定级、切点与区界都建立在同一次标题扫描上。survey 因此不从 chunk manifest 汇总，而是与 chunk 共用 `document_headings` 各自直接扫掩码文本——两个阶段谁也不依赖谁，都只依赖 `masked.tex`，阶段序不变。有效深度的口径与分块一致（体内出现首选层级标题的环境判为透明、不计入深度），故被 `CJK*` 一类包裹环境裹住的标题照样在树里。
+
+掩码文本扫不出标题结构（环境配对不上，`chunking` 抛 `ChunkError`）或一个标题命令都没有时，`heading_tree` 为 null 并记一条 warning，不是失败——前者是 chunk 阶段要判失败的情形，对 survey 只意味着没有标题树可写。
+
+translate 只在 front chunk 的提示词里引用 heading_tree，用于摘要的缩写展开（实测成本增加 1.3 倍即有收益）。body 与 appendix chunk 不引用——实测证明正文 chunk 带标题树引发推理膨胀或白花输入 token，翻译质量无可见差异（决策见 ARCHITECTURE 附录 A.31）。
+
+将来的全局语境扩展（模型生成的字段）仍落在这个文件里，`brief_sha256` 的语义不变。
 
 ## 出口判据
 
@@ -75,7 +85,7 @@ manifest 即 `SurveyManifest`。承担契约职责的字段：`status` 是唯一
 
 `build/glossary.json` 即 `GlossaryFile`（resolved glossary）：`terms` 列表（词、译法、`decided_by`）、`do_not_translate` 列表（词、`decided_by`）、`style`（字符串或 null）。`decided_by` 取值 `global` / `paper` / `cli`，记胜出层；hook④ 接线后增 `survey`。
 
-`build/brief.json` 即 `BriefFile`：`abstract`（字符串或 null）。
+`build/brief.json` 即 `BriefFile`：`abstract`（字符串或 null）、`heading_tree`（`BriefHeading` 列表或 null，见上文 heading_tree 节）。manifest 另记 `headings_total`（标题树条目数，观察值）。
 
 ## 验收与试跑对象
 

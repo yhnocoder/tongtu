@@ -11,6 +11,11 @@ agent。上游结论与两个输入 hash 从 mask manifest 装载。术语表的
 glossary 读不到或不符合形状 → 状态 `glossary_invalid`，message 指出文件路径与首个错误。前置
 条件不满足同样写 survey manifest：驱动器不向调用方抛栈，每次执行的结论都落盘。
 
+章节标题树由 `chunking.document_headings` 扫 `masked.tex` 得出，写进 brief 的 `heading_tree`：
+标题结构是分块的输入而不是分块的产物，survey 与 chunk 因此共用同一份扫描实现、各自直接读
+掩码文本，两个阶段不互相依赖。掩码文本扫不出标题结构（环境配对不上）或一个标题命令都没有
+时，`heading_tree` 为 null 并记一条 warning，不是失败。
+
 摘要照录两条来路，按序尝试：`blocks.json` 中 kind 为 abstract 的 caption 槽位（摘要写在前导区
 的文档类，mask 阶段已抽出），取其原始文本；槽位不存在时在 `masked.tex` 里扫描 abstract 环境
 （正文形态，多数论文如此），照录环境体。两条都落空则 `abstract` 为 null，不是失败。掩码文本
@@ -32,12 +37,13 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .. import config, glossary, manifests, workdir
+from .. import chunking, config, glossary, manifests, workdir
 from ..artifacts.fetch import FetchStatus
 from ..artifacts.mask import BlocksFile, MaskManifest, MaskStatus
 from ..artifacts.survey import (
     AbstractSource,
     BriefFile,
+    BriefHeading,
     DoNotTranslateEntry,
     FilteredTerm,
     GlossaryFile,
@@ -200,8 +206,10 @@ def survey(
         )
 
     abstract, abstract_source = _extract_abstract(blocks, masked)
+    heading_tree, heading_warnings = _extract_heading_tree(masked)
     glossary_bytes = _glossary_file(resolved, merged.style).model_dump_json(indent=2).encode(ENCODING) + b"\n"
-    brief_bytes = BriefFile(abstract=abstract).model_dump_json(indent=2).encode(ENCODING) + b"\n"
+    brief_file = BriefFile(abstract=abstract, heading_tree=heading_tree)
+    brief_bytes = brief_file.model_dump_json(indent=2).encode(ENCODING) + b"\n"
     glossary_file_path(paper_workdir).write_bytes(glossary_bytes)
     brief_path(paper_workdir).write_bytes(brief_bytes)
     return _write_result(
@@ -218,6 +226,8 @@ def survey(
             filtered=[FilteredTerm(word=entry.word, decided_by=entry.decided_by) for entry in filtered],
             abstract_source=abstract_source,
             abstract_chars=len(abstract) if abstract is not None else 0,
+            headings_total=len(heading_tree) if heading_tree is not None else 0,
+            warnings=heading_warnings,
         ),
     )
 
@@ -302,6 +312,25 @@ def _extract_abstract(blocks: BlocksFile, masked: str) -> tuple[str | None, Abst
     if body:
         return body, AbstractSource.BODY_ENVIRONMENT
     return None, AbstractSource.ABSENT
+
+
+def _extract_heading_tree(masked: str) -> tuple[list[BriefHeading] | None, list[str]]:
+    """扫出全文章节标题树，返回（标题树、警告清单）；扫不出结构时返回（None、一条警告）。
+
+    扫描口径与分块共用一份实现（`chunking.document_headings`）：标题结构是分块的输入，不是
+    分块的产物，survey 与 chunk 因此都直接扫 `masked.tex`，两个阶段不互相依赖。掩码文本的
+    环境配对不上时 `chunking` 抛 `ChunkError`——那是 chunk 阶段要判失败的情形，对 survey 只
+    意味着没有标题树可写，记一条警告后照常出产物。
+    """
+    try:
+        headings = chunking.document_headings(masked)
+    except chunking.ChunkError as error:
+        return None, [f"掩码文本扫不出标题结构（{manifests.describe_error(error)}），brief 的 heading_tree 为 null。"]
+    if not headings:
+        return None, ["掩码文本里一个标题命令都没有，brief 的 heading_tree 为 null。"]
+    return [
+        BriefHeading(depth=heading.depth, level=heading.level, argument=heading.argument) for heading in headings
+    ], []
 
 
 def _abstract_environment_body(masked: str) -> str:

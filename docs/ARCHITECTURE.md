@@ -2,14 +2,14 @@
 
 ## 1. 定位与范围
 
-通途是基于 LaTeX 源码的 arXiv 论文英译中引擎：确定性 pipeline + agent 翻译 + 脚本校验 + 编译循环，产出保真排版的中文 PDF 与结构化索引。
+通途是基于 LaTeX 源码的 arXiv 论文英译中引擎：确定性 pipeline + agent 翻译 + 脚本校验 + 编译循环，产出保真排版的中文 PDF 与结构化索引（`paper.json`，§5）。
 
 ## 2. 设计原则
 
 1. **agent 负责智能，程序负责验证**。翻译、修编译错、适配非常规 documentclass 交给 agent；正确性只认校验脚本全绿与编译通过。
 2. **pipeline 是增量构建系统**。每阶段输出 = 输入（源码 + 配置 + 术语表 + prompt 版本 + 模型）；输入未变不重算；LLM 输出有不确定性，同样的输入可能有不同的输出，这部分按输入 hash 判定是否命中缓存。
 3. **使用 Pipeline 进行推进**。脚本只在固定 stage 启动 agent，agent 会话内部不限制其行为（多轮、执行命令、联网），结束判定一律是脚本校验。一次性问题由 agent 在会话内就地解决，只记入 report；反复出现的问题**固化**为确定性代码或 SKILL 经验条目，判断条件是 report.json 的干预统计。
-4. **构建状态也是数据**（「会话 = 数据」的推广）。增量重翻所需状态（翻译记忆）随 artifact package 走，可在任何新环境续跑；工作目录的 `build/` 随时可丢。范围注明：随包走的构建状态只有翻译记忆；编译修复会话的成果零期不持久化，重编译 = 重新拉起修复会话（§4，附录 A.21）。
+4. **构建状态也是数据**（「会话 = 数据」的推广）。增量重翻所需状态（翻译记忆）随 artifact package 走，可在任何新环境续跑；工作目录的 `build/` 随时可丢。范围注明：随包走的构建状态只有翻译记忆；编译修复会话的成果零期不持久化，重编译 = 重新拉起修复会话（§4，附录 A.21）。零期连翻译记忆也不做，本条描述的是设计而非当前实现（附录 A.33）。
 5. **纯本地操作**。通途只读写本地工作目录、stdout 与退出码；R2 上传、容器调度、任务队列全部是 wenshu 侧职责。接口形态固定为「文件 + CLI 约定」。
 
 ## 3. pipeline
@@ -44,8 +44,8 @@ flowchart TD
 
 **所有阶段都由脚本驱动。** 脚本拉起 agent 只有两个原语，签名与约束见下文 agent 适配层节：
 
-- `ask(prompt, text, model, schema, log_path) -> AskOutcome`：单次问答，API 直调，无工具、无状态，用于主文件判定、环境分类与术语决策。
-- `work(prompt, workdir, model, budget, trace_path) -> WorkOutcome`：多轮会话，agent CLI 运行时拉起，可读写 workdir、执行命令、联网，用于逐 chunk 翻译与各类修复。
+- `ask(prompt, text, model, schema, log_path, effort) -> AskOutcome`：单次问答，API 直调，无工具、无状态，用于主文件判定、环境分类、术语决策与逐 chunk 翻译。
+- `work(prompt, workdir, model, budget, trace_path) -> WorkOutcome`：多轮会话，agent CLI 运行时拉起，可读写 workdir、执行命令、联网，用于各类修复。
 
 表中「agent」指：该阶段的脚本在特定触发条件下拉起一次有明确结束判定的 agent 调用，拿回结果后由脚本校验与推进，控制流不移交。「结束判定」一列是每个阶段完成与否的判定条件；有 agent 调用的阶段，这一判定同样由脚本做出。
 
@@ -55,12 +55,12 @@ flowchart TD
 | [flatten](stages/flatten.md) | latexpand 展开 | 主文件歧义 → 判定主文件 ① | 单文件 `flat.tex` |
 | [precompile](stages/precompile.md) | latexmk 编译原文，编不过则修复到通过；产出下游输入 `precompile.tex`，基线数据（页数与三类日志计数）写入 `build/manifests/precompile.json` | 编译失败 → 修复会话 ②（源码与引擎的不匹配，`work`） | 原文编译通过（必要时经修复会话，脚本复验终审）；复验仍失败 → 终止（引擎或源码问题，非翻译问题） |
 | [mask](stages/mask.md) | 把 non-translatable environment、注释、caption 换成 placeholder，产出**掩码文本**（`masked.tex`：placeholder 与待译文本相间的单一字符序列，chunk 首尾相接拼起来逐字符等于它） | 未知环境 → text/non-translatable environment 分类 ③；不确定 → 保守整体掩码 | `unmask(mask(x)) == x` 恒等；`blocks.json` 完整 |
-| [survey](stages/survey.md) | 三层 input glossary 合并、按全文命中过滤成 resolved glossary；abstract 照录成 `brief.json`。均为确定性操作，产物供 translate 消费 | 术语预扫与新词译法决策 ④（`ask`，推迟，重启条件见 stages/survey.md） | resolved glossary 与 `brief.json` 落盘并通过 artifact model 校验，合并不变量成立 |
+| [survey](stages/survey.md) | 三层 input glossary 合并、按全文命中过滤成 resolved glossary；abstract 照录、章节标题树扫出，一并成 `brief.json`。均为确定性操作，产物供 translate 消费 | 术语预扫与新词译法决策 ④（`ask`，推迟，重启条件见 stages/survey.md） | resolved glossary 与 `brief.json` 落盘并通过 artifact model 校验，合并不变量成立 |
 | [chunk](stages/chunk.md) | 章节树优先分块：首选标题层级划出的一节即一个 chunk，超过 `SPLIT_ABOVE` 的节向深层下分，不足 `MERGE_BELOW` 的碎片与相邻 chunk 合并；不切入不透明环境与段落内部（透明环境与切点定义见 stages/chunk.md） | — | chunk 文件与 manifest 落盘；按序拼接逐字符等于 masked.tex |
-| translate | chunk 循环、上下文组装、缓存查询；每个 chunk 拉起一次会话，出口跑 validate 终审 | 单 chunk 翻译（`work` 原语）⑤ | validate 全绿（placeholder / control sequence multiset / 括号与 inline math / 段落数） |
-| compile | 脚本 backfill 与 inject 出一份可编译的起点，编译修复交给会话（工具面见 compile 节） | 编译不过 → 修复会话 ⑥（会话内可调 retranslate 复用⑤） | `zh.pdf` 存在、非空、页数与 precompile 基线相当、日志无 CJK missing glyph（回退段记入 report，保证总能产出 PDF） |
+| translate | chunk 循环、上下文组装、缓存查询；每个 chunk 一次 `ask` 调用，脚本驱动 validate 与重试 | 单 chunk 翻译（`ask` 原语，脚本驱动重试）⑤ | validate 全绿（placeholder / control sequence multiset / 括号与 inline math / 段落数） |
+| [compile](stages/compile.md) | 脚本 backfill 与 inject 出一份可编译的起点，编译一次跑出口判据，不过则交给修复会话 | 编译或判据不过 → 修复会话 ⑥（`work`，cwd 是编译树） | 五条判据全过：编译退出码 0、`zh.pdf` 非空、页数落在基线的固定比例区间、CJK 缺字形计数为 0、正文控制序列相对 backfill 产物只增不减 |
 | figures | 图源整理：位图原样带走，矢量转位图并保留原件；caption 与引用段落收集。**只读 `src/` 与 `blocks.json`，不依赖翻译侧 artifact，可同时跑** | — | 图文件 + 元数据齐全 |
-| export | artifact package 组装；anchors 三来源（synctex / blocks / pdf-scan）合成；caption 译文并入 figures 元数据；inspection page 生成；artifact model 自校验 | — | 全部 JSON artifact 通过 artifact model 校验 |
+| export | artifact package 组装；anchors 三来源（synctex / blocks / pdf-scan）合成；结构化索引 `paper.json` 组装；caption 译文并入 figures 元数据；inspection page 生成；artifact model 自校验 | — | 全部 JSON artifact 通过 artifact model 校验 |
 
 六个涉及到 agent 的 stage（主文件、toolchain、环境分类、读全文与术语、翻译、适配与修复）用于覆盖论文之间的少见差异。**阶段图对所有论文相同**，PDF-only 在顶层分支到 degraded path，阶段序列本身不重排。
 
@@ -69,11 +69,14 @@ flowchart TD
 代码在 `agent/` 子模块。两个原语分属两种传输，各自独立可替换：`ask` 走 API 直调（OpenCode Go，附录 C），`work` 走 agent CLI 运行时（首发 Claude Code CLI，附录 C）。流水线只依赖这层接口：
 
 ```
-ask(prompt, text, model, schema, log_path) -> AskOutcome
-    # 单次问答：主文件判定、环境分类、读全文与术语决策。
-    # prompt 作 system message，text 作 user message，一次请求一次响应；
+ask(prompt, text, model, schema, log_path, effort) -> AskOutcome
+    # 单次问答：主文件判定、环境分类、读全文与术语决策、逐 chunk 翻译。
+    # prompt 作系统提示词，text 作待处理文本，一次请求一次响应；
     # 无工具、无状态，输出只是输入的函数（模型自身的随机性除外）。
     # schema（JSON Schema）给出时映射为服务端结构化输出约束（response_format）。
+    # effort 是推理强度，不给则由服务端取默认档；翻译类调用一律取 low（models.md）。
+    # 端点家族按模型分派：多数模型走 chat/completions，muse-spark 系列走 responses，
+    # 两者的请求形态、响应形状与 usage 字段名都不同，差异记在 models.md。
 
 AskOutcome:
     status   # ok | error
@@ -81,7 +84,7 @@ AskOutcome:
     detail   # 仅 error 时非空：失败现场，进 manifest
 
 work(prompt, workdir, model, budget, trace_path) -> WorkOutcome
-    # 多轮会话：逐 chunk 翻译、修 toolchain、修编译错、documentclass 适配。
+    # 多轮会话：修 toolchain、修编译错、documentclass 适配。
     # 要求：headless 拉起、读写 workdir、执行命令、联网、可指定模型。
 
 WorkOutcome:
@@ -97,85 +100,87 @@ WorkOutcome:
 
 - `work` 的 `stop_reason` 只说明会话如何终止，**不表示修好了**；终审权在事后的校验脚本与编译，不采信 agent 的自述。各运行时自己的终止原因由适配层映射到这四个值，映射不上的归 `error`，现场写进 `detail`。
 - **`ask` 的纯函数约束由构造成立**：API 直调的请求里不存在工具，也没有会话状态，输出只能是入参的函数——§4 的缓存 key 正按这个假设建立（hook④ 接线后 survey 的术语决策进 resolved glossary，命中词条进每个 chunk 的翻译 key）。若 `ask` 能读工作目录里的文件，这个假设即被破坏；选型从「与 `work` 同走运行时」改为 API 直调的决策见附录 A.25。
-- 翻译场景下脚本给出 chunk 文件与译文输出路径，agent 在会话内自行翻译、跑 `tongtu validate`、按输出修改，写完退出；脚本读文件再跑一遍 validate 做终审（translate 节）。
-- 编译场景下 agent 不直接访问文件系统，读写 `zh.tex`、编译、看渲染页、回退或重译都经由 `tongtu tex …` 工具面，动作与 metadata 一并记账（compile 节）。
+- 翻译场景下脚本调 `ask` 拿回译文，自行跑 validate，不通过则带校验错误信息重新 `ask`，至多重试若干次；仍不通过则该 chunk 回退原文（translate 节）。
+- 编译场景下 agent 的现场是编译树 `build/zh/`，可自由读写树内文件、执行命令，与 precompile 的修复会话同形态；只有编译一次经 `tongtu tex compile`，理由是参数统一而非权限（compile 节，决策见附录 A.36）。
 - **日志路径由脚本决定，日志由适配层写**：`logs/` 是工作目录布局的一部分（§5），文件名按 hook、chunk 与尝试次数拼出，以入参交给适配层（`ask` 的 `log_path`、`work` 的 `trace_path`）——重试、usage 与终止原因只有适配层知道。`ask` 的调用日志是单个 JSON 文件：请求要素、返回正文、usage、finish_reason 与耗时，失败的调用同样落日志。`work` 的会话 trace 内容是 start-state hash + command sequence（参数、返回、耗时与 token）+ end-state hash，既是审计记录，也是固化规则（§2 原则 3）的原料。
 - **用量不进返回值**：每次调用的 token 与耗时落 `logs/`（`ask` 的调用日志、`work` 的 trace），export 组装 report 时从 `logs/` 汇总一次。两个原语的用量口径因此统一在一处；各阶段是独立进程，日志文件跨得过进程边界，进程内的累计对象跨不过。
 - **MockAgent**：`ask` 无 schema 时原样返回 `text`，给出 schema 时返回按 schema 生成的确定性默认对象（strict 约束下原样返回不符合形状）；`work` 在翻译场景把原文写到译文路径，在编译场景调一次 `tex compile` 后退出。当前无消费者——CI 的编译层跑的是原文编译，不进翻译路径，不经 agent；MockAgent 的第一个消费者是全流水线的 identity translation，待 survey 起各阶段建成后接线。
 
-### translate —— 按 chunk 逐一翻译，结构一致由 validation 判定
+### translate —— 逐 chunk 翻译，结构一致由 validation 判定
+
+> 设计权威在 [stages/translate.md](stages/translate.md)，本节是摘要与跨节引用。
 
 **要解决的问题**：把每个 chunk 译成中文，同时保证译文与原文结构完全一致。placeholder 少一个、control sequence 多一个、两段被并成一段，backfill 之后都会编译失败或丢内容，而模型的「我检查过了」在这里没有效力。
 
-**输入 → 输出**：chunk 正文 + brief + 命中术语 + neighboring context → 译文 chunk + `chunks.json`（翻译记忆）。brief 与 resolved glossary 都是 survey 阶段的产出（[stages/survey.md](stages/survey.md)）；`style` 随 resolved glossary 一起进来，是用户写的一段额外要求，原样进提示词，内容来自三层合并的用户配置（§5 术语表节）。
+**输入 → 输出**：chunk + brief + terms + neighbors → 译文 chunk + `build/translated/<id>.tex` + `build/manifests/translate.json`。brief 与 resolved glossary 都是 survey 阶段的产出（[stages/survey.md](stages/survey.md)）；`style` 随 resolved glossary 一起进来，原样进提示词。
 
-**循环归 agent，终审归脚本**：
+**翻译用 `ask`，重试归脚本，终审归脚本**：
 
 ```
-chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（hook⑤）
-                                              │
-              agent 自跑：翻译 → tongtu validate → 按输出修改 → 退出
-                                              │
-                              脚本读译文，再跑一遍 validate
-                                   ├ 通过 → 写入缓存与 chunks.json
-                                   └ 不通过 → 该 chunk 回退原文，记 status="fallback"
+chunk 循环 → 跳过判定（translatable_chars == 0 → 原文即译文）
+           → 组装上下文 → ask(hook⑤)
+                            │
+                脚本跑 validate
+                  ├ 通过 → 写译文与 manifest
+                  └ 不通过 → 带错误信息重新 ask（至多 MAX_RETRIES 次）
+                              └ 仍不通过 → 回退原文，记 status="fallback"
 ```
 
 **validate 的四层**，全部机械，不含判断：
 
-1. **placeholder**：`⟦BLK-3⟧` / `⟦CAP-2⟧` multiset 相等，外加残缺自检（`⟦` 与 `⟧` 的数量必须与完整 placeholder 数吻合，拦截 `⟦BLK-3⟧⟧` 这类碎片）
-2. **control sequence**：`\cmd`（含星号变体）与 `\符号` multiset 相等
-3. **括号与 inline math**：未转义的 `{` `}` `$` 计数分别相等
-4. **段落数**：含可译文本的段落数相等，防简译与跳段。一段剥除 placeholder、`\begin{X}` 与 `\end{X}` 整体、其余控制序列的命令名（参数保留）之后仍有非空白字符才计入；只含 placeholder 或只含 `\maketitle`、`\newpage` 这类命令的段落不计入，模型在这些位置合并空行对排版没有影响。口径定义与实测证据见 [stages/chunk.md](stages/chunk.md) 段落计数的两个口径节
+1. **placeholders**：`⟦BLK-3⟧` / `⟦CAP-2⟧` multiset 相等，外加残缺自检（`⟦` 与 `⟧` 的数量必须与完整 placeholder 数吻合，拦截 `⟦BLK-3⟧⟧` 这类碎片）
+2. **control_sequences**：`\cmd`（含星号变体）与 `\符号` multiset 相等
+3. **braces_and_math**：未转义的 `{` `}` `$` 计数分别相等
+4. **paragraph_count**：含可译文本的段落数相等（口径定义见 [stages/chunk.md](stages/chunk.md) 段落计数的两个口径节）
 
-层名与 report artifact model 的 `validation.failures_by_check` 键一一对应。validate 同时是 CLI 子命令 `tongtu validate`，agent 在会话内调的与脚本在出口调的是同一份实现。
+层名与 report artifact model 的 `validation.failures_by_check` 键一一对应。validate 同时是 CLI 子命令 `tongtu validate`；compile 终审比对正文控制序列时，用的是同一份实现的第 2 层。
+
+**上下文按 chunk 类型不同**：front chunk 带 heading_tree（brief.json 中的章节标题树）用于缩写展开，不带 brief 与 neighbors（自身即摘要，且是首个 chunk）；body 与 appendix chunk 带 brief（abstract）与 neighbors（前后各三段源文本），不带 heading_tree——实测证明正文 chunk 带标题树引发推理膨胀或白花输入 token，翻译质量无可见差异。所有 chunk 都带 terms 与 style。
 
 **关键取舍**：
 
-- **重试循环不由脚本驱动**。agent 在会话内翻译、跑 validate、按输出改，改到自己认为可以为止；脚本不采信这个判断，会话退出后自己再跑一遍 validate 终审。
-- **缓存查询在拉起会话之前**。命中直接取译文，不拉 agent。缓存粒度是 chunk，所以必须保持一个 chunk 一次调用；把整篇交给一次会话会让 incremental retranslation 退化为全量（§4）。
-- **空白由驱动器保管**。送进会话的是去掉首尾空白的 chunk 正文，写回时由代码把首尾空白原样接上。译文 chunk 拼接后的形状因此由代码保证，而不是指望模型不动空白；validate 也只比对正文，段落数这一层才不会被首尾换行搅混。
-- **neighboring context 只用原文**。前一个 chunk 的译文不进后一个 chunk 的提示词，理由见附录 A.11。
-- **术语一致性零期不进 validate**。四层校验只管结构；命中术语是否用了 canonical translation、不译词是否原样保留，零期靠提示词与 cache invalidation（§4）约束，不设机械校验——代价是编辑术语触发的 incremental retranslation 没有机械手段确认新译法真的生效。将来若加，方向是不译词的保留作硬判据、canonical translation 作 report warning。
-- **出口 validate 与会话内的重译共用一份实现**。编译修复会话调 `tex retranslate` 时走同一个 validate，否则编译阶段救活的那一段就绕过了 validation。
-- **不通过不终止 pipeline**。该 chunk 回退原文并记入 report，与 compile 里 `fallback` 是同一条纪律：保证总能产出 PDF。
+- **翻译用 `ask` 原语，重试由脚本驱动**。翻译的输入输出形态固定，不需要读写文件或执行命令；validate 失败的重试是机械循环——带上校验错误信息重新 ask。`work` 原语的会话拉起开销对小 chunk 不值。决策见附录 A.32。
+- **chunk 级并发**。chunk 之间无数据依赖（neighbors 取源文本，缓存 key 不含前一个 chunk 的译文），标准库线程池直接并发，默认 4，`--jobs` 可覆盖。写盘收在主线程，不需要加锁。
+- **零期不做 chunk 级翻译记忆**。复用的粒度是整个阶段：输入 hash、模型标识与 prompt 版本全都不变才跳过，任一变了就整篇重翻。chunk 级缓存的设计留在 §4，实现推迟（附录 A.33）。
+- **空白由驱动器保管**。送进 ask 的是去掉首尾空白的 chunk 正文，写回时由代码把首尾空白原样接上。validate 只比对正文。
+- **neighbors 只用原文**。前一个 chunk 的译文不进后一个 chunk 的提示词，理由见附录 A.11。
+- **术语一致性零期不进 validate**。四层校验只管结构。将来若加，方向是不译词的保留作硬判据、canonical translation 作 report warning。
+- **compile 复用 validate 的第 2 层**。终审比对正文控制序列 multiset 走同一份实现；compile 阶段本身不重译，会话内的重译与回退零期都不实现（附录 A.36）。
+- **单 chunk 不通过不终止，回退超阈值整体判失败**。单个 chunk 回退原文并记入 report，保证总能产出 PDF；但 fallback 比例超过 `FALLBACK_RATIO_MAX`（默认 20%）时 translate 判失败、不进入 compile。
 
-> 缓存 key 构成见 §4，原语定义见 agent 适配层节，决策见附录 A.15。
+> 缓存 key 构成见 §4，上下文组装与实测依据见 [stages/translate.md](stages/translate.md)，决策见附录 A.15 与 A.32。
 
 ### compile —— backfill、inject，然后交给会话编到出 PDF
 
-**要解决的问题**：译文是掩码文本，不能直接编译；英文 preamble 排不出中文；而编译错误的种类是开放的，package 冲突、字体缺失、float 溢出、documentclass 不认识的选项，每篇论文遇到的都不一样。更麻烦的是「编译通过」不等于「排得对」：tofu、图跑飞、双栏串行、line breaking 难看，这些只有看渲染结果才知道。
+> 设计权威在 [stages/compile.md](stages/compile.md)，本节是摘要与跨节引用。
 
-**输入 → 输出**：译文 chunk + `blocks.json` → `zh.tex` + `zh.pdf` + `build/zh-spans.json`（每个 chunk 在 `zh.tex` 里的字符区间，export 的 anchors 消费）。
+**要解决的问题**：译文是掩码文本，不能直接编译；英文 preamble 排不出中文；而编译错误的种类是开放的，package 冲突、字体缺失、float 溢出、documentclass 不认识的选项，每篇论文遇到的都不一样。更麻烦的是「编译通过」不等于「排得对」：缺字形、图跑飞、双栏串行、断行难看，这些只有看渲染结果才知道。
 
-**三段职责**：
+**输入 → 输出**：译文 chunk + `blocks.json` → `build/zh-raw.tex`（backfill 产物，含 chunk 边界哨兵）+ `build/zh/zh.tex` + `build/zh/zh.pdf` + `build/zh/zh.synctex.gz` + `build/captions-zh.json`（caption 译文，export 并入 figures 元数据）。
 
-1. **脚本产出起点**：unmask backfill（placeholder 换回原始 TeX，中间 artifact `zh-raw.tex` 落 `build/` 供调试）、inject_cjk inject（xeCJK 与 font fallback chain，查 documentclass 适配表）、组装 `build/zh/`。这一段是确定性的，交出一份可编译的 `zh.tex` 与已知的 chunk 区间。backfill 本就要逐个判定 caption 槽位是否被翻译（未改动的槽位 backfill 原文），译过的顺手落一份 caption 译文中间 artifact，供 export 并入 figures 元数据（figures 节）。
-2. **会话编译修复**（hook⑥）：agent 编译、读日志、看渲染页、改、再编，直到它认为可以。全部动作经由工具面，不直接碰文件系统。
-3. **脚本终审出口**：`zh.pdf` 存在、非空、页数与 precompile 基线相当、日志无 CJK missing glyph。agent 的自述不作数。
+**四段职责**：
 
-**missing glyph 是硬判据**。xelatex 遇到字体里没有的字形会直接丢掉——这就是 tofu 的来源——只在日志留一行 `Missing character`，前提是 `\tracinglostchars ≥ 2`；2021 年后的 LaTeX 内核默认即 2，inject_cjk 仍在 preamble 显式写入 `\tracinglostchars=2`，不依赖内核版本。出口脚本扫描日志：missing glyph 落在 CJK 区段（含全角标点）→ 判失败——它只有 font fallback chain 没接上一个原因，而页数判据看不见它；非 CJK missing glyph、`Overfull \hbox` 行数与未定义引用数则取相对 precompile 基线的增量，进 report 作 warning，不设硬门——「多难看才算坏」没有机械答案，这部分仍靠会话内 agent 看渲染页。检查与 §7 pseudo-translation e2e 的 missing glyph 断言共用一份实现，与 validate 的三个调用方是同一条纪律。
+1. **backfill**（脚本）：按文档序拼接译文 chunk，相邻 chunk 之间插一行注释哨兵 `%%tongtu chunk c012`，整体 unmask 换回原始 TeX，落 `build/zh-raw.tex`。`unmask` 的返回值直接给出 caption 译文；CAP token 丢失一律判失败，不按原文回填。
+2. **inject_cjk**（脚本）：在 `\begin{document}` 之前插入 xeCJK、字体设置与 `\tracinglostchars=2`，查 documentclass 适配表；把 `src/` 与仓库 `fonts/` 拷进编译树 `build/zh/`。
+3. **首次编译与判据**（脚本）：`latexmk -xelatex -interaction=nonstopmode -synctex=1`，跑一遍出口判据。全过则不拉会话，多数论文走这条路。
+4. **修复会话**（hook⑥）与**脚本终审**：会话恰拉起一次，cwd 是编译树，agent 自由读写树内文件；结束后脚本 `latexmk -C` 清理再重编一遍，判据全部取自这一遍，agent 的自述不作数。
 
-**工具面**：会话内的动作只有 `tongtu tex` 子命令面这几个，`zh.tex` 与编译日志之外的文件 agent 看不到。命令清单见 [CLI.md](CLI.md)（`tex retranslate` 复用hook⑤），分区权限规则见下。
+**出口判据五条硬门**：编译退出码 0；`zh.pdf` 存在且非空；页数与 precompile 基线之比落在 `[0.7, 1.3]`；`zh.log` 中报的字符落在 CJK 区段的 `Missing character` 计数为 0（绝对零，不减基线）；正文控制序列 multiset 相对 `zh-raw.tex` 只增不减。非 CJK 缺字形、`Overfull \hbox`、未定义引用与引文取相对基线的增量，记 warning 不设门——「多难看才算坏」没有机械答案，这部分靠会话内 agent 看渲染页。
 
-**按区域分区权限，metadata 只来自显式动作**：
+**CJK 缺字形是绝对零**：xelatex 遇到字体里没有的字形会直接丢掉，只在日志留一行 `Missing character`（前提是 `\tracinglostchars ≥ 2`，inject_cjk 显式写入不依赖内核版本）。译文里的中文字符缺字形只有 font fallback chain 没接上一个原因，而页数判据看不见它。precompile 基线里的 `missing_characters` 不参与这条判据：原文里的中文字符在那边缺字形属预期，本阶段注入 xeCJK 后即正常渲染。
 
-- preamble（`\begin{document}` 之前）可以自由 patch。编译错误的绝大多数修复落在这里，而这些改动与 chunk 状态无关。
-- 正文的每一次变化都对应一个语义明确的动作：`fallback`、`retranslate`，或标注了 `--chunk` 的 patch。动作发生时直接写 `chunks.json` 的 status（`translated` / `fallback` / `edited`）与 report。
-
-`chunks.json` 与 report 因此不必从 `zh.tex` 反推。文本差异记得住「改了什么」，记不住「这个改动意味着什么」，而 status 要的正是后者。
+**正文控制序列只增不减**：这是其余四条判据都看不见的一类静默失败——注释掉一个 `\includegraphics`、删掉一个编不过的 `figure` 环境，能让编译通过、PDF 非空、CJK 计数为零、页数仍在区间内，而 PDF 缺内容。比对基准是 `zh-raw.tex` 的正文段，用 `validation.py` 已有的 control sequence multiset 实现，preamble 段排除在外。
 
 **关键取舍**：
 
-- **除 budget 外不限制 agent 的动作**。修复手段是开放集合（加 package、删冲突 package、调 float 参数、换字体、改 `\textwidth`），枚举我们想得到的动作只会在没预料到的疑难情况上卡住 agent，而那正是最需要它的场合。唯一的约束是编译次数上限，超限即终止会话并记 report。
-- **trace 即 command sequence**。start-state hash + command sequence（参数、返回、耗时与 token）+ end-state hash。确定性命令可重放，非确定性命令（`retranslate` 调模型、`compile` 产日志）记下返回值代入。这份记录是固化规则（§2 原则 3）的原料，也顺带完成 bypass detection：重放结果与 end-state hash 对不上，就说明有改动没走工具面。
-- **`zh-spans.json` 由 patch 增量维护**。每次 patch 知道位置与前后长度差，chunk 区间随之更新，anchors 拿到的是精确输入而不是文本查找的猜测。
-- **适配表是数据，不是代码**。`tongtu/data/documentclass.json` 是叠加层，让会话里反复出现的成功适配沉淀成数据条目（§2 原则 3），下一篇同类论文的起点就已经是对的。
-- **保证总能出 PDF**。回退过的段落记入 report.json，所以「编译通过」不等于「全篇都是译文」。
+- **会话拿 cwd 自由读写，不做权限隔离**。与 precompile 的修复会话同形态。原设计（A.17 / A.18）是 agent 经 `tongtu tex` 一组命令读写、按区域分区权限、trace 为可重放的 command sequence，零期不实施：它的前提在附录 B.7 里本就是待验证项，而更根本的是**命令集防不住真正的风险**——agent 用 `tex patch --chunk` 把一段删掉，metadata 会记下这个 chunk 是 `edited`，内容照样没了。命令集买到的是记账精度，拦住内容丢失靠的是出口判据，而判据由脚本在终审时跑，与 agent 有没有命令集无关（§2 原则 1：验证在出口，不在过程）。
+- **会话只留一条命令 `tongtu tex compile`**，理由是参数统一：会话编译与脚本终审必须是同一条 latexmk 命令。参数留在脚本里而不是编译树内的配置文件，后者 agent 能改。
+- **chunk 边界用注释哨兵标记**。终审通过后扫一遍即得每个 chunk 的行区间与「哪些 chunk 被改过」，不做增量维护。哨兵被删则该区间标记为未知、记 warning，不阻断。
+- **不落独立的位置产物**。chunk 行区间记在 manifest，block 与标题的位置由 export 从 `zh.tex`、`zh-raw.tex` 与 `blocks.json` 现算——它们没有一样是只有 compile 知道的，另落一份盘只多出一处需要保持一致的拷贝（同 A.18 否决「另存 diff」）。compile 独有、事后补不了的只有两件：哨兵在 backfill 时写进 `zh.tex`，`zh-raw.tex` 落盘作比对基准。
+- **适配表是数据，不是代码**。`tongtu/data/documentclass.json` 是叠加层，让会话里反复出现的成功适配沉淀成数据条目（§2 原则 3）。零期是空表加一份 schema，条目只从真实论文的会话成果长出来。
+- **零期不实现任何回退路径**。`tex fallback`、`tex retranslate`、caption 的原文回填一律不做，正文控制序列减少设为硬门而不是 warning。这些路径的共同作用是让一次有问题的执行仍然产出 PDF，而调试期需要的恰好相反：译文丢了 placeholder、agent 删了一张图、某段译文编不过，都应当场失败并指出位置。「保证总能出 PDF」这条要求因此在零期让位，等失败模式看清楚之后再逐条加回来（stages/compile.md「零期不实现 fallback」节）。
 
-> **前提待验证**：工具面能否真正约束住 agent，取决于运行时可否配置成「只给指定工具、不给 shell」。若不能，退路是容器隔离，`zh.tex` 挂在容器外经 CLI 中转。见附录 B 第 7 条。
-
-> 逐条实现机制见 `tongtu/stages/compile.py` 与 `inject_cjk.py` 模块文档，决策见附录 A.13 / A.16 / A.17 / A.18。
+> 逐条实现机制见 [stages/compile.md](stages/compile.md)，决策见附录 A.13 / A.16 / A.17 / A.18 / A.20 / A.36。
 
 ### figures —— 整理图源，供索引与下游渲染
 
@@ -215,13 +220,13 @@ chunk 循环 → 查缓存 →（未命中）组装上下文 → 拉起会话（
 
 **Stage 级**：每阶段完成后在 `build/manifests/<stage>.json` 记录输入 hash 集与输出清单。重跑时输入未变 → 跳过。断点续跑 = 原样重跑同一条命令。
 
-**chunk 级**（翻译缓存，也是唯一昂贵的一层）：
+**chunk 级**（翻译缓存，也是唯一昂贵的一层）。**零期不实现**：translate 的复用粒度是整个阶段，输入 hash、模型标识与 prompt 版本全都不变才跳过，任一变了就整篇重翻，`build/chunks.json` 不产出。本小节记的是设计，实现推迟到增量重翻成为真实需求时，与 `retranslate` 子命令一起做（决策见附录 A.33）。
 
 ```
-key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
-          + neighbor_src                # 提示词携带的 neighboring context（前后各若干段，随源码固定）
-          + relevant_terms(chunk)       # glossary 术语条目中在本 chunk 命中的子集（排序）
-          + brief_hash                  # survey 产出的 brief.json 内容 hash（照录的全局语境）
+key = hash( norm(chunk)                 # 空白规范化后的 chunk 源码
+          + neighbors                   # 前后邻段落的拼接（前一 chunk 末 N 段 + 后一 chunk 首 N 段，源文本）
+          + terms(chunk)                # glossary 术语条目中在本 chunk 命中的子集（排序）
+          + brief_hash                  # survey 产出的 brief.json 内容 hash（abstract + heading_tree）
           + style_hash                  # resolved glossary 的 style 文本 hash（用户写的额外要求）
           + prompt_version              # SKILL / prompt 资产版本
           + model_id )
@@ -243,7 +248,7 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 
 **figures 逐图缓存**：以源图文件 hash 为 key，与翻译状态无关，翻译侧任何返工都不触发重渲染。
 
-**不做跨论文全局缓存**：chunk 源码跨论文几乎不复用，去重价值≈0。缓存存放在该论文的工作目录内；权威翻译记忆是 artifact package 中的 `chunks.json`（见 §5 artifact contract 节），`build/` 整体删除不丢失任何昂贵成果。
+**不做跨论文全局缓存**：chunk 源码跨论文几乎不复用，去重价值≈0。缓存存放在该论文的工作目录内；权威翻译记忆是 artifact package 中的 `chunks.json`（见 §5 artifact contract 节），`build/` 整体删除不丢失任何昂贵成果。零期 `build/` 删掉就是整篇重翻（附录 A.33）。
 
 **key 的构成会变，记忆不应作废**：`chunks.json` 每条记录都存着 key 的组成要素快照（源码 hash、术语快照、模型与 prompt 版本），在此之上加一个 `key_version`——key 构成算法自身的版本号。将来改 key 逻辑（brief 分字段参与、按要素降级匹配、非 arXiv 来源）时，从存好的要素对旧记忆重算新 key，翻译记忆平滑迁移。同一论文的版次更新（arXiv v2）今天没有增量语义：survey 重跑、brief 变，全部 chunk 失效——这个场景显式推迟（附录 B 第 10 条），`key_version` 是为它留的口子。
 
@@ -283,7 +288,8 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 | `zh.pdf` | xelatex 编译 artifact，主阅读格式 |
 | `blocks.json` | 每个 non-translatable environment 的类型、label、原始 TeX、源码位置 |
 | `anchors.json` | 交互地图：公式/图/表/章节在 PDF 中的页码与矩形区域 |
-| `chunks.json` | **翻译记忆**：每个 chunk `源码hash → 译文 + 模型/prompt 版本/相关术语快照/状态(translated\|fallback\|edited)`，incremental retranslation 的全部状态，另记 `key_version`（缓存 key 构成算法的版本号，供将来重算 key 迁移记忆，§4）。`edited` = 编译修复会话内经标注 patch 改过的 chunk |
+| `paper.json` | **结构化索引**：章节树、段落条目、block 条目三类信息的单一汇总视图，从既有 artifact 组装（见「结构化索引与阅读侧消费约定」节）。**零期未产出**：随 export 阶段落地 |
+| `chunks.json` | **翻译记忆**：每个 chunk `源码hash → 译文 + 模型/prompt 版本/相关术语快照/状态(translated\|fallback\|edited)`，incremental retranslation 的全部状态，另记 `key_version`（缓存 key 构成算法的版本号，供将来重算 key 迁移记忆，§4）。`edited` = 编译修复会话内经标注 patch 改过的 chunk。**零期未产出**：translate 的复用粒度是整个阶段（§4，附录 A.33），逐 chunk 的结论记在 `build/manifests/translate.json` 里 |
 | `brief.json` | **全局语境**：论文原文 abstract **照录**（程序提取，不经模型）。用途是按 chunk 翻译的全局上下文；将来的扩展字段落在此文件（[stages/survey.md](stages/survey.md)） |
 | `figures/` + 元数据 | 图源整理 artifact：位图源（png/jpg/webp）原样带走，矢量源（pdf/eps）转一份位图并保留矢量原件（按固定 DPI，起步 150）；元数据含 caption（原文与译文，译文由 export 从 backfill 结果并入）、全文引用段落清单、原始尺寸与 `format` 字段 |
 | `glossary.json` | 本篇 resolved glossary：三层输入合并并按全文命中过滤后的词条与 style（[stages/survey.md](stages/survey.md)；hook④ 接线后含 agent 新决策） |
@@ -294,6 +300,26 @@ key = hash( norm(chunk_src)              # 空白规范化后的 chunk 源码
 各 JSON artifact 以 `tongtu/artifacts/` 下的 pydantic model 为字段级权威定义（下称 **artifact model**）：字段、类型与默认值只在 model 一处定义，artifact 的读写都经过 model 校验，`--json` 事件流的事件类型同样以 model 定义。契约变更 = 改 model 并 bump `contract_version`，契约 diff 在 model 代码的 diff 上审阅。语言中立的 JSON Schema 由 model 生成、不提交进仓库：在出现仓库外的消费者（wenshu 接入、第三方）之前它没有读者，需要契约文件时由导出命令按当前 model 生成，不提交不丢失信息。决策见附录 A.22。
 
 **跨版本兼容规则还没想**：旧 artifact package 能否被新版通途 incremental retranslation（`chunks.json` 是否跨版本可读）、wenshu 拿到不认识的 `contract_version` 该怎么办、版本号用 semver 还是单调整数，都未定。零期只有一个版本，先不处理。
+
+### 结构化索引（`paper.json`）与阅读侧消费约定
+
+**定位**：`paper.json` 是论文结构的单向衍生视图——只从源码与既有 artifact 组装生成，任何路径都不从它反向生成源码；translate 与 compile 不读它，它不是构建的中间表示（决策见附录 A.34）。§1 的「结构化索引」由它承载：人读 `zh.pdf`，AI 与程序读 `paper.json` 加 `blocks.json`，不解析 PDF。
+
+**内容三类，全部是既有 artifact 信息的汇总与关联，不新增提取过程**：
+
+- **章节树**：survey 扫出的 heading_tree（`brief.json`）。
+- **段落条目**：id 是全文段落序号（`p-0012` 形），按掩码文本的段落切分编号，携带原文与译文文本。validate 强制原译段落一一对应（§3 translate 节），同一 id 在原译两侧指向同一段落。**段落 id 不由 chunk id 派生**：chunk id 只在同一次分块结果下有效（[stages/chunk.md](stages/chunk.md) part 与 chunk id 节），而分块的三个常量仍在校准期（附录 B.1），校准一次即改变全部 chunk id，按它派生的划线标注会随之失效；段落序号只随掩码文本变化，而掩码文本只随源码与环境分类表变化，标注因此在重翻与分块常量校准之后都仍然稳定（版次更新除外，那时整包重建，附录 B.10）。chunk id 作为附加字段保留，供排查与定位译文文件用，不承担标识职责。
+- **block 条目**：行间公式、图、表的 block id、类型、label、caption 原文与译文、引用段落清单，来自 `blocks.json` 与 figures 元数据，经 `anchors.json` 关联到 PDF 页码与矩形。
+
+字段级定义照旧以 artifact model 为权威；组装发生在 export，不新增流水线阶段，字段细化随 export 阶段设计稿定。
+
+**阅读侧消费约定**（对文枢阅读器与任何包外消费者）：
+
+- **块级定位**（行间公式、图、表、章节标题）：点击坐标与该页 anchors 矩形做命中判定得到 block id，再从 `paper.json` / `blocks.json` 取原始 TeX、label 与引用段落——人点的是渲染结果，程序拿到的是源码。消费方必须读 anchors 的 `source` 与 `confidence` 字段：页级锚点走降级交互（如列出该页全部候选项），不得假设矩形精确（附录 B.4）。inspection page 的 hotspot 点击是这条约定的第一个消费实例（inspection page 节）。
+- **正文划线**：持久标识用文本锚定——段落 id + 选中引文 + 前后文 + 段内偏移；PDF 坐标只作渲染缓存（决策见附录 A.35）。重翻或重编译后全篇坐标变化，文本锚定在未重翻的段落仍然命中，重翻的段落按段落 id 对新译文重新锚定。行内公式不是 block、随段落文本走，点击定位到段落级；段落级矩形与行内公式索引显式推迟（附录 B.12）。
+- **`zh.synctex.gz` 不是阅读侧定位的依赖**：定位由文本锚定与 anchors 承担，synctex 随包分发只供将来的段落级矩形计算（附录 B.12）。合成 anchors 所需的位置数据不落独立产物：block 与标题的行号由 export 从 `zh.tex` 与 `blocks.json` 现算，chunk 的行区间在 `build/manifests/compile.json` 里（[stages/compile.md](stages/compile.md) 产物模型节）。
+
+**多输入与多输出的汇合点是本契约**：将来接入其他源格式（typst、markdown、PDF 经 doc2x 的 degraded path），做法是每格式一条原生流水线——翻译在源格式内进行、用该格式的编译器或校验器验证——共同出口是同一份 artifact package；多种阅读格式（HTML、markdown 等）是只消费 artifact package 的渲染器，保真主产物仍由各源格式的编译器产出。为此，契约的结构性字段保持格式中立：结构字段不以 LaTeX 概念命名（environment、preamble 这类词不出现在结构字段名里），原始 TeX 作为内容字段存放不受此限。跨流水线的 stage 接口不提前抽取，等第二条流水线落地时从两个具体实现中提取（决策见附录 A.34）。
 
 ### inspection page（`report.html`）
 
@@ -361,10 +387,10 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 12. **章节优先的大 chunk 分块，翻译粒度与回退粒度解耦。** 曾考虑：段落级小 chunk；固定 token 窗口切割。否决理由：小 chunk 切断节内衔接，而节内衔接是翻译质量的主要来源；固定窗口会切进环境或段落内部。代价是编辑术语时会失效整节，token 成本可接受。粒度约束见 §3。**「不切入环境内部」的表述已由 A.28 精确化**：透明环境对分块透明、可被切点跨越，不切入的是不透明环境与段落内部。
 13. **assemble 并入 compile，「documentclass 适配」与「编译修复」合为一个hook。** 曾考虑：独立 assemble 阶段（unmask + inject_cjk）。否决理由：原 assemble 的结束判定一栏写的是「终审权在 compile」，而没有自身结束判定的阶段在本模型下不构成独立阶段；修复会话的常见动作是「改 inject 配置/preamble → 重编译」，这个循环本身跨越两者，合并后它在单一阶段驱动器内闭合；unmask + inject 是廉价文本操作，无独立缓存价值，中间 artifact `zh-raw.tex` 仍落 `build/` 供调试。适配与修复并成一个hook，是因为它们是同一件事（让这个 documentclass 编译通过）、同一个终审方式（编译循环）。
 14. **figures 单格式 PNG + 按视觉模型上限定长边，暂不做 WebP/GIF/SVG。** 曾考虑：多格式兼容（webp/gif/svg）。否决理由：「分辨率高则体积大、体积小则模糊」属于分辨率策略，与格式无关；GIF 色深劣于 PNG；SVG 视觉 API 不接受，PDF→SVG 转换的保真度问题也多，矢量需求已由 zh.pdf 承担；WebP 的收益只在存储与传输体积，留作后续优化，元数据 `format` 字段已预留。人看高清走 zh.pdf 内嵌的矢量原图，不需要独立的高清位图。**本条已被 A.19 取代。**
-15. **翻译内环交给 agent 自跑，脚本只在出口终审。** 曾考虑：脚本驱动重试，即用单次问答原语 `ask`，拿回译文后由脚本跑 validate、把错误格式化后喂回提示词，至多 N 次。否决理由：那等于我们代替 agent 读工具输出，而 agent 运行时本来就能执行命令；重试计数、错误转译、`max_retries` 都是编排层为此维护的机械代码。§2 原则 3 本来就允许hook内部多轮与执行命令，脚本驱动重试是实现选择而非原则要求，改用 `work` 原语不移交控制流：脚本仍决定何时拉起、拉起几次，出口仍由 validate 终审，不过则该 chunk 回退原文。代价是每个 chunk 一次会话的拉起开销大于单次调用，需实测（见 BACKLOG）。缓存与回退粒度不随之改变：缓存查询在拉起会话之前，一个 chunk 一次调用的约束不变。
+15. **翻译内环交给 agent 自跑，脚本只在出口终审。** 曾考虑：脚本驱动重试，即用单次问答原语 `ask`，拿回译文后由脚本跑 validate、把错误格式化后喂回提示词，至多 N 次。否决理由：那等于我们代替 agent 读工具输出，而 agent 运行时本来就能执行命令；重试计数、错误转译、`max_retries` 都是编排层为此维护的机械代码。§2 原则 3 本来就允许hook内部多轮与执行命令，脚本驱动重试是实现选择而非原则要求，改用 `work` 原语不移交控制流：脚本仍决定何时拉起、拉起几次，出口仍由 validate 终审，不过则该 chunk 回退原文。代价是每个 chunk 一次会话的拉起开销大于单次调用，需实测（见 BACKLOG）。缓存与回退粒度不随之改变：缓存查询在拉起会话之前，一个 chunk 一次调用的约束不变。**本条已被 A.32 修正。**
 16. **compile 的编译修复交给 agent 主导。** 曾考虑：脚本 triage（全局问题 vs 坏段）+ chunk→段落两级 bisection localization + 「译文错误数不超过原文」的放宽判据。否决理由：编译错误是开放集合，为每一类写 triage 规则没有尽头；bisection localization 是拿算力换判断力，每次探测烧一次编译，而 agent 读日志行号往往一步到位；更根本的是「编译通过」不等于「排得对」，tofu、图跑飞、双栏串行只有看渲染结果才知道，脚本没有这个能力。脚本保留的是确定性起点（backfill 与 inject）与出口终审。
-17. **agent 经 CLI 工具面读写 `zh.tex`，按区域分区权限。** 曾考虑：给 agent 文件系统访问，事后 diff 推断发生了什么。否决理由：文本差异记得住「改了什么」，记不住「这个改动意味着什么」——某段被改回英文与某段被重写，在 diff 里长得一样，而 `chunks.json` 的 status 要的正是语义。metadata 因此只来自显式动作：preamble 自由 patch，正文的每次变化对应 `fallback` / `retranslate` / 标注了 chunk 的 patch。工具面同时限定 agent 能读到什么，顺带控制上下文开销。
-18. **trace = start-state hash + command sequence + end-state hash，不存 diff。** 曾考虑：记录每次会话对工作目录的改动 diff。否决理由：command sequence 本身就是改动的完整描述（`patch --old X --new Y` 即那次改动），起点加序列可重放出任何中间状态，另存差异只是同一信息的第二份拷贝，还多一处可能对不上的地方；command sequence 还带着 agent 的意图，而 `fallback` 与 `patch` 在 diff 里无从分辨，固化规则要总结的恰恰是意图。非确定性命令记返回值代入重放。bypass detection 随之免费：重放结果与 end-state hash 不符，即说明有改动没走工具面。
+17. **agent 经 CLI 工具面读写 `zh.tex`，按区域分区权限。** 曾考虑：给 agent 文件系统访问，事后 diff 推断发生了什么。否决理由：文本差异记得住「改了什么」，记不住「这个改动意味着什么」——某段被改回英文与某段被重写，在 diff 里长得一样，而 `chunks.json` 的 status 要的正是语义。metadata 因此只来自显式动作：preamble 自由 patch，正文的每次变化对应 `fallback` / `retranslate` / 标注了 chunk 的 patch。工具面同时限定 agent 能读到什么，顺带控制上下文开销。**本条零期不实施，见 A.36。**
+18. **trace = start-state hash + command sequence + end-state hash，不存 diff。** 曾考虑：记录每次会话对工作目录的改动 diff。否决理由：command sequence 本身就是改动的完整描述（`patch --old X --new Y` 即那次改动），起点加序列可重放出任何中间状态，另存差异只是同一信息的第二份拷贝，还多一处可能对不上的地方；command sequence 还带着 agent 的意图，而 `fallback` 与 `patch` 在 diff 里无从分辨，固化规则要总结的恰恰是意图。非确定性命令记返回值代入重放。bypass detection 随之免费：重放结果与 end-state hash 不符，即说明有改动没走工具面。**本条零期不实施，见 A.36**；零期的 compile 会话只落 transcript，precompile 已是同样的处理。
 19. **figures 保留矢量原件 + 位图，不统一成单一格式。** 曾考虑：全部转 PNG 并按视觉模型上限（≈1568px）定 DPI（即本文 A.14）；一并支持 SVG。否决理由：A.14 的论证建立在「消费者只有视觉模型与 inspection page」这个假设上，而下游还包括 markdown 与 typst 渲染；1568px 是其中一个消费者的数字，焊进 artifact package 意味着换消费者就要重新生成，位图源缩过之后原图信息也找不回来。SVG 暂不做，因为 PDF→SVG 的保真度未经实测（字体转路径则体积大且文字不可选，依赖字体可用则可能出现 missing glyph），而保留 PDF 原件已覆盖需要矢量的场景，下游要 SVG 可自行转换。
 20. **compile 出口加 missing glyph 硬判据，排版质量的其余维度记 warning 不设门。** 曾考虑：出口只查页数，排版质量全部交给会话内 agent 看渲染页。否决理由：那让「排得对」的最终终审落在 agent 自述上，与原则 1 冲突，而 missing glyph 恰好机械可查——`\tracinglostchars=2` 之下每个丢掉的字形都在日志留 `Missing character` 一行，CJK missing glyph 只有 font fallback chain 没接上一个原因，页数判据看不见它，出来的 PDF 必然带 tofu。overfull 与未定义引用相对 precompile 基线的增量同样免费，但「多难看才算坏」没有机械答案，只记 report 不拦产出。机制见 §3 compile 节。
 21. **编译修复成果零期不持久化，重编译 = 重新拉起修复会话。** 曾考虑：把修复后的 preamble（或 patch 集）纳入状态资产，随 artifact package 走，重编译从已修复状态起步。否决理由：方案本身成立，但零期没有真实论文的修复 trace，不知道持久化成什么形态才对（patch 集、终态 preamble、还是适配表条目），先按最简单的语义跑，代价是重复的会话开销。攒够 trace 后走更便宜的路线：重编译先重放上次会话的确定性命令或命中适配表（A.18 的 trace 本就可重放），失败再拉会话。原则 4 的「构建状态也是数据」范围因此注明只含翻译记忆。语义见 §4。
@@ -384,6 +410,15 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 
 31. **测试按外部依赖分层，编译层随阶段推进逐步加长；测试用例取自各阶段设计稿的验收条目。** 曾考虑：延续「happy path 调通前不写测试」，把测试整体推迟到全部阶段建成；编译层维持 identity translation 的定义。否决理由：那条推迟规则来自零期重建的起点——Phase0 照一份未定稿的总纲一次性实现，验收未通过，代码与测试一并删除；但失效的原因是架构未定稿就一次性实现，测试是被牵连的一方。改为逐阶段先出设计稿、拍板再动手之后，已拍板阶段的接口不再大幅漂移（masking.py 自落地后未再改动），推迟规则的前提只对尚未设计的阶段成立。更直接的理由是各阶段的「验收与试跑对象」一节本就是机械可判的断言清单（精确到 manifest 的字段取值，如 `fix_session` 为 false、`decided_by` 取 `newtheorem`），此前的落地方式是阶段完成时人工跑一遍、跑完不留下可重复执行的东西，而每个新阶段落地都在改动已完成阶段共用的代码，这类改动打坏上游阶段时没有任何自动检查会报告。编译层维持 identity translation 的定义则把这一层的起点绑在全部阶段建成之后，而它从第一个需要 TeX 的阶段起即成立，identity translation 因此降为该层的终点形态。A.7 否决的「LLM 层也设为 PR 必过」不受影响：承担合并必过的具体对象由 identity translation 变为编译层自造论文组，两者同为零模型成本覆盖编译链路的测试。分层与作业结构见 [ci/README.md](ci/README.md)。
 
+32. **翻译改用 `ask` 原语，脚本驱动 validate 与重试，不用 `work`。** 曾考虑：`work` 原语、agent 在会话内自行翻译并跑 validate（A.15 的原选型）。否决理由：翻译的输入输出形态固定（chunk 文本进、译文出），不需要读写文件或执行命令；validate 失败的重试是机械循环——带上校验错误信息重新 ask，脚本驱动几行代码的事；`work` 的进程拉起开销对 146 token 的 front chunk 完全不值。实测依据：2412.19437 上 2 个模型 × 4 个 chunk 共 8 次调用，四层 validate 全部通过，无需 agent 自主修改；正文 chunk 带标题树引发 output token 5.5 倍膨胀（方案 A），不带标题树的方案 B 成本最低且 validate 全通过。详见 [stages/translate.md](stages/translate.md) 与 [models.md](models.md)。**本条修正 A.15。**
+
+33. **零期不做 chunk 级翻译记忆，translate 的复用粒度是整个阶段。** 曾考虑：按 §4 的 key 建 `chunks.json`，改一个术语只失效命中它的 chunk（本节原设计）。推迟理由：chunk 级记忆要维护一整套东西——key 的构成、要素快照、`key_version` 与它的迁移路径、记忆与译文目录两份产物的删除语义各不相同，而这些机制换来的只是重翻一篇论文的调用费。实测一篇 10 个 chunk 的论文全量翻译不到五分钟、成本很低（§1「自用」：开发阶段不为省钱牺牲形态，性价比是之后的事）。阶段级判定已经覆盖「输入没变就不重算」这条正事：三个输入 hash 加 `model_id`、`prompt_version` 全都不变才跳过，任一变了就整篇重翻。本节 chunk 级那一段记的是设计，实现推迟到增量重翻成为真实需求时——那时 `retranslate` 子命令也要一起做，两者本就是同一件事。
+
+34. **`paper.json` 是单向衍生的结构化索引，不做构建期中间表示；多格式在出口 artifact contract 汇合。** 曾考虑：定义 LaTeX 与 paper IR 的一一映射（abstract / section / caption / figure / table / algorithm 一类结构词汇），翻译与编译经 IR 走，以同一 IR 对接多种输入（PDF / markdown / typst）与多种输出。否决理由：LaTeX 是宏语言，一一映射等于重建 LaTeX AST，即 pandoc / LaTeXML 路线，结构上有损，验收语料里就有反例（`CJK*` 包裹整篇正文、`proof` 体内 `\subsection*`，见 stages/chunk.md 透明环境节）；从 IR 再生成源码无法维持「编译通过 + 保真排版」这条硬判据，而它是本引擎区别于上述路线的存在理由；chunk 与掩码往返解决的是单次调用的输入量与逐字符还原的位置记录，任何输入格式都需要这层，引入 IR 消除不了它；跨流水线可复用的是翻译资产（术语表、style、prompt）、validate 的层次、chunk 算法与 agent 适配层，文档模型不在其中。多输入的汇合点因此放在出口——每格式原生流水线产出同一份 artifact package——不放在入口。正面设计见 §5 结构化索引节。
+35. **划线的持久标识是文本锚定，坐标只作渲染缓存。** 曾考虑：直接存 PDF 页码与矩形。否决理由：坐标是编译产物的属性，改一个术语、重翻一个 chunk、重编译一次，全篇坐标都会变化，存坐标的标注随之全部失效；文本锚定（段落 id + 引文 + 前后文 + 段内偏移）在未重翻的段落不受影响，重翻的段落也能按段落 id 落到新译文上重新锚定。消费约定见 §5 结构化索引节。
+
+36. **compile 的修复会话不做权限隔离；零期不实现任何回退路径。** 曾考虑：按 A.17 / A.18 建 `tongtu tex` 命令集（read / patch / compile / render / fallback / retranslate）、按区域分区权限、trace 记为可重放的 command sequence（原设计）；退一步只删其中几条命令、正文控制序列减少记 warning 放行。否决理由：命令集的约束力前提在附录 B.7 里本就是待验证项，而更根本的是它防不住真正的风险——agent 用 `tex patch --chunk` 把一段删掉，metadata 会记下这个 chunk 是 `edited`，内容照样没了；命令集买到的是记账精度，拦住内容丢失靠的是出口判据，而判据由脚本在终审时跑，与 agent 有没有命令集无关（§2 原则 1：验证在出口，不在过程）。原设计买到的三样东西里，chunk 行区间与「哪些 chunk 被改过」由一行注释哨兵得到，只剩语义区分与 bypass detection 拿不到，代价记在 stages/compile.md。保留 `tex compile` 一条是为参数统一，不是为权限。回退路径全部不实现则是调试期的选择：`tex fallback`、`tex retranslate` 与 caption 的原文回填，共同作用是让一次有问题的执行仍然产出 PDF，而零期需要的恰好相反——译文丢了 placeholder、agent 删了一张图、某段译文编不过，都应当场判失败并指出位置。正文控制序列相对 backfill 产物只增不减因此设为硬门而非 warning：它是其余四条判据都看不见的一类静默失败（删内容能让编译通过、PDF 非空、CJK 计数为零、页数仍在区间内）。失败模式在三篇自造论文与八篇真实论文上看清楚之后，再逐条加回回退路径。机制见 stages/compile.md。
+
 ## 附录 B：Open Questions
 
 多为实测校准项，非设计阻塞。已定的条目落入正文，编号保留供文档间引用。
@@ -392,13 +427,14 @@ fixtures：自造最小模板论文（article / revtex / 双栏会议，各数�
 2. **identity translation 的中文路径覆盖**：曾在 pseudo-translation 变体与专门的中文 fixture 之间取舍。**已定**（零期收尾）：pseudo-translation 变体，见 §7 第 2 层。
 3. **`--json` 事件流 schema**：一期容器调度前冻结，零期先出草案。
 4. **anchors 三来源叠加的实现次序与 hotspot 容差**：零期拿真实论文实测后定。M4 已把它们收成 `tongtu/anchors.py` 的模块级常量（`SOURCE_PRIORITY` / `RECT_PADDING_PT` / `BAND_MERGE_TOLERANCE_PT` / `SYNCTEX_SCALE` 与页级降级的页码估计），改一个数即可重新校准；synctex 缺席时一律退化为页级锚点并如实标注 `source` 与 `confidence`，不伪造精确矩形。
-5. **neighboring context 段数**：三篇 fixture 校准。原并列的「brief 各字段粒度」随 A.26 的裁剪不再是问题：brief 零期只有照录的 abstract。
+5. **neighbors 段数**：三篇 fixture 校准（起步 3）。brief 已加入 heading_tree 字段（survey 扫 `masked.tex` 得出，与分块共用同一份扫描实现；translate 只在 front chunk 引用），`brief_hash` 的语义不变。
 6. **survey view 的 token 规模**：**已随 A.26 失效**——survey 不再构造视图，也不调模型；hook④ 将来接线时读的是整份 masked.tex（十一篇实测 3.2k–101k 字符，单次调用没有规模压力）。
-7. **compile 工具面能否真正约束住 agent**（§3 compile 节的**约束力**问题）：工具面是 `tongtu tex` 这组 CLI 子命令，agent 要调用它就得有 Bash，而拿到通用 shell 之后它可以绕开工具面直接改 `zh.tex`，「`zh.tex` 与编译日志之外的文件 agent 看不到」随之落空，工具面只剩记账作用。Claude Code 这边的具体路径是 Bash 权限的命令前缀规则：只允许 `tongtu tex` 开头的命令，禁掉其余 Bash 与 Read / Edit / Glob 等文件工具。待验证的因此是两件具体的事——前缀规则能否可靠拦住命令拼接与替换，以及禁掉文件工具之后 agent 是否还能正常完成修复。做不到时的退路是容器隔离（`zh.tex` 挂在容器外，经 CLI 中转），但那样本地开发也要跑容器，与 §6 运行环境节「本地原生为主」有张力。本条原来还含 `ask` 侧的禁工具问题（正确性约束），已随 `ask` 改走 API 直调消解（A.25）。
-8. **编译修复会话的 budget**：编译次数上限，开发阶段起步 30 次，拿真实论文的次数分布校准。
+7. **compile 工具面能否真正约束住 agent**：**本条已关闭，零期不走命令集约束这条路线**（A.36）。原问题是：工具面是 `tongtu tex` 这组 CLI 子命令，agent 要调用它就得有 Bash，而拿到通用 shell 之后它可以绕开工具面直接改 `zh.tex`，工具面只剩记账作用；待验证的是 Bash 权限的命令前缀规则能否可靠拦住命令拼接与替换，以及禁掉文件工具之后 agent 是否还能正常完成修复。关闭的理由不是验证出了结论，而是这个问题的前提不再成立：命令集拦不住内容丢失，而那才是真正要防的失败，拦它的是出口判据（A.36）。将来若为别的目的需要限制 agent 的动作面，这两件事仍然待验证。本条原来还含 `ask` 侧的禁工具问题（正确性约束），已随 `ask` 改走 API 直调消解（A.25）。
+8. **编译修复会话的 budget**：轮数上限 30、墙钟上限 900 秒，与 precompile 同值（[stages/compile.md](stages/compile.md)）。编译次数不单独设限，它被轮数蕴含。拿真实论文的实测分布校准。
 9. **SVG 是否加进 figures 输出**：pdf2svg / mutool convert 在三篇 fixture 上的保真度（字体处理、透明度、裁剪路径）决定取舍，见附录 A.19。
 10. **同一论文版次更新的 incremental retranslation**：arXiv v2 出来后 survey 重跑、brief 变，全部 chunk 失效，翻译记忆等于归零。显式推迟：当前读的以老论文为主，场景还没出现过；`chunks.json` 的要素快照与 `key_version`（§4）已为它留了迁移口子，且不绑 arXiv——将来非 arXiv 来源同样适用。真实遇到追新版的需求再设计，可选方向：brief 分字段参与 key、记忆按要素降级匹配。
 11. **`ask` 的非流式请求能否承住长生成**：hook④ 接线后 survey 的调用输入是整份掩码文本、输出是术语决策列表（较原设想的完整 brief 已大幅缩小），非流式请求要在网关超时之内拿到整个响应。真实论文实测后定；出现网关超时再改流式，其余语义不变。
+12. **段落级锚点与行内公式索引**：显式推迟到文枢阅读器动工、需求实际出现时再做。段落级矩形可在 export 由 synctex（`zh.tex` 行号 ↔ PDF 坐标）与哨兵划出的 chunk 行区间计算，是 anchors 的可选细化；行内公式的点击定位当前落在段落级，细到单个公式需要为 `$…$` 区间建索引与锚定，词法层已能识别该区间。两者都不是阅读侧定位机制的依赖：定位由文本锚定与块级 anchors 承担（§5 结构化索引节）。
 
 ## 附录 C：选型清单
 

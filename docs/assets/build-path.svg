@@ -132,8 +132,8 @@
   <text x="366" y="391">摘出去的 block，逐字节保存</text>
   <text x="76" y="485">章节树优先分块</text>
   <text x="366" y="485">全篇共享上下文</text>
-  <text x="76" y="579">chunks.json 是翻译记忆</text>
-  <text x="76" y="695">build/zh-spans.json：chunk 在 zh.tex 的字符区间</text>
+  <text x="76" y="579">译文逐 chunk 落盘，零期无翻译记忆</text>
+  <text x="76" y="695">zh-raw.tex 是 backfill 产物，含 chunk 边界哨兵</text>
   <text x="366" y="695">位图原样带走，矢量转位图并保留原件</text>
   <text x="76" y="833">export 组装：anchors 合成、report 与 inspection page 生成</text>
 </g>
