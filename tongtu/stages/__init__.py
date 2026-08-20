@@ -1,7 +1,7 @@
 """确定性流水线各阶段。
 
 保留阶段名清单，供 CLI 的 `stage` 命令约束取值；各阶段驱动器逐个重建，实现随重建
-落回本包，已重建：fetch、flatten、precompile、mask、survey、chunk（同名模块）。阶段图对所有论文
+落回本包，已重建：fetch、flatten、precompile、mask、survey、chunk、translate（同名模块）。阶段图对所有论文
 不变：不适用的阶段记 skipped，不从序里删。
 """
 

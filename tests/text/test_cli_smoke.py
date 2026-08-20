@@ -25,7 +25,7 @@ from ..conftest import TONGTU_BIN
 runner = CliRunner()
 
 #: 已接线的阶段：`stage <名字> --help` 之外还要能给出真实执行路径。
-WIRED_STAGES = ("fetch", "flatten", "precompile", "mask", "survey", "chunk")
+WIRED_STAGES = ("fetch", "flatten", "precompile", "mask", "survey", "chunk", "translate")
 
 #: 仍是占位实现的阶段，执行时统一退 `EXIT_STUB`。
 STUB_STAGES = tuple(name for name in STAGES if name not in WIRED_STAGES)

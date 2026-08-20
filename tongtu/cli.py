@@ -1,7 +1,7 @@
 """`tongtu` CLI 命令面。
 
-`stage fetch`、`stage flatten`、`stage precompile`、`stage mask`、`stage survey`、`stage chunk` 与 `doctor` 已接线，
-走真实的阶段驱动器与环境检查；其余命令为占位实现：
+`stage fetch`、`stage flatten`、`stage precompile`、`stage mask`、`stage survey`、`stage chunk`、
+`stage translate`、`validate` 与 `doctor` 已接线，走真实的阶段驱动器、校验实现与环境检查；其余命令为占位实现：
 只解析并校验参数、说明将要执行的动作，不运行 pipeline。run / validate /
 `tex compile` 的退出码是机器判据，占位结果不得被误当成真实结论，故占位命令统一以 ``EXIT_STUB``
 （99）退出；`--help` 退 0、用法错误退 2，这两类行为是真实的。
@@ -20,7 +20,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__, config
+from . import __version__, config, validation
 from .agent import opencode
 from .artifacts.chunk import ChunkManifest, ChunkStatus
 from .artifacts.fetch import FetchStatus
@@ -28,6 +28,7 @@ from .artifacts.flatten import FlattenManifest, FlattenStatus
 from .artifacts.mask import MaskManifest, MaskStatus
 from .artifacts.precompile import PrecompileManifest, PrecompileStatus
 from .artifacts.survey import AbstractSource, GlossaryInputRecord, SurveyManifest, SurveyStatus
+from .artifacts.translate import ChunkTranslateStatus, TranslateManifest, TranslateStatus
 from .assets import asset_path
 from .chunking import Part
 from .masking import BlockCategory
@@ -38,6 +39,7 @@ from .stages import flatten as flatten_stage
 from .stages import mask as mask_stage
 from .stages import precompile as precompile_stage
 from .stages import survey as survey_stage
+from .stages import translate as translate_stage
 from .workdir import WorkdirError
 
 # 模块级退出码常量是退出码的集中登记处：新增退出码在此定义并注释含义。
@@ -57,7 +59,7 @@ EXIT_STUB = 99
 #: chunk id 形状：`c` 后至少三位数字，如 c012。
 _CHUNK_ID_RE = re.compile(r"^c[0-9]{3,}$")
 
-#: doctor 检查项（架构 §6）第一组：工具链与字体。缺任一项则编译无法进行，计入退出码。
+#: doctor 检查项第一组：工具链与字体。缺任一项则编译无法进行，计入退出码。
 DOCTOR_TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
     ("xelatex", "编译引擎（latexmk -xelatex）"),
     ("latexmk", "编译回环驱动"),
@@ -101,7 +103,7 @@ app = typer.Typer(
 
 tex_app = typer.Typer(
     no_args_is_help=True,
-    help="编译修复会话的工具面，不面向人；权限规则见架构 §3 compile 节。",
+    help="编译修复会话可调用的命令，不面向人；会话现场见 stages/compile.md。",
 )
 # 不面向人，故不出现在顶层 help；`tongtu tex --help` 仍可用。
 app.add_typer(tex_app, name="tex", hidden=True)
@@ -121,16 +123,31 @@ WorkdirOpt = Annotated[
 ]
 JsonOpt = Annotated[
     bool,
-    typer.Option("--json", help="向 stdout 输出机器可读事件流（JSON Lines，架构 §6；事件类型随 run 接线定义）"),
+    typer.Option("--json", help="向 stdout 输出机器可读事件流"),
 ]
 AgentOpt = Annotated[
     str | None, typer.Option("--agent", metavar="NAME", help="agent 运行时适配器（注册表在 tongtu/agent/）")
 ]
 ModelOpt = Annotated[
     str | None,
-    typer.Option("--model", metavar="ID", help="模型标识，透传给 agent 运行时；模型标识进翻译缓存 key（架构 §4）"),
+    typer.Option(
+        "--model", metavar="ID", help="模型标识，透传给 agent 运行时；translate 用它做跳过判定（换模型即整篇重翻）"
+    ),
 ]
-ChunkIdArg = Annotated[str, typer.Argument(metavar="CHUNK_ID", help="chunk id，形如 c012")]
+JobsOpt = Annotated[
+    int,
+    typer.Option("--jobs", min=1, metavar="N", help="translate 的 chunk 级并发度（默认 4，上限由 API 速率限制决定）"),
+]
+MaxFallbackRatioOpt = Annotated[
+    float,
+    typer.Option(
+        "--max-fallback-ratio",
+        min=0.0,
+        max=1.0,
+        metavar="R",
+        help="translate 的回退比例阈值（默认 0.2），超过它整体判失败、不进入 compile",
+    ),
+]
 
 
 def _print_version(value: bool) -> None:
@@ -198,7 +215,7 @@ def retranslate(
     agent: AgentOpt = None,
     model: ModelOpt = None,
 ) -> None:
-    """chunk 级失效重算（incremental retranslation），失效语义见架构 §4 返工触发表。"""
+    """chunk 级失效重算（incremental retranslation）"""
     if sum([chunks is not None, term is not None, all_chunks]) != 1:
         raise typer.BadParameter("--chunks / --term / --all 三者必须恰好给一个")
     chunk_ids: list[str] = []
@@ -233,6 +250,8 @@ def stage(
     json_output: JsonOpt = False,
     agent: AgentOpt = None,
     model: ModelOpt = None,
+    jobs: JobsOpt = translate_stage.DEFAULT_JOBS,
+    max_fallback_ratio: MaxFallbackRatioOpt = translate_stage.DEFAULT_MAX_FALLBACK_RATIO,
 ) -> None:
     """单阶段入口，调试用：上游阶段从工作目录装载已有产物；重跑语义见各阶段设计，--force 强制重算。
 
@@ -258,6 +277,10 @@ def stage(
     if name.value == chunk_stage.STAGE_NAME:
         # chunk 是纯文本变换，无 agent 介入点，--agent 与 --model 不参与执行。
         raise _run_stage_chunk(paper, workdir, force, json_output)
+    if name.value == translate_stage.STAGE_NAME:
+        # translate 的模型标识透传给 `ask`；agent 运行时目前唯一，适配层还没有注册表，
+        # --agent 无消费方。
+        raise _run_stage_translate(paper, workdir, force, json_output, model, jobs, max_fallback_ratio)
     raise _stub_exit(
         "stage",
         name=name.value,
@@ -296,7 +319,7 @@ def _print_skipped(stage_name: str, status: str, manifest_path: Path) -> None:
 
 
 def _upstream_exit_code(*, ok: bool, pdf_only_chain: bool) -> int:
-    """flatten、precompile 与 mask 共用的退出码映射：ok 退 0，上游判定为 PDF 退 3，其余失败态退 1。
+    """上游沿链的退出码映射，flatten 之后的各阶段共用：ok 退 0，上游判定为 PDF 退 3，其余失败态退 1。
 
     `pdf_only_chain` 指本阶段的失败源自上游把源判定成 PDF 而非 LaTeX 源码，调用方据此改道
     degraded path；该退出码在业务分支段（3–9），跨子命令同码同义。
@@ -665,6 +688,81 @@ def _chunk_exit_code(manifest: ChunkManifest) -> int:
     )
 
 
+def _run_stage_translate(
+    paper: str,
+    workdir: Path | None,
+    force: bool,
+    json_output: bool,
+    model: str | None,
+    jobs: int,
+    max_fallback_ratio: float,
+) -> typer.Exit:
+    """`stage translate` 的接线：定位工作目录、调驱动器、打印翻译结果、映射退出码。
+
+    translate 不读源目录内容，论文参数只用来定位工作目录；模型标识透传给 `ask` 原语。
+    """
+    _warn_json_ignored(json_output)
+    try:
+        result = translate_stage.translate(
+            _workdir_name_from_paper(paper),
+            workdir,
+            model=model,
+            jobs=jobs,
+            max_fallback_ratio=max_fallback_ratio,
+            force=force,
+        )
+    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    manifest = result.manifest
+    manifest_path = result.workdir.manifest_path(translate_stage.STAGE_NAME)
+    if result.skipped:
+        _print_skipped(translate_stage.STAGE_NAME, manifest.status, manifest_path)
+        return typer.Exit(_translate_exit_code(manifest))
+    console.print(f"translate：状态 {manifest.status}")
+    translated = bool(manifest.chunks)
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(overflow="fold")
+    table.add_row("  模型", f"{manifest.model_id}（prompt 版本 {manifest.prompt_version}，并发 {manifest.jobs}）")
+    table.add_row("  chunk", _translate_counts(manifest) if translated else "—")
+    table.add_row("  ask 调用", _translate_attempts(manifest) if translated else "—")
+    table.add_row("  回退比例", f"{manifest.fallback_ratio:.0%}（阈值 {manifest.max_fallback_ratio:.0%}）")
+    table.add_row("  translated/", str(translate_stage.translated_dir(result.workdir)) if translated else "未产出")
+    table.add_row("  manifest", str(manifest_path))
+    console.print(table)
+    for record in manifest.chunks:
+        if record.status is ChunkTranslateStatus.FALLBACK:
+            error_console.print(f"{record.id} 回退原文：{'；'.join(record.failures) or '没有可用的失败现场'}")
+    if manifest.message:
+        error_console.print(manifest.message)
+    return typer.Exit(_translate_exit_code(manifest))
+
+
+def _translate_counts(manifest: TranslateManifest) -> str:
+    """chunk 总数与三个结论各自的数量；取值词表以 ChunkTranslateStatus 为准。"""
+    counts = Counter(record.status for record in manifest.chunks)
+    listed = [f"{status}={counts[status]}" for status in ChunkTranslateStatus if counts[status]]
+    return f"{manifest.chunks_total}（{'、'.join(listed)}）"
+
+
+def _translate_attempts(manifest: TranslateManifest) -> str:
+    """本次的 ask 调用总次数，以及其中重试过的 chunk：翻译次数是排查提示词与模型的第一个观察值。"""
+    total = sum(record.attempts for record in manifest.chunks)
+    retried = [f"{record.id}×{record.attempts}" for record in manifest.chunks if record.attempts > 1]
+    return f"{total} 次" + (f"（重试过：{'、'.join(retried)}）" if retried else "（无重试）")
+
+
+def _translate_exit_code(manifest: TranslateManifest) -> int:
+    """translate 状态到退出码的映射；命中跳过时对已存结论取同样的映射。"""
+    return _upstream_exit_code(
+        ok=manifest.status is TranslateStatus.OK,
+        pdf_only_chain=(
+            manifest.status in (TranslateStatus.CHUNK_NOT_OK, TranslateStatus.SURVEY_NOT_OK)
+            and manifest.fetch_status == FetchStatus.PDF_ONLY
+        ),
+    )
+
+
 @app.command()
 def validate(
     src: Annotated[Path, typer.Argument(help="原文 chunk 文件")],
@@ -672,14 +770,25 @@ def validate(
 ) -> None:
     """四层 validation，逐项报告失败。
 
-    四层（架构 §3 translate 节）：placeholder multiset / control sequence multiset /
-    括号与 inline math 计数 / 段落数。三个调用方共用同一份实现：agent 在翻译会话内
-    自查、脚本在出口终审、开发者手工排查。
+    四层（设计见 stages/translate.md）：placeholder multiset / control sequence multiset /
+    括号与 inline math 计数 / 段落数。三个调用方共用同一份实现：translate 驱动器的出口终审、
+    compile 终审对正文控制序列的比对（只用第 2 层）、开发者手工排查。比对的是两份文件的正文，首尾空白
+    不参与判定。查出问题退 1，与 doctor、tex compile 同为「0 = 通过」的谓词惯例。
     """
-    console.print(f"tongtu validate：占位实现，校验未执行（退出码 {EXIT_STUB}）  src={src}  dst={dst}")
-    for layer in ("placeholders", "control_sequences", "braces_and_math", "paragraph_count"):
-        console.print(f"  [未执行] {layer}")
-    raise typer.Exit(EXIT_STUB)
+    try:
+        source = src.read_text(encoding="utf-8")
+        translation = dst.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        error_console.print(f"读不到文件：{error}")
+        raise typer.Exit(EXIT_FAILURE) from error
+    result = validation.validate(source.strip(), translation.strip())
+    failures = {failure.check: failure.message for failure in result.failures}
+    for layer in validation.CHECK_NAMES:
+        if layer in failures:
+            console.print(f"  [失败] {layer}：{failures[layer]}")
+        else:
+            console.print(f"  [通过] {layer}")
+    raise typer.Exit(0 if result.ok else EXIT_FAILURE)
 
 
 @app.command()
@@ -743,7 +852,7 @@ def _check_opencode_key() -> tuple[bool, str]:
     source_labels = {
         opencode.KEY_SOURCE_ENV: f"环境变量 {opencode.API_KEY_ENV}",
         opencode.KEY_SOURCE_STORED: str(config.credentials_path()),
-        opencode.KEY_SOURCE_OPENCODE_LOGIN: f"本机 opencode 登录态（{opencode.OPENCODE_AUTH_PATH.expanduser()}）",
+        opencode.KEY_SOURCE_LOGIN: f"本机 opencode 登录态（{opencode.OPENCODE_AUTH_PATH.expanduser()}）",
     }
     return True, source_labels[resolved.source]
 
@@ -761,78 +870,13 @@ def preview(
     raise _stub_exit("preview", paper=paper, workdir=workdir, serve=serve)
 
 
-# ------------------------------------------------------- tex 工具面（不面向人）
-
-
-@tex_app.command("read")
-def tex_read(
-    preamble: Annotated[bool, typer.Option("--preamble", help="读 preamble（\\begin{document} 之前）")] = False,
-    chunk: Annotated[str | None, typer.Option("--chunk", metavar="ID", help="读该 chunk 在 zh.tex 中的区间")] = None,
-    lines: Annotated[str | None, typer.Option("--lines", metavar="A-B", help="读行区间，如 120-180")] = None,
-) -> None:
-    """读 zh.tex 的指定区域。"""
-    if sum([preamble, chunk is not None, lines is not None]) != 1:
-        raise typer.BadParameter("--preamble / --chunk / --lines 三者必须恰好给一个")
-    if chunk is not None and not _CHUNK_ID_RE.fullmatch(chunk):
-        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk}")
-    if lines is not None and not re.fullmatch(r"[0-9]+-[0-9]+", lines):
-        raise typer.BadParameter(f"--lines 形如 A-B（如 120-180），不合法：{lines}")
-    raise _stub_exit("tex read", preamble=preamble, chunk=chunk, lines=lines)
-
-
-@tex_app.command("patch")
-def tex_patch(
-    old: Annotated[str, typer.Option("--old", help="被替换的原文文本")],
-    new: Annotated[str, typer.Option("--new", help="替换后的文本")],
-    chunk: Annotated[
-        str | None,
-        typer.Option(
-            "--chunk",
-            metavar="ID",
-            help="正文 patch 必须标注所属 chunk（该 chunk 状态记 edited）；不给则为 preamble patch",
-        ),
-    ] = None,
-) -> None:
-    """patch zh.tex：preamble 自由，正文须标 --chunk（架构 §3 compile 节分区权限）。"""
-    if chunk is not None and not _CHUNK_ID_RE.fullmatch(chunk):
-        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk}")
-    raise _stub_exit("tex patch", old=old, new=new, chunk=chunk)
+# ----------------------------------------------------- tex 子命令（不面向人）
 
 
 @tex_app.command("compile")
 def tex_compile() -> None:
-    """编译一次，返回错误列表与日志摘要。"""
+    """在 cwd 的编译树内编译一次，返回退出码、错误行摘录与日志路径。"""
     raise _stub_exit("tex compile")
-
-
-@tex_app.command("render")
-def tex_render(
-    page: Annotated[int, typer.Option("--page", min=1, help="页码（1-based）")],
-) -> None:
-    """渲染某页为图，供 agent 检查排版。"""
-    raise _stub_exit("tex render", page=page)
-
-
-@tex_app.command("fallback")
-def tex_fallback(
-    chunk_id: ChunkIdArg,
-    paragraph: Annotated[
-        int | None,
-        typer.Option("--paragraph", min=0, metavar="N", help="只回退该段落（0-based）；不给则整个 chunk 回退"),
-    ] = None,
-) -> None:
-    """该 chunk（或其中一段）回退原文。"""
-    if not _CHUNK_ID_RE.fullmatch(chunk_id):
-        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk_id}")
-    raise _stub_exit("tex fallback", chunk_id=chunk_id, paragraph=paragraph)
-
-
-@tex_app.command("retranslate")
-def tex_retranslate(chunk_id: ChunkIdArg) -> None:
-    """重译一次该 chunk（复用翻译介入点⑤）。"""
-    if not _CHUNK_ID_RE.fullmatch(chunk_id):
-        raise typer.BadParameter(f"chunk id 形如 c012，不合法：{chunk_id}")
-    raise _stub_exit("tex retranslate", chunk_id=chunk_id)
 
 
 def main() -> None:

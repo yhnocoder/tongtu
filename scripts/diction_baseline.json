@@ -1,31 +1,4 @@
 {
-  "note": "diction_lint 基线：存量违例的 {路径: {正则: 数量}}，数量只许减少；清理后跑 scripts/diction_lint.py --update-baseline 收紧。不要手工放宽。",
-  "counts": {
-    "docker/README.md": {
-      "真跑": 1
-    },
-    "docs/ARCHITECTURE.md": {
-      "真模型": 1,
-      "纪律": 2,
-      "顺手": 2
-    },
-    "scripts/diction_lint.py": {
-      "纪律": 7
-    },
-    "skill/classify/SKILL.md": {
-      "促升": 1,
-      "关节": 1
-    },
-    "skill/repair/SKILL.md": {
-      "促升": 3,
-      "关节": 3
-    },
-    "skill/survey/SKILL.md": {
-      "关节": 1
-    },
-    "skill/translate/SKILL.md": {
-      "关节": 1,
-      "纪律": 2
-    }
-  }
+  "note": "diction_lint 基线：存量违例的 {路径: {正则: 数量}}，数量只许减少；清理后跑 scripts/diction_lint.py --update-baseline 重新生成 diction_baseline.json。不要手工更改这个文件来放宽限制。",
+  "counts": {}
 }

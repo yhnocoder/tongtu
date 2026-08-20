@@ -86,6 +86,20 @@ class Heading:
 
 
 @dataclass(frozen=True)
+class DocumentHeading:
+    r"""全文标题树的一条：命令名、参数原文与层级深度。
+
+    `depth` 是相对深度：全文出现过的最浅层级记 1，往深一级加一（多数论文 section 是 1、
+    subsection 是 2）。取相对值而不是 `HEADING_LEVELS` 的绝对下标，是因为论文用不用
+    `\part` / `\chapter` 因文档类而异，绝对下标会让同样形状的两篇论文得出不同的数。
+    """
+
+    level: str
+    argument: str
+    depth: int
+
+
+@dataclass(frozen=True)
 class Chunk:
     """一个 chunk 在掩码文本中的位置与它的定级结论，内容即 `masked[start:end]`。"""
 
@@ -111,13 +125,23 @@ def estimate_tokens(text: str) -> int:
     return math.ceil(len(text) / CHARS_PER_TOKEN)
 
 
+def paragraphs(text: str) -> list[str]:
+    """按空行切分、逐段剥除首尾空白、丢弃空段，返回段落列表。
+
+    分块的段落计数、validate 的段落比对与 translate 的 neighbors 取段共用这一条切分规则：
+    同一条规则各写一遍，日后差一个字符就是三处口径不一致。
+    """
+    return [paragraph.strip() for paragraph in masking.BLANK_LINE_RE.split(text) if paragraph.strip()]
+
+
 def count_paragraphs(text: str) -> int:
-    """段落计数：按空行切分、逐段剥除首尾空白、丢弃空段后计数。
+    """段落计数：全部非空段落。
 
     真实语料里连续空行常见，空段若计入，translate 的段落数比对就在要求译文保持同样多的连续
-    空行，而模型合并连续空行是最常见的无害改动。
+    空行，而模型合并连续空行是最常见的无害改动。含可译文本的段落是另一个口径，在
+    `tongtu/validation.py`，两者的区别见 docs/stages/chunk.md 段落计数的两个口径节。
     """
-    return sum(1 for paragraph in masking.BLANK_LINE_RE.split(text) if paragraph.strip())
+    return len(paragraphs(text))
 
 
 def translatable_chars(text: str) -> int:
@@ -125,14 +149,45 @@ def translatable_chars(text: str) -> int:
     return sum(1 for character in masking.TOKEN_RE.sub("", text) if not character.isspace())
 
 
-def split_document(masked: str) -> ChunkingOutcome:
-    """把掩码文本切成 chunk 序列；扫描的结构错误与定级的兜底硬判据不通过时抛 `ChunkError`。
+def document_headings(masked: str) -> tuple[DocumentHeading, ...]:
+    """扫出全文有效深度 0 的标题，按文档序，每条带相对层级深度。
 
-    词法原语抛的 `MaskError` 在此转成 `ChunkError`：错在掩码文本的词法遍历，报错要落在本阶段
-    的名下，不能让 manifest 的 message 指向 mask。
+    标题结构是分块的输入而不是分块的产物：定级、切点与区界都建立在同一次扫描上。survey 用
+    本函数把标题树写进 `brief.json`（translate 在 front chunk 的提示词里引用它），chunk 用
+    同一份扫描切块，两个阶段因此不互相依赖，都只依赖 `masked.tex`。
+
+    有效深度的口径与分块一致：体内出现首选层级标题的环境判为透明、不计入深度，故被
+    `CJK*` 一类包裹环境裹住的标题照样在树里。全文一个标题命令都没有时返回空元组。
+    """
+    run = _chunk_run(masked)
+    headings = [heading for heading in run.scan.headings if run.depth.at(heading.start) == 0]
+    if not headings:
+        return ()
+    shallowest = min(HEADING_LEVELS.index(heading.level) for heading in headings)
+    return tuple(
+        DocumentHeading(
+            level=heading.level,
+            argument=heading.argument,
+            depth=HEADING_LEVELS.index(heading.level) - shallowest + 1,
+        )
+        for heading in headings
+    )
+
+
+def split_document(masked: str) -> ChunkingOutcome:
+    """把掩码文本切成 chunk 序列；扫描的结构错误与定级的兜底硬判据不通过时抛 `ChunkError`。"""
+    return _chunk_run(masked).run()
+
+
+def _chunk_run(masked: str) -> _ChunkRun:
+    """扫描掩码文本；词法原语抛的 `MaskError` 在此转成 `ChunkError`。
+
+    错在掩码文本的词法遍历，报错要落在调用方阶段的名下，不能让 manifest 的 message 指向
+    mask。`document_headings` 与 `split_document` 都经由这里，survey 与 chunk 对同一份坏输入
+    因此报同一类错。
     """
     try:
-        return _ChunkRun(masked).run()
+        return _ChunkRun(masked)
     except masking.MaskError as error:
         raise ChunkError(f"掩码文本的词法遍历失败：{error}") from error
 

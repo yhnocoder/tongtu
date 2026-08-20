@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""措辞与命名检查：按 denylist 正则扫描仓库文本，与基线比对，只拦新增违例。
-
-纪律见 AGENTS.md「行文与命名纪律」。零第三方依赖，需要 Python >= 3.11（tomllib），
-用 `uv run python scripts/diction_lint.py` 调用即可满足。
-
-四种入口：
-  uv run python scripts/diction_lint.py                    # 全仓扫描，与基线比对，有新增违例则退出码 1
-  uv run python scripts/diction_lint.py FILE...            # 只查指定文件，同样按基线比对
-  uv run python scripts/diction_lint.py --all              # 忽略基线，报告全部存量违例（清理存量用）
-  uv run python scripts/diction_lint.py --update-baseline  # 以当前扫描结果重写基线
-  uv run python scripts/diction_lint.py --hook             # PostToolUse hook：从 stdin 读事件 JSON，
-                                                           # 检查刚写入的文件，新增违例写 stderr 并退出码 2
-
-denylist：scripts/diction_denylist.toml，人编辑，条目为 [[rules]] 的 pattern + hint。
-基线：scripts/diction_baseline.json，机器生成，结构为 {路径: {正则: 数量}}。
-基线约定：某文件某模式的命中数不得超过基线值，只许减少；
-清理一批存量后跑 --update-baseline 收紧。
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -32,8 +13,6 @@ REPO = Path(__file__).resolve().parent.parent
 DENYLIST_PATH = REPO / "scripts" / "diction_denylist.toml"
 BASELINE_PATH = REPO / "scripts" / "diction_baseline.json"
 
-# 排除项：vendor 与 fixtures 不是本仓库的行文；AGENTS.md（及其符号链接 CLAUDE.md）
-# 的纪律段落、denylist 与基线本身必然引用违例词。
 EXCLUDE_PREFIXES = (
     "tongtu/data/report_page/vendor/",
     "tests/fixtures/",
@@ -66,7 +45,6 @@ TEXT_EXTS = {
 
 
 def load_rules() -> list[tuple[re.Pattern, str, str]]:
-    """读 denylist，返回 [(编译后的正则, 原始正则文本, 提示)]。格式错误直接抛 SystemExit。"""
     try:
         data = tomllib.loads(DENYLIST_PATH.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
@@ -124,7 +102,7 @@ def load_baseline() -> dict[tuple[str, str], int]:
     try:
         data = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        raise SystemExit(f"基线不是合法 JSON：{e}") from e
+        raise SystemExit(f"diction_baseline.json 不是合法 JSON：{e}") from e
     allowed: dict[tuple[str, str], int] = {}
     for rel, patterns in data.get("counts", {}).items():
         for pattern, count in patterns.items():
@@ -138,14 +116,13 @@ def write_baseline(found) -> None:
         counts.setdefault(rel, {})[pattern] = len(matches)
     data = {
         "note": "diction_lint 基线：存量违例的 {路径: {正则: 数量}}，数量只许减少；"
-        "清理后跑 scripts/diction_lint.py --update-baseline 收紧。不要手工放宽。",
+        "清理后跑 scripts/diction_lint.py --update-baseline 重新生成 diction_baseline.json。不要手工更改这个文件来放宽限制。",
         "counts": counts,
     }
     BASELINE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def new_violations(found, allowed):
-    """与基线比对：返回命中数超过基线值的 (键, 命中列表, 基线值)。"""
     over = []
     for key, matches in sorted(found.items()):
         limit = allowed.get(key, 0)
@@ -183,7 +160,7 @@ def run_scan(paths: list[str], use_baseline: bool) -> int:
     over = new_violations(found, allowed)
     if over:
         kind = "新增" if use_baseline else ""
-        print(f"措辞{kind}违例（纪律见 AGENTS.md「行文与命名纪律」）：")
+        print(f"措辞{kind}违例（规则见 CLAUDE.md「行文与命名规则」）：")
         print("\n".join(format_violations(over)))
         return 1
     print("diction_lint：无" + ("新增违例" if use_baseline else "违例"))
@@ -191,7 +168,6 @@ def run_scan(paths: list[str], use_baseline: bool) -> int:
 
 
 def run_hook() -> int:
-    """PostToolUse hook：只检查本次写入的文件；新增违例经 stderr 反馈给模型，退出码 2。"""
     try:
         event = json.load(sys.stdin)
         file_path = (event.get("tool_input") or {}).get("file_path")
@@ -211,11 +187,6 @@ def run_hook() -> int:
             return 0
         print("diction_lint 检出措辞新增违例，请改写后重新写入：", file=sys.stderr)
         print("\n".join(format_violations(over)), file=sys.stderr)
-        print(
-            "纪律见 AGENTS.md「行文与命名纪律」。若是引用违例词本身（如清理文档），"
-            "以 scripts/diction_baseline.json 的基线值为准，不要绕过。",
-            file=sys.stderr,
-        )
         return 2
     except SystemExit as e:  # denylist / 基线本身的格式错误也反馈给模型修
         print(f"diction_lint 配置错误：{e}", file=sys.stderr)

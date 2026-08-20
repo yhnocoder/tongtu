@@ -152,7 +152,7 @@ def _chunk(paper_workdir: workdir.Workdir, mask_manifest: MaskManifest, source_p
         ChunkStatus.OK,
         mask_manifest,
         warnings=_oversized_warnings(records),
-        chunks_sha256=_chunks_sha256(records),
+        chunks_sha256=manifests.records_sha256(record.sha256 for record in records),
         chunks=records,
         chunks_total=len(records),
         heading_level=outcome.heading_level,
@@ -207,11 +207,6 @@ def _oversized_warnings(records: list[ChunkRecord]) -> list[str]:
         for record in records
         if record.token_estimate > chunking.SPLIT_ABOVE
     ]
-
-
-def _chunks_sha256(records: list[ChunkRecord]) -> str:
-    """输出 hash：按文档序连接各 chunk 文件的 sha256 十六进制串再取 sha256。"""
-    return hashlib.sha256("".join(record.sha256 for record in records).encode("ascii")).hexdigest()
 
 
 def _manifest_from_mask(status: ChunkStatus, mask_manifest: MaskManifest, **fields: object) -> ChunkManifest:

@@ -3,11 +3,14 @@
 manifest 的字段级定义在 `tongtu/artifacts/` 的各 model，本模块只管它们与磁盘之间的两个
 动作：装载（读不到或不合 schema 一律返回 None，由调用方转对应状态）与写出（缺目录先建，
 JSON 缩进两格、末尾带换行）。`describe_error` 是异常记进 manifest 的 `message` 时的统一
-格式，各阶段的失败说明由此保持同一形状。
+格式，各阶段的失败说明由此保持同一形状。`records_sha256` 是逐文件产物的输出 hash 规则，chunk
+与 translate 共用，下游比对输入 hash 时两边才算的是同一个东西。
 """
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Iterable
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
@@ -34,3 +37,8 @@ def write_manifest(path: Path, manifest: BaseModel) -> None:
 def describe_error(error: Exception) -> str:
     """异常统一格式化成「类型名：信息」，记入 manifest 的 message。"""
     return f"{type(error).__name__}：{error}"
+
+
+def records_sha256(hashes: Iterable[str]) -> str:
+    """逐文件产物的输出 hash：按文档序连接各文件的 sha256 十六进制串再取 sha256。"""
+    return hashlib.sha256("".join(hashes).encode("ascii")).hexdigest()
