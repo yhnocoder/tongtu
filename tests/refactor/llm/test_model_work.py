@@ -16,7 +16,11 @@ TABLE = """
 skill_path = ".claude/skills/{role}"
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits"]
+           "--setting-sources", "", "--strict-mcp-config",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--disallowedTools", "Edit(.claude/skills/**)",
+           "--settings", "{settings}"]
+settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 
 [roles]
 smoke = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
@@ -48,5 +52,5 @@ def test_work_runs_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
     assert "hello" in (workdir / "hello.txt").read_text(encoding="utf-8").strip().lower()
     assert trace_path.stat().st_size > 0
-    print(f"trace：{trace_path}")
-    print(f"现场：{workdir}")
+    print(f"trace： {trace_path} ")
+    print(f"现场： {workdir} ")

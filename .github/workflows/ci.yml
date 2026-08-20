@@ -32,10 +32,4 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync
-      - run: >-
-          uv run pytest -q
-          tests/text/test_comment_lint.py
-          tests/text/test_model_config.py
-          tests/text/test_model_ask.py
-          tests/text/test_model_work.py
-          tests/text/test_cli_model.py
+      - run: uv run pytest -q tests/refactor/text/

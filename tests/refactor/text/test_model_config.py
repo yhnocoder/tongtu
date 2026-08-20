@@ -6,13 +6,16 @@ from pathlib import Path
 import pytest
 
 from tongtu.model.config import (
+    DEFAULT_ASK_MODEL,
     MODELS_TEMPLATE,
     Api,
     ModelsConfig,
+    ProviderConfig,
     RoleTable,
     load_config,
     model_api,
     models_path,
+    provider_key,
     resolve_role,
     role_config,
 )
@@ -60,6 +63,60 @@ def test_template_parses_and_validates() -> None:
     assert set(config.roles) == {"survey_terms", "translate", "review", "precompile_fix", "compile_fix"}
     assert config.provider["opencode"].models["deepseek-v4-flash"] == Api.CHAT
     assert config.roles["precompile_fix"].bash == ["latexmk", "xelatex", "kpsewhich"]
+    assert config.roles["review"].bash == ["python3 -I validate.py"]
+    assert config.provider["opencode"].api_key == ""
+    assert config.provider["opencode"].api_key_env == "OPENCODE_API_KEY"
+    assert set(DEFAULT_ASK_MODEL) == set(config.provider)
+
+
+def test_template_runtime_carries_sandbox_settings() -> None:
+    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    runtime = config.runtime["claude_code"]
+    assert runtime.settings == {
+        "sandbox": {
+            "enabled": True,
+            "autoAllowBashIfSandboxed": True,
+            "allowUnsandboxedCommands": False,
+            "failIfUnavailable": True,
+            "network": {"allowedDomains": []},
+        }
+    }
+    assert "--setting-sources" in runtime.command
+    assert "--strict-mcp-config" in runtime.command
+    assert "Edit(.claude/skills/**)" in runtime.command
+    assert "{settings}" in runtime.command
+
+
+def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("DEMO_KEY", "from-env")
+    provider = ProviderConfig(base_url="https://demo.example/v1", api_key="written", api_key_env="DEMO_KEY")
+    assert provider_key("demo", provider) == ("written", "models.toml 的 api_key")
+
+
+def test_provider_key_falls_back_to_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("DEMO_KEY", "from-env")
+    provider = ProviderConfig(base_url="https://demo.example/v1", api_key="", api_key_env="DEMO_KEY")
+    assert provider_key("demo", provider) == ("from-env", "环境变量 DEMO_KEY")
+
+
+def test_provider_key_reports_both_sources_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("DEMO_KEY", "")
+    provider = ProviderConfig(base_url="https://demo.example/v1", api_key_env="DEMO_KEY")
+    key, detail = provider_key("demo", provider)
+    assert key is None
+    assert "api_key" in detail
+    assert "DEMO_KEY" in detail
+
+
+def test_provider_key_reports_no_variable_declared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    provider = ProviderConfig(base_url="https://demo.example/v1")
+    key, detail = provider_key("demo", provider)
+    assert key is None
+    assert "api_key_env" in detail
 
 
 def test_models_path_follows_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

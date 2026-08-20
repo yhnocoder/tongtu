@@ -25,7 +25,7 @@ from .artifacts.translate import ChunkTranslateStatus, TranslateManifest, Transl
 from .assets import asset_path
 from .chunking import Part
 from .masking import BlockCategory
-from .model.config import MODELS_TEMPLATE, load_config, models_path
+from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .stages import STAGES
 from .stages import chunk as chunk_stage
 from .stages import fetch as fetch_stage
@@ -37,6 +37,8 @@ from .stages import translate as translate_stage
 from .workdir import WorkdirError
 
 EXIT_FAILURE = 1
+
+EXIT_USAGE = 2
 
 EXIT_PDF_ONLY = 3
 
@@ -59,8 +61,8 @@ REQUIRED_FONT_FILENAMES: tuple[str, ...] = ("LXGWWenKai-Light.ttf", "LXGWWenKai-
 
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
 
-console = Console()
-error_console = Console(stderr=True)
+console = Console(markup=False, soft_wrap=True)
+error_console = Console(stderr=True, markup=False, soft_wrap=True)
 
 app = typer.Typer(
     add_completion=False,
@@ -672,25 +674,20 @@ def validate(
 
 @app.command()
 def doctor() -> None:
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column()
-    table.add_column(overflow="fold")
-    absent_toolchain = _add_doctor_rows(table, _toolchain_rows())
-    absent_config = _add_doctor_rows(table, _config_rows())
-    console.print(table)
+    absent_toolchain = _print_doctor_rows(_toolchain_rows())
+    absent_config = _print_doctor_rows(_config_rows())
     if absent_toolchain:
-        console.print(f"环境有缺失：{'、'.join(absent_toolchain)}")
+        console.print(f"环境有缺失： {'、'.join(absent_toolchain)}")
         raise typer.Exit(EXIT_FAILURE)
     if absent_config:
-        console.print(f"工具链与字体齐全；{'、'.join(absent_config)} 未配置，survey 起的阶段无法执行。")
+        console.print(f"工具链与字体齐全； {'、'.join(absent_config)} 未配置， survey 起的阶段无法执行。")
         return
     console.print("环境齐全。")
 
 
-def _add_doctor_rows(table: Table, rows: list[tuple[str, str, bool, str]]) -> list[str]:
+def _print_doctor_rows(rows: list[tuple[str, str, bool, str]]) -> list[str]:
     for name, purpose, found, detail in rows:
-        table.add_row(f"  [{'通过' if found else '缺失'}]", f"{name} —— {purpose}", detail)
+        console.print(f"  [{'通过' if found else '缺失'}] {name} —— {purpose}  {detail}")
     return [name for name, _purpose, found, _detail in rows if not found]
 
 
@@ -709,13 +706,24 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
             ("运行时", "各运行时的可执行文件", False, "models.toml 读不到，无法检查"),
         ]
     rows = [(CONFIG_CHECK_NAME, "服务商、运行时与角色的配置", True, str(models_path()))]
-    for name, provider in config.provider.items():
-        key = (os.environ.get(provider.api_key_env) or "").strip()
-        detail = "已设置" if key else f"环境变量 {provider.api_key_env} 未设或为空"
-        rows.append((f"密钥 {name}", f"环境变量 {provider.api_key_env}", bool(key), detail))
-    for name, runtime in config.runtime.items():
+    for name in _roles_refer_to(config, "provider"):
+        provider = config.provider.get(name)
+        if provider is None:
+            rows.append((f"密钥 {name}", "角色引用的服务商", False, f"models.toml 里没有声明服务商 {name}"))
+            continue
+        key, detail = provider_key(name, provider)
+        rows.append((f"密钥 {name}", "服务商的 API 密钥", key is not None, detail))
+    for name in _roles_refer_to(config, "runtime"):
+        runtime = config.runtime.get(name)
+        if runtime is None:
+            rows.append((f"运行时 {name}", "角色引用的运行时", False, f"models.toml 里没有声明运行时 {name}"))
+            continue
         rows.append((f"运行时 {name}", "会话运行时的可执行文件", *_check_executable(runtime.command[0])))
     return rows
+
+
+def _roles_refer_to(config: ModelsConfig, field: str) -> list[str]:
+    return list(dict.fromkeys(name for entry in config.roles.values() if (name := getattr(entry, field))))
 
 
 def _check_executable(name: str) -> tuple[bool, str]:
@@ -734,48 +742,49 @@ def _check_fonts() -> tuple[bool, str]:
 
 @app.command()
 def setup(
-    interactive: Annotated[bool, typer.Option("-i", help="交互问答填服务商、密钥变量名与各角色默认模型")] = False,
+    interactive: Annotated[bool, typer.Option("-i", help="交互选服务商并填 API key")] = False,
 ) -> None:
     path = models_path()
     if path.exists():
-        console.print(f"{path} 已存在，不覆盖。要改配置直接编辑这个文件。")
+        console.print(f"配置文件 {path} 已存在， 不覆盖。 要改配置直接编辑这个文件。")
         return
+    text = _interactive_models_toml() if interactive else MODELS_TEMPLATE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_interactive_models_toml() if interactive else MODELS_TEMPLATE, encoding="utf-8")
-    console.print(f"已写出 {path}。")
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o600)
+    console.print(f"已写出 {path} 。")
 
 
 def _interactive_models_toml() -> str:
-    defaults = tomllib.loads(MODELS_TEMPLATE)
-    provider = typer.prompt("服务商名")
-    base_url = typer.prompt("API 前缀 base_url")
-    api_key_env = typer.prompt("密钥的环境变量名")
-    api = typer.prompt("该服务商的接口（chat / responses / messages）")
-    runtime = typer.prompt("会话运行时名", default="claude_code")
-    runtime_defaults = defaults["runtime"]["claude_code"]
-    lines = [
-        f"[provider.{provider}]",
-        f'base_url    = "{base_url}"',
-        f'api_key_env = "{api_key_env}"',
-        f'api         = "{api}"',
-        "",
-        f"[runtime.{runtime}]",
-        f'skill_path = "{runtime_defaults["skill_path"]}"',
-        f"command = {json.dumps(runtime_defaults['command'], ensure_ascii=False)}",
-        "",
-        "[roles]",
-    ]
-    for role, entry in defaults["roles"].items():
-        model = typer.prompt(f"角色 {role} 的默认模型")
-        effort = typer.prompt(f"角色 {role} 的推理强度（low / medium / high / xhigh）")
-        if "provider" in entry:
-            lines.append(f'{role} = {{ provider = "{provider}", model = "{model}", effort = "{effort}" }}')
-        else:
-            lines.append(
-                f'{role} = {{ runtime = "{runtime}", model = "{model}", effort = "{effort}", '
-                f"max_turns = {entry['max_turns']}, timeout_seconds = {entry['timeout_seconds']}, "
-                f"bash = {json.dumps(entry['bash'], ensure_ascii=False)} }}"
-            )
+    template = tomllib.loads(MODELS_TEMPLATE)
+    keys: dict[str, str] = {}
+    for name in template["provider"]:
+        if typer.confirm(f"配置 {name}？", default=False):
+            keys[name] = typer.prompt(f"{name} 的 API key", hide_input=True)
+    if not keys:
+        console.print("一个服务商都没选。 至少选一个才能调模型， 重新运行 tongtu setup -i 。")
+        raise typer.Exit(EXIT_USAGE)
+    ask_roles = [role for role, entry in template["roles"].items() if "provider" in entry]
+    return _fill_template(keys, ask_roles)
+
+
+def _fill_template(keys: dict[str, str], ask_roles: list[str]) -> str:
+    chosen = next(iter(keys))
+    section = ""
+    provider_name = ""
+    lines = []
+    for line in MODELS_TEMPLATE.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            section = stripped.strip("[]")
+            if section.startswith("provider."):
+                provider_name = section.split(".")[1]
+        elif section.startswith("provider.") and stripped.startswith("api_key ") and provider_name in keys:
+            line = line.replace('""', json.dumps(keys[provider_name]), 1)
+        elif section == "roles" and stripped.split("=")[0].strip() in ask_roles:
+            line = re.sub(r'provider = "[^"]*"', f'provider = "{chosen}"', line)
+            line = re.sub(r'model = "[^"]*"', f'model = "{DEFAULT_ASK_MODEL[chosen]}"', line)
+        lines.append(line)
     return "\n".join(lines) + "\n"
 
 
@@ -797,6 +806,9 @@ def tex_compile() -> None:
 
 
 def main() -> None:
+    if os.environ.get("TONGTU_DISABLE"):
+        error_console.print("tongtu 不能在 agent 会话内运行（TONGTU_DISABLE 已设）")
+        raise SystemExit(EXIT_USAGE)
     app()
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -10,7 +9,7 @@ from pathlib import Path
 import anthropic
 import openai
 
-from .config import Api, RoleTable, load_config, model_api, resolve_role
+from .config import Api, RoleTable, load_config, model_api, provider_key, resolve_role
 
 SCHEMA_NAME = "ask_response"
 
@@ -18,7 +17,7 @@ DETAIL_EXCERPT_CHARS = 2000
 
 MESSAGES_MAX_TOKENS = 32768
 
-THINKING_BUDGET_TOKENS: dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
+THINKING_BUDGET_TOKENS: dict[str, int] = {"low": 1024, "medium": 2048, "high": 4096}
 
 MESSAGES_TIMEOUT_SECONDS = 600.0
 
@@ -75,7 +74,7 @@ def ask(
     except OSError as error:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"调用日志写不出（{type(error).__name__}：{error}）。确认 {log_path.parent} 可写。",
+            detail=f"调用日志写不出（{type(error).__name__}： {error}）。 确认 {log_path.parent} 可写。",
         )
     return outcome
 
@@ -104,9 +103,9 @@ def _request(
         return _error(detail)
     provider = config.provider[name]
     fields: dict[str, object] = {"provider": name, "model": resolved.model, "effort": resolved.effort}
-    api_key = (os.environ.get(provider.api_key_env) or "").strip()
-    if not api_key:
-        return _error(f"环境变量 {provider.api_key_env} 未设或为空，服务商 {name} 的密钥取不到。", fields)
+    api_key, detail = provider_key(name, provider)
+    if api_key is None:
+        return _error(detail, fields)
     try:
         if api is Api.MESSAGES:
             outcome, extra = _messages(
@@ -117,7 +116,7 @@ def _request(
             caller = _responses if api is Api.RESPONSES else _chat
             outcome, extra = caller(client, resolved.model, resolved.effort, system, messages, schema)
     except (openai.OpenAIError, anthropic.AnthropicError) as error:
-        return _error(f"请求失败（{type(error).__name__}：{error}）"[:DETAIL_EXCERPT_CHARS], fields)
+        return _error(f"请求失败（{type(error).__name__}： {error}）"[:DETAIL_EXCERPT_CHARS], fields)
     return outcome, fields | extra
 
 
@@ -149,7 +148,7 @@ def _chat(
     if not content:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"响应里没有正文（choices 为空或 content 为空），finish_reason={finish_reason or '（无）'}。",
+            detail=f"响应里没有正文（choices 为空或 content 为空）， finish_reason={finish_reason or '（无）'}。",
         ), extra
     return AskOutcome(status=AskStatus.OK, text=content), extra
 
@@ -175,7 +174,7 @@ def _responses(
     if not response.output_text:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"响应里没有正文（output_text 为空），status={response.status or '（无）'}。",
+            detail=f"响应里没有正文（output_text 为空）， status={response.status or '（无）'}。",
         ), extra
     return AskOutcome(status=AskStatus.OK, text=response.output_text), extra
 
@@ -194,8 +193,8 @@ def _messages(
     budget = THINKING_BUDGET_TOKENS.get(effort)
     if budget is None:
         return _error(
-            f"模型 {model} 走 messages 接口，该接口按 token 预算给推理强度，"
-            f"档位只有 {'、'.join(THINKING_BUDGET_TOKENS)}，配置里给的是 {effort}。"
+            f"模型 {model} 走 messages 接口， 该接口按 token 预算给推理强度， "
+            f"档位只有 {'、'.join(THINKING_BUDGET_TOKENS)}， 配置里给的是 {effort}。"
         )
     client = anthropic.Anthropic(base_url=base_url.removesuffix("/v1"), api_key=api_key)
     response = client.messages.create(
@@ -212,10 +211,10 @@ def _messages(
     if not content:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"响应里没有正文（content 里没有 text 块），stop_reason={response.stop_reason or '（无）'}。",
+            detail=f"响应里没有正文（content 里没有 text 块）， stop_reason={response.stop_reason or '（无）'}。",
         ), extra
     return AskOutcome(status=AskStatus.OK, text=content), extra
 
 
 def _schema_unsupported(api: Api, model: str) -> Reply:
-    return _error(f"模型 {model} 走 {api} 接口，该接口的输出约束形态未实测，不接受 schema。")
+    return _error(f"模型 {model} 走 {api} 接口， 该接口的输出约束形态未实测， 不接受 schema。")

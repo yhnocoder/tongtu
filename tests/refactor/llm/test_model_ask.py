@@ -46,5 +46,5 @@ def test_ask_returns_translation(configured: Path, role: str) -> None:
     assert outcome.status == AskStatus.OK, outcome.detail
     assert outcome.text.strip()
     assert log_path.is_file()
-    print(f"{role} 日志：{log_path}")
-    print(f"{role} 正文：{outcome.text.strip()}")
+    print(f"{role} 日志： {log_path} ")
+    print(f"{role} 正文： {outcome.text.strip()}")

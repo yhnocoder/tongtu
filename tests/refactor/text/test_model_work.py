@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import shutil
 from pathlib import Path
 from typing import IO
 
@@ -11,19 +13,27 @@ from tongtu.processes import ProcessOutcome
 
 work_module = importlib.import_module("tongtu.model.work")
 
+EXECUTABLES = {"runner": "/fake/bin/runner", "other-runner": "/fake/bin/other-runner", "xelatex": "/tex/bin/xelatex"}
+
 TABLE = """
 [runtime.demo]
 skill_path = ".agent/skills/{role}"
-command = ["runner", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}", "--allowedTools", "Read,Edit,{bash_allow}"]
+command = ["runner", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}", "--allowedTools", "Read,Edit,{bash_allow}", "--settings", "{settings}"]
+settings = { sandbox = { enabled = true, network = { allowedDomains = [] } } }
 
 [runtime.other]
 skill_path = ".other/{role}"
 command = ["other-runner", "--model", "{model}", "--effort", "{effort}"]
 
+[runtime.bare_settings]
+skill_path = ".bare/{role}"
+command = ["runner", "--settings", "{settings}"]
+
 [roles]
 smoke = { runtime = "demo", model = "m1", effort = "high", max_turns = 4, timeout_seconds = 60, bash = ["latexmk", "xelatex"] }
 bare = { runtime = "demo", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 lost = { runtime = "nowhere", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
+unsettled = { runtime = "bare_settings", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 asker = { provider = "demo", model = "m1", effort = "low" }
 halfway = { runtime = "demo", model = "m1", effort = "low" }
 """
@@ -40,6 +50,7 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (skill_root / role).mkdir(parents=True, exist_ok=True)
         (skill_root / role / "SKILL.md").write_text(f"{role} 的做法", encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
+    monkeypatch.setattr(shutil, "which", lambda name: EXECUTABLES.get(name))
     (tmp_path / "paper").mkdir()
     return tmp_path
 
@@ -52,8 +63,9 @@ def record_run(monkeypatch: pytest.MonkeyPatch, recorded: dict, outcome: Process
         *,
         stdout: IO[bytes],
         input_bytes: bytes,
+        env: dict[str, str],
     ) -> ProcessOutcome:
-        recorded.update(command=command, cwd=cwd, timeout_seconds=timeout_seconds, input_bytes=input_bytes)
+        recorded.update(command=command, cwd=cwd, timeout_seconds=timeout_seconds, input_bytes=input_bytes, env=env)
         if isinstance(outcome, Exception):
             raise outcome
         stdout.write(b'{"type":"result"}\n')
@@ -76,7 +88,7 @@ def test_finished_session_copies_skill_and_fills_command(configured: Path, monke
     assert outcome.detail == ""
     assert (workdir / ".agent" / "skills" / "smoke" / "SKILL.md").read_text(encoding="utf-8") == "smoke 的做法"
     assert recorded["command"] == [
-        "runner",
+        "/fake/bin/runner",
         "--model",
         "m1",
         "--effort",
@@ -85,6 +97,8 @@ def test_finished_session_copies_skill_and_fills_command(configured: Path, monke
         "4",
         "--allowedTools",
         "Read,Edit,Bash(latexmk:*),Bash(xelatex:*)",
+        "--settings",
+        '{"sandbox":{"enabled":true,"network":{"allowedDomains":[]}}}',
     ]
     assert recorded["cwd"] == workdir
     assert recorded["timeout_seconds"] == 60
@@ -99,7 +113,37 @@ def test_empty_bash_list_leaves_no_trailing_comma(configured: Path, monkeypatch:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
     work("bare", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert recorded["command"][-1] == "Read,Edit"
+    assert recorded["command"][recorded["command"].index("--allowedTools") + 1] == "Read,Edit"
+
+
+def test_settings_are_filled_as_json(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    filled = recorded["command"][recorded["command"].index("--settings") + 1]
+    assert json.loads(filled) == {"sandbox": {"enabled": True, "network": {"allowedDomains": []}}}
+
+
+def test_session_environment_is_narrowed(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert recorded["env"]["TONGTU_DISABLE"] == "1"
+    assert recorded["env"]["PATH"] == "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def test_session_environment_without_tex(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "xelatex" else EXECUTABLES.get(name))
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert recorded["env"]["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def test_runtime_without_settings_table_is_error(configured: Path) -> None:
+    outcome = work("unsettled", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "settings" in outcome.detail
 
 
 def test_stale_skill_directory_is_replaced(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,11 +183,19 @@ def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatc
 
 
 def test_runtime_not_on_path_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded: dict = {}
-    record_run(monkeypatch, recorded, FileNotFoundError("runner"))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
+    assert "PATH" in outcome.detail
     assert "runner" in outcome.detail
+
+
+def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, FileNotFoundError("现场不存在"))
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "/fake/bin/runner" in outcome.detail
 
 
 def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,7 +235,7 @@ def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: p
         effort="low",
     )
     assert outcome.stop_reason == StopReason.FINISHED
-    assert recorded["command"] == ["other-runner", "--model", "m9", "--effort", "low"]
+    assert recorded["command"] == ["/fake/bin/other-runner", "--model", "m9", "--effort", "low"]
     assert (workdir / ".other" / "smoke" / "SKILL.md").is_file()
 
 

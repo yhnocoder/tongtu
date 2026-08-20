@@ -25,6 +25,11 @@ base_url = "https://odd.example"
 api_key_env = "ODD_KEY"
 api = "grpc"
 
+[provider.inline]
+base_url = "https://inline.example/v1"
+api_key = "written-key"
+api = "chat"
+
 [roles]
 chat_role = { provider = "demo", model = "chat-model", effort = "low" }
 responses_role = { provider = "demo", model = "responses-model", effort = "high" }
@@ -33,6 +38,7 @@ messages_xhigh_role = { provider = "demo", model = "messages-model", effort = "x
 unknown_model_role = { provider = "demo", model = "other-model", effort = "low" }
 ghost_role = { provider = "ghost", model = "chat-model", effort = "low" }
 odd_role = { provider = "odd", model = "any-model", effort = "low" }
+inline_role = { provider = "inline", model = "chat-model", effort = "low" }
 work_role = { runtime = "claude_code", model = "m", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
 """
 
@@ -182,7 +188,7 @@ def test_messages_request_shape(configured: Path, monkeypatch: pytest.MonkeyPatc
     assert recorded["client"] == {"base_url": "https://demo.example", "api_key": "demo-key"}
     assert recorded["system"] == "你是译者"
     assert recorded["max_tokens"] == 32768
-    assert recorded["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+    assert recorded["thinking"] == {"type": "enabled", "budget_tokens": 2048}
     assert recorded["messages"] == [{"role": "user", "content": MESSAGES[0][1]}]
     assert read_log(configured / "log.json")["finish_reason"] == "end_turn"
 
@@ -257,6 +263,14 @@ def test_unknown_api_value_is_error(configured: Path) -> None:
     assert "grpc" in outcome.detail
 
 
+def test_api_key_written_in_config_is_used(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    monkeypatch.setattr(openai, "OpenAI", openai_stub(recorded, chat_response("你好")))
+    outcome = ask("inline_role", "", MESSAGES, log_path=configured / "log.json")
+    assert outcome.status == AskStatus.OK
+    assert recorded["client"] == {"base_url": "https://inline.example/v1", "api_key": "written-key"}
+
+
 def test_missing_api_key_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEMO_KEY", "")
     outcome = ask("chat_role", "", MESSAGES, log_path=configured / "log.json")
@@ -328,4 +342,4 @@ def test_unwritable_log_is_error(configured: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_thinking_budget_table_matches_efforts() -> None:
-    assert THINKING_BUDGET_TOKENS == {"low": 1024, "medium": 4096, "high": 16384}
+    assert THINKING_BUDGET_TOKENS == {"low": 1024, "medium": 2048, "high": 4096}
