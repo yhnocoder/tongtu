@@ -10,8 +10,6 @@
 命中，也仍要下载 6GB 级的缓存层并把镜像导出到本地 docker daemon，实测占去作业八成时间。
 两个 target 各自何时构建、何时推送，见 [`image.yml`](../.github/workflows/image.yml) 的头部注释。
 
-## 三个角色（架构 §10）
-
 镜像存在是为了三件事：
 
 | 角色 | 谁在用 | 说明 |
@@ -50,7 +48,7 @@ docker pull ghcr.io/yhnocoder/tongtu:0.1.0      # 某个 tag（git tag 即版本
 
 ## 运行
 
-论文工作目录不在仓库里（架构 §5）。镜像内 `TONGTU_HOME=/work`，把宿主的目录挂到 `/work`
+论文工作目录不在仓库里。镜像内 `TONGTU_HOME=/work`，把宿主的目录挂到 `/work`
 即可——`build/` 与 `out/` 都落在挂载卷上，容器随时可丢、下次原样重跑即断点续跑。
 
 ```bash
@@ -80,12 +78,9 @@ docker run --rm -it -v "$HOME/.local/share/tongtu:/work" \
 ### agent 运行时不在镜像里
 
 镜像只管确定性的那一半（TeX + 通途）。agent 运行时（Codex CLI 等）是每次运行的选择，
-凭据也各不相同，故不打进镜像：真跑时把运行时装进容器或换用带运行时的派生镜像，并把
-API key 以环境变量注入（`-e OPENAI_API_KEY=...`）。
+凭据也各不相同，故不打进镜像：采用把API key 以环境变量注入（`-e OPENAI_API_KEY=...`）的方式。
 
 ## 已知取舍
 
-- **~6GB 不裁**：arXiv 论文的宏包不可预测，为省磁盘引入一类新的编译失败不划算（继承 v2
-  结论，架构 §13）。
-- **`latest` 基底**：`TEXLIVE_TAG` 默认 `latest`，图的是宏包新；要可复现到某年某月就锁
-  TL 快照 tag 重新发一版。
+- **使用 Tex 全量包：~6GB**：arXiv 论文的宏包不可预测，为省磁盘引入一类新的编译失败不划算。
+- **`latest` 基底**：`TEXLIVE_TAG` 默认 `latest`，图的是宏包新；要可复现到某年某月就锁 TL 快照 tag 重新发一版。

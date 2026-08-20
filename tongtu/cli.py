@@ -59,7 +59,7 @@ EXIT_STUB = 99
 #: chunk id 形状：`c` 后至少三位数字，如 c012。
 _CHUNK_ID_RE = re.compile(r"^c[0-9]{3,}$")
 
-#: doctor 检查项（架构 §6）第一组：工具链与字体。缺任一项则编译无法进行，计入退出码。
+#: doctor 检查项第一组：工具链与字体。缺任一项则编译无法进行，计入退出码。
 DOCTOR_TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
     ("xelatex", "编译引擎（latexmk -xelatex）"),
     ("latexmk", "编译回环驱动"),
@@ -123,7 +123,7 @@ WorkdirOpt = Annotated[
 ]
 JsonOpt = Annotated[
     bool,
-    typer.Option("--json", help="向 stdout 输出机器可读事件流（JSON Lines，架构 §6；事件类型随 run 接线定义）"),
+    typer.Option("--json", help="向 stdout 输出机器可读事件流"),
 ]
 AgentOpt = Annotated[
     str | None, typer.Option("--agent", metavar="NAME", help="agent 运行时适配器（注册表在 tongtu/agent/）")
@@ -215,7 +215,7 @@ def retranslate(
     agent: AgentOpt = None,
     model: ModelOpt = None,
 ) -> None:
-    """chunk 级失效重算（incremental retranslation），失效语义见架构 §4 返工触发表。"""
+    """chunk 级失效重算（incremental retranslation）"""
     if sum([chunks is not None, term is not None, all_chunks]) != 1:
         raise typer.BadParameter("--chunks / --term / --all 三者必须恰好给一个")
     chunk_ids: list[str] = []

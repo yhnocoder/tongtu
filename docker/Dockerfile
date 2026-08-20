@@ -1,4 +1,4 @@
-# 通途参考镜像（架构 §10：docker 的三个角色 —— 云部署单元 / CI 环境 / 参考环境）。
+# 通途参考镜像
 #
 # 三层构建，各层的变化频率差着数量级：
 #   base    基底层：TeX Live full + 图渲染工具 + uv 与受管 Python。几乎不变，层缓存常年命中。
@@ -20,7 +20,7 @@
 ARG TEXLIVE_TAG=latest
 
 # =========================================================== 基底层（几乎不变）
-# 起点选官方 texlive/texlive：已含 TeX Live **full**（不裁，架构 §13 与 v2 结论一致）、
+# 起点选官方 texlive/texlive：已含 TeX Live **full**、
 # latexmk、latexpand、epstopdf 与 perl，一次 pull 就是一个稳定的基础层。
 # 曾考虑 debian + `apt install texlive-full`：装的是 Debian 冻结的 TL 版本（比 arXiv 论文
 # 常用的宏包旧一年以上，凭空多出一类编译失败），且 apt 装 full 比拉现成镜像层慢得多。
@@ -53,7 +53,7 @@ RUN apt-get update \
         poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Python 与依赖管理走 uv（架构 §13）。解释器也交给 uv 装：镜像内不依赖发行版的 python3
+# Python 与依赖管理走 uv。解释器也交给 uv 装：镜像内不依赖发行版的 python3
 # 版本（texlive 基底跟着 Debian 走，python3 是 3.11 还是 3.13 不该影响我们），
 # only-managed 保证 `uv sync` 挑中的就是下面这一版。
 ARG UV_VERSION=0.8.17
@@ -83,7 +83,7 @@ WORKDIR /opt/tongtu
 
 # 依赖先行：只有 pyproject.toml / uv.lock 变了才重装依赖，改流水线代码不重装。
 # --frozen = 不改 uv.lock（镜像里锁定的就是仓库锁定的）；dev 组一并装，镜像里能直接
-# `pytest -m compile`（架构 §12 层 2 的编译层 e2e 在参考环境里复现）。
+# `pytest -m compile`。
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
@@ -108,8 +108,7 @@ RUN printf '%s\n' \
     && grep -qi 'lxgw wenkai' /tmp/fc-list.txt \
     && rm -f /tmp/fc-list.txt
 
-# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work（架构 §5：云容器内
-# 为 /work），论文目录落 /work/<arxiv_id>，宿主挂进来即可续跑。
+# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/<arxiv_id>，宿主挂进来即可续跑。
 ENV PATH="/opt/tongtu/.venv/bin:${PATH}" \
     TONGTU_HOME=/work
 

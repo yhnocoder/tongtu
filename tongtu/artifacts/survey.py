@@ -2,8 +2,7 @@
 
 `SurveyManifest` 是 `build/manifests/survey.json`：`status` 是唯一分流依据；`masked_sha256`、
 `blocks_sha256` 与 `glossary_input_sha256` 是本阶段的三个输入 hash；`glossary_sha256` 与
-`brief_sha256` 是输出 hash，下游判定「输入未变不重算」时引用它们，后者即架构 §4 缓存 key 里
-的 `brief_hash`；`filtered` 是合并后未在全文命中、因而不进 resolved 的条目清单。
+`brief_sha256` 是输出 hash，下游判定「输入未变不重算」时引用它们；`filtered` 是合并后未在全文命中、因而不进 resolved 的条目清单。
 
 `GlossaryFile` 是 `build/glossary.json`（resolved glossary），`BriefFile` 是 `build/brief.json`，
 两者都是 artifact contract 的一员，消费方是 translate。词条来源层的取值词表由
@@ -74,7 +73,7 @@ class SurveyManifest(BaseModel):
     glossary_sha256: str = Field(default="", description="build/glossary.json 的 sha256，本阶段的输出 hash 之一")
     brief_sha256: str = Field(
         default="",
-        description="build/brief.json 的 sha256，本阶段的输出 hash 之二，即架构 §4 缓存 key 里的 brief_hash",
+        description="build/brief.json 的 sha256，本阶段的输出 hash 之二",
     )
     terms_total: int = Field(default=0, description="resolved glossary 里给出译法的词条数")
     do_not_translate_total: int = Field(default=0, description="resolved glossary 里保留原文的词条数")
