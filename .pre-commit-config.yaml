@@ -19,3 +19,9 @@ repos:
         language: system
         types: [text]
         pass_filenames: true
+      - id: comment-lint
+        name: comment lint
+        entry: uv run python scripts/comment_lint.py
+        language: system
+        pass_filenames: false
+        always_run: true
