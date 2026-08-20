@@ -156,20 +156,22 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 
 <h2>命令行</h2>
 <div class="card" style="margin-top:8px">
-<pre style="margin:0"><span class="k">tongtu run</span> PAPER [--from STAGE] [--model PROVIDER/MODEL] [--effort low|medium|high] [--glossary FILE]... [--workdir DIR] [--jobs N]
+<pre style="margin:0"><span class="k">tongtu run</span> PAPER [--from STAGE] [--ask-model PROVIDER/MODEL] [--ask-effort LEVEL] [--work-model RUNTIME/MODEL] [--work-effort LEVEL] [--glossary FILE]... [--workdir DIR] [--jobs N]
 <span class="k">tongtu stage</span> STAGE PAPER [同上，不含 --from]
 <span class="k">tongtu status</span> PAPER                <span class="c"># 按阶段序打一张表：状态 / 一行 message / 产物在不在 / manifest 路径；只读</span>
 <span class="k">tongtu validate</span> SRC DST            <span class="c"># 四层校验，0 = 通过</span>
 <span class="k">tongtu doctor</span>                       <span class="c"># 工具链、字体、密钥逐项检查</span>
-<span class="k">tongtu setup</span> [-i]                  <span class="c"># 写出带注释的 models.toml 模板（已存在不覆盖）；-i 交互问答填服务商、密钥变量名、各角色默认模型</span></pre>
+<span class="k">tongtu setup</span> [-i]                  <span class="c"># 写出带注释的 models.toml 模板（已存在不覆盖，权限 0600）；-i 逐个问要不要配置模板里的服务商并填 API key，ask 类角色指向第一个选中的服务商</span></pre>
 <div class="cols" style="margin-top:16px">
 <div class="io">
 <span class="label">参数</span>
 <dl>
 <dt>PAPER</dt><dd>arXiv 编号 / arXiv 链接 / 本地源码目录</dd>
 <dt>--from</dt><dd>从该阶段起全部重做，下游产物先删；不给则从第一个产物不在的阶段开始。帮助文本按序列出全部阶段名，<code>tongtu stage</code> 不带参数也列</dd>
-<dt>--model</dt><dd><code>服务商/模型</code>，覆盖配置文件里该命令涉及的所有角色的模型；只想换一个角色就改配置文件</dd>
-<dt>--effort</dt><dd>推理强度，同上覆盖</dd>
+<dt>--ask-model</dt><dd><code>服务商/模型</code>，覆盖本次涉及的全部 ask 类角色（survey_terms、translate）；服务商名 = <code>[provider.*]</code> 的名字。只想换一个角色就改配置文件</dd>
+<dt>--ask-effort</dt><dd>推理强度，同上覆盖 ask 类角色</dd>
+<dt>--work-model</dt><dd><code>运行时/模型</code>，覆盖本次涉及的全部 work 类角色（review、precompile_fix、compile_fix）；运行时名 = <code>[runtime.*]</code> 的名字，例 <code>claude_code/claude-sonnet-5</code></dd>
+<dt>--work-effort</dt><dd>同上覆盖 work 类角色</dd>
 <dt>--glossary</dt><dd>命令行层术语表，可多次给，靠后优先</dd>
 <dt>--workdir</dt><dd>直接指定论文工作目录（默认 <code>$TONGTU_HOME/&lt;编号&gt;</code>，再默认 <code>~/.local/share/tongtu/</code>）</dd>
 <dt>--jobs</dt><dd>translate 并发度</dd>
@@ -177,7 +179,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 </dl>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0"><code>status</code> 是「上次跑挂了、不想重跑、想知道为什么」的入口：失败阶段那一行有 message 与 warnings，再细看去 logs/。</p>
 <span class="label" style="display:block;margin-top:12px">退出码</span>
-<dl><dt>0</dt><dd>成功（validate / doctor：通过）</dd><dt>1</dt><dd>某阶段失败，manifest 里有原因</dd><dt>2</dt><dd>用法错误</dd></dl>
+<dl><dt>0</dt><dd>成功（validate：通过；doctor：工具链与字体齐全——models.toml、密钥、运行时只报告不计入，镜像构建期可当断言用）</dd><dt>1</dt><dd>某阶段失败，manifest 里有原因</dd><dt>2</dt><dd>用法错误</dd></dl>
 </div>
 <div class="io">
 <span class="label">配置目录 <code>~/.config/tongtu/</code>（<code>$XDG_CONFIG_HOME</code> 覆盖）</span>
@@ -188,7 +190,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <span class="label" style="display:block;margin-top:12px">论文工作目录</span>
 <dl><dt><span class="f">glossary.json</span></dt><dd>论文层术语表，放在工作目录根</dd></dl>
 <span class="label" style="display:block;margin-top:12px">环境变量</span>
-<dl><dt>TONGTU_HOME</dt><dd>工作目录根</dd><dt>各服务商密钥</dt><dd>变量名在 models.toml 里逐个声明</dd></dl>
+<dl><dt>TONGTU_HOME</dt><dd>工作目录根</dd><dt>各服务商密钥</dt><dd>服务商条目的 <code>api_key</code> 留空时，用 <code>api_key_env</code> 指的环境变量</dd></dl>
 <p style="font-size:13px;color:var(--muted);margin:10px 0 0">去掉的命令与选项：<code>retranslate</code>（chunk 级重翻，随复用一起放下）、<code>preview</code>、<code>tex compile</code>、<code>--force</code>（被 <code>--from</code> 替代）、<code>--agent</code>（被配置文件的角色表替代）、<code>--json</code>（事件流 schema 从未定义）、<code>--max-fallback-ratio</code>（常量即可）。</p>
 </div>
 </div>
@@ -517,16 +519,17 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
     message: <span class="t">str</span></pre></details>
 </div>
 
-<h2>模型调用层<small><code>tongtu/model/</code>，原「agent 适配层」；流水线只认两个函数</small></h2>
+<h2>模型调用层<small><code>tongtu/model/</code>，原「agent 适配层」；流水线只认两个函数</small> <span class="tag" style="font-size:12px;padding:1px 8px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:500">步骤 1 完成（PR #24）</span></h2>
 <div class="card" style="margin-top:8px">
 <div class="cols">
 <div>
 <span class="label">ask —— 单次问答，无状态</span>
-<pre style="margin-top:6px">ask(role, system, messages, *, schema=None, log_path) -> AskOutcome
+<pre style="margin-top:6px">ask(role, system, messages, *, schema=None, log_path, model=None, effort=None) -> AskOutcome
   role:     "translate" | "survey_terms" | …   <span class="c"># 角色名，在 models.toml 的 [roles] 查到服务商 / 模型 / 强度</span>
   system:   系统提示词
   messages: [(role, content), …]               <span class="c"># 第一次只有一条 user；重试续上 assistant + user</span>
-  schema:   JSON Schema，要结构化输出时给
+  schema:   JSON Schema，要结构化输出时给            <span class="c"># 只有 chat 接口支持；另两个接口给了 schema 以 error 返回</span>
+  model:    "服务商/模型"，None 用角色配置          <span class="c"># --ask-model 的原字符串；effort 同理，None 用角色配置</span>
   → AskOutcome(status: "ok"|"error", text, detail)</pre>
 <span class="label" style="display:block;margin-top:14px">三种接口，各用官方 SDK</span>
 <dl class="io" style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13.5px;margin:6px 0 0">
@@ -538,9 +541,10 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </div>
 <div>
 <span class="label">work —— 在一棵目录树里拉起一次多轮会话</span>
-<pre style="margin-top:6px">work(role, workdir, *, trace_path) -> WorkOutcome
+<pre style="margin-top:6px">work(role, workdir, *, trace_path, model=None, effort=None) -> WorkOutcome
   role:     "precompile_fix" | "compile_fix" | "review"
   workdir:  会话的 cwd，也是它能读写的全部范围
+  model:    "运行时/模型"，None 用角色配置          <span class="c"># --work-model 的原字符串；effort 同理</span>
   → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail)</pre>
 <p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>（从 tongtu 的实现生成，不入库），agent 跑的是它，不是 <code>tongtu</code>。</p>
 
@@ -551,14 +555,16 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </div>
 </div>
 <details open><summary>models.toml（配置目录）</summary>
-<pre><span class="c"># 服务商：一个 API 前缀 + 一个密钥变量名 + 哪个模型走哪种接口（api 取 chat / responses / messages）</span>
+<pre><span class="c"># 服务商：一个 API 前缀 + 一个密钥 + 哪个模型走哪种接口（api 取 chat / responses / messages）</span>
 [provider.opencode]
 base_url    = "https://opencode.ai/zen/go/v1"
+api_key     = ""                  <span class="c"># 直接写密钥，或留空改用下面的环境变量；setup -i 填的是这里</span>
 api_key_env = "OPENCODE_API_KEY"
 models = { "deepseek-v4-flash" = "chat", "gpt-5.6-luna" = "responses", "minimax-m3" = "messages" }
 
 [provider.anthropic]
 base_url    = "https://api.anthropic.com"
+api_key     = ""
 api_key_env = "ANTHROPIC_API_KEY"
 api         = "messages"          <span class="c"># 整个服务商一种接口时不必逐模型列</span>
 
@@ -574,7 +580,7 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 <span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
 <span class="c"># {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
-# Codex 的运行时条目在步骤 1 写 models.toml 时定；已验证的参数：-s workspace-write -c approval_policy="never" --skip-git-repo-check -C &lt;现场&gt;，规则文件放 .codex/rules/</span>
+# Codex 的运行时条目另开 issue #27 做（被 #26 阻塞）；已验证的参数：-s workspace-write -c approval_policy="never" --skip-git-repo-check -C &lt;现场&gt;，规则文件放 .codex/rules/</span>
 
 <span class="c"># 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么</span>
 [roles]
@@ -583,7 +589,7 @@ translate      = { provider = "opencode", model = "deepseek-v4-flash", effort = 
 review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 -I validate.py"] }
 precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
 compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }</pre>
-<p style="font-size:13px;color:var(--muted);margin:8px 0 0">命令行 <code>--model</code> / <code>--effort</code> 覆盖本次涉及的全部角色；没有 <code>tongtu config</code> 子命令，文件手改。密钥只认环境变量，变量名在服务商条目里声明（现状的 credentials.json 与 opencode 登录态两级来源去掉，少两套逻辑；要方便就把 export 写进 shell 配置）。</p>
+<p style="font-size:13px;color:var(--muted);margin:8px 0 0">命令行 <code>--ask-model</code> / <code>--ask-effort</code> 覆盖全部 ask 类角色，<code>--work-model</code> / <code>--work-effort</code> 覆盖全部 work 类角色；没有 <code>tongtu config</code> 子命令，文件手改。密钥写在服务商条目的 <code>api_key</code>（文件 0600），留空则用 <code>api_key_env</code> 指的环境变量；credentials.json 与 opencode 登录态两级来源去掉。messages 接口的推理强度按档位表换算成 <code>thinking.budget_tokens</code>（low 1024 / medium 2048 / high 4096），<code>max_tokens</code> 32768。<code>tongtu doctor</code> 只检查 <code>[roles]</code> 引用到的服务商与运行时。</p>
 </details>
 <div style="margin-top:18px">
 <span class="label">会话的约束——四件事，各管一件<small style="text-transform:none;letter-spacing:0;margin-left:8px">issue #20 实测结论，2026-08-20</small></span>

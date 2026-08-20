@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -24,9 +25,10 @@ settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowU
 
 [roles]
 smoke = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
+sandbox_probe = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 8, timeout_seconds = 300, bash = ["touch"] }
 """
 
-SKILL = """---
+SMOKE_SKILL = """---
 name: smoke
 description: 在现场写一个 hello.txt
 ---
@@ -34,17 +36,42 @@ description: 在现场写一个 hello.txt
 在当前目录写一个文件 hello.txt，文件内容只有一行、正好是五个小写字母 hello，不要加标点、不要改写、不要再做别的事，写完就结束。
 """
 
+PROBE_SKILL = """---
+name: sandbox_probe
+description: 在现场外与现场内各建一个文件
+---
 
-def test_work_runs_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+用 Bash 依次执行两条命令：`touch ../outside.txt`，然后 `touch inside.txt`；第一条失败也继续执行第二条；两条都跑过就结束，不做别的。
+"""
+
+
+def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, skill: str) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     config = tmp_path / "config" / "tongtu" / "models.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
-    (skill_root / "smoke").mkdir(parents=True)
-    (skill_root / "smoke" / "SKILL.md").write_text(SKILL, encoding="utf-8")
+    (skill_root / role).mkdir(parents=True)
+    (skill_root / role / "SKILL.md").write_text(skill, encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
 
+
+def tool_result_for(trace_path: Path, needle: str) -> str:
+    events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    wanted = ""
+    for event in events:
+        for block in event.get("message", {}).get("content", []) or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and needle in json.dumps(block.get("input", {})):
+                wanted = block.get("id", "")
+            if block.get("type") == "tool_result" and block.get("tool_use_id") == wanted:
+                return json.dumps(block.get("content"), ensure_ascii=False)
+    return ""
+
+
+def test_work_runs_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared(tmp_path, monkeypatch, "smoke", SMOKE_SKILL)
     workdir = tmp_path / "paper"
     workdir.mkdir()
     trace_path = tmp_path / "logs" / "smoke.jsonl"
@@ -54,3 +81,17 @@ def test_work_runs_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert trace_path.stat().st_size > 0
     print(f"trace： {trace_path} ")
     print(f"现场： {workdir} ")
+
+
+def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared(tmp_path, monkeypatch, "sandbox_probe", PROBE_SKILL)
+    workdir = tmp_path / "probe" / "paper"
+    workdir.mkdir(parents=True)
+    trace_path = tmp_path / "logs" / "sandbox_probe.jsonl"
+    outcome = work("sandbox_probe", workdir, trace_path=trace_path)
+    print(f"trace： {trace_path} ")
+    print(f"现场： {workdir} ")
+    print(f"越界写的 tool_result： {tool_result_for(trace_path, 'outside.txt')}")
+    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
+    assert (workdir / "inside.txt").exists()
+    assert not (workdir.parent / "outside.txt").exists()
