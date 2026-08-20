@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from tongtu import cli
+from tongtu import __version__, cli
 from tongtu.artifacts.common import Manifest
 from tongtu.cli import RunOptions, app, main
 from tongtu.model.config import MODELS_TEMPLATE
@@ -394,3 +394,20 @@ def test_status_does_not_create_the_workdir(tmp_path: Path) -> None:
     result = runner.invoke(app, ["status", "2002.05202", "--workdir", str(target)])
     assert result.exit_code == 0
     assert not target.exists()
+
+
+def test_version_flag() -> None:
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.stdout
+
+
+def test_link_and_id_resolve_to_the_same_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    first_lines = []
+    for paper in ("2002.05202", "https://arxiv.org/abs/2002.05202"):
+        result = runner.invoke(app, ["status", paper])
+        assert result.exit_code == 0
+        first_lines.append(result.stdout.splitlines()[0])
+    assert first_lines[0] == first_lines[1]
+    assert str(tmp_path / "2002.05202") in first_lines[0]

@@ -149,6 +149,15 @@ def _workdir_name(paper_input: PaperInput) -> str:
     return paper_input.arxiv_id or ""
 
 
+def _paper_workdir(paper: str, workdir: Path | None) -> tuple[PaperInput, Workdir]:
+    try:
+        paper_input = parse_paper_argument(paper)
+        path = resolve(_workdir_name(paper_input), workdir)
+    except (PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    return paper_input, Workdir(path)
+
+
 def _options(
     paper: str,
     workdir: Path | None,
@@ -160,14 +169,10 @@ def _options(
     jobs: int,
     no_terms: bool,
 ) -> RunOptions:
-    try:
-        paper_input = parse_paper_argument(paper)
-        path = resolve(_workdir_name(paper_input), workdir)
-    except (PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
+    paper_input, paper_workdir = _paper_workdir(paper, workdir)
     return RunOptions(
         paper=paper_input,
-        workdir=Workdir(path),
+        workdir=paper_workdir,
         ask_model=ask_model,
         ask_effort=ask_effort,
         work_model=work_model,
@@ -263,12 +268,7 @@ def stage(
 
 @app.command()
 def status(paper: PaperArg, workdir: WorkdirOpt = None) -> None:
-    try:
-        paper_input = parse_paper_argument(paper)
-        path = resolve(_workdir_name(paper_input), workdir)
-    except (PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    paper_workdir = Workdir(path)
+    _paper_input, paper_workdir = _paper_workdir(paper, workdir)
     console.print(f"工作目录 {paper_workdir.path}")
     table = Table(box=None, pad_edge=False)
     table.add_column("阶段")
