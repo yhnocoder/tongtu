@@ -466,7 +466,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div><span class="label">任务</span>
 <ol class="steps">
 <li><b>搭隔离现场</b> <code>build/review/</code>，只放：<code>chunks/</code>（原文，只读）、<code>reviewed/</code>（译文，可改）、<code>brief.json</code>，加 skill 目录（SKILL.md + <code>validate.py</code>）。manifest、blocks.json、masked.tex 都不在这棵树里，agent 碰不到</li>
-<li>拉一次 agent work（角色 <code>review</code>）：通读全部原文与译文，<b>把 translate 回退成英文的 chunk 翻出来</b>，修订术语不一致、同一概念前后译法不同、记号与称呼不统一、明显误译；只许改 <code>reviewed/</code> 下的文件，不许增删文件。SKILL 要求它每改完一个文件就跑 <code>python3 validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改——与脚本终审同一份实现；Bash 只放行这一条</li>
+<li>拉一次 agent work（角色 <code>review</code>）：通读全部原文与译文，<b>把 translate 回退成英文的 chunk 翻出来</b>，修订术语不一致、同一概念前后译法不同、记号与称呼不统一、明显误译；只许改 <code>reviewed/</code> 下的文件，不许增删文件。SKILL 要求它每改完一个文件就跑 <code>python3 -I validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改——与脚本终审同一份实现；Bash 只放行这一条</li>
 <li><b>脚本终审</b>：先查 <code>reviewed/</code> 的文件名集合与 <code>chunks/</code> 完全一致（多的忽略，少的视为回退；一个文件就是一个 chunk，边界改不了）；再对每个文件对着它的源 chunk 跑四层 validate——placeholder 那一层就是拦「多一个少一个 ⟦BLK-21⟧」的；<b>不过的 chunk 整个回退到 translate 的版本</b>，其他 chunk 的修订保留；通过的拷出到 <code>build/reviewed/</code></li>
 <li>compile 读 <code>reviewed/</code></li>
 </ol>
@@ -543,7 +543,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
   workdir:  会话的 cwd，也是它能读写的全部范围
   → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail)</pre>
 <p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>（从 tongtu 的实现生成，不入库），agent 跑的是它，不是 <code>tongtu</code>。</p>
-<p style="font-size:13.5px;margin:8px 0 0"><b>Bash 按命令前缀放行</b>：review 只给 <code>python3 validate.py</code>；precompile_fix / compile_fix 只给 <code>latexmk</code>、<code>xelatex</code>、<code>kpsewhich</code>。任何会话都不给 <code>tongtu</code>——否则 agent 能在会话里发起 <code>tongtu run</code>，形成循环调用。</p>
+
 <span class="label" style="display:block;margin-top:14px">运行时 = 一条命令模板</span>
 <p style="font-size:13.5px;margin:6px 0 0">Claude Code、Codex、opencode 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放哪。所以运行时不写代码，写在配置里（见下）；<code>work</code> 本身只做：拷 skill → 拼命令 → 新进程组跑 → 超时杀组 → stdout 落 trace → 按退出码与超时给 stop_reason。</p>
 <p style="font-size:13.5px;margin:8px 0 0"><b>去掉 <code>budget_exhausted</code></b>：它要解析各运行时的 transcript 才能判，而调用方反正不信 stop_reason、会自己复验，轮数耗尽与其他错误在调用方眼里没有区别。<code>max_turns</code> 仍作为参数传给运行时，只是不再从结果里读回。</p>
@@ -567,24 +567,40 @@ api         = "messages"          <span class="c"># 整个服务商一种接口�
 skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现场的哪里</span>
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits"]
-<span class="c"># {bash_allow} 由角色给出，形如 "Bash(python3 validate.py:*)"</span>
+           "--setting-sources", "", "--strict-mcp-config",                       <span class="c"># 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）</span>
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--disallowedTools", "Edit(.claude/skills/**)",                       <span class="c"># agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦</span>
+           "--settings", "{settings}"]                                           <span class="c"># 下面 settings 表序列化成 JSON 填入</span>
+settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
+<span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
+<span class="c"># {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
+# Codex 的运行时条目在步骤 1 写 models.toml 时定；已验证的参数：-s workspace-write -c approval_policy="never" --skip-git-repo-check -C &lt;现场&gt;，规则文件放 .codex/rules/</span>
 
 <span class="c"># 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么</span>
 [roles]
 survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   <span class="c"># 可选；不配就不提议</span>
 translate      = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
-review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 validate.py"] }
+review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 -I validate.py"] }
 precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
 compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }</pre>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0">命令行 <code>--model</code> / <code>--effort</code> 覆盖本次涉及的全部角色；没有 <code>tongtu config</code> 子命令，文件手改。密钥只认环境变量，变量名在服务商条目里声明（现状的 credentials.json 与 opencode 登录态两级来源去掉，少两套逻辑；要方便就把 export 写进 shell 配置）。</p>
 </details>
+<div style="margin-top:18px">
+<span class="label">会话的约束——四件事，各管一件<small style="text-transform:none;letter-spacing:0;margin-left:8px">issue #20 实测结论，2026-08-20</small></span>
+<ol style="margin:8px 0 0;padding-left:22px;font-size:14px;max-width:none">
+<li><b>命令放行规则</b>：运行时自带，按子命令逐个判定，复合命令与命令替换绕不过。review 只给 <code>python3 -I validate.py</code>（<code>-I</code> 不把脚本目录放进 sys.path）；precompile_fix / compile_fix 只给 <code>latexmk</code>、<code>xelatex</code>、<code>kpsewhich</code>。同时 deny 对 skill 目录的编辑：agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它。</li>
+<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 在放行之后仍能执行任意代码，靠沙箱把写范围限制在会话 cwd、断网。</li>
+<li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻退出码 2。给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过——有意绕过只能走第 2 条管住的那条路：嵌套的 run 要写 cwd 之外的工作目录根、要出网，第一个阶段就失败。</li>
+<li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin + 系统 bin）。</li>
+</ol>
+<p style="font-size:13.5px;color:var(--muted);margin:8px 0 0;max-width:none">运行时只认 Claude Code 与 Codex：Codex 的放行规则是 <code>.codex/rules/&lt;role&gt;.rules</code>（<code>prefix_rule</code>），沙箱是 <code>-s workspace-write -c approval_policy="never"</code>；opencode 没有沙箱，在它有之前不作为使用方案。</p>
+</div>
 </div>
 
 <h2>待验证<small>讨论中记下、还没有答案的事</small></h2>
 <div class="card" style="margin-top:8px">
 <ul style="margin:0;padding-left:18px;font-size:14px">
-<li><b>Bash 前缀放行的严密性</b>：方案是按命令前缀放行（<code>Bash(python3 validate.py:*)</code>、<code>Bash(latexmk:*)</code>），不给 <code>tongtu</code>。待验证：复合命令（<code>python3 validate.py a b &amp;&amp; 别的</code>）与子 shell 会不会绕过前缀匹配；Codex / opencode 有没有同等机制。验证不过的退路：现场里不装 tongtu、不放别的可执行物，只靠 cwd 与工具集约束。</li>
+<li><b>Bash 前缀放行的严密性</b>——<b>已验证</b>（<a href="https://github.com/yhnocoder/tongtu/issues/20">issue #20</a>，2026-08-20）：Claude Code、Codex、opencode 都按子命令逐个判定，<code>&amp;&amp;</code> <code>;</code> <code>||</code> <code>|</code> 换行、<code>$()</code>、反引号、子 shell 绕不过。真正的洞不在复合命令：agent 能改写 validate.py 再运行、在旁边放同名模块遮蔽标准库、<code>latexmk -e</code> / <code>xelatex -shell-escape</code> 本身就是任意代码。处理写进「模型调用层」的四件事。</li>
 </ul>
 </div>
 </div>
