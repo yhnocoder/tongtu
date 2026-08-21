@@ -21,6 +21,7 @@ from .assets import asset_path
 from .manifests import load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
+from .stages import fetch, precompile
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .workdir import Workdir, WorkdirError, resolve
 
@@ -78,7 +79,17 @@ def _pending_stage(name: str) -> Callable[[RunOptions], Manifest]:
     return entry
 
 
+def _fetch_entry(options: RunOptions) -> Manifest:
+    return fetch.run(options.paper, options.workdir)
+
+
+def _precompile_entry(options: RunOptions) -> Manifest:
+    return precompile.run(options.workdir, model_override=options.work_model, effort=options.work_effort)
+
+
 STAGE_ENTRIES: dict[str, Callable[[RunOptions], Manifest]] = {name: _pending_stage(name) for name in STAGES}
+STAGE_ENTRIES["fetch"] = _fetch_entry
+STAGE_ENTRIES["precompile"] = _precompile_entry
 
 
 PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")]
