@@ -5,7 +5,8 @@ import os
 import re
 import shutil
 import tomllib
-from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -15,36 +16,21 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__, validation
-from .artifacts.chunk import ChunkManifest, ChunkStatus
-from .artifacts.fetch import FetchStatus
-from .artifacts.flatten import FlattenManifest, FlattenStatus
-from .artifacts.mask import MaskManifest, MaskStatus
-from .artifacts.precompile import PrecompileManifest, PrecompileStatus
-from .artifacts.survey import AbstractSource, GlossaryInputRecord, SurveyManifest, SurveyStatus
-from .artifacts.translate import ChunkTranslateStatus, TranslateManifest, TranslateStatus
+from .artifacts.common import Manifest
 from .assets import asset_path
-from .chunking import Part
-from .masking import BlockCategory
+from .manifests import load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
-from .stages import STAGES
-from .stages import chunk as chunk_stage
-from .stages import fetch as fetch_stage
-from .stages import flatten as flatten_stage
-from .stages import mask as mask_stage
-from .stages import precompile as precompile_stage
-from .stages import survey as survey_stage
-from .stages import translate as translate_stage
-from .workdir import WorkdirError
+from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
+from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
+from .workdir import Workdir, WorkdirError, resolve
 
 EXIT_FAILURE = 1
 
 EXIT_USAGE = 2
 
-EXIT_PDF_ONLY = 3
+STATUS_OK = "ok"
 
-EXIT_STUB = 99
-
-_CHUNK_ID_RE = re.compile(r"^c[0-9]{3,}$")
+DEFAULT_JOBS = 4
 
 TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
     ("xelatex", "编译引擎（latexmk -xelatex）"),
@@ -70,51 +56,76 @@ app = typer.Typer(
     help="基于 LaTeX 源码的 arXiv 论文英译中引擎。",
 )
 
-tex_app = typer.Typer(
-    no_args_is_help=True,
-    help="编译修复会话可调用的命令，不面向人；会话现场见 stages/compile.md。",
-)
-app.add_typer(tex_app, name="tex", hidden=True)
+
+@dataclass(frozen=True)
+class RunOptions:
+    paper: PaperInput
+    workdir: Workdir
+    ask_model: str | None
+    ask_effort: str | None
+    work_model: str | None
+    work_effort: str | None
+    glossary: tuple[Path, ...]
+    jobs: int
+    no_terms: bool
 
 
-PaperArg = Annotated[str, typer.Argument(metavar="ID", help="arXiv id（或本地源码目录名）")]
+def _pending_stage(name: str) -> Callable[[RunOptions], Manifest]:
+    def entry(options: RunOptions) -> Manifest:
+        error_console.print(f"阶段 {name} 尚未按提案图重写，流水线在此停止（重构步骤 3–8 逐个接入）。")
+        raise typer.Exit(EXIT_FAILURE)
+
+    return entry
+
+
+STAGE_ENTRIES: dict[str, Callable[[RunOptions], Manifest]] = {name: _pending_stage(name) for name in STAGES}
+
+
+PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")]
+FromOpt = Annotated[
+    StageName | None,
+    typer.Option(
+        "--from",
+        help=(f"从该阶段起全部重做，下游产物先删；不给则从第一个产物不在的阶段开始。阶段按序：{' → '.join(STAGES)}"),
+    ),
+]
+AskModelOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--ask-model",
+        metavar="PROVIDER/MODEL",
+        help="覆盖本次涉及的全部 ask 类角色（survey_terms、translate）；PROVIDER 是 models.toml \\[provider.*] 的名字",
+    ),
+]
+AskEffortOpt = Annotated[
+    str | None, typer.Option("--ask-effort", metavar="LEVEL", help="推理强度，覆盖全部 ask 类角色")
+]
+WorkModelOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--work-model",
+        metavar="RUNTIME/MODEL",
+        help=(
+            "覆盖本次涉及的全部 work 类角色（review、precompile_fix、compile_fix）；"
+            "RUNTIME 是 models.toml \\[runtime.*] 的名字"
+        ),
+    ),
+]
+WorkEffortOpt = Annotated[
+    str | None, typer.Option("--work-effort", metavar="LEVEL", help="推理强度，覆盖全部 work 类角色")
+]
 GlossaryOpt = Annotated[
     list[Path] | None,
-    typer.Option("--glossary", metavar="FILE", help="input glossary，可多次；优先级高于论文目录内与全局表"),
+    typer.Option("--glossary", metavar="FILE", help="命令行层术语表，可多次给，靠后优先"),
 ]
 WorkdirOpt = Annotated[
     Path | None,
     typer.Option(
-        "--workdir", metavar="DIR", help="论文工作目录（默认 $TONGTU_HOME/<id> 或 ~/.local/share/tongtu/<id>）"
+        "--workdir", metavar="DIR", help="论文工作目录（默认 $TONGTU_HOME/<编号>，再默认 ~/.local/share/tongtu/<编号>）"
     ),
 ]
-JsonOpt = Annotated[
-    bool,
-    typer.Option("--json", help="向 stdout 输出机器可读事件流"),
-]
-AgentOpt = Annotated[
-    str | None, typer.Option("--agent", metavar="NAME", help="agent 运行时适配器（注册表在 tongtu/agent/）")
-]
-ModelOpt = Annotated[
-    str | None,
-    typer.Option(
-        "--model", metavar="ID", help="模型标识，透传给 agent 运行时；translate 用它做跳过判定（换模型即整篇重翻）"
-    ),
-]
-JobsOpt = Annotated[
-    int,
-    typer.Option("--jobs", min=1, metavar="N", help="translate 的 chunk 级并发度（默认 4，上限由 API 速率限制决定）"),
-]
-MaxFallbackRatioOpt = Annotated[
-    float,
-    typer.Option(
-        "--max-fallback-ratio",
-        min=0.0,
-        max=1.0,
-        metavar="R",
-        help="translate 的回退比例阈值（默认 0.2），超过它整体判失败、不进入 compile",
-    ),
-]
+JobsOpt = Annotated[int, typer.Option("--jobs", min=1, metavar="N", help="translate 并发度")]
+NoTermsOpt = Annotated[bool, typer.Option("--no-terms", help="survey 不调模型提议术语表，只用你写的三层")]
 
 
 def _print_version(value: bool) -> None:
@@ -132,523 +143,157 @@ def _root(
     return None
 
 
-def _stub_exit(command: str, **fields: object) -> typer.Exit:
-    console.print(f"tongtu {command}：占位实现，未执行任何操作（退出码 {EXIT_STUB}）")
-    table = Table(show_header=False, box=None, pad_edge=False)
-    for key, value in fields.items():
-        table.add_row(f"  {key}", "—" if value in (None, [], ()) else str(value))
-    console.print(table)
-    return typer.Exit(EXIT_STUB)
+def _workdir_name(paper_input: PaperInput) -> str:
+    if paper_input.source_dir is not None:
+        return paper_input.source_dir.name
+    return paper_input.arxiv_id or ""
+
+
+def _paper_workdir(paper: str, workdir: Path | None) -> tuple[PaperInput, Workdir]:
+    try:
+        paper_input = parse_paper_argument(paper)
+        path = resolve(_workdir_name(paper_input), workdir)
+    except (PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    return paper_input, Workdir(path)
+
+
+def _options(
+    paper: str,
+    workdir: Path | None,
+    ask_model: str | None,
+    ask_effort: str | None,
+    work_model: str | None,
+    work_effort: str | None,
+    glossary: list[Path] | None,
+    jobs: int,
+    no_terms: bool,
+) -> RunOptions:
+    paper_input, paper_workdir = _paper_workdir(paper, workdir)
+    return RunOptions(
+        paper=paper_input,
+        workdir=paper_workdir,
+        ask_model=ask_model,
+        ask_effort=ask_effort,
+        work_model=work_model,
+        work_effort=work_effort,
+        glossary=tuple(glossary or ()),
+        jobs=jobs,
+        no_terms=no_terms,
+    )
+
+
+def _print_stage_result(name: str, manifest: Manifest, workdir: Workdir) -> None:
+    console.print(f"{name}：状态 {manifest.status}")
+    if manifest.message:
+        console.print(f"  message  {manifest.message}")
+    for line in manifest.warnings:
+        console.print(f"  warning  {line}")
+    if manifest.status != STATUS_OK:
+        console.print(f"  manifest  {workdir.manifest_path(name)}")
+
+
+def _run_stages(start: str, options: RunOptions) -> typer.Exit:
+    for name in downstream(start):
+        manifest = STAGE_ENTRIES[name](options)
+        _print_stage_result(name, manifest, options.workdir)
+        if manifest.status != STATUS_OK:
+            return typer.Exit(EXIT_FAILURE)
+    return typer.Exit(0)
 
 
 @app.command()
 def run(
-    paper: Annotated[str, typer.Argument(metavar="ARXIV_ID|DIR", help="arXiv id 或本地源码目录")],
-    glossary: GlossaryOpt = None,
-    workdir: WorkdirOpt = None,
-    force: Annotated[bool, typer.Option("--force", help="无视缓存 full rerun")] = False,
-    json_output: JsonOpt = False,
-    agent: AgentOpt = None,
-    model: ModelOpt = None,
-) -> None:
-    raise _stub_exit(
-        "run",
-        paper=paper,
-        workdir=workdir,
-        glossary=glossary,
-        force=force,
-        json=json_output,
-        agent=agent,
-        model=model,
-    )
-
-
-@app.command()
-def retranslate(
     paper: PaperArg,
-    chunks: Annotated[str | None, typer.Option("--chunks", metavar="c012,c045", help="指定 chunk id，逗号分隔")] = None,
-    term: Annotated[str | None, typer.Option("--term", metavar="WORD", help="重翻命中该术语的 chunk")] = None,
-    all_chunks: Annotated[
-        bool, typer.Option("--all", help="full retranslation（改 style rules / 换模型时的显式操作）")
-    ] = False,
+    from_stage: FromOpt = None,
+    ask_model: AskModelOpt = None,
+    ask_effort: AskEffortOpt = None,
+    work_model: WorkModelOpt = None,
+    work_effort: WorkEffortOpt = None,
     glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
-    json_output: JsonOpt = False,
-    agent: AgentOpt = None,
-    model: ModelOpt = None,
+    jobs: JobsOpt = DEFAULT_JOBS,
+    no_terms: NoTermsOpt = False,
 ) -> None:
-    if sum([chunks is not None, term is not None, all_chunks]) != 1:
-        raise typer.BadParameter("--chunks / --term / --all 三者必须恰好给一个")
-    chunk_ids: list[str] = []
-    if chunks is not None:
-        chunk_ids = [part.strip() for part in chunks.split(",") if part.strip()]
-        if not chunk_ids:
-            raise typer.BadParameter("--chunks 要求至少一个 chunk id（形如 c012,c045）")
-        bad = [c for c in chunk_ids if not _CHUNK_ID_RE.fullmatch(c)]
-        if bad:
-            raise typer.BadParameter(f"chunk id 形如 c012，不合法：{'、'.join(bad)}")
-    raise _stub_exit(
-        "retranslate",
-        paper=paper,
-        chunks=chunk_ids or None,
-        term=term,
-        all=all_chunks,
-        glossary=glossary,
-        workdir=workdir,
-        json=json_output,
-        agent=agent,
-        model=model,
-    )
+    options = _options(paper, workdir, ask_model, ask_effort, work_model, work_effort, glossary, jobs, no_terms)
+    if from_stage is not None:
+        clean_from(options.workdir, from_stage.value)
+        start = from_stage.value
+        console.print(f"--from {start}：已删除 {start} 及其下游的产物")
+    else:
+        pending = first_pending(options.workdir)
+        if pending is None:
+            console.print(f"七个阶段的产物都在，本次不执行任何阶段；要重做，给 --from。工作目录 {options.workdir.path}")
+            return
+        start = pending
+        if start != STAGES[0]:
+            console.print(f"从 {start} 开始（更早阶段的产物已在）")
+    options.workdir.create()
+    raise _run_stages(start, options)
 
 
 @app.command()
 def stage(
-    name: Annotated[StageName, typer.Argument(help="阶段名")],
-    paper: Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")],
+    name: Annotated[
+        StageName | None, typer.Argument(metavar="STAGE", help=f"阶段名，按序：{'、'.join(STAGES)}")
+    ] = None,
+    paper: Annotated[str | None, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")] = None,
+    ask_model: AskModelOpt = None,
+    ask_effort: AskEffortOpt = None,
+    work_model: WorkModelOpt = None,
+    work_effort: WorkEffortOpt = None,
     glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
-    force: Annotated[bool, typer.Option("--force", help="无视已有 manifest 结论重新执行")] = False,
-    json_output: JsonOpt = False,
-    agent: AgentOpt = None,
-    model: ModelOpt = None,
-    jobs: JobsOpt = translate_stage.DEFAULT_JOBS,
-    max_fallback_ratio: MaxFallbackRatioOpt = translate_stage.DEFAULT_MAX_FALLBACK_RATIO,
+    jobs: JobsOpt = DEFAULT_JOBS,
+    no_terms: NoTermsOpt = False,
 ) -> None:
-    if name.value == fetch_stage.STAGE_NAME:
-        raise _run_stage_fetch(paper, workdir, force, json_output)
-    if name.value == flatten_stage.STAGE_NAME:
-        raise _run_stage_flatten(paper, workdir, force, json_output)
-    if name.value == precompile_stage.STAGE_NAME:
-        raise _run_stage_precompile(paper, workdir, force, json_output, model)
-    if name.value == mask_stage.STAGE_NAME:
-        raise _run_stage_mask(paper, workdir, force, json_output)
-    if name.value == survey_stage.STAGE_NAME:
-        raise _run_stage_survey(paper, glossary or [], workdir, force, json_output)
-    if name.value == chunk_stage.STAGE_NAME:
-        raise _run_stage_chunk(paper, workdir, force, json_output)
-    if name.value == translate_stage.STAGE_NAME:
-        raise _run_stage_translate(paper, workdir, force, json_output, model, jobs, max_fallback_ratio)
-    raise _stub_exit(
-        "stage",
-        name=name.value,
-        paper=paper,
-        glossary=glossary,
-        workdir=workdir,
-        force=force,
-        json=json_output,
-        agent=agent,
-        model=model,
-    )
-
-
-def _warn_json_ignored(json_output: bool) -> None:
-    if json_output:
-        error_console.print("--json：事件流 schema 尚未定义，本次忽略该选项")
-
-
-def _workdir_name_from_paper(paper: str) -> str:
-    paper_input = fetch_stage.parse_paper_argument(paper)
-    if paper_input.source_dir is not None:
-        return paper_input.source_dir.name
-    return paper_input.arxiv_id
-
-
-def _print_skipped(stage_name: str, status: str, manifest_path: Path) -> None:
-    console.print(f"{stage_name} 跳过：manifest 已有结论（状态 {status}），--force 可重新执行")
-    console.print(f"  manifest  {manifest_path}")
-
-
-def _upstream_exit_code(*, ok: bool, pdf_only_chain: bool) -> int:
-    if ok:
-        return 0
-    if pdf_only_chain:
-        return EXIT_PDF_ONLY
-    return EXIT_FAILURE
-
-
-def _run_stage_fetch(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
-    _warn_json_ignored(json_output)
-    try:
-        paper_input = fetch_stage.parse_paper_argument(paper)
-        if paper_input.source_dir is not None:
-            result = fetch_stage.fetch_local(paper_input.source_dir, workdir)
-        else:
-            result = fetch_stage.fetch_remote(paper_input.arxiv_id, workdir, force=force)
-    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    manifest = result.manifest
-    manifest_path = result.workdir.manifest_path(fetch_stage.STAGE_NAME)
-    if result.skipped:
-        _print_skipped(fetch_stage.STAGE_NAME, manifest.status, manifest_path)
-        return typer.Exit(_fetch_exit_code(manifest.status))
-    console.print(f"fetch：状态 {manifest.status}")
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column(overflow="fold")
-    table.add_row("  kind", manifest.kind or "—")
-    table.add_row("  src", str(result.workdir.src))
-    table.add_row(
-        "  文件数", f"{len(manifest.files)}（.tex {len(manifest.tex_files)} 个，共 {manifest.tex_chars} 字符）"
-    )
-    table.add_row("  manifest", str(manifest_path))
-    if manifest.message:
-        table.add_row("  message", manifest.message)
-    for line in manifest.warnings:
-        table.add_row("  warning", line)
-    for member_name in manifest.rejected:
-        table.add_row("  rejected", member_name)
-    console.print(table)
-    return typer.Exit(_fetch_exit_code(manifest.status))
-
-
-def _fetch_exit_code(status: FetchStatus) -> int:
-    if status is FetchStatus.OK:
-        return 0
-    if status is FetchStatus.PDF_ONLY:
-        return EXIT_PDF_ONLY
-    return EXIT_FAILURE
-
-
-def _run_stage_flatten(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
-    _warn_json_ignored(json_output)
-    try:
-        result = flatten_stage.flatten(_workdir_name_from_paper(paper), workdir, force=force)
-    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    manifest = result.manifest
-    manifest_path = result.workdir.manifest_path(flatten_stage.STAGE_NAME)
-    if result.skipped:
-        _print_skipped(flatten_stage.STAGE_NAME, manifest.status, manifest_path)
-        return typer.Exit(_flatten_exit_code(manifest))
-    console.print(f"flatten：状态 {manifest.status}")
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column(overflow="fold")
-    table.add_row("  main_file", manifest.main_file or "—")
-    table.add_row("  bbl", f"已内联 {manifest.bbl_file}" if manifest.bbl_file else "未内联")
-    flat_path = result.workdir.build / flatten_stage.FLAT_FILENAME
-    if manifest.status is FlattenStatus.OK:
-        table.add_row("  flat.tex", f"{flat_path}（{manifest.flat_bytes} 字节）")
-    else:
-        table.add_row("  flat.tex", "未写出")
-    table.add_row("  manifest", str(manifest_path))
-    if manifest.message:
-        table.add_row("  message", manifest.message)
-    for line in manifest.warnings:
-        table.add_row("  warning", line)
-    console.print(table)
-    return typer.Exit(_flatten_exit_code(manifest))
-
-
-def _flatten_exit_code(manifest: FlattenManifest) -> int:
-    return _upstream_exit_code(
-        ok=manifest.status is FlattenStatus.OK,
-        pdf_only_chain=(
-            manifest.status is FlattenStatus.FETCH_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
-        ),
-    )
-
-
-def _run_stage_precompile(
-    paper: str, workdir: Path | None, force: bool, json_output: bool, model: str | None
-) -> typer.Exit:
-    _warn_json_ignored(json_output)
-    try:
-        result = precompile_stage.precompile(_workdir_name_from_paper(paper), workdir, force=force, model=model)
-    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    manifest = result.manifest
-    manifest_path = result.workdir.manifest_path(precompile_stage.STAGE_NAME)
-    if result.skipped:
-        _print_skipped(precompile_stage.STAGE_NAME, manifest.status, manifest_path)
-        return typer.Exit(_precompile_exit_code(manifest))
-    console.print(f"precompile：状态 {manifest.status}")
-    compiled = manifest.status is PrecompileStatus.OK
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column(overflow="fold")
-    table.add_row("  pages", str(manifest.pages) if compiled else "—")
-    table.add_row("  overfull_hboxes", str(manifest.overfull_hboxes) if compiled else "—")
-    table.add_row("  undefined_references", str(manifest.undefined_references) if compiled else "—")
-    table.add_row("  undefined_citations", str(manifest.undefined_citations) if compiled else "—")
-    table.add_row("  missing_characters", str(manifest.missing_characters) if compiled else "—")
-    table.add_row("  耗时", f"{manifest.duration_seconds:.1f} 秒" if manifest.duration_seconds else "—")
-    pdf_path = result.workdir.build / precompile_stage.PRECOMPILE_DIRNAME / precompile_stage.PDF_FILENAME
-    precompile_path = result.workdir.build / precompile_stage.PRECOMPILE_FILENAME
-    if compiled:
-        table.add_row("  flat.pdf", f"{pdf_path}（{manifest.pdf_bytes} 字节）")
-        table.add_row("  precompile.tex", f"{precompile_path}（{manifest.precompile_bytes} 字节）")
-    else:
-        table.add_row("  flat.pdf", "未产出")
-        table.add_row("  precompile.tex", "未产出")
-    if manifest.fix_session:
-        table.add_row(
-            "  修复会话",
-            f"已拉起（{manifest.session_stop_reason}，{manifest.session_duration_seconds:.0f} 秒，"
-            f"模型 {manifest.session_model}）",
-        )
-    else:
-        table.add_row("  修复会话", "未拉起")
-    for changed in manifest.changed_files:
-        table.add_row("  changed_file", changed)
-    table.add_row("  manifest", str(manifest_path))
-    if manifest.message:
-        table.add_row("  message", manifest.message)
-    for line in manifest.warnings:
-        table.add_row("  warning", line)
-    console.print(table)
-    return typer.Exit(_precompile_exit_code(manifest))
-
-
-def _precompile_exit_code(manifest: PrecompileManifest) -> int:
-    return _upstream_exit_code(
-        ok=manifest.status is PrecompileStatus.OK,
-        pdf_only_chain=(
-            manifest.status is PrecompileStatus.FLATTEN_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
-        ),
-    )
-
-
-def _run_stage_mask(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
-    _warn_json_ignored(json_output)
-    try:
-        result = mask_stage.mask(_workdir_name_from_paper(paper), workdir, force=force)
-    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    manifest = result.manifest
-    manifest_path = result.workdir.manifest_path(mask_stage.STAGE_NAME)
-    if result.skipped:
-        _print_skipped(mask_stage.STAGE_NAME, manifest.status, manifest_path)
-        return typer.Exit(_mask_exit_code(manifest))
-    console.print(f"mask：状态 {manifest.status}")
-    masked = manifest.status is MaskStatus.OK
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column(overflow="fold")
-    table.add_row("  blocks", str(manifest.blocks_total) if masked else "—")
-    table.add_row("  captions", str(manifest.captions_total) if masked else "—")
-    table.add_row("  unknown 环境", _unknown_environments(manifest) if masked else "—")
-    table.add_row("  掩码保留比", f"{manifest.masked_chars_ratio:.1%}" if masked else "—")
-    if masked:
-        table.add_row(
-            "  precompile.tex",
-            f"{mask_stage.precompile_path(result.workdir)}（{manifest.precompile_chars} 字符）",
-        )
-        table.add_row("  masked.tex", f"{mask_stage.masked_path(result.workdir)}（{manifest.masked_chars} 字符）")
-        table.add_row("  blocks.json", str(mask_stage.blocks_path(result.workdir)))
-    else:
-        table.add_row("  precompile.tex", "—")
-        table.add_row("  masked.tex", "未产出")
-        table.add_row("  blocks.json", "未产出")
-    table.add_row("  manifest", str(manifest_path))
-    if manifest.message:
-        table.add_row("  message", manifest.message)
-    for line in manifest.warnings:
-        table.add_row("  warning", line)
-    console.print(table)
-    return typer.Exit(_mask_exit_code(manifest))
-
-
-def _unknown_environments(manifest: MaskManifest) -> str:
-    listed = [
-        f"{name}（{decision.blocks} 块）"
-        for name, decision in manifest.environments.items()
-        if decision.category == BlockCategory.UNKNOWN and decision.blocks > 0
+    if name is None:
+        console.print(" → ".join(STAGES))
+        return
+    if paper is None:
+        raise typer.BadParameter("缺参数 PAPER（arXiv 编号 / arXiv 链接 / 本地源码目录）")
+    options = _options(paper, workdir, ask_model, ask_effort, work_model, work_effort, glossary, jobs, no_terms)
+    missing = [
+        upstream for upstream in STAGES[: STAGES.index(name.value)] if not outputs_present(options.workdir, upstream)
     ]
-    return "、".join(listed) if listed else "—"
-
-
-def _mask_exit_code(manifest: MaskManifest) -> int:
-    return _upstream_exit_code(
-        ok=manifest.status is MaskStatus.OK,
-        pdf_only_chain=(
-            manifest.status is MaskStatus.PRECOMPILE_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY
-        ),
-    )
-
-
-def _run_stage_survey(
-    paper: str, glossary_paths: list[Path], workdir: Path | None, force: bool, json_output: bool
-) -> typer.Exit:
-    _warn_json_ignored(json_output)
-    try:
-        result = survey_stage.survey(
-            _workdir_name_from_paper(paper), workdir, glossary_paths=glossary_paths, force=force
+    if missing:
+        error_console.print(
+            f"上游产物不在：{'、'.join(missing)}。先跑 tongtu run，或用 tongtu run --from {missing[0]} 重做。"
         )
-    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    manifest = result.manifest
-    manifest_path = result.workdir.manifest_path(survey_stage.STAGE_NAME)
-    if result.skipped:
-        _print_skipped(survey_stage.STAGE_NAME, manifest.status, manifest_path)
-        return typer.Exit(_survey_exit_code(manifest))
-    console.print(f"survey：状态 {manifest.status}")
-    surveyed = manifest.status is SurveyStatus.OK
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column(overflow="fold")
-    for record in manifest.glossary_inputs:
-        table.add_row(f"  {record.layer} 术语表", _glossary_input(record))
-    table.add_row("  terms", str(manifest.terms_total) if surveyed else "—")
-    table.add_row("  do_not_translate", str(manifest.do_not_translate_total) if surveyed else "—")
-    table.add_row("  过滤掉的词条", _filtered_terms(manifest) if surveyed else "—")
-    if surveyed:
+        raise typer.Exit(EXIT_USAGE)
+    manifest = STAGE_ENTRIES[name.value](options)
+    _print_stage_result(name.value, manifest, options.workdir)
+    raise typer.Exit(0 if manifest.status == STATUS_OK else EXIT_FAILURE)
+
+
+@app.command()
+def status(paper: PaperArg, workdir: WorkdirOpt = None) -> None:
+    _paper_input, paper_workdir = _paper_workdir(paper, workdir)
+    console.print(f"工作目录 {paper_workdir.path}")
+    table = Table(box=None, pad_edge=False)
+    table.add_column("阶段")
+    table.add_column("状态")
+    table.add_column("message", overflow="fold")
+    table.add_column("产物")
+    table.add_column("manifest", overflow="fold")
+    for name in STAGES:
+        manifest_path = paper_workdir.manifest_path(name)
+        manifest = load_manifest(manifest_path, Manifest)
         table.add_row(
-            "  abstract",
-            f"{manifest.abstract_source}（{manifest.abstract_chars} 字符）"
-            if manifest.abstract_source is not AbstractSource.ABSENT
-            else "未提取到（不是失败）",
+            name,
+            manifest.status if manifest is not None else "—",
+            _status_message(manifest),
+            "在" if outputs_present(paper_workdir, name) else "不在",
+            str(manifest_path) if manifest_path.is_file() else "—",
         )
-        table.add_row("  glossary.json", str(survey_stage.glossary_file_path(result.workdir)))
-        table.add_row("  brief.json", str(survey_stage.brief_path(result.workdir)))
-    else:
-        table.add_row("  abstract", "—")
-        table.add_row("  glossary.json", "未产出")
-        table.add_row("  brief.json", "未产出")
-    table.add_row("  manifest", str(manifest_path))
-    if manifest.message:
-        table.add_row("  message", manifest.message)
-    for line in manifest.warnings:
-        table.add_row("  warning", line)
     console.print(table)
-    return typer.Exit(_survey_exit_code(manifest))
 
 
-def _glossary_input(record: GlossaryInputRecord) -> str:
-    if not record.path:
-        return "未给出"
-    return record.path if record.present else f"{record.path}（不存在）"
-
-
-def _filtered_terms(manifest: SurveyManifest) -> str:
-    listed = [f"{entry.word}（{entry.decided_by}）" for entry in manifest.filtered]
-    return "、".join(listed) if listed else "—"
-
-
-def _survey_exit_code(manifest: SurveyManifest) -> int:
-    return _upstream_exit_code(
-        ok=manifest.status is SurveyStatus.OK,
-        pdf_only_chain=(manifest.status is SurveyStatus.MASK_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY),
-    )
-
-
-def _run_stage_chunk(paper: str, workdir: Path | None, force: bool, json_output: bool) -> typer.Exit:
-    _warn_json_ignored(json_output)
-    try:
-        result = chunk_stage.chunk(_workdir_name_from_paper(paper), workdir, force=force)
-    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    manifest = result.manifest
-    manifest_path = result.workdir.manifest_path(chunk_stage.STAGE_NAME)
-    if result.skipped:
-        _print_skipped(chunk_stage.STAGE_NAME, manifest.status, manifest_path)
-        return typer.Exit(_chunk_exit_code(manifest))
-    console.print(f"chunk：状态 {manifest.status}")
-    chunked = manifest.status is ChunkStatus.OK
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column(overflow="fold")
-    table.add_row("  chunk 数", _chunk_counts(manifest) if chunked else "—")
-    table.add_row("  token 估算", _token_spread(manifest) if chunked else "—")
-    table.add_row("  首选层级", (manifest.heading_level or "无标题（退化路径）") if chunked else "—")
-    table.add_row("  透明环境", "、".join(manifest.transparent_environments) or "—" if chunked else "—")
-    table.add_row("  appendix", str(manifest.appendix_source) if chunked else "—")
-    table.add_row("  chunks/", str(chunk_stage.chunks_dir(result.workdir)) if chunked else "未产出")
-    table.add_row("  manifest", str(manifest_path))
-    if manifest.message:
-        table.add_row("  message", manifest.message)
-    for line in manifest.warnings:
-        table.add_row("  warning", line)
-    console.print(table)
-    return typer.Exit(_chunk_exit_code(manifest))
-
-
-def _chunk_counts(manifest: ChunkManifest) -> str:
-    counts = Counter(record.part for record in manifest.chunks)
-    listed = [f"{part} {counts[part]}" for part in Part if counts[part]]
-    return f"{manifest.chunks_total}（{'、'.join(listed)}）"
-
-
-def _token_spread(manifest: ChunkManifest) -> str:
-    if not manifest.chunks:
+def _status_message(manifest: Manifest | None) -> str:
+    if manifest is None:
         return "—"
-    estimates = sorted(record.token_estimate for record in manifest.chunks)
-    return f"最小 {estimates[0]}、中位 {estimates[len(estimates) // 2]}、最大 {estimates[-1]}"
-
-
-def _chunk_exit_code(manifest: ChunkManifest) -> int:
-    return _upstream_exit_code(
-        ok=manifest.status is ChunkStatus.OK,
-        pdf_only_chain=(manifest.status is ChunkStatus.MASK_NOT_OK and manifest.fetch_status == FetchStatus.PDF_ONLY),
-    )
-
-
-def _run_stage_translate(
-    paper: str,
-    workdir: Path | None,
-    force: bool,
-    json_output: bool,
-    model: str | None,
-    jobs: int,
-    max_fallback_ratio: float,
-) -> typer.Exit:
-    _warn_json_ignored(json_output)
-    try:
-        result = translate_stage.translate(
-            _workdir_name_from_paper(paper),
-            workdir,
-            model=model,
-            jobs=jobs,
-            max_fallback_ratio=max_fallback_ratio,
-            force=force,
-        )
-    except (fetch_stage.PaperArgumentError, WorkdirError) as error:
-        raise typer.BadParameter(str(error)) from error
-    manifest = result.manifest
-    manifest_path = result.workdir.manifest_path(translate_stage.STAGE_NAME)
-    if result.skipped:
-        _print_skipped(translate_stage.STAGE_NAME, manifest.status, manifest_path)
-        return typer.Exit(_translate_exit_code(manifest))
-    console.print(f"translate：状态 {manifest.status}")
-    translated = bool(manifest.chunks)
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column()
-    table.add_column(overflow="fold")
-    table.add_row("  模型", f"{manifest.model_id}（prompt 版本 {manifest.prompt_version}，并发 {manifest.jobs}）")
-    table.add_row("  chunk", _translate_counts(manifest) if translated else "—")
-    table.add_row("  ask 调用", _translate_attempts(manifest) if translated else "—")
-    table.add_row("  回退比例", f"{manifest.fallback_ratio:.0%}（阈值 {manifest.max_fallback_ratio:.0%}）")
-    table.add_row("  translated/", str(translate_stage.translated_dir(result.workdir)) if translated else "未产出")
-    table.add_row("  manifest", str(manifest_path))
-    console.print(table)
-    for record in manifest.chunks:
-        if record.status is ChunkTranslateStatus.FALLBACK:
-            error_console.print(f"{record.id} 回退原文：{'；'.join(record.failures) or '没有可用的失败现场'}")
-    if manifest.message:
-        error_console.print(manifest.message)
-    return typer.Exit(_translate_exit_code(manifest))
-
-
-def _translate_counts(manifest: TranslateManifest) -> str:
-    counts = Counter(record.status for record in manifest.chunks)
-    listed = [f"{status}={counts[status]}" for status in ChunkTranslateStatus if counts[status]]
-    return f"{manifest.chunks_total}（{'、'.join(listed)}）"
-
-
-def _translate_attempts(manifest: TranslateManifest) -> str:
-    total = sum(record.attempts for record in manifest.chunks)
-    retried = [f"{record.id}×{record.attempts}" for record in manifest.chunks if record.attempts > 1]
-    return f"{total} 次" + (f"（重试过：{'、'.join(retried)}）" if retried else "（无重试）")
-
-
-def _translate_exit_code(manifest: TranslateManifest) -> int:
-    return _upstream_exit_code(
-        ok=manifest.status is TranslateStatus.OK,
-        pdf_only_chain=(
-            manifest.status in (TranslateStatus.CHUNK_NOT_OK, TranslateStatus.SURVEY_NOT_OK)
-            and manifest.fetch_status == FetchStatus.PDF_ONLY
-        ),
-    )
+    parts = [part for part in (manifest.message, *manifest.warnings) if part]
+    return "；".join(parts) if parts else "—"
 
 
 @app.command()
@@ -786,23 +431,6 @@ def _fill_template(keys: dict[str, str], ask_roles: list[str]) -> str:
             line = re.sub(r'model = "[^"]*"', f'model = "{DEFAULT_ASK_MODEL[chosen]}"', line)
         lines.append(line)
     return "\n".join(lines) + "\n"
-
-
-@app.command()
-def preview(
-    paper: PaperArg,
-    workdir: WorkdirOpt = None,
-    serve: Annotated[
-        bool,
-        typer.Option("--serve", help="起一个本地 http.server 打开（http 下页面走相对路径读 zh.pdf，大文件加载更快）"),
-    ] = False,
-) -> None:
-    raise _stub_exit("preview", paper=paper, workdir=workdir, serve=serve)
-
-
-@tex_app.command("compile")
-def tex_compile() -> None:
-    raise _stub_exit("tex compile")
 
 
 def main() -> None:
