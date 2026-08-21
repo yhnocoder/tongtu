@@ -168,6 +168,7 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
         return _compile_failed(main_file, warnings, _timeout_message(first))
 
     fix_session: FixSession | None = None
+    final = first
     if not first.passed:
         fix_session, session_failure = _fix(paper_workdir, tree, warnings, model_override, effort)
         if session_failure:
@@ -177,21 +178,19 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
                 f"{session_failure}首次编译的失败现场：{_failure_message(first)}",
                 fix_session,
             )
-
-    warnings.extend(_clean_tree(tree))
-    try:
-        final = _attempt_compile(tree)
-    except OSError as error:
-        return _compile_failed(
-            main_file, warnings, f"终审编译时执行 latexmk 失败（{describe_error(error)}）。", fix_session
-        )
-    if final.outcome.timed_out:
-        return _compile_failed(main_file, warnings, _timeout_message(final), fix_session)
-    if not final.passed:
-        prefix = "经过修复会话，" if fix_session is not None else ""
-        return _compile_failed(
-            main_file, warnings, f"{prefix}终审编译未过出口判据：{_failure_message(final)}", fix_session
-        )
+        warnings.extend(_clean_tree(tree))
+        try:
+            final = _attempt_compile(tree)
+        except OSError as error:
+            return _compile_failed(
+                main_file, warnings, f"终审编译时执行 latexmk 失败（{describe_error(error)}）。", fix_session
+            )
+        if final.outcome.timed_out:
+            return _compile_failed(main_file, warnings, _timeout_message(final), fix_session)
+        if not final.passed:
+            return _compile_failed(
+                main_file, warnings, f"经过修复会话，终审编译未过出口判据：{_failure_message(final)}", fix_session
+            )
 
     _precompile_path(paper_workdir).write_bytes((tree / FLAT_FILENAME).read_bytes())
     report = CompileReport(

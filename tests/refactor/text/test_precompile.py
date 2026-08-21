@@ -74,9 +74,7 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> dict[str
         if spec.get("pdf", True):
             (cwd / precompile.PDF_FILENAME).write_bytes(b"%PDF-1.5 fake body")
         (cwd / precompile.LOG_FILENAME).write_text(spec.get("log", LOG_OK), encoding="utf-8")
-        return ProcessOutcome(
-            returncode=spec.get("returncode", 0), stderr=b"", timed_out=False, duration_seconds=2.5
-        )
+        return ProcessOutcome(returncode=spec.get("returncode", 0), stderr=b"", timed_out=False, duration_seconds=2.5)
 
     monkeypatch.setattr(processes, "run_in_process_group", run)
     return calls
@@ -176,7 +174,7 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert manifest.report.undefined_citations == 1
     assert manifest.report.missing_characters == 1
     assert manifest.report.duration_seconds > 0
-    assert calls == {"compile": 2, "clean": 1}
+    assert calls == {"compile": 1, "clean": 0}
     assert outputs_present(workdir, "precompile")
     tree = workdir.build / "precompile"
     assert (tree / "flat.tex").is_file()
