@@ -40,11 +40,11 @@
 ### 总则
 
 - 一次完成一个中等大小的 feature，每步一个 PR 进 main。
-- 主 agent 大部分情况下只做编排与 review。提案图只在用户验证通过后进行改动，核心开发、测试、验证各交给 subagent 完成，subagent 一律用 Opus；任务书里要求 subagent 先读本文件。
+- 主 agent 大部分情况下只做编排与 review。提案图的改动只随步骤 PR 进 main、由用户 merge 认可，核心开发、测试、验证各交给 subagent 完成，subagent 一律用 Opus；任务书里要求 subagent 先读本文件。
 - Git：主 agent 从 main 切分支 `step-<N>-<名字>`，subagent 在工作树里直接改（同一时刻只有一个 subagent 在改代码），主 agent review 通过后提交，用 `gh pr create` 开 PR 并关联步骤 issue，合并由用户做，squash merge，PR 标题即 commit 第一行。commit message 格式 `<type>(<scope>): <中文一句话>`：type 取 `feat` / `fix` / `refactor` / `test` / `ci` / `docs` / `chore`，scope 是阶段名或横切面名（`model`、`cli`、`fetch`…），一句话动词开头、不带句号、不超过 50 字；正文可选，写为什么与关键取舍，三行以内；末尾 `Closes #N`。不加 `Co-Authored-By` 一类署名行。交付报告写进 PR 描述，回复里贴同一份。
 - subagent 的边界：可以联网（拉 arXiv、调模型、拉起 agent 运行时）、可以读写 `~/.local/share/tongtu/`；不装系统工具、不改 `~/` 下的配置，需要就停下来问。验证用本机 TeX；`work` 在步骤 1 用本机的 Claude Code（`claude`）验通，opencode / codex 也已安装、作为可选运行时；可用服务商、各角色默认模型与密钥环境变量名由用户在步骤 1 开工时给出，写进 `models.toml`，不写进本文件。docker 镜像（image.yml）在重构完成后再接回。
 - 过渡期：步骤 1、2 只建新模块（`tongtu/model/`、新的命令行与工作目录代码），旧的 `tongtu/agent/`、`tongtu/stages/`、`tongtu/artifacts/` 与旧测试在各自阶段的步骤里整体删除；重构期间 main 上的流水线不保证可跑，以各步的测试与验证为准。
-- 提案图是实现依据，但不是不能改：觉得它设计不合理、写不通、与代码冲突，停下来向用户说明并给替代方案，由用户拍板；不许隐瞒、不许绕过、不许自己决定偏离。提案图只在用户验证通过后才改动，主 agent 不自行更新。
+- 提案图是实现依据，但不是不能改：觉得它设计不合理、写不通、与代码冲突，停下来向用户说明并给替代方案，由用户拍板；不许隐瞒、不许绕过、不许自己决定偏离。提案图的改动只放进步骤 PR、随代码一起由用户 merge 认可；主 agent 不单独向 main 提交提案图改动。
 - 进度与问题用 GitHub Issues 管理，不写文件。每个步骤一个 issue（标签 `step`），PR 描述里写 `Closes #N`，合并即关闭；发现的问题一个 issue（标签 `question`），结论写进 issue 再关，不删。新会话先 `gh issue list --state open`。步骤 issue 的状态：open 且无 PR = 待做或进行中，有 PR 关联 = 待验证，closed = 完成。
 - 重构期间新写的测试统一放 `tests/refactor/`（内部仍按 `text/` `compile/` `llm/` 分层），旧测试留在原处不动；ci.yml 的 `test` 作业跑整个 `tests/refactor/text/`。重构完成后删光旧测试，把 `tests/refactor/` 下的内容上移一级、删掉这一级目录，本条与本节一起删。papers.yml（定时跑真实论文）在步骤 0 删掉，重构完成后按新流水线重写。
 
@@ -68,8 +68,8 @@
 2. 开发 subagent：按提案图实现该部分功能，重写该模块的测试；删光改动文件里的注释与 docstring；跑 `make lint` 与 pytest；返回改动文件清单与测试输出原文。
 3. 主 agent review：按下面的清单逐条判定，读 diff、读 subagent 的汇报、自己跑命令都可以，判据是清单。不过就退回同一个 subagent 并指明条目；两轮不过，停下来报告用户。
 4. 验证 subagent（新开上下文，与开发 subagent 无关）：按任务书的验证命令实际运行，报告命令、退出码、产物路径与关键内容。步骤 0–2 没有论文可跑，验证就是实际执行命令（`make lint`、`tongtu setup`、`tongtu doctor`、`tongtu status` 等）；步骤 3 起验证集 12 篇全跑，每篇状态与耗时写进报告，没有硬性通过线，由用户看报告定。以运行结果为准，不以读代码为准。
-5. 主 agent：开 PR 并关联步骤 issue，写交付报告。
-6. 用户验证通过、PR 合并后：主 agent 更新提案图，标记对应项完成，用户验证过程中拍板的改动一并写回提案图。
+5. 主 agent：开 PR 并关联步骤 issue，写交付报告；提案图的完成标记与本步已拍板的改动一并放进这个 PR。
+6. 用户验证过程中新拍板的改动，在合并前追加进 PR（含提案图的对应改动）；用户合并即步骤完成。来不及在合并前追加的，事后以补丁 PR 处理，属例外而非常态。
 
 ### 代码规范
 

@@ -133,7 +133,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
   <span>七个阶段到 PDF；figures / export 在主线之外，本页不画</span>
 </div>
 
-<h2>重跑语义（提案）<small>一条规则，没有 hash</small></h2>
+<h2>重跑语义<small>一条规则，没有 hash</small> <span class="tag" style="font-size:12px;padding:1px 8px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:500">步骤 2 完成（PR #30）</span></h2>
 <div class="card" style="margin-top:8px">
 <pre style="margin:0">tongtu run &lt;paper&gt; [--from &lt;stage&gt;]</pre>
 <ol class="steps" style="margin-top:14px">
@@ -152,13 +152,13 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
   <div><b>③ 自检</b>机械判据，全部成立才是 ok</div>
   <div><b>④ 写 manifest</b>状态、观察值、warnings、message</div>
 </div>
-<p style="font-size:13.5px;color:var(--muted)">去掉的两步：前置条件检查（由 <code>run</code> 的顺序保证，<code>stage</code> 直接报错）与跳过判定（由 <code>--from</code> 替代）。</p>
+<p style="font-size:13.5px;color:var(--muted)">去掉的两步：前置条件检查（由 <code>run</code> 的顺序保证，<code>stage</code> 直接报错，退出码 2）与跳过判定（由 <code>--from</code> 替代）。各 manifest 的共用字段是 status / warnings / message；类 <code>Manifest</code>（<code>tongtu/artifacts/common.py</code>）只是命令行读这三个字段的读取器，各阶段 manifest 按本页卡片的字段序自定义，不继承它（步骤 2 拍板）。</p>
 
-<h2>命令行</h2>
+<h2>命令行 <span class="tag" style="font-size:12px;padding:1px 8px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:500">步骤 2 完成（PR #30）</span></h2>
 <div class="card" style="margin-top:8px">
-<pre style="margin:0"><span class="k">tongtu run</span> PAPER [--from STAGE] [--ask-model PROVIDER/MODEL] [--ask-effort LEVEL] [--work-model RUNTIME/MODEL] [--work-effort LEVEL] [--glossary FILE]... [--workdir DIR] [--jobs N]
+<pre style="margin:0"><span class="k">tongtu run</span> PAPER [--from STAGE] [--ask-model PROVIDER/MODEL] [--ask-effort LEVEL] [--work-model RUNTIME/MODEL] [--work-effort LEVEL] [--glossary FILE]... [--workdir DIR] [--jobs N] [--no-terms]
 <span class="k">tongtu stage</span> STAGE PAPER [同上，不含 --from]
-<span class="k">tongtu status</span> PAPER                <span class="c"># 按阶段序打一张表：状态 / 一行 message / 产物在不在 / manifest 路径；只读</span>
+<span class="k">tongtu status</span> PAPER [--workdir DIR]  <span class="c"># 按阶段序打一张表：状态 / 一行 message / 产物在不在 / manifest 路径；只读</span>
 <span class="k">tongtu validate</span> SRC DST            <span class="c"># 四层校验，0 = 通过</span>
 <span class="k">tongtu doctor</span>                       <span class="c"># 工具链、字体、密钥逐项检查</span>
 <span class="k">tongtu setup</span> [-i]                  <span class="c"># 写出带注释的 models.toml 模板（已存在不覆盖，权限 0600）；-i 逐个问要不要配置模板里的服务商并填 API key，ask 类角色指向第一个选中的服务商</span></pre>
