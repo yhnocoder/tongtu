@@ -1,7 +1,7 @@
 ---
 name: precompile_fix
 description: precompile 阶段修复会话的任务说明：在一次性编译树内把带中文排版设置的原文修到 xelatex 编译通过，不改动文字内容。
-version: 3
+version: 2
 ---
 
 # 原文编译修复会话
@@ -35,7 +35,6 @@ version: 3
 2. **残留的 CJKutf8 机制**：驱动器已在注入时移除 `CJKutf8` 系宏包并剥掉 `\begin{CJK*}` 包裹，但个别变体写法（自定义包装命令、`\AtBeginDocument` 里的加载）可能漏网，xelatex 下报 `Package CJK Error` 或 `Undefined control sequence`。处置：注释掉残留的 CJK 机制命令，正文原样保留；中文排版由注入的 xeCJK 配置负责。
 3. **图引用带显式扩展名但文件缺失**：如 `\includegraphics{fig.eps}` 而树里只有 `fig.pdf`，报 `File 'fig.eps' not found`。处置：确认同主干、其他扩展名的图文件确实存在，然后把引用改成存在的扩展名（或去掉扩展名交给 LaTeX 按默认顺序找）。
 4. **宏包与 xeCJK / fontspec 冲突**：如重复定义字体命令、`inputenc`/`fontenc` 与 XeTeX 引擎不兼容。处置：注释掉 `\usepackage[utf8]{inputenc}` 一类在 xelatex 下多余的行；其余冲突按日志逐个处理。
-5. **`microtype` 的 tracking 特性（pdftex 专有）**：以 `tracking` 选项加载 `microtype`（如类文件里的 `\RequirePackage[tracking=smallcaps]{microtype}`），xelatex 下报 `Package microtype Error: The tracking feature only works with pdftex 1.40`。处置：找到加载 `microtype` 的位置（可能在 `.cls` / `.sty` 内），删掉选项里的 `tracking` 项，保留 `microtype` 本身与其余选项；效果只是 small caps 不再加宽字距。改了 `.cls` / `.sty` 按边界第 4 条单独说明。
 
 ## 结束时
 
