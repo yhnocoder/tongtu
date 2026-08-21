@@ -282,7 +282,7 @@ def test_fix_session_error_still_goes_to_verification(tmp_path: Path, monkeypatc
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
-    assert "修复会话以 error 结束（运行时 claude_code 不在 PATH 里），结论仍由脚本终审给出" in manifest.warnings
+    assert "修复会话以 error 结束（运行时 claude_code 不在 PATH 里），结论仍由脚本校验给出" in manifest.warnings
     assert calls == {"compile": 2, "clean": 1}
     assert outputs_present(workdir, "precompile")
 
@@ -297,7 +297,7 @@ def test_fix_session_error_then_verification_failure(tmp_path: Path, monkeypatch
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
     assert any("修复会话以 error 结束" in line for line in manifest.warnings)
-    assert manifest.message.startswith("经过修复会话，终审编译未过出口判据：")
+    assert manifest.message.startswith("经过修复会话，校验编译未过出口判据：")
     assert calls == {"compile": 2, "clean": 1}
     assert not outputs_present(workdir, "precompile")
 
@@ -322,7 +322,7 @@ def test_final_verification_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert manifest.report is None
-    assert "终审" in manifest.message
+    assert "校验" in manifest.message
     assert "! Undefined control sequence." in manifest.message
     assert not (workdir.build / "precompile.tex").exists()
 

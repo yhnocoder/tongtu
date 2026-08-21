@@ -176,13 +176,13 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
             final = _attempt_compile(tree)
         except OSError as error:
             return _compile_failed(
-                main_file, warnings, f"终审编译时执行 latexmk 失败（{describe_error(error)}）。", fix_session
+                main_file, warnings, f"校验编译时执行 latexmk 失败（{describe_error(error)}）。", fix_session
             )
         if final.outcome.timed_out:
             return _compile_failed(main_file, warnings, _timeout_message(final), fix_session)
         if not final.passed:
             return _compile_failed(
-                main_file, warnings, f"经过修复会话，终审编译未过出口判据：{_failure_message(final)}", fix_session
+                main_file, warnings, f"经过修复会话，校验编译未过出口判据：{_failure_message(final)}", fix_session
             )
 
     _precompile_path(paper_workdir).write_bytes((tree / FLAT_FILENAME).read_bytes())
@@ -439,11 +439,11 @@ def _clean_tree(tree: Path) -> list[str]:
     try:
         outcome = processes.run_in_process_group(list(LATEXMK_CLEAN_COMMAND), tree, CLEAN_TIMEOUT_SECONDS)
     except OSError as error:
-        return [f"终审前清理编译产物失败（{describe_error(error)}）"]
+        return [f"校验前清理编译产物失败（{describe_error(error)}）"]
     if outcome.timed_out:
-        return [f"终审前清理编译产物超过 {CLEAN_TIMEOUT_SECONDS} 秒超时上限，已按进程组终止"]
+        return [f"校验前清理编译产物超过 {CLEAN_TIMEOUT_SECONDS} 秒超时上限，已按进程组终止"]
     if outcome.returncode != 0:
-        return [f"终审前清理编译产物的 latexmk 退出码 {outcome.returncode}"]
+        return [f"校验前清理编译产物的 latexmk 退出码 {outcome.returncode}"]
     return []
 
 
@@ -467,9 +467,9 @@ def _fix(
             "这些改动不传播到下游，compile 阶段的编译树仍从 src/ 组装"
         )
     if outcome.stop_reason is StopReason.ERROR:
-        warnings.append(f"修复会话以 error 结束（{outcome.detail}），结论仍由脚本终审给出")
+        warnings.append(f"修复会话以 error 结束（{outcome.detail}），结论仍由脚本校验给出")
     if outcome.stop_reason is StopReason.TIMEOUT:
-        warnings.append("修复会话以 timeout 结束，结论仍由脚本终审给出")
+        warnings.append("修复会话以 timeout 结束，结论仍由脚本校验给出")
     return session
 
 
