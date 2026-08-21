@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,9 +19,10 @@ from rich.table import Table
 from . import __version__, validation
 from .artifacts.common import Manifest
 from .assets import asset_path
-from .manifests import load_manifest
+from .manifests import describe_error, load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
+from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import fetch, precompile
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .workdir import Workdir, WorkdirError, resolve
@@ -33,11 +35,21 @@ STATUS_OK = "ok"
 
 DEFAULT_JOBS = 4
 
+XELATEX = "xelatex"
+
 TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
-    ("xelatex", "编译引擎（latexmk -xelatex）"),
+    (XELATEX, "编译引擎（latexmk -xelatex）"),
     ("latexmk", "编译回环驱动"),
     ("latexpand", "展开多文件源码"),
 )
+
+MIN_TEXLIVE_YEAR = 2026
+
+VERSION_TIMEOUT_SECONDS = 30
+
+TEXLIVE_CHECK_NAME = "TeX Live"
+
+TEXLIVE_YEAR_PATTERN = re.compile(r"\(TeX Live (\d{4})\)")
 
 FONT_CHECK_NAME = "中文字体"
 CONFIG_CHECK_NAME = "models.toml"
@@ -348,7 +360,11 @@ def _print_doctor_rows(rows: list[tuple[str, str, bool, str]]) -> list[str]:
 
 
 def _toolchain_rows() -> list[tuple[str, str, bool, str]]:
-    rows = [(name, purpose, *_check_executable(name)) for name, purpose in TOOLCHAIN_CHECKS]
+    rows: list[tuple[str, str, bool, str]] = []
+    for name, purpose in TOOLCHAIN_CHECKS:
+        rows.append((name, purpose, *_check_executable(name)))
+        if name == XELATEX:
+            rows.append((TEXLIVE_CHECK_NAME, f"TeX 发行版年份不低于 {MIN_TEXLIVE_YEAR}", *_check_texlive()))
     rows.append((FONT_CHECK_NAME, "font fallback chain（霞鹜文楷随仓库分发）", *_check_fonts()))
     return rows
 
@@ -387,6 +403,26 @@ def _check_executable(name: str) -> tuple[bool, str]:
     if path is None:
         return False, f"PATH 里找不到 {name}"
     return True, path
+
+
+def _check_texlive() -> tuple[bool, str]:
+    if shutil.which(XELATEX) is None:
+        return False, f"{XELATEX} 不在 PATH 里，无法检查"
+    try:
+        completed = subprocess.run(
+            [XELATEX, "--version"], capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS
+        )
+    except (subprocess.TimeoutExpired, OSError) as error:
+        return False, f"{XELATEX} --version 跑不起来：{describe_error(error)}"
+    text = completed.stdout.strip()
+    first_line = text.splitlines()[0] if text else ""
+    match = TEXLIVE_YEAR_PATTERN.search(first_line)
+    if match is None:
+        return False, f"{XELATEX} --version 的输出里没有 TeX Live 年份；输出：{text[:OUTPUT_EXCERPT_CHARS]}"
+    year = int(match.group(1))
+    if year < MIN_TEXLIVE_YEAR:
+        return False, f"TeX Live {year} 低于要求的 {MIN_TEXLIVE_YEAR}；用 install-tl 全量安装，不用发行版的 apt 包"
+    return True, first_line
 
 
 def _check_fonts() -> tuple[bool, str]:
