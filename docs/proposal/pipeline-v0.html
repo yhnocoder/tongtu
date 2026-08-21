@@ -111,9 +111,9 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <h2>流水线</h2>
 <div class="strip"><div class="strip-inner">
   <div class="file-box"><span class="f">arXiv 编号 / 链接 / 本地目录</span></div>
-  <span class="arrow">→</span><div class="stage-box rework">fetch</div><span class="arrow">→</span>
+  <span class="arrow">→</span><div class="stage-box">fetch</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">src/ 全部源文件</span></div>
-  <span class="arrow">→</span><div class="stage-box rework">precompile</div><span class="arrow">→</span>
+  <span class="arrow">→</span><div class="stage-box">precompile</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/precompile.tex</span><span class="f">build/precompile/flat.pdf</span></div>
   <span class="arrow">→</span><div class="stage-box rework">mask</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/masked.tex</span><span class="f">build/blocks.json</span></div>
@@ -127,7 +127,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
   <div class="file-box"><span class="f todo">build/zh.tex</span><span class="f todo">out/zh.pdf</span></div>
 </div></div>
 <div class="legend">
-  <span><span class="sw" style="background:var(--accent-soft);border:1.5px solid var(--accent)"></span>完成（按本提案建好，目前没有）</span>
+  <span><span class="sw" style="background:var(--accent-soft);border:1.5px solid var(--accent)"></span>完成（按本提案建好）</span>
   <span><span class="sw" style="background:var(--card);border:1.5px solid var(--accent)"></span>待改造（现有实现，要按本提案改）</span>
   <span><span class="sw" style="background:var(--todo-bg);border:1.5px dashed var(--todo)"></span>未建</span>
   <span>七个阶段到 PDF；figures / export 在主线之外，本页不画</span>
@@ -160,7 +160,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <span class="k">tongtu stage</span> STAGE PAPER [同上，不含 --from]
 <span class="k">tongtu status</span> PAPER                <span class="c"># 按阶段序打一张表：状态 / 一行 message / 产物在不在 / manifest 路径；只读</span>
 <span class="k">tongtu validate</span> SRC DST            <span class="c"># 四层校验，0 = 通过</span>
-<span class="k">tongtu doctor</span>                       <span class="c"># 工具链、字体、密钥逐项检查</span>
+<span class="k">tongtu doctor</span>                       <span class="c"># 工具链（含 TeX Live 年份不低于 2026）、字体、密钥逐项检查</span>
 <span class="k">tongtu setup</span> [-i]                  <span class="c"># 写出带注释的 models.toml 模板（已存在不覆盖，权限 0600）；-i 逐个问要不要配置模板里的服务商并填 API key，ask 类角色指向第一个选中的服务商</span></pre>
 <div class="cols" style="margin-top:16px">
 <div class="io">
@@ -198,7 +198,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 
 <!-- ============ fetch ============ -->
 <div class="card" id="fetch">
-<div class="card-head"><span class="name">fetch</span><span class="one">把论文源码落进 <code>src/</code></span><span class="tag">工作不变</span></div>
+<div class="card-head"><span class="name">fetch</span><span class="one">把论文源码落进 <code>src/</code></span><span class="tag">步骤 3 完成（PR #33）</span></div>
 <div class="cols">
 <div><span class="label">任务</span>
 <ol class="steps">
@@ -229,7 +229,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 
 <!-- ============ precompile ============ -->
 <div class="card" id="precompile" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">precompile</span><span class="one">把原文变成一份带中文排版设置、能编译通过的单文件 LaTeX，产出基线</span><span class="tag">吸收 flatten</span><span class="tag agent">失败时拉 agent work</span></div>
+<div class="card-head"><span class="name">precompile</span><span class="one">把原文变成一份带中文排版设置、能编译通过的单文件 LaTeX，产出基线</span><span class="tag">步骤 3 完成（PR #33）</span><span class="tag">吸收 flatten</span><span class="tag agent">失败时拉 agent work</span></div>
 <div class="cols">
 <div><span class="label">任务</span>
 <ol class="steps">
@@ -239,7 +239,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <li><b>搭编译树</b>：src/ 拷进 <code>build/precompile/</code>，注入后的展开结果写为树内 <code>flat.tex</code></li>
 <li><b>编译</b>：<code>latexmk -xelatex</code> 一次</li>
 <li class="branch">失败 → 拉一次 agent work 修复会话：<code>skill/precompile_fix/</code> 拷进编译树，agent 自己读 skill 与 flat.log；现场就是编译树</li>
-<li><b>终审</b>：<code>latexmk -C</code> 后再编一遍；退出码 0、pdf 非空、页数 &gt; 0</li>
+<li><b>校验编译</b>：首编通过即以首编为校验编译；拉过修复会话后 <code>latexmk -C</code> 再编一遍，结论只认这一次；判据：退出码 0、pdf 非空、页数 &gt; 0</li>
 <li>从 flat.log 解析五个基线计数；拷出（可能已修过的）flat.tex 为 <code>build/precompile.tex</code></li>
 </ol></div>
 <div class="io">
@@ -248,7 +248,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
 </div></div>
 <details open><summary>PrecompileManifest（两个子模型与 compile 共用）</summary>
-<pre><span class="c"># 一次终审编译的结果。precompile 记原文的，compile 记译文的，同一个类，并排可比。</span>
+<pre><span class="c"># 一次校验编译的结果。precompile 记原文的，compile 记译文的，同一个类，并排可比。</span>
 <span class="k">class</span> CompileReport(BaseModel):
     pages: <span class="t">int</span>
     pdf_bytes: <span class="t">int</span>
@@ -267,7 +267,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <span class="k">class</span> PrecompileManifest(BaseModel):
     status: <span class="t">PrecompileStatus</span>
     main_file: <span class="t">str</span>                      <span class="c"># 判定出的主文件</span>
-    report: <span class="t">CompileReport | None</span>         <span class="c"># 终审通过才有</span>
+    report: <span class="t">CompileReport | None</span>         <span class="c"># 校验编译通过才有</span>
     fix_session: <span class="t">FixSession | None</span>       <span class="c"># 拉起过才有</span>
     warnings: <span class="t">list[str]</span>                 <span class="c"># 含：bbl 内联与否、残留 \input、会话改动了 flat.tex 之外的文件</span>
     message: <span class="t">str</span>                        <span class="c"># 失败原因；main_ambiguous 时列出全部候选</span>
@@ -417,7 +417,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <tr><td style="padding:4px 10px 4px 0"><code>braces_and_math</code></td><td style="padding:4px 10px 4px 0">未转义的 <code>{</code> <code>}</code> <b>配对平衡</b>（深度不转负、结尾归零）；未转义的 <code>$</code> <b>偶数且不少于原文</b>。<span style="color:var(--muted)">现状是三者计数分别相等，本地 5 个失败案例里它抓的全是化妆品级漂移（多个 \textit、数字包进 $、去掉 \dsviii{} 的空括号），却让一个 chunk 回退成英文——放宽后那个 chunk 第二次就过，其余四个仍被别的层拦住</span></td><td style="padding:4px 0">「{ } 在第 312 字符处不平衡」「$ 原文 14 个、译文 12 个」</td></tr>
 <tr><td style="padding:4px 10px 4px 0"><code>paragraph_count</code></td><td style="padding:4px 10px 4px 0">含可译文本的段落数相等。一段剥除 placeholder、<code>\begin{X}</code> / <code>\end{X}</code>、其余命令名之后仍有非空白字符才计入——模型合并只含 placeholder 或只含 <code>\maketitle</code> 的空行不算错</td><td style="padding:4px 0">「原文 9 段、译文 8 段」</td></tr>
 </tbody></table>
-<p style="font-size:13px;color:var(--muted);margin:8px 0 0">同一份实现三处用：translate 的出口终审、<code>tongtu validate</code>、compile 对正文控制序列的比对（只用第 2 层）。</p>
+<p style="font-size:13px;color:var(--muted);margin:8px 0 0">同一份实现三处用：translate 的出口校验、<code>tongtu validate</code>、compile 对正文控制序列的比对（只用第 2 层）。</p>
 </div>
 <div>
 <span class="label">system —— 稳定的在前、逐 chunk 变化的在后；缓存按 token 前缀命中，与 system / user 边界无关</span>
@@ -468,8 +468,8 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div><span class="label">任务</span>
 <ol class="steps">
 <li><b>搭隔离现场</b> <code>build/review/</code>，只放：<code>chunks/</code>（原文，只读）、<code>reviewed/</code>（译文，可改）、<code>brief.json</code>，加 skill 目录（SKILL.md + <code>validate.py</code>）。manifest、blocks.json、masked.tex 都不在这棵树里，agent 碰不到</li>
-<li>拉一次 agent work（角色 <code>review</code>）：通读全部原文与译文，<b>把 translate 回退成英文的 chunk 翻出来</b>，修订术语不一致、同一概念前后译法不同、记号与称呼不统一、明显误译；只许改 <code>reviewed/</code> 下的文件，不许增删文件。SKILL 要求它每改完一个文件就跑 <code>python3 -I validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改——与脚本终审同一份实现；Bash 只放行这一条</li>
-<li><b>脚本终审</b>：先查 <code>reviewed/</code> 的文件名集合与 <code>chunks/</code> 完全一致（多的忽略，少的视为回退；一个文件就是一个 chunk，边界改不了）；再对每个文件对着它的源 chunk 跑四层 validate——placeholder 那一层就是拦「多一个少一个 ⟦BLK-21⟧」的；<b>不过的 chunk 整个回退到 translate 的版本</b>，其他 chunk 的修订保留；通过的拷出到 <code>build/reviewed/</code></li>
+<li>拉一次 agent work（角色 <code>review</code>）：通读全部原文与译文，<b>把 translate 回退成英文的 chunk 翻出来</b>，修订术语不一致、同一概念前后译法不同、记号与称呼不统一、明显误译；只许改 <code>reviewed/</code> 下的文件，不许增删文件。SKILL 要求它每改完一个文件就跑 <code>python3 -I validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改——与脚本校验同一份实现；Bash 只放行这一条</li>
+<li><b>脚本校验</b>：先查 <code>reviewed/</code> 的文件名集合与 <code>chunks/</code> 完全一致（多的忽略，少的视为回退；一个文件就是一个 chunk，边界改不了）；再对每个文件对着它的源 chunk 跑四层 validate——placeholder 那一层就是拦「多一个少一个 ⟦BLK-21⟧」的；<b>不过的 chunk 整个回退到 translate 的版本</b>，其他 chunk 的修订保留；通过的拷出到 <code>build/reviewed/</code></li>
 <li>compile 读 <code>reviewed/</code></li>
 </ol>
 <p style="font-size:13.5px;margin:6px 0 0">agent 能造成的最大损害 = 某个 chunk 的修订被丢弃。它的改动全部经过与 translate 同一套机械校验；它只见隔离现场里的文本；<code>--from review</code> 可以反复跑而不重翻。</p>
@@ -500,7 +500,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <li>按 chunk 序拼接 <code>reviewed/</code> 得到译后掩码文本</li>
 <li>unmask：用 blocks.json 回填 <code>⟦BLK-n⟧</code>、<code>⟦CAP-n⟧</code> → <code>build/zh.tex</code>（中文排版设置 precompile 已注入，这里不再动前导区）</li>
 <li>在 <code>build/compile/</code>（src/ 拷贝 + zh.tex）跑 <code>latexmk -xelatex</code></li>
-<li class="branch">失败 → 拉一次 agent work 修复；<code>latexmk -C</code> 后终审</li>
+<li class="branch">失败 → 拉一次 agent work 修复；<code>latexmk -C</code> 后做校验编译</li>
 <li>出口：编译通过、页数与 precompile 基线相差在容差内、正文控制序列与原文一致（validate 第 2 层）</li>
 <li>拷出 <code>out/zh.pdf</code></li>
 </ol></div>
@@ -512,7 +512,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <details open><summary>CompileManifest（推测）</summary>
 <pre><span class="k">class</span> CompileManifest(BaseModel):
     status: <span class="t">CompileStatus</span>
-    report: <span class="t">CompileReport | None</span>         <span class="c"># 译文的终审结果，与 precompile 的 report 同类</span>
+    report: <span class="t">CompileReport | None</span>         <span class="c"># 译文的校验结果，与 precompile 的 report 同类</span>
     baseline: <span class="t">CompileReport | None</span>       <span class="c"># 从 precompile manifest 转录，并排一眼比</span>
     fix_session: <span class="t">FixSession | None</span>
     warnings: <span class="t">list[str]</span>
