@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import stat
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -53,6 +54,20 @@ api = "chat"
 [roles]
 translate = { provider = "demo", model = "m1", effort = "low" }
 """
+
+
+VERSION_2026 = "XeTeX 3.141592653-2.6-0.999998 (TeX Live 2026)\nkpathsea version 6.4.1\n"
+
+VERSION_2022 = "XeTeX 3.141592653-2.6-0.999994 (TeX Live 2022)\nkpathsea version 6.3.4\n"
+
+VERSION_WITHOUT_YEAR = "XeTeX 3.141592653-2.6-0.999996 (MiKTeX 24.1)\n"
+
+
+def fake_xelatex_version(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+    def run(command: list[str], capture_output: bool, text: bool, timeout: float) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
 
 
 def squeeze(text: str) -> str:
@@ -132,6 +147,7 @@ def test_setup_interactive_without_any_provider_exits_two(tmp_path: Path, monkey
 def test_doctor_without_config_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
@@ -145,13 +161,54 @@ def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr(shutil, "which", lambda name: None)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
-    assert "环境有缺失：xelatex" in squeeze(result.stdout)
+    output = squeeze(result.stdout)
+    assert "环境有缺失：xelatex" in output
+    assert "[缺失]TeXLive" in output
+    assert "xelatex不在PATH里，无法检查" in output
+
+
+def test_doctor_accepts_the_required_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "[通过]TeXLive" in output
+    assert "(TeXLive2026)" in output
+
+
+def test_doctor_rejects_an_older_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2022)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    output = squeeze(result.stdout)
+    assert "[缺失]TeXLive" in output
+    assert "TeXLive2022低于要求的2026" in output
+    assert "环境有缺失：TeXLive" in output
+
+
+def test_doctor_rejects_output_without_a_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_WITHOUT_YEAR)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    output = squeeze(result.stdout)
+    assert "[缺失]TeXLive" in output
+    assert "(MiKTeX24.1)" in output
 
 
 def test_doctor_lists_only_referenced_providers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
@@ -167,6 +224,7 @@ def test_doctor_reports_missing_key_without_failing(tmp_path: Path, monkeypatch:
     written_config(tmp_path, monkeypatch)
     monkeypatch.delenv("DEMO_KEY", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
@@ -179,6 +237,7 @@ def test_doctor_keeps_table_names_in_the_text(tmp_path: Path, monkeypatch: pytes
     path.parent.mkdir(parents=True)
     path.write_text(KEYLESS_TABLE, encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "[provider.demo]" in result.stdout
