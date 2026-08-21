@@ -170,14 +170,7 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
     fix_session: FixSession | None = None
     final = first
     if not first.passed:
-        fix_session, session_failure = _fix(paper_workdir, tree, warnings, model_override, effort)
-        if session_failure:
-            return _compile_failed(
-                main_file,
-                warnings,
-                f"{session_failure}首次编译的失败现场：{_failure_message(first)}",
-                fix_session,
-            )
+        fix_session = _fix(paper_workdir, tree, warnings, model_override, effort)
         warnings.extend(_clean_tree(tree))
         try:
             final = _attempt_compile(tree)
@@ -456,7 +449,7 @@ def _clean_tree(tree: Path) -> list[str]:
 
 def _fix(
     paper_workdir: Workdir, tree: Path, warnings: list[str], model_override: str | None, effort: str | None
-) -> tuple[FixSession, str]:
+) -> FixSession:
     snapshot = _snapshot_tree_files(paper_workdir.src, tree)
     started = time.monotonic()
     outcome = model.work(
@@ -474,10 +467,10 @@ def _fix(
             "这些改动不传播到下游，compile 阶段的编译树仍从 src/ 组装"
         )
     if outcome.stop_reason is StopReason.ERROR:
-        return session, f"首次编译未过出口判据，修复会话未能执行（{outcome.detail}）。"
+        warnings.append(f"修复会话以 error 结束（{outcome.detail}），结论仍由脚本终审给出")
     if outcome.stop_reason is StopReason.TIMEOUT:
         warnings.append("修复会话以 timeout 结束，结论仍由脚本终审给出")
-    return session, ""
+    return session
 
 
 def _session_model(model_override: str | None, effort: str | None) -> str:

@@ -273,7 +273,21 @@ def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.
     assert work_calls[0]["effort"] == "high"
 
 
-def test_fix_session_error_fails_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fix_session_error_still_goes_to_verification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
+    wire_expand(monkeypatch)
+    calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
+    wire_work(monkeypatch, stop_reason=StopReason.ERROR, detail="运行时 claude_code 不在 PATH 里")
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.OK
+    assert manifest.fix_session is not None
+    assert manifest.fix_session.stop_reason == "error"
+    assert "修复会话以 error 结束（运行时 claude_code 不在 PATH 里），结论仍由脚本终审给出" in manifest.warnings
+    assert calls == {"compile": 2, "clean": 1}
+    assert outputs_present(workdir, "precompile")
+
+
+def test_fix_session_error_then_verification_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
     wire_expand(monkeypatch)
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}])
@@ -282,8 +296,9 @@ def test_fix_session_error_fails_the_stage(tmp_path: Path, monkeypatch: pytest.M
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
-    assert "claude_code" in manifest.message
-    assert calls["compile"] == 1
+    assert any("修复会话以 error 结束" in line for line in manifest.warnings)
+    assert manifest.message.startswith("经过修复会话，终审编译未过出口判据：")
+    assert calls == {"compile": 2, "clean": 1}
     assert not outputs_present(workdir, "precompile")
 
 
