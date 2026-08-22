@@ -46,6 +46,8 @@ class RuntimeConfig(BaseModel):
     skill_path: str
     command: list[str]
     settings: dict | None = None
+    provider: str | None = None
+    env: dict[str, str] | None = None
 
 
 class RoleConfig(BaseModel):
@@ -161,7 +163,7 @@ def model_api(config: ModelsConfig, provider: str, model: str) -> tuple[Api | No
 MODELS_TEMPLATE = """\
 # 服务商：一个 API 前缀 + 一个密钥 + 哪个模型走哪种接口（api 取 chat / responses / messages）
 [provider.opencode]
-base_url    = "https://opencode.ai/zen/go/v1"
+base_url    = "https://opencode.ai/zen/go"   # 接口前缀的根，chat / responses / messages 都在它下面的 /v1/...
 api_key     = ""                  # 直接写密钥，或留空改用下面的环境变量
 api_key_env = "OPENCODE_API_KEY"
 
@@ -206,6 +208,23 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 # 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网
 # {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单
+
+# 同一个 Claude Code，模型换成 opencode 上的：一个运行时条目 = 一个「工具 × 服务商」组合
+[runtime.claude_code_opencode]
+provider = "opencode"                    # {base_url} 与 {api_key} 由 work 从 [provider.opencode] 填入
+skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
+command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
+           "--output-format", "stream-json", "--verbose",
+           "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
+           "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
+settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
+env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+# opencode 的 messages 端点只认 x-api-key，所以密钥写进 ANTHROPIC_API_KEY；ANTHROPIC_AUTH_TOKEN 走 Bearer，会 401
+# Claude Code 把 ANTHROPIC_BASE_URL 当根，自己拼 /v1/messages，所以这里填的是不带 /v1 的 base_url
+# 三个 DEFAULT_*_MODEL 都指同一个模型，防止后台的小调用拿 claude 系列的名字去打 opencode
+# 密钥经进程环境传入而不是写进命令行参数：命令行参数在 ps 里可见
 
 # 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么
 [roles]

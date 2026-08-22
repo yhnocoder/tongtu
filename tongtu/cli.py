@@ -383,14 +383,20 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
             ("运行时", "各运行时的可执行文件", False, "models.toml 读不到，无法检查"),
         ]
     rows = [(CONFIG_CHECK_NAME, "服务商、运行时与角色的配置", True, str(models_path()))]
-    for name in _roles_refer_to(config, "provider"):
+    runtimes = _roles_refer_to(config, "runtime")
+    providers = _roles_refer_to(config, "provider")
+    for name in runtimes:
+        runtime = config.runtime.get(name)
+        if runtime is not None and runtime.provider is not None and runtime.provider not in providers:
+            providers.append(runtime.provider)
+    for name in providers:
         provider = config.provider.get(name)
         if provider is None:
             rows.append((f"密钥 {name}", "角色引用的服务商", False, f"models.toml 里没有声明服务商 {name}"))
             continue
         key, detail = provider_key(name, provider)
         rows.append((f"密钥 {name}", "服务商的 API 密钥", key is not None, detail))
-    for name in _roles_refer_to(config, "runtime"):
+    for name in runtimes:
         runtime = config.runtime.get(name)
         if runtime is None:
             rows.append((f"运行时 {name}", "角色引用的运行时", False, f"models.toml 里没有声明运行时 {name}"))

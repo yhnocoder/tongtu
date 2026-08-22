@@ -16,6 +16,7 @@ from .config import (
     RuntimeConfig,
     load_config,
     models_path,
+    provider_key,
     resolve_role,
     role_config,
 )
@@ -66,9 +67,24 @@ def work(
     name = resolved.runtime or ""
     runtime = config.runtime[name]
 
-    command, detail = _build_command(runtime, name, resolved, entry)
-    if command is None:
+    base_url: str | None = None
+    api_key: str | None = None
+    if runtime.provider is not None:
+        provider = config.provider.get(runtime.provider)
+        if provider is None:
+            return _error(
+                f"运行时 {name} 声明的服务商 {runtime.provider} 没有配置，"
+                f" 在 {models_path()} 的 [provider.{runtime.provider}] 下补上。"
+            )
+        api_key, detail = provider_key(runtime.provider, provider)
+        if api_key is None:
+            return _error(detail)
+        base_url = provider.base_url
+
+    built, detail = _build_invocation(runtime, name, resolved, entry, base_url, api_key)
+    if built is None:
         return _error(detail)
+    command, session_env = built
     executable = shutil.which(command[0])
     if executable is None:
         return _error(f"运行时 {name} 不在 PATH 里， 它的命令是 {command[0]}。")
@@ -90,7 +106,7 @@ def work(
                 entry.timeout_seconds or 0.0,
                 stdout=trace_file,
                 input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
-                env=_session_env(),
+                env=_session_env() | session_env,
             )
     except OSError as error:
         return _error(f"拉起 {executable} 失败（{type(error).__name__}： {error}）。 确认工作目录 {workdir} 存在。")
@@ -112,17 +128,25 @@ def _session_env() -> dict[str, str]:
     return os.environ | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}
 
 
-def _build_command(
+def _build_invocation(
     runtime: RuntimeConfig,
     name: str,
     resolved: ResolvedRole,
     entry: RoleConfig,
-) -> tuple[list[str] | None, str]:
+    base_url: str | None,
+    api_key: str | None,
+) -> tuple[tuple[list[str], dict[str, str]] | None, str]:
     bash_allow = ",".join(f"Bash({prefix}:*)" for prefix in entry.bash or [])
+    templates = list(runtime.command) + list((runtime.env or {}).values())
     if runtime.settings is None and any("{settings}" in item for item in runtime.command):
         return None, (
             f"运行时 {name} 的命令模板要填 settings， 但 [runtime.{name}] 没有 settings 表。"
             f" 在 {models_path()} 里补上。"
+        )
+    if base_url is None and any("{base_url}" in item or "{api_key}" in item for item in templates):
+        return None, (
+            f"运行时 {name} 的命令模板或 env 表要填 {{base_url}} 与 {{api_key}}，"
+            f" 但 [runtime.{name}] 没有 provider 字段。 在 {models_path()} 里补上。"
         )
     values = {
         "{model}": resolved.model,
@@ -130,11 +154,18 @@ def _build_command(
         "{max_turns}": str(entry.max_turns),
         "{bash_allow}": bash_allow,
         "{settings}": json.dumps(runtime.settings, separators=(",", ":")),
+        "{base_url}": base_url or "",
+        "{api_key}": api_key or "",
     }
-    filled = []
+
+    def substituted(text: str) -> str:
+        for placeholder, value in values.items():
+            text = text.replace(placeholder, value)
+        return text
+
+    command = []
     for item in runtime.command:
         drop_empty = "{bash_allow}" in item and not bash_allow
-        for placeholder, value in values.items():
-            item = item.replace(placeholder, value)
-        filled.append(",".join(piece for piece in item.split(",") if piece) if drop_empty else item)
-    return filled, ""
+        filled = substituted(item)
+        command.append(",".join(piece for piece in filled.split(",") if piece) if drop_empty else filled)
+    return (command, {key: substituted(value) for key, value in (runtime.env or {}).items()}), ""

@@ -550,6 +550,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 
 <span class="label" style="display:block;margin-top:14px">运行时 = 一条命令模板</span>
 <p style="font-size:13.5px;margin:6px 0 0">Claude Code、Codex、opencode 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放哪。所以运行时不写代码，写在配置里（见下）；<code>work</code> 本身只做：拷 skill → 拼命令 → 新进程组跑 → 超时杀组 → stdout 落 trace → 按退出码与超时给 stop_reason。</p>
+<p style="font-size:13.5px;margin:8px 0 0">一个运行时条目 = 一个「工具 × 服务商」组合<small style="text-transform:none;letter-spacing:0"> （<a href="https://github.com/yhnocoder/tongtu/issues/26">issue #26</a>，2026-08-22）</small>：条目可选写 <code>provider</code> 指向 <code>[provider.*]</code>，<code>work</code> 据此把 <code>{base_url}</code> 与 <code>{api_key}</code> 填进命令模板与 <code>env</code> 表，密钥经 <code>env</code> 表进子进程环境，不出现在命令行参数里。角色表、<code>resolve_role</code>、<code>--work-model 运行时/模型</code> 的语义都不变。</p>
 <p style="font-size:13.5px;margin:8px 0 0"><b>去掉 <code>budget_exhausted</code></b>：它要解析各运行时的 transcript 才能判，而调用方反正不信 stop_reason、会自己复验，轮数耗尽与其他错误在调用方眼里没有区别。<code>max_turns</code> 仍作为参数传给运行时，只是不再从结果里读回。</p>
 <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">自建 agent 循环（用 <code>ask</code> + 工具调用自己写）是第三条路，CLI 运行时不够用再说。</p>
 </div>
@@ -557,7 +558,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <details open><summary>models.toml（配置目录）</summary>
 <pre><span class="c"># 服务商：一个 API 前缀 + 一个密钥 + 哪个模型走哪种接口（api 取 chat / responses / messages）</span>
 [provider.opencode]
-base_url    = "https://opencode.ai/zen/go/v1"
+base_url    = "https://opencode.ai/zen/go"   <span class="c"># 接口前缀的根，chat / responses / messages 都在它下面的 /v1/...</span>
 api_key     = ""                  <span class="c"># 直接写密钥，或留空改用下面的环境变量；setup -i 填的是这里</span>
 api_key_env = "OPENCODE_API_KEY"
 models = { "deepseek-v4-flash" = "chat", "gpt-5.6-luna" = "responses", "minimax-m3" = "messages" }
@@ -580,7 +581,20 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 <span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
 <span class="c"># {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
-# Codex 的运行时条目另开 issue #27 做（被 #26 阻塞）；已验证的参数：-s workspace-write -c approval_policy="never" --skip-git-repo-check -C &lt;现场&gt;，规则文件放 .codex/rules/</span>
+# Codex 的运行时条目在这套机制之上做（issue #27）；已验证的参数：-s workspace-write -c approval_policy="never" --skip-git-repo-check -C &lt;现场&gt;。
+# .codex/rules 的 allow 是「沙箱外执行」，不用它做放行（issue #26 实测，2026-08-22）</span>
+
+<span class="c"># 同一个 Claude Code，模型换成 opencode 上的：一个运行时条目 = 一个「工具 × 服务商」组合</span>
+[runtime.claude_code_opencode]
+provider = "opencode"                    <span class="c"># {base_url} 与 {api_key} 由 work 从 [provider.opencode] 填入</span>
+skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现场的哪里</span>
+command = [同 runtime.claude_code 一字不差]
+settings = { sandbox = { … 同 runtime.claude_code … } }
+env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+<span class="c"># opencode 的 messages 端点只认 x-api-key，所以密钥写进 ANTHROPIC_API_KEY；ANTHROPIC_AUTH_TOKEN 走 Bearer，会 401
+# Claude Code 把 ANTHROPIC_BASE_URL 当根，自己拼 /v1/messages，所以这里填的是不带 /v1 的 base_url
+# 三个 DEFAULT_*_MODEL 都指同一个模型，防止后台的小调用拿 claude 系列的名字去打 opencode
+# 密钥经进程环境传入而不是写进命令行参数：命令行参数在 ps 里可见</span>
 
 <span class="c"># 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么</span>
 [roles]
@@ -599,7 +613,7 @@ compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = 
 <li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻退出码 2。给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过——有意绕过只能走第 2 条管住的那条路：嵌套的 run 要写 cwd 之外的工作目录根、要出网，第一个阶段就失败。</li>
 <li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin + 系统 bin）。</li>
 </ol>
-<p style="font-size:13.5px;color:var(--muted);margin:8px 0 0;max-width:none">运行时只认 Claude Code 与 Codex：Codex 的放行规则是 <code>.codex/rules/&lt;role&gt;.rules</code>（<code>prefix_rule</code>），沙箱是 <code>-s workspace-write -c approval_policy="never"</code>；opencode 没有沙箱，在它有之前不作为使用方案。</p>
+<p style="font-size:13.5px;color:var(--muted);margin:8px 0 0;max-width:none">运行时只认 Claude Code 与 Codex：Codex 不用 <code>.codex/rules</code> 做放行——<code>decision="allow"</code> 的规则是「沙箱外执行」（<a href="https://github.com/yhnocoder/tongtu/issues/26">issue #26</a> 实测，2026-08-22）——只靠沙箱 <code>-s workspace-write -c approval_policy="never"</code> 把写范围限制在现场；opencode 作为运行时没有沙箱，在它有之前不作为使用方案。</p>
 </div>
 </div>
 
