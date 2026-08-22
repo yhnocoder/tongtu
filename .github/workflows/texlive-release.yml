@@ -6,12 +6,7 @@
 
 name: texlive-release
 
-# push 触发是临时的：workflow_dispatch 在文件进入默认分支前无法按文件名触发，
-# 首跑靠推送本文件触发，跑通后删除这段 push 配置。
 on:
-  push:
-    branches: [claude/tex-full-2026-setup-ujf8uw]
-    paths: [".github/workflows/texlive-release.yml"]
   workflow_dispatch:
     inputs:
       year:
