@@ -1,0 +1,97 @@
+# TeX Live 预打包：装 scheme-full（不含 doc/src），打成 zstd 分片传到 GitHub Release。
+# 消费方是 Claude cloud environment 的 setup script：下载分片、校验、解压到
+# /usr/local/texlive/<年份>，几分钟内得到与本仓库参考镜像同级别的全量 TeX。
+# CI 的编译层作业不用这份产物，仍按 docker/README.md 用 ghcr 的 :env 镜像。
+# 手动触发；TeX Live 换年份时改默认值重跑一次，旧 release 保留。
+
+name: texlive-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: TeX Live 年份（须与 CTAN 当前发行版一致）
+        type: string
+        default: "2026"
+      tag:
+        description: release 的 tag 名
+        type: string
+        default: texlive-2026
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and release TeX Live tarball
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      YEAR: ${{ inputs.year || '2026' }}
+      TAG: ${{ inputs.tag || 'texlive-2026' }}
+      TEXDIR: /usr/local/texlive/${{ inputs.year || '2026' }}
+      NAME: texlive-${{ inputs.year || '2026' }}-full-nodoc
+    steps:
+      # TeX Live full 在 6GB 量级，与 image.yml 相同，先删掉用不到的预装 SDK 腾出磁盘。
+      - name: Remove unused SDKs
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+# 从 ISO 安装而不是网络仓库：网络仓库要逐个拉四千多个小包，ISO 是单个大文件下载
+      # 后本地安装，快得多；且 ISO 是发行快照，与 MacTeX 同源，宏包版本与 Mac 上的全量
+      # 安装一致。
+      - name: Install TeX Live scheme-full from ISO without doc and src
+        run: |
+          cd /tmp
+          curl -fsSL --retry 3 -O "https://mirror.ctan.org/systems/texlive/Images/texlive${YEAR}.iso"
+          curl -fsSL --retry 3 -O "https://mirror.ctan.org/systems/texlive/Images/texlive${YEAR}.iso.sha512"
+          sha512sum -c "texlive${YEAR}.iso.sha512"
+          sudo mkdir -p /mnt/iso
+          sudo mount -o loop,ro "texlive${YEAR}.iso" /mnt/iso
+          cat > tongtu.profile <<EOF
+          selected_scheme scheme-full
+          TEXDIR ${TEXDIR}
+          TEXMFLOCAL /usr/local/texlive/texmf-local
+          TEXMFSYSCONFIG ${TEXDIR}/texmf-config
+          TEXMFSYSVAR ${TEXDIR}/texmf-var
+          tlpdbopt_install_docfiles 0
+          tlpdbopt_install_srcfiles 0
+          tlpdbopt_autobackup 0
+          EOF
+          sudo perl /mnt/iso/install-tl --profile tongtu.profile
+          sudo umount /mnt/iso
+          rm -f "texlive${YEAR}.iso"
+
+      - name: Verify toolchain
+        run: |
+          export PATH="${TEXDIR}/bin/x86_64-linux:${PATH}"
+          xelatex --version
+          latexmk --version
+          latexpand --version
+          du -sh "${TEXDIR}"
+
+      # release 单个资产上限 2GB，按 1900MB 切分；SHA256SUMS 兼作分片清单，
+      # setup script 先取它再按行下载与校验。
+      - name: Pack and split
+        run: |
+          sudo tar -C /usr/local -I 'zstd -10 -T0' -cf "/tmp/${NAME}.tar.zst" "texlive/${YEAR}"
+          cd /tmp
+          split -b 1900M -d "${NAME}.tar.zst" "${NAME}.tar.zst.part"
+          sudo rm -f "${NAME}.tar.zst"
+          sha256sum "${NAME}".tar.zst.part* > SHA256SUMS
+          ls -lh "${NAME}".tar.zst.part* SHA256SUMS
+
+      # 同 tag 重跑视为重新生成：先删旧 release 与旧 tag 再建，产物以最新一次为准。
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /tmp
+          gh release delete "${TAG}" --repo "${{ github.repository }}" --yes --cleanup-tag || true
+          gh release create "${TAG}" \
+            --repo "${{ github.repository }}" \
+            --title "TeX Live ${YEAR} scheme-full（不含 doc/src）" \
+            --notes "供 Claude cloud environment 的 setup script 使用：下载全部分片，按 SHA256SUMS 校验，cat 拼接后以 zstd 解压到 /usr/local。构建自 .github/workflows/texlive-release.yml。" \
+            "${NAME}".tar.zst.part* SHA256SUMS
