@@ -13,17 +13,18 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from . import __version__, validation
 from .artifacts.common import Manifest
 from .assets import asset_path
+from .console import console, error_console
 from .manifests import describe_error, load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
-from .stages import fetch, mask, precompile
+from .stages import fetch, mask, precompile, survey
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .workdir import Workdir, WorkdirError, resolve
 
@@ -59,9 +60,6 @@ FONTS_DIR = asset_path("fonts")
 REQUIRED_FONT_FILENAMES: tuple[str, ...] = ("LXGWWenKai-Light.ttf", "LXGWWenKai-Medium.ttf")
 
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
-
-console = Console(markup=False, soft_wrap=True)
-error_console = Console(stderr=True, markup=False, soft_wrap=True)
 
 app = typer.Typer(
     add_completion=False,
@@ -103,10 +101,21 @@ def _mask_entry(options: RunOptions) -> Manifest:
     return mask.run(options.workdir)
 
 
+def _survey_entry(options: RunOptions) -> Manifest:
+    return survey.run(
+        options.workdir,
+        glossary=options.glossary,
+        no_terms=options.no_terms,
+        ask_model=options.ask_model,
+        ask_effort=options.ask_effort,
+    )
+
+
 STAGE_ENTRIES: dict[str, Callable[[RunOptions], Manifest]] = {name: _pending_stage(name) for name in STAGES}
 STAGE_ENTRIES["fetch"] = _fetch_entry
 STAGE_ENTRIES["precompile"] = _precompile_entry
 STAGE_ENTRIES["mask"] = _mask_entry
+STAGE_ENTRIES["survey"] = _survey_entry
 
 
 PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")]
@@ -221,11 +230,19 @@ def _print_stage_result(name: str, manifest: Manifest, workdir: Workdir) -> None
         console.print(f"  manifest  {workdir.manifest_path(name)}")
 
 
+def _run_stage(name: str, options: RunOptions) -> Manifest:
+    with Progress(
+        SpinnerColumn(), TextColumn("{task.description}"), TimeElapsedColumn(), console=console, transient=True
+    ) as progress:
+        progress.add_task(f"{name} 运行中…")
+        manifest = STAGE_ENTRIES[name](options)
+    _print_stage_result(name, manifest, options.workdir)
+    return manifest
+
+
 def _run_stages(start: str, options: RunOptions) -> typer.Exit:
     for name in downstream(start):
-        manifest = STAGE_ENTRIES[name](options)
-        _print_stage_result(name, manifest, options.workdir)
-        if manifest.status != STATUS_OK:
+        if _run_stage(name, options).status != STATUS_OK:
             return typer.Exit(EXIT_FAILURE)
     return typer.Exit(0)
 
@@ -289,8 +306,7 @@ def stage(
             f"上游产物不在：{'、'.join(missing)}。先跑 tongtu run，或用 tongtu run --from {missing[0]} 重做。"
         )
         raise typer.Exit(EXIT_USAGE)
-    manifest = STAGE_ENTRIES[name.value](options)
-    _print_stage_result(name.value, manifest, options.workdir)
+    manifest = _run_stage(name.value, options)
     raise typer.Exit(0 if manifest.status == STATUS_OK else EXIT_FAILURE)
 
 

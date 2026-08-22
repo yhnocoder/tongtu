@@ -19,7 +19,7 @@ MESSAGES_MAX_TOKENS = 32768
 
 THINKING_BUDGET_TOKENS: dict[str, int] = {"low": 1024, "medium": 2048, "high": 4096}
 
-MESSAGES_TIMEOUT_SECONDS = 600.0
+ASK_TIMEOUT_SECONDS = 300
 
 
 class AskStatus(StrEnum):
@@ -112,7 +112,9 @@ def _request(
                 provider.base_url, api_key, resolved.model, resolved.effort, system, messages, schema
             )
         else:
-            client = openai.OpenAI(base_url=f"{provider.base_url}/v1", api_key=api_key)
+            client = openai.OpenAI(
+                base_url=f"{provider.base_url}/v1", api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1
+            )
             caller = _responses if api is Api.RESPONSES else _chat
             outcome, extra = caller(client, resolved.model, resolved.effort, system, messages, schema)
     except (openai.OpenAIError, anthropic.AnthropicError) as error:
@@ -196,14 +198,13 @@ def _messages(
             f"模型 {model} 走 messages 接口， 该接口按 token 预算给推理强度， "
             f"档位只有 {'、'.join(THINKING_BUDGET_TOKENS)}， 配置里给的是 {effort}。"
         )
-    client = anthropic.Anthropic(base_url=base_url, api_key=api_key)
+    client = anthropic.Anthropic(base_url=base_url, api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1)
     response = client.messages.create(
         model=model,
         max_tokens=MESSAGES_MAX_TOKENS,
         system=system,
         messages=[{"role": item[0], "content": item[1]} for item in messages],
         thinking={"type": "enabled", "budget_tokens": budget},
-        timeout=MESSAGES_TIMEOUT_SECONDS,
     )
     usage = None if response.usage is None else response.usage.model_dump(exclude_none=True)
     extra: dict[str, object] = {"finish_reason": response.stop_reason, "usage": usage}

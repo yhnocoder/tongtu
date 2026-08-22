@@ -1,450 +1,779 @@
-r"""survey 阶段驱动器：合并三层 input glossary 并按全文命中过滤，照录论文摘要。
-
-survey 只读 `build/` 与术语表输入、只写 `build/`：纯文本变换，不访问网络、不编译，也不拉起
-agent。上游结论与两个输入 hash 从 mask manifest 装载。术语表的解析、合并与命中匹配在
-`tongtu/glossary.py`（translate 的逐 chunk 命中复用同一实现），本模块管前置条件、跳过判定、
-摘要照录与落盘。
-
-前置条件：mask manifest 缺失或不可解析，或它的状态是 ok 但 `build/masked.tex` 与
-`build/blocks.json` 有缺（含 blocks.json 不可解析）→ 状态 `mask_missing`；mask 的状态不是 ok
-→ 状态 `mask_not_ok`，本次读到的 mask 状态与它记录的 fetch 状态转录进 manifest；任一 input
-glossary 读不到或不符合形状 → 状态 `glossary_invalid`，message 指出文件路径与首个错误。前置
-条件不满足同样写 survey manifest：驱动器不向调用方抛栈，每次执行的结论都落盘。
-
-章节标题树由 `chunking.document_headings` 扫 `masked.tex` 得出，写进 brief 的 `heading_tree`：
-标题结构是分块的输入而不是分块的产物，survey 与 chunk 因此共用同一份扫描实现、各自直接读
-掩码文本，两个阶段不互相依赖。掩码文本扫不出标题结构（环境配对不上）或一个标题命令都没有
-时，`heading_tree` 为 null 并记一条 warning，不是失败。
-
-摘要照录两条来路，按序尝试：`blocks.json` 中 kind 为 abstract 的 caption 槽位（摘要写在前导区
-的文档类，mask 阶段已抽出），取其原始文本；槽位不存在时在 `masked.tex` 里扫描 abstract 环境
-（正文形态，多数论文如此），照录环境体。两条都落空则 `abstract` 为 null，不是失败。掩码文本
-里没有注释（mask 已把注释整块摘出），故环境扫描按字面匹配即可。
-
-重跑语义：输入 hash 是三个值——`masked_sha256` 与 `blocks_sha256` 从 mask manifest 转录，
-`glossary_input_sha256` 是三层输入按层序规范化序列后的 sha256。已有 survey manifest 可解析、
-状态 ok、三个输入 hash 与当前值一致、两件产物都存在 → 跳过；失败状态不跳过；`force` 无视已有
-结论。每次非跳过的执行开始先删除已有的两件产物，失败时不留上次的产物误导下游。
-"""
-
 from __future__ import annotations
 
-import hashlib
+import json
 import re
-from collections.abc import Sequence
+import shutil
+import time
+from bisect import bisect_left, bisect_right
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import tiktoken
 from pydantic import ValidationError
 
-from .. import chunking, config, glossary, manifests, workdir
-from ..artifacts.fetch import FetchStatus
-from ..artifacts.mask import BlocksFile, MaskManifest, MaskStatus
+from .. import masking
+from ..artifacts.mask import BlocksFile
 from ..artifacts.survey import (
-    AbstractSource,
     BriefFile,
-    BriefHeading,
+    ChunkRecord,
+    DecidedBy,
     DoNotTranslateEntry,
     FilteredTerm,
-    GlossaryFile,
-    GlossaryInputRecord,
+    Heading,
+    Part,
     SurveyManifest,
     SurveyStatus,
     TermEntry,
 )
-from ..glossary import GlossaryError, GlossaryLayer, GlossarySource
-from ..masking import ABSTRACT_ENVIRONMENT, CaptionKind
-from .mask import BLOCKS_FILENAME, MASKED_FILENAME, blocks_path, masked_path
-from .mask import STAGE_NAME as MASK_STAGE_NAME
+from ..assets import asset_path
+from ..config import config_dir
+from ..console import console
+from ..manifests import describe_error, write_manifest
+from ..model.ask import ASK_TIMEOUT_SECONDS, AskStatus, ask
+from ..model.config import RoleTable, load_config, resolve_role
+from ..workdir import Workdir
 
-#: 阶段名，也是 stage manifest 的文件名主干。
 STAGE_NAME = "survey"
 
-#: resolved glossary 在 build/ 下的文件名，与 input glossary 同名（前者由本阶段产出，后者由
-#: 用户手写，两者位置不同：build/ 之下与工作目录根、全局配置目录）。
-GLOSSARY_FILENAME = glossary.GLOSSARY_FILENAME
+MASKED_FILENAME = "masked.tex"
 
-#: 全局语境在 build/ 下的文件名，artifact contract 的一员。
+BLOCKS_FILENAME = "blocks.json"
+
 BRIEF_FILENAME = "brief.json"
 
-#: 产物文本的编码；读写都用它。
+CHUNKS_DIRNAME = "chunks"
+
+GLOSSARY_FILENAME = "glossary.json"
+
+TERMS_LOG_FILENAME = "survey-terms.json"
+
+SKILL_FILENAME = "SKILL.md"
+
+ROLE = "survey_terms"
+
 ENCODING = "utf-8"
 
-#: 在掩码文本里定位 abstract 环境的两个匹配式（正文形态的摘要来路）。
-BEGIN_ABSTRACT_RE = re.compile(r"\\begin\s*\{" + ABSTRACT_ENVIRONMENT + r"\}")
-END_ABSTRACT_RE = re.compile(r"\\end\s*\{" + ABSTRACT_ENVIRONMENT + r"\}")
+TOKEN_ENCODING_NAME = "o200k_base"
+
+SPLIT_ABOVE = 5000
+
+MERGE_BELOW = 1500
+
+WARNING_DETAIL_CHARS = 400
+
+HEADING_COMMANDS: tuple[str, ...] = ("part", "chapter", "section", "subsection", "subsubsection", "paragraph")
+
+APPENDIX_COMMANDS: tuple[str, ...] = ("appendix", "appendices")
+
+APPENDIX_ENVIRONMENT = "appendices"
+
+SPECIAL_RE = re.compile(r"[\\$]")
+
+BEGIN_ABSTRACT_RE = re.compile(r"\\begin\s*\{" + masking.ABSTRACT_ENVIRONMENT + r"\}")
+
+END_ABSTRACT_RE = re.compile(r"\\end\s*\{" + masking.ABSTRACT_ENVIRONMENT + r"\}")
+
+TERMS_FIELD = "terms"
+
+DO_NOT_TRANSLATE_FIELD = "do_not_translate"
+
+STYLE_FIELD = "style"
+
+KNOWN_FIELDS: tuple[str, ...] = (TERMS_FIELD, DO_NOT_TRANSLATE_FIELD, STYLE_FIELD)
+
+TERMS_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "terms": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"word": {"type": "string"}, "translation": {"type": "string"}},
+                "required": ["word", "translation"],
+                "additionalProperties": False,
+            },
+        },
+        "do_not_translate": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["terms", "do_not_translate"],
+    "additionalProperties": False,
+}
+
+
+class ChunkError(Exception):
+    pass
+
+
+class GlossaryError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
-class SurveyResult:
-    """驱动器的返回值：manifest、工作目录与是否命中跳过。"""
-
-    manifest: SurveyManifest
-    workdir: workdir.Workdir
-    skipped: bool
+class Term:
+    word: str
+    translation: str | None
+    decided_by: DecidedBy
 
 
-# ------------------------------------------------------------------ 阶段驱动器
-
-
-def survey(
-    workdir_name: str | None = None,
-    workdir_path: Path | None = None,
+def run(
+    paper_workdir: Workdir,
     *,
-    glossary_paths: Sequence[Path] = (),
-    force: bool = False,
-) -> SurveyResult:
-    """装载 mask 结论与三层术语表，写出 glossary.json、brief.json 与 manifest。
-
-    `workdir_name` 是工作目录名（arXiv 编号，或本地源码目录的 basename），`workdir_path`
-    直接给出论文工作目录本身并覆盖前者。`glossary_paths` 是命令行 `--glossary` 给出的文件，
-    按给出顺序排列，靠后的优先。`force` 无视已有结论重新执行。
-    """
-    paper_workdir = workdir.Workdir(workdir.resolve(workdir_name, workdir_path))
-    paper_workdir.create()  # 前置条件不满足时也要写 manifest，先确保四区存在
-
-    # 上游 mask manifest 读不到或不可解析都转 mask_missing，两种情形对本阶段含义相同。
-    mask_manifest = manifests.load_manifest(paper_workdir.manifest_path(MASK_STAGE_NAME), MaskManifest)
-    if mask_manifest is None:
-        # 两个输入 hash 从 mask manifest 转录，读不到就无从做跳过判定，直接给结论。
-        _reset_outputs(paper_workdir)
-        return _write_result(
-            paper_workdir,
-            SurveyManifest(
-                status=SurveyStatus.MASK_MISSING,
-                message="读不到 build/manifests/mask.json 或它不可解析，先跑 `tongtu stage mask`。",
-            ),
-        )
-
-    sources, read_error = _load_sources(paper_workdir, glossary_paths)
-    input_sha256 = glossary.input_sha256(sources)
-    if not force and not read_error:
-        # 某份表读不到时不做跳过判定：它的内容以空占位进 hash，与「该层缺席」无从区分。
-        existing = _load_skippable_manifest(paper_workdir, mask_manifest, input_sha256)
-        if existing is not None:
-            return SurveyResult(manifest=existing, workdir=paper_workdir, skipped=True)
-
-    _reset_outputs(paper_workdir)
-    if mask_manifest.status is not MaskStatus.OK:
-        return _write_result(
-            paper_workdir,
-            _manifest_from_mask(
-                SurveyStatus.MASK_NOT_OK,
-                mask_manifest,
-                sources,
-                input_sha256,
-                message=(
-                    f"mask 的状态是 {mask_manifest.status}，上游 fetch 判定源是 PDF 而非 LaTeX 源码，"
-                    "没有可合并术语表的掩码文本，走 degraded path。"
-                    if mask_manifest.fetch_status == FetchStatus.PDF_ONLY
-                    else f"mask 的状态是 {mask_manifest.status}，不是 ok，先重跑 `tongtu stage mask`。"
-                ),
-            ),
-        )
-    masked_file = masked_path(paper_workdir)
-    blocks_file = blocks_path(paper_workdir)
-    if not masked_file.is_file() or not blocks_file.is_file():
-        absent = MASKED_FILENAME if not masked_file.is_file() else BLOCKS_FILENAME
-        return _write_result(
-            paper_workdir,
-            _manifest_from_mask(
-                SurveyStatus.MASK_MISSING,
-                mask_manifest,
-                sources,
-                input_sha256,
-                message=f"mask 的状态是 ok，但 build/{absent} 不是文件，先跑 `tongtu stage mask`。",
-            ),
-        )
-    blocks = _load_blocks(blocks_file)
-    if blocks is None:
-        return _write_result(
-            paper_workdir,
-            _manifest_from_mask(
-                SurveyStatus.MASK_MISSING,
-                mask_manifest,
-                sources,
-                input_sha256,
-                message=f"build/{BLOCKS_FILENAME} 不可解析，先重跑 `tongtu stage mask`。",
-            ),
-        )
-    if read_error:
-        return _write_result(
-            paper_workdir,
-            _manifest_from_mask(
-                SurveyStatus.GLOSSARY_INVALID, mask_manifest, sources, input_sha256, message=read_error
-            ),
-        )
-
-    try:
-        merged = _merge_sources(sources)
-    except GlossaryError as error:
-        return _write_result(
-            paper_workdir,
-            _manifest_from_mask(
-                SurveyStatus.GLOSSARY_INVALID, mask_manifest, sources, input_sha256, message=str(error)
-            ),
-        )
-
-    masked = masked_file.read_text(encoding=ENCODING)
-    resolved = glossary.relevant_terms(merged.entries, masked)
-    kept = set(resolved)
-    filtered = tuple(entry for entry in merged.entries if entry not in kept)
-    if len(resolved) + len(filtered) != len(merged.entries):
-        # 出口判据的不变量：命中与被过滤两份清单恰好切分合并结果，不重不漏。
-        return _write_result(
-            paper_workdir,
-            _manifest_from_mask(
-                SurveyStatus.GLOSSARY_INVALID,
-                mask_manifest,
-                sources,
-                input_sha256,
-                message=(
-                    f"合并结果 {len(merged.entries)} 条，命中 {len(resolved)} 条加被过滤 "
-                    f"{len(filtered)} 条对不上，命中过滤的实现有误。"
-                ),
-            ),
-        )
-
-    abstract, abstract_source = _extract_abstract(blocks, masked)
-    heading_tree, heading_warnings = _extract_heading_tree(masked)
-    glossary_bytes = _glossary_file(resolved, merged.style).model_dump_json(indent=2).encode(ENCODING) + b"\n"
-    brief_file = BriefFile(abstract=abstract, heading_tree=heading_tree)
-    brief_bytes = brief_file.model_dump_json(indent=2).encode(ENCODING) + b"\n"
-    glossary_file_path(paper_workdir).write_bytes(glossary_bytes)
-    brief_path(paper_workdir).write_bytes(brief_bytes)
-    return _write_result(
-        paper_workdir,
-        _manifest_from_mask(
-            SurveyStatus.OK,
-            mask_manifest,
-            sources,
-            input_sha256,
-            glossary_sha256=hashlib.sha256(glossary_bytes).hexdigest(),
-            brief_sha256=hashlib.sha256(brief_bytes).hexdigest(),
-            terms_total=sum(1 for entry in resolved if entry.translation is not None),
-            do_not_translate_total=sum(1 for entry in resolved if entry.translation is None),
-            filtered=[FilteredTerm(word=entry.word, decided_by=entry.decided_by) for entry in filtered],
-            abstract_source=abstract_source,
-            abstract_chars=len(abstract) if abstract is not None else 0,
-            headings_total=len(heading_tree) if heading_tree is not None else 0,
-            warnings=heading_warnings,
-        ),
-    )
-
-
-# ------------------------------------------------------------------ 术语表输入
-
-
-def _load_sources(
-    paper_workdir: workdir.Workdir, glossary_paths: Sequence[Path]
-) -> tuple[tuple[GlossarySource, ...], str]:
-    """读三层 input glossary，返回（按层序排列的合并单元、读不到时的失败说明）。
-
-    全局配置目录与论文工作目录的表默认不存在，缺失即该层缺席；命令行 `--glossary` 是用户显式
-    给出的文件，缺失是用户错误，不静默跳过。命令行一份都没给时补一个空占位，保持三层形状。
-    """
-    sources: list[GlossarySource] = []
-    error = ""
-    requests: list[tuple[GlossaryLayer, Path, bool]] = [
-        (GlossaryLayer.GLOBAL, config.glossary_path(), False),
-        (GlossaryLayer.PAPER, input_glossary_path(paper_workdir), False),
-    ]
-    requests.extend((GlossaryLayer.CLI, path, True) for path in glossary_paths)
-    for layer, path, required in requests:
-        content, failure = _read_source(path, required=required)
-        sources.append(GlossarySource(layer=layer, path=path, content=content))
-        if failure and not error:
-            error = failure
-    if not glossary_paths:
-        sources.append(GlossarySource(layer=GlossaryLayer.CLI))
-    return tuple(sources), error
-
-
-def _read_source(path: Path, *, required: bool) -> tuple[str | None, str]:
-    """读一份 input glossary，返回（内容、读不到时的失败说明）。
-
-    `required` 为假时文件不存在按该层缺席处理；为真时报错。存在但读不出或不是 UTF-8 一律报错，
-    两种情形都不能按缺席处理：那会把用户的配置静默丢掉。
-    """
-    try:
-        return path.read_text(encoding=ENCODING), ""
-    except FileNotFoundError:
-        if required:
-            return None, f"--glossary 给出的 {path} 不存在。"
-        return None, ""
-    except (OSError, UnicodeDecodeError) as error:
-        return None, f"读不到 input glossary {path}（{manifests.describe_error(error)}）。"
-
-
-def _load_blocks(path: Path) -> BlocksFile | None:
-    """读 build/blocks.json 并按 artifact model 解析；读不到或不合 schema 返回 None。
-
-    两种失败对本阶段含义相同（没有可用的 caption 槽位清单），由调用方一并转 mask_missing。
-    """
-    try:
-        return BlocksFile.model_validate_json(path.read_text(encoding=ENCODING))
-    except (OSError, ValidationError):
-        return None
-
-
-def _merge_sources(sources: Sequence[GlossarySource]) -> glossary.MergedGlossary:
-    """逐份解析并按层序合并；某份不符合形状时抛 `GlossaryError`，由调用方转 glossary_invalid。"""
-    units: list[tuple[GlossaryLayer, glossary.InputGlossary]] = []
-    for source in sources:
-        if source.content is None:
-            continue
-        units.append((source.layer, glossary.parse(source.content, str(source.path))))
-    return glossary.merge(units)
-
-
-# ------------------------------------------------------------------ 摘要照录
-
-
-def _extract_abstract(blocks: BlocksFile, masked: str) -> tuple[str | None, AbstractSource]:
-    """按两条来路取论文原文摘要，返回（摘要、来路）；两条都落空返回（None、absent）。"""
-    for caption in blocks.captions:
-        if caption.kind is CaptionKind.ABSTRACT:
-            text = caption.tex.strip()
-            if text:
-                return text, AbstractSource.PREAMBLE_SLOT
-            break
-    body = _abstract_environment_body(masked)
-    if body:
-        return body, AbstractSource.BODY_ENVIRONMENT
-    return None, AbstractSource.ABSENT
-
-
-def _extract_heading_tree(masked: str) -> tuple[list[BriefHeading] | None, list[str]]:
-    """扫出全文章节标题树，返回（标题树、警告清单）；扫不出结构时返回（None、一条警告）。
-
-    扫描口径与分块共用一份实现（`chunking.document_headings`）：标题结构是分块的输入，不是
-    分块的产物，survey 与 chunk 因此都直接扫 `masked.tex`，两个阶段不互相依赖。掩码文本的
-    环境配对不上时 `chunking` 抛 `ChunkError`——那是 chunk 阶段要判失败的情形，对 survey 只
-    意味着没有标题树可写，记一条警告后照常出产物。
-    """
-    try:
-        headings = chunking.document_headings(masked)
-    except chunking.ChunkError as error:
-        return None, [f"掩码文本扫不出标题结构（{manifests.describe_error(error)}），brief 的 heading_tree 为 null。"]
-    if not headings:
-        return None, ["掩码文本里一个标题命令都没有，brief 的 heading_tree 为 null。"]
-    return [
-        BriefHeading(depth=heading.depth, level=heading.level, argument=heading.argument) for heading in headings
-    ], []
-
-
-def _abstract_environment_body(masked: str) -> str:
-    r"""照录掩码文本里首个 abstract 环境的环境体，仅去除首尾空白；没有该环境返回空串。
-
-    环境体照录，其中的 placeholder 原样留着：它记录的是原文摘要在掩码文本里的形态，供
-    translate 当全局语境用，不再回填。
-    """
-    opening = BEGIN_ABSTRACT_RE.search(masked)
-    if opening is None:
-        return ""
-    closing = END_ABSTRACT_RE.search(masked, opening.end())
-    if closing is None:
-        return ""
-    return masked[opening.end() : closing.start()].strip()
-
-
-# ------------------------------------------------------------------ 产物组装
-
-
-def _glossary_file(entries: Sequence[glossary.GlossaryEntry], style: str | None) -> GlossaryFile:
-    """把命中的词条按两个区段分开，与 style 一起组装成 resolved glossary。
-
-    `style` 是可选输入：三层都没写这一段、或最高层写的是空白，产物里都写 null。
-    """
-    return GlossaryFile(
-        terms=[
-            TermEntry(word=entry.word, translation=entry.translation, decided_by=entry.decided_by)
-            for entry in entries
-            if entry.translation is not None
-        ],
-        do_not_translate=[
-            DoNotTranslateEntry(word=entry.word, decided_by=entry.decided_by)
-            for entry in entries
-            if entry.translation is None
-        ],
-        style=style,
-    )
-
-
-def _manifest_from_mask(
-    status: SurveyStatus,
-    mask_manifest: MaskManifest,
-    sources: Sequence[GlossarySource],
-    input_sha256: str,
-    **fields: object,
+    glossary: tuple[Path, ...] = (),
+    no_terms: bool = False,
+    ask_model: str | None = None,
+    ask_effort: str | None = None,
 ) -> SurveyManifest:
-    """组装 manifest：三个输入 hash、术语表输入一览与上游两个状态一律转录，其余字段由调用处给出。"""
-    return SurveyManifest(
-        status=status,
-        masked_sha256=mask_manifest.masked_sha256,
-        blocks_sha256=mask_manifest.blocks_sha256,
-        glossary_input_sha256=input_sha256,
-        glossary_inputs=[
-            GlossaryInputRecord(
-                layer=source.layer,
-                path=str(source.path) if source.path is not None else "",
-                present=source.content is not None,
-            )
-            for source in sources
-        ],
-        mask_status=str(mask_manifest.status),
-        fetch_status=mask_manifest.fetch_status,
-        **fields,
-    )
-
-
-# ------------------------------------------------------------------ 跳过判定与落盘
-
-
-def _load_skippable_manifest(
-    paper_workdir: workdir.Workdir, mask_manifest: MaskManifest, input_sha256: str
-) -> SurveyManifest | None:
-    """读已有 survey manifest；可解析、状态 ok、三个输入 hash 一致且两件产物都在，返回它，否则返回 None。"""
-    manifest = manifests.load_manifest(paper_workdir.manifest_path(STAGE_NAME), SurveyManifest)
-    if manifest is None:
-        return None
-    if manifest.status is not SurveyStatus.OK:
-        return None
-    if manifest.masked_sha256 != mask_manifest.masked_sha256:
-        return None
-    if manifest.blocks_sha256 != mask_manifest.blocks_sha256:
-        return None
-    if manifest.glossary_input_sha256 != input_sha256:
-        return None
-    if not glossary_file_path(paper_workdir).is_file():
-        return None
-    if not brief_path(paper_workdir).is_file():
-        return None
+    paper_workdir.create()
+    _reset_outputs(paper_workdir)
+    manifest = _execute(paper_workdir, glossary, no_terms, ask_model, ask_effort)
+    write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def input_glossary_path(paper_workdir: workdir.Workdir) -> Path:
-    """论文工作目录内 input glossary 的路径：与 src/、build/ 同级，用户手写，默认不存在。"""
-    return paper_workdir.path / GLOSSARY_FILENAME
+def _execute(
+    paper_workdir: Workdir,
+    glossary_paths: Sequence[Path],
+    no_terms: bool,
+    ask_model: str | None,
+    ask_effort: str | None,
+) -> SurveyManifest:
+    try:
+        masked = (paper_workdir.build / MASKED_FILENAME).read_text(encoding=ENCODING)
+        blocks = BlocksFile.model_validate_json((paper_workdir.build / BLOCKS_FILENAME).read_text(encoding=ENCODING))
+    except (OSError, UnicodeDecodeError, ValidationError) as error:
+        return SurveyManifest(status=SurveyStatus.CHUNK_FAILED, message=describe_error(error))
+    try:
+        units = _read_layers(paper_workdir, glossary_paths)
+    except GlossaryError as error:
+        return SurveyManifest(status=SurveyStatus.GLOSSARY_INVALID, message=str(error))
+    try:
+        encoder = tiktoken.get_encoding(TOKEN_ENCODING_NAME)
+    except Exception as error:
+        return SurveyManifest(
+            status=SurveyStatus.CHUNK_FAILED,
+            message=(
+                f"取不到 tiktoken 编码器 {TOKEN_ENCODING_NAME}（{describe_error(error)}）。"
+                "首次使用要联网下载 BPE 文件，或把已下载的缓存目录设进环境变量 TIKTOKEN_CACHE_DIR。"
+            ),
+        )
+    try:
+        document = _Document(masked, encoder)
+        chunks = document.chunks()
+        contents = [masked[chunk.start : chunk.end] for chunk in chunks]
+        _verify(masked, chunks, contents)
+    except (ChunkError, masking.MaskError) as error:
+        return SurveyManifest(status=SurveyStatus.CHUNK_FAILED, message=describe_error(error))
+
+    warnings: list[str] = []
+    heading_tree = document.heading_tree()
+    abstract = _abstract(blocks, masked)
+    if abstract is None:
+        warnings.append(
+            "摘要未找到：blocks.json 里没有 abstract 槽位，masked.tex 里也没有 abstract 环境，brief 的 abstract 为 null。"
+        )
+    proposed, proposal_warnings = _propose(
+        paper_workdir, abstract, heading_tree, masked, document.encoder, no_terms, ask_model, ask_effort
+    )
+    warnings.extend(proposal_warnings)
+
+    merged, style = _merge([(proposed, None), *units])
+    decisions = [(term, _hits(term.word, masked)) for term in merged]
+    kept = [term for term, hit in decisions if hit]
+    filtered = [term for term, hit in decisions if not hit]
+    if len(kept) + len(filtered) != len(merged):
+        raise RuntimeError("命中与未命中两份清单没有恰好切分合并结果，实现有误")
+
+    records = [
+        _record(index, chunk, body, document) for index, (chunk, body) in enumerate(zip(chunks, contents, strict=True))
+    ]
+    warnings.extend(
+        f"{record.id} 有 {record.tokens} token，超过下分线 {SPLIT_ABOVE}，该单元内没有更细的切点。"
+        for record in records
+        if record.tokens > SPLIT_ABOVE
+    )
+    brief = BriefFile(
+        abstract=abstract,
+        heading_tree=heading_tree,
+        terms=[
+            TermEntry(word=term.word, translation=term.translation, decided_by=term.decided_by)
+            for term in kept
+            if term.translation is not None
+        ],
+        do_not_translate=[
+            DoNotTranslateEntry(word=term.word, decided_by=term.decided_by) for term in kept if term.translation is None
+        ],
+        style=style,
+        chunks=records,
+    )
+    _write_outputs(paper_workdir, records, contents, brief)
+    return SurveyManifest(
+        status=SurveyStatus.OK,
+        chunks_total=len(records),
+        transparent_environments=sorted(document.transparent),
+        terms_total=len(brief.terms),
+        do_not_translate_total=len(brief.do_not_translate),
+        filtered=[FilteredTerm(word=term.word, decided_by=term.decided_by) for term in filtered],
+        warnings=warnings,
+    )
 
 
-def glossary_file_path(paper_workdir: workdir.Workdir) -> Path:
-    """resolved glossary 的路径；下游 translate 与 export 取同一个文件。"""
-    return paper_workdir.build / GLOSSARY_FILENAME
+def _write_outputs(
+    paper_workdir: Workdir, records: Sequence[ChunkRecord], contents: Sequence[str], brief: BriefFile
+) -> None:
+    chunks_dir = paper_workdir.build / CHUNKS_DIRNAME
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    for record, body in zip(records, contents, strict=True):
+        (chunks_dir / f"{record.id}.tex").write_text(body, encoding=ENCODING)
+    (paper_workdir.build / BRIEF_FILENAME).write_text(brief.model_dump_json(indent=2) + "\n", encoding=ENCODING)
 
 
-def brief_path(paper_workdir: workdir.Workdir) -> Path:
-    """brief.json 的路径；下游 translate 与 export 取同一个文件。"""
-    return paper_workdir.build / BRIEF_FILENAME
+def _reset_outputs(paper_workdir: Workdir) -> None:
+    (paper_workdir.build / BRIEF_FILENAME).unlink(missing_ok=True)
+    shutil.rmtree(paper_workdir.build / CHUNKS_DIRNAME, ignore_errors=True)
+    (paper_workdir.logs / TERMS_LOG_FILENAME).unlink(missing_ok=True)
 
 
-def _reset_outputs(paper_workdir: workdir.Workdir) -> None:
-    """删除两件产物：失败时不留上次的结果误导下游。"""
-    glossary_file_path(paper_workdir).unlink(missing_ok=True)
-    brief_path(paper_workdir).unlink(missing_ok=True)
+def _record(index: int, chunk: _Chunk, body: str, document: _Document) -> ChunkRecord:
+    return ChunkRecord(
+        id=f"c{index:03d}",
+        start=chunk.start,
+        end=chunk.end,
+        part=chunk.part,
+        tokens=document.tokens(chunk.start, chunk.end),
+        paragraphs=_paragraph_count(body),
+        headings=[heading for offset, heading in document.headings if chunk.start <= offset < chunk.end],
+        translatable_chars=sum(1 for character in masking.TOKEN_RE.sub("", body) if not character.isspace()),
+    )
 
 
-def _write_result(paper_workdir: workdir.Workdir, manifest: SurveyManifest) -> SurveyResult:
-    """写出 manifest 并组装返回值；除跳过外的每次执行（含失败）都经此处落盘。"""
-    manifests.write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
-    return SurveyResult(manifest=manifest, workdir=paper_workdir, skipped=False)
+def _verify(masked: str, chunks: Sequence[_Chunk], contents: Sequence[str]) -> None:
+    if not chunks:
+        raise ChunkError(f"masked.tex 有 {len(masked)} 字符，却一个 chunk 也没切出")
+    if "".join(contents) != masked:
+        raise ChunkError("chunk 切片按序拼接后与 masked.tex 不逐字符相等，切分实现有误")
+    empty = [index for index, body in enumerate(contents) if _paragraph_count(body) < 1]
+    if empty:
+        starts = "、".join(str(chunks[index].start) for index in empty)
+        raise ChunkError(f"有 {len(empty)} 个 chunk 一个非空段落都没有（起始偏移 {starts}），切分实现有误")
+
+
+def _paragraph_count(text: str) -> int:
+    return sum(1 for paragraph in masking.BLANK_LINE_RE.split(text) if paragraph.strip())
+
+
+def _abstract(blocks: BlocksFile, masked: str) -> str | None:
+    for caption in blocks.captions:
+        if caption.kind is masking.CaptionKind.ABSTRACT:
+            text = caption.tex.strip()
+            if text:
+                return text
+            break
+    opening = BEGIN_ABSTRACT_RE.search(masked)
+    if opening is None:
+        return None
+    closing = END_ABSTRACT_RE.search(masked, opening.end())
+    if closing is None:
+        return None
+    return masked[opening.end() : closing.start()].strip() or None
+
+
+def _read_layers(paper_workdir: Workdir, glossary_paths: Sequence[Path]) -> list[tuple[list[Term], str | None]]:
+    layers: list[tuple[Path, DecidedBy, bool]] = [
+        (config_dir() / GLOSSARY_FILENAME, DecidedBy.GLOBAL, False),
+        (paper_workdir.path / GLOSSARY_FILENAME, DecidedBy.PAPER, False),
+        *[(path, DecidedBy.CLI, True) for path in glossary_paths],
+    ]
+    units: list[tuple[list[Term], str | None]] = []
+    for path, layer, required in layers:
+        try:
+            content = path.read_text(encoding=ENCODING)
+        except FileNotFoundError as error:
+            if required:
+                raise GlossaryError(f"{path} 读不到（{describe_error(error)}）") from error
+            continue
+        except (OSError, UnicodeDecodeError) as error:
+            raise GlossaryError(f"{path} 读不到（{describe_error(error)}）") from error
+        units.append(_parse(content, str(path), layer))
+    return units
+
+
+def _parse(content: str, origin: str, layer: DecidedBy) -> tuple[list[Term], str | None]:
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise GlossaryError(f"{origin} 不是合法 JSON：{error}") from error
+    if not isinstance(data, dict):
+        raise GlossaryError(f"{origin} 的顶层必须是对象，实际是 {type(data).__name__}")
+    unknown = [key for key in data if key not in KNOWN_FIELDS]
+    if unknown:
+        raise GlossaryError(f"{origin} 出现未知字段 {unknown[0]!r}，术语表文件只认 {'、'.join(KNOWN_FIELDS)} 三段")
+    terms: list[Term] = []
+    seen: dict[str, Term] = {}
+    for word in _parse_do_not_translate(data.get(DO_NOT_TRANSLATE_FIELD), origin):
+        _add(terms, seen, Term(word=word, translation=None, decided_by=layer), origin)
+    for word, translation in _parse_terms(data.get(TERMS_FIELD), origin):
+        _add(terms, seen, Term(word=word, translation=translation, decided_by=layer), origin)
+    return terms, _parse_style(data.get(STYLE_FIELD), origin)
+
+
+def _parse_do_not_translate(value: object, origin: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise GlossaryError(f"{origin} 的 {DO_NOT_TRANSLATE_FIELD} 必须是字符串列表，实际是 {type(value).__name__}")
+    words: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise GlossaryError(
+                f"{origin} 的 {DO_NOT_TRANSLATE_FIELD}[{index}] 必须是字符串，实际是 {type(item).__name__}"
+            )
+        word = item.strip()
+        if not word:
+            raise GlossaryError(f"{origin} 的 {DO_NOT_TRANSLATE_FIELD}[{index}] 是空词")
+        words.append(word)
+    return words
+
+
+def _parse_terms(value: object, origin: str) -> list[tuple[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        raise GlossaryError(f"{origin} 的 {TERMS_FIELD} 必须是对象（词到译法的映射），实际是 {type(value).__name__}")
+    pairs: list[tuple[str, str]] = []
+    for raw_word, raw_translation in value.items():
+        word = raw_word.strip()
+        if not word:
+            raise GlossaryError(f"{origin} 的 {TERMS_FIELD} 里有空词")
+        if not isinstance(raw_translation, str):
+            raise GlossaryError(
+                f"{origin} 的 {TERMS_FIELD}[{word!r}] 的译法必须是字符串，实际是 {type(raw_translation).__name__}"
+            )
+        translation = raw_translation.strip()
+        if not translation:
+            raise GlossaryError(
+                f"{origin} 的 {TERMS_FIELD}[{word!r}] 译法为空；要保留原文请写进 {DO_NOT_TRANSLATE_FIELD}"
+            )
+        pairs.append((word, translation))
+    return pairs
+
+
+def _parse_style(value: object, origin: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise GlossaryError(
+            f"{origin} 的 {STYLE_FIELD} 必须是字符串（一段写给译者的额外要求），实际是 {type(value).__name__}"
+        )
+    return value.strip()
+
+
+def _add(terms: list[Term], seen: dict[str, Term], term: Term, origin: str) -> None:
+    key = term.word.casefold()
+    previous = seen.get(key)
+    if previous is None:
+        seen[key] = term
+        terms.append(term)
+        return
+    if previous == term:
+        return
+    raise GlossaryError(
+        f"{origin} 里 {term.word!r} 给出了两条不一致的记录"
+        f"（{_describe_term(previous)}、{_describe_term(term)}），同一份文件内不判定优先级"
+    )
+
+
+def _describe_term(term: Term) -> str:
+    if term.translation is None:
+        return f"{DO_NOT_TRANSLATE_FIELD} 中的 {term.word!r}"
+    return f"{TERMS_FIELD} 中的 {term.word!r} → {term.translation!r}"
+
+
+def _merge(units: Sequence[tuple[list[Term], str | None]]) -> tuple[list[Term], str | None]:
+    entries: dict[str, Term] = {}
+    style: str | None = None
+    for terms, unit_style in units:
+        for term in terms:
+            entries[term.word.casefold()] = term
+        if unit_style is not None:
+            style = unit_style or None
+    return sorted(entries.values(), key=lambda term: (term.word.casefold(), term.word)), style
+
+
+def _hits(word: str, text: str) -> bool:
+    flags = re.NOFLAG if _abbreviation(word) else re.IGNORECASE
+    body = r"\s+".join(re.escape(part) for part in word.split())
+    return re.search(rf"(?<![0-9A-Za-z]){body}(?:es|s)?(?![0-9A-Za-z])", text, flags) is not None
+
+
+def _abbreviation(word: str) -> bool:
+    return any(character.isalpha() for character in word) and word == word.upper()
+
+
+def _propose(
+    paper_workdir: Workdir,
+    abstract: str | None,
+    heading_tree: Sequence[Heading],
+    masked: str,
+    encoder: tiktoken.Encoding,
+    no_terms: bool,
+    ask_model: str | None,
+    ask_effort: str | None,
+) -> tuple[list[Term], list[str]]:
+    if no_terms:
+        return [], []
+    config, detail = load_config()
+    if config is None:
+        return [], [f"读不到模型配置，术语提议按空提议继续（{detail[:WARNING_DETAIL_CHARS]}）"]
+    if ROLE not in config.roles:
+        return [], []
+    payload = _payload(abstract, heading_tree, masked)
+    resolved, _detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
+    if resolved is not None:
+        thousands = len(encoder.encode(payload, disallowed_special=())) / 1000
+        console.print(
+            f"  {ROLE}：{resolved.provider}/{resolved.model}，"
+            f"输入约 {thousands:.1f}k token，超时 {ASK_TIMEOUT_SECONDS} s"
+        )
+    started = time.monotonic()
+    outcome = ask(
+        role=ROLE,
+        system=(asset_path("skill") / ROLE / SKILL_FILENAME).read_text(encoding=ENCODING),
+        messages=[("user", payload)],
+        schema=TERMS_SCHEMA,
+        log_path=paper_workdir.logs / TERMS_LOG_FILENAME,
+        model=ask_model,
+        effort=ask_effort,
+    )
+    console.print(f"  {ROLE} 返回 {outcome.status}，用时 {time.monotonic() - started:.1f} s")
+    if outcome.status is AskStatus.ERROR:
+        return [], [f"术语提议调用失败，按空提议继续（{outcome.detail[:WARNING_DETAIL_CHARS]}）"]
+    try:
+        return _proposed_terms(outcome.text), []
+    except (json.JSONDecodeError, TypeError, KeyError, AttributeError) as error:
+        return [], [f"术语提议的回复不合 schema，按空提议继续（{describe_error(error)[:WARNING_DETAIL_CHARS]}）"]
+
+
+def _proposed_terms(text: str) -> list[Term]:
+    data = json.loads(text)
+    proposed = [
+        Term(word=item["word"].strip(), translation=item["translation"].strip(), decided_by=DecidedBy.SURVEY)
+        for item in data["terms"]
+    ]
+    proposed += [
+        Term(word=word.strip(), translation=None, decided_by=DecidedBy.SURVEY) for word in data["do_not_translate"]
+    ]
+    return [term for term in proposed if term.word and term.translation != ""]
+
+
+def _payload(abstract: str | None, heading_tree: Sequence[Heading], masked: str) -> str:
+    tree = [f"{'  ' * (heading.depth - 1)}{heading.command}：{heading.argument}" for heading in heading_tree]
+    return "\n".join(
+        [
+            "# 摘要",
+            abstract or "（无摘要）",
+            "",
+            "# 标题树",
+            *(tree or ["（无标题）"]),
+            "",
+            "# 全文（已掩码）",
+            masked,
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class _Chunk:
+    start: int
+    end: int
+    part: Part
+
+
+@dataclass(frozen=True)
+class _Heading:
+    start: int
+    command: str
+    argument: str
+    depth: int
+
+
+@dataclass(frozen=True)
+class _Environment:
+    name: str
+    body_start: int
+    body_end: int
+
+
+@dataclass(frozen=True)
+class _Scan:
+    headings: tuple[_Heading, ...]
+    environments: tuple[_Environment, ...]
+    appendix_marks: tuple[int, ...]
+    paragraph_starts: tuple[int, ...]
+
+
+def _scan(text: str) -> _Scan:
+    headings: list[_Heading] = []
+    environments: list[_Environment] = []
+    appendix_marks: list[int] = []
+    stack: list[tuple[str, int]] = []
+    position = 0
+    while True:
+        match = SPECIAL_RE.search(text, position)
+        if match is None:
+            break
+        position = match.start()
+        if text[position] == "$":
+            position = masking.find_inline_dollar_close(text, position + 1)
+            continue
+        name, after_name = masking.read_control_sequence(text, position)
+        if name == "verb":
+            position = masking.skip_verb(text, after_name)
+        elif name == "(":
+            position = masking.skip_to_delimiter(text, after_name, "\\)", "\\(")
+        elif name == "begin":
+            environment, after = masking.read_environment_name(text, after_name)
+            if environment is None:
+                position = after_name
+                continue
+            if environment == APPENDIX_ENVIRONMENT:
+                appendix_marks.append(position)
+            stack.append((environment, after))
+            position = after
+        elif name == "end":
+            environment, after = masking.read_environment_name(text, after_name)
+            if environment is None:
+                position = after_name
+                continue
+            if not stack:
+                raise ChunkError(f"偏移 {position} 处的 \\end{{{environment}}} 没有对应的 \\begin，环境配对不上")
+            opened, body_start = stack.pop()
+            if opened != environment:
+                raise ChunkError(f"偏移 {position} 处的 \\end{{{environment}}} 与未闭合的 \\begin{{{opened}}} 配对不上")
+            environments.append(_Environment(name=environment, body_start=body_start, body_end=position))
+            position = after
+        elif name in HEADING_COMMANDS:
+            heading, position = _read_heading(text, name, position, after_name, len(stack))
+            headings.append(heading)
+        elif name in APPENDIX_COMMANDS:
+            appendix_marks.append(position)
+            position = after_name
+        else:
+            position = after_name
+    if stack:
+        raise ChunkError(f"到文件尾仍未闭合的环境：{'、'.join(name for name, _ in stack)}")
+    return _Scan(
+        headings=tuple(headings),
+        environments=tuple(environments),
+        appendix_marks=tuple(sorted(appendix_marks)),
+        paragraph_starts=tuple(match.end() for match in masking.BLANK_LINE_RE.finditer(text)),
+    )
+
+
+def _read_heading(text: str, command: str, start: int, after_name: int, depth: int) -> tuple[_Heading, int]:
+    cursor = after_name
+    if text[cursor : cursor + 1] == "*":
+        cursor += 1
+    cursor = masking.skip_optional_arguments(text, cursor)
+    if text[cursor : cursor + 1] != "{":
+        return _Heading(start=start, command=command, argument="", depth=depth), cursor
+    end = masking.match_group(text, cursor)
+    return _Heading(start=start, command=command, argument=text[cursor + 1 : end - 1], depth=depth), end
+
+
+class _Depth:
+    def __init__(self, environments: Iterable[_Environment], transparent: frozenset[str]) -> None:
+        points: list[tuple[int, int]] = []
+        for environment in environments:
+            if environment.name in transparent:
+                continue
+            points.append((environment.body_start, 1))
+            points.append((environment.body_end, -1))
+        points.sort()
+        self._offsets = [offset for offset, _ in points]
+        self._depths: list[int] = []
+        total = 0
+        for _, delta in points:
+            total += delta
+            self._depths.append(total)
+
+    def at(self, offset: int) -> int:
+        index = bisect_right(self._offsets, offset)
+        return self._depths[index - 1] if index else 0
+
+
+class _Document:
+    def __init__(self, text: str, encoder: tiktoken.Encoding) -> None:
+        self.text = text
+        self.encoder = encoder
+        self._token_counts: dict[tuple[int, int], int] = {}
+        self.scan = _scan(text)
+        self.command = _preferred_command(self.scan.headings)
+        self.transparent = _transparent_environments(self.scan, self.command)
+        self.depth = _Depth(self.scan.environments, self.transparent)
+        self.headings = self._headings()
+
+    def tokens(self, start: int, end: int) -> int:
+        found = self._token_counts.get((start, end))
+        if found is None:
+            found = len(self.encoder.encode(self.text[start:end], disallowed_special=()))
+            self._token_counts[(start, end)] = found
+        return found
+
+    def heading_tree(self) -> list[Heading]:
+        return [heading for _offset, heading in self.headings]
+
+    def _headings(self) -> list[tuple[int, Heading]]:
+        top = [heading for heading in self.scan.headings if self.depth.at(heading.start) == 0]
+        if not top:
+            return []
+        shallowest = min(HEADING_COMMANDS.index(heading.command) for heading in top)
+        return [
+            (
+                heading.start,
+                Heading(
+                    command=heading.command,
+                    argument=heading.argument,
+                    depth=HEADING_COMMANDS.index(heading.command) - shallowest + 1,
+                ),
+            )
+            for heading in top
+        ]
+
+    def chunks(self) -> list[_Chunk]:
+        appendix_start = self._appendix_start() if self.command is not None else None
+        pieces: list[_Chunk] = []
+        for part, start, end in self._regions(appendix_start):
+            for unit in self._region_units(start, end):
+                pieces.extend(_Chunk(piece[0], piece[1], part) for piece in self._expand(unit, self.command))
+        return self._merge_small(pieces)
+
+    def _appendix_start(self) -> int | None:
+        for offset in self.scan.appendix_marks:
+            if self.depth.at(offset) == 0:
+                return offset
+        return None
+
+    def _command_cuts(self) -> list[int]:
+        return [
+            heading.start
+            for heading in self.scan.headings
+            if heading.command == self.command and self.depth.at(heading.start) == 0
+        ]
+
+    def _regions(self, appendix_start: int | None) -> list[tuple[Part, int, int]]:
+        length = len(self.text)
+        if self.command is None:
+            return [(Part.BODY, 0, length)] if length else []
+        cuts = self._command_cuts()
+        appendix = length if appendix_start is None else appendix_start
+        body_start = min([*cuts, appendix])
+        bounds = [(Part.FRONT, 0, body_start), (Part.BODY, body_start, appendix), (Part.APPENDIX, appendix, length)]
+        return _merge_blank_regions(self.text, [(part, start, end) for part, start, end in bounds if start < end])
+
+    def _region_units(self, start: int, end: int) -> list[tuple[int, int]]:
+        if self.command is None:
+            return _merge_blank(self.text, _split_at((start, end), self._paragraph_cuts(start, end)))
+        return _split_at((start, end), [cut for cut in self._command_cuts() if start < cut < end])
+
+    def _paragraph_cuts(self, start: int, end: int) -> list[int]:
+        return [offset for offset in self.scan.paragraph_starts if start < offset < end and self.depth.at(offset) == 0]
+
+    def _expand(self, unit: tuple[int, int], command: str | None) -> list[tuple[int, int]]:
+        start, end = unit
+        if self.tokens(start, end) <= SPLIT_ABOVE:
+            return [unit]
+        deeper_commands = HEADING_COMMANDS[HEADING_COMMANDS.index(command) + 1 :] if command is not None else ()
+        for deeper in deeper_commands:
+            cuts = [
+                heading.start
+                for heading in self.scan.headings
+                if heading.command == deeper and start < heading.start < end and self.depth.at(heading.start) == 0
+            ]
+            if cuts:
+                return [piece for sub in _split_at(unit, cuts) for piece in self._expand(sub, deeper)]
+        cuts = self._paragraph_cuts(start, end)
+        return _merge_blank(self.text, _split_at(unit, cuts)) if cuts else [unit]
+
+    def _merge_small(self, chunks: Sequence[_Chunk]) -> list[_Chunk]:
+        merged: list[_Chunk] = []
+        for chunk in chunks:
+            if (
+                merged
+                and self.tokens(merged[-1].start, merged[-1].end) < MERGE_BELOW
+                and self._joinable(merged[-1], chunk)
+            ):
+                merged[-1] = _join(merged[-1], chunk)
+            else:
+                merged.append(chunk)
+        index = len(merged) - 1
+        while index >= 1:
+            if self.tokens(merged[index].start, merged[index].end) < MERGE_BELOW and self._joinable(
+                merged[index - 1], merged[index]
+            ):
+                merged[index - 1] = _join(merged[index - 1], merged[index])
+                del merged[index]
+            index -= 1
+        return merged
+
+    def _joinable(self, first: _Chunk, second: _Chunk) -> bool:
+        return first.part is second.part and self.tokens(first.start, second.end) <= SPLIT_ABOVE
+
+
+def _join(first: _Chunk, second: _Chunk) -> _Chunk:
+    return _Chunk(start=first.start, end=second.end, part=first.part)
+
+
+def _preferred_command(headings: Sequence[_Heading]) -> str | None:
+    if not headings:
+        return None
+    top = [heading for heading in headings if heading.depth == 0]
+    return min((heading.command for heading in top or headings), key=HEADING_COMMANDS.index)
+
+
+def _transparent_environments(scan: _Scan, command: str | None) -> frozenset[str]:
+    if command is None:
+        return frozenset()
+    starts = [heading.start for heading in scan.headings if heading.command == command]
+    return frozenset(
+        environment.name
+        for environment in scan.environments
+        if bisect_left(starts, environment.body_start) < bisect_left(starts, environment.body_end)
+    )
+
+
+def _split_at(unit: tuple[int, int], cuts: Sequence[int]) -> list[tuple[int, int]]:
+    edges = [unit[0], *cuts, unit[1]]
+    return [(edges[index], edges[index + 1]) for index in range(len(edges) - 1)]
+
+
+def _merge_blank(text: str, units: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for unit in units:
+        if merged and not text[unit[0] : unit[1]].strip():
+            merged[-1] = (merged[-1][0], unit[1])
+        else:
+            merged.append(unit)
+    if len(merged) > 1 and not text[merged[0][0] : merged[0][1]].strip():
+        merged[1] = (merged[0][0], merged[1][1])
+        del merged[0]
+    return merged
+
+
+def _merge_blank_regions(text: str, bounds: Sequence[tuple[Part, int, int]]) -> list[tuple[Part, int, int]]:
+    merged: list[tuple[Part, int, int]] = []
+    pending: int | None = None
+    for part, start, end in bounds:
+        if pending is not None:
+            start, pending = pending, None
+        if text[start:end].strip():
+            merged.append((part, start, end))
+        else:
+            pending = start
+    if pending is None:
+        return merged
+    if merged:
+        part, start, _end = merged[-1]
+        merged[-1] = (part, start, bounds[-1][2])
+        return merged
+    return [(bounds[0][0], pending, bounds[-1][2])]

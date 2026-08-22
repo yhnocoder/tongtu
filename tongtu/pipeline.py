@@ -21,7 +21,7 @@ STAGE_REMOVES: dict[str, tuple[str, ...]] = {
     "fetch": ("src", "build/e-print.bin"),
     "precompile": ("build/precompile", "build/precompile.tex", "logs/precompile-fix.jsonl"),
     "mask": ("build/masked.tex", "build/blocks.json"),
-    "survey": ("build/brief.json", "build/chunks"),
+    "survey": ("build/brief.json", "build/chunks", "logs/survey-terms.json"),
     "translate": ("build/translated", "logs/translate-*.json"),
     "review": ("build/review", "build/reviewed", "logs/review.jsonl"),
     "compile": ("build/zh.tex", "build/compile", "out/zh.pdf", "logs/compile-fix.jsonl"),
