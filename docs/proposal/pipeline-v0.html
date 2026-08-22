@@ -115,9 +115,9 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
   <div class="file-box"><span class="f">src/ 全部源文件</span></div>
   <span class="arrow">→</span><div class="stage-box">precompile</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/precompile.tex</span><span class="f">build/precompile/flat.pdf</span></div>
-  <span class="arrow">→</span><div class="stage-box rework">mask</div><span class="arrow">→</span>
+  <span class="arrow">→</span><div class="stage-box">mask</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/masked.tex</span><span class="f">build/blocks.json</span></div>
-  <span class="arrow">→</span><div class="stage-box rework">survey</div><span class="arrow">→</span>
+  <span class="arrow">→</span><div class="stage-box">survey</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/brief.json</span><span class="f">build/chunks/c000.tex …</span></div>
   <span class="arrow">→</span><div class="stage-box rework">translate</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/translated/c000.tex …</span></div>
@@ -312,7 +312,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 
 <!-- ============ survey ============ -->
 <div class="card" id="survey" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">survey</span><span class="one">通览全文，产出翻译任务单</span><span class="tag">吸收 chunk</span><span class="tag agent">可选一次 ask</span></div>
+<div class="card-head"><span class="name">survey</span><span class="one">通览全文，产出翻译任务单</span><span class="tag">步骤 5 完成（PR #36）</span><span class="tag">吸收 chunk</span><span class="tag agent">可选一次 ask</span></div>
 <div class="cols">
 <div><span class="label">任务</span>
 <ol class="steps">
