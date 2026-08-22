@@ -6,7 +6,12 @@
 
 name: texlive-release
 
+# push 触发是临时的：workflow_dispatch 在文件进入默认分支前无法按文件名触发，
+# 首跑靠推送本文件触发，跑通后删除这段 push 配置。
 on:
+  push:
+    branches: [claude/tex-full-2026-setup-ujf8uw]
+    paths: [".github/workflows/texlive-release.yml"]
   workflow_dispatch:
     inputs:
       year:
@@ -27,8 +32,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      TEXDIR: /usr/local/texlive/${{ inputs.year }}
-      NAME: texlive-${{ inputs.year }}-full-nodoc
+      YEAR: ${{ inputs.year || '2026' }}
+      TAG: ${{ inputs.tag || 'texlive-2026' }}
+      TEXDIR: /usr/local/texlive/${{ inputs.year || '2026' }}
+      NAME: texlive-${{ inputs.year || '2026' }}-full-nodoc
     steps:
       # TeX Live full 在 6GB 量级，与 image.yml 相同，先删掉用不到的预装 SDK 腾出磁盘。
       - name: Remove unused SDKs
@@ -67,7 +74,7 @@ jobs:
       # setup script 先取它再按行下载与校验。
       - name: Pack and split
         run: |
-          sudo tar -C /usr/local -I 'zstd -10 -T0' -cf "/tmp/${NAME}.tar.zst" "texlive/${{ inputs.year }}"
+          sudo tar -C /usr/local -I 'zstd -10 -T0' -cf "/tmp/${NAME}.tar.zst" "texlive/${YEAR}"
           cd /tmp
           split -b 1900M -d "${NAME}.tar.zst" "${NAME}.tar.zst.part"
           rm "${NAME}.tar.zst"
@@ -80,9 +87,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd /tmp
-          gh release delete "${{ inputs.tag }}" --repo "${{ github.repository }}" --yes --cleanup-tag || true
-          gh release create "${{ inputs.tag }}" \
+          gh release delete "${TAG}" --repo "${{ github.repository }}" --yes --cleanup-tag || true
+          gh release create "${TAG}" \
             --repo "${{ github.repository }}" \
-            --title "TeX Live ${{ inputs.year }} scheme-full（不含 doc/src）" \
+            --title "TeX Live ${YEAR} scheme-full（不含 doc/src）" \
             --notes "供 Claude cloud environment 的 setup script 使用：下载全部分片，按 SHA256SUMS 校验，cat 拼接后以 zstd 解压到 /usr/local。构建自 .github/workflows/texlive-release.yml。" \
             "${NAME}".tar.zst.part* SHA256SUMS
