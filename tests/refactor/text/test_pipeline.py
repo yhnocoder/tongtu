@@ -19,7 +19,7 @@ SIDE_FILES: dict[str, tuple[str, ...]] = {
     "fetch": ("build/e-print.bin",),
     "precompile": ("logs/precompile-fix.jsonl",),
     "mask": (),
-    "survey": (),
+    "survey": ("logs/survey-terms.json",),
     "translate": ("logs/translate-c000-1.json", "logs/translate-c001-1.json"),
     "review": ("build/review/chunks/c000.tex", "logs/review.jsonl"),
     "compile": ("build/compile/zh.tex", "logs/compile-fix.jsonl"),

@@ -23,7 +23,7 @@ from .manifests import describe_error, load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
-from .stages import fetch, mask, precompile
+from .stages import fetch, mask, precompile, survey
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .workdir import Workdir, WorkdirError, resolve
 
@@ -103,10 +103,21 @@ def _mask_entry(options: RunOptions) -> Manifest:
     return mask.run(options.workdir)
 
 
+def _survey_entry(options: RunOptions) -> Manifest:
+    return survey.run(
+        options.workdir,
+        glossary=options.glossary,
+        no_terms=options.no_terms,
+        ask_model=options.ask_model,
+        ask_effort=options.ask_effort,
+    )
+
+
 STAGE_ENTRIES: dict[str, Callable[[RunOptions], Manifest]] = {name: _pending_stage(name) for name in STAGES}
 STAGE_ENTRIES["fetch"] = _fetch_entry
 STAGE_ENTRIES["precompile"] = _precompile_entry
 STAGE_ENTRIES["mask"] = _mask_entry
+STAGE_ENTRIES["survey"] = _survey_entry
 
 
 PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")]

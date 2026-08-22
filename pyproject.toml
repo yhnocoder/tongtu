@@ -13,6 +13,7 @@ dependencies = [
     "openai>=1.66",        # ask 原语的 API 直调（OpenCode Go 的 OpenAI 兼容端点）；responses 端点 1.66 起才有
     "anthropic>=0.40",    # ask 的 messages 接口（Anthropic Messages）
     "pypdfium2>=4.30",     # anchors 的 pdf-scan 来源
+    "tiktoken>=0.7",       # survey 分块的 token 实数（o200k_base）
 ]
 
 [project.scripts]
