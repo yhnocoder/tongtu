@@ -88,7 +88,7 @@ def test_template_runtime_carries_sandbox_settings() -> None:
     assert "Edit(.claude/skills/**)" in runtime.command
     assert "{settings}" in runtime.command
     assert runtime.provider is None
-    assert runtime.env is None
+    assert runtime.env == {"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_BASE_URL": ""}
 
 
 def test_template_opencode_runtime_carries_provider_and_env() -> None:

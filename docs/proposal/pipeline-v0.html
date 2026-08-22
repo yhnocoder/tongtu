@@ -579,6 +579,7 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
            "--disallowedTools", "Edit(.claude/skills/**)",                       <span class="c"># agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦</span>
            "--settings", "{settings}"]                                           <span class="c"># 下面 settings 表序列化成 JSON 填入</span>
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
+env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   <span class="c"># 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录</span>
 <span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
 <span class="c"># {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
 # Codex 的运行时条目在这套机制之上做（issue #27）；已验证的参数：-s workspace-write -c approval_policy="never" --skip-git-repo-check -C &lt;现场&gt;。
