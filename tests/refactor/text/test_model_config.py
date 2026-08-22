@@ -106,6 +106,7 @@ def test_template_opencode_runtime_carries_provider_and_env() -> None:
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "{model}",
         "ANTHROPIC_DEFAULT_OPUS_MODEL": "{model}",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
     }
     assert {entry.runtime for entry in config.roles.values() if entry.runtime} == {"claude_code"}
 

@@ -220,7 +220,7 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
            "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
            "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
-env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
 # opencode 的 messages 端点只认 x-api-key，所以密钥写进 ANTHROPIC_API_KEY；ANTHROPIC_AUTH_TOKEN 走 Bearer，会 401
 # Claude Code 把 ANTHROPIC_BASE_URL 当根，自己拼 /v1/messages，所以这里填的是不带 /v1 的 base_url
 # 三个 DEFAULT_*_MODEL 都指同一个模型，防止后台的小调用拿 claude 系列的名字去打 opencode

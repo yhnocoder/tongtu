@@ -43,7 +43,7 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
            "--disallowedTools", "Edit(.claude/skills/**)",
            "--settings", "{settings}"]
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
-env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
 
 [roles]
 smoke = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
