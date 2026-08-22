@@ -84,7 +84,7 @@ jobs:
           sudo tar -C /usr/local -I 'zstd -10 -T0' -cf "/tmp/${NAME}.tar.zst" "texlive/${YEAR}"
           cd /tmp
           split -b 1900M -d "${NAME}.tar.zst" "${NAME}.tar.zst.part"
-          rm "${NAME}.tar.zst"
+          sudo rm -f "${NAME}.tar.zst"
           sha256sum "${NAME}".tar.zst.part* > SHA256SUMS
           ls -lh "${NAME}".tar.zst.part* SHA256SUMS
 
