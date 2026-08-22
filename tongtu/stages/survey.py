@@ -231,6 +231,7 @@ def _write_outputs(
 def _reset_outputs(paper_workdir: Workdir) -> None:
     (paper_workdir.build / BRIEF_FILENAME).unlink(missing_ok=True)
     shutil.rmtree(paper_workdir.build / CHUNKS_DIRNAME, ignore_errors=True)
+    (paper_workdir.logs / TERMS_LOG_FILENAME).unlink(missing_ok=True)
 
 
 def _record(index: int, chunk: _Chunk, body: str, document: _Document) -> ChunkRecord:

@@ -480,6 +480,8 @@ def test_unreadable_model_config_degrades_to_an_empty_proposal(tmp_path: Path, m
 def test_no_terms_skips_the_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(survey, "load_config", lambda: (role_config(), ""))
     workdir = make_workdir(tmp_path)
+    workdir.logs.mkdir(parents=True, exist_ok=True)
+    (workdir.logs / survey.TERMS_LOG_FILENAME).write_text("stale", encoding="utf-8")
     manifest = survey.run(workdir, no_terms=True)
     assert manifest.status is SurveyStatus.OK
     assert manifest.warnings == []

@@ -13,26 +13,10 @@ from ...conftest import paper_dir
 
 pytestmark = pytest.mark.llm
 
-TABLE = """
-[provider.opencode]
-base_url = "https://opencode.ai/zen/go/v1"
-api_key_env = "OPENCODE_API_KEY"
-
-[provider.opencode.models]
-"deepseek-v4-flash" = "chat"
-
-[roles]
-survey_terms = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
-"""
-
 PAPER = "revtex"
 
 
-def test_survey_proposes_terms_with_a_real_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    models_path = tmp_path / "config" / "tongtu" / "models.toml"
-    models_path.parent.mkdir(parents=True, exist_ok=True)
-    models_path.write_text(TABLE, encoding="utf-8")
+def test_survey_proposes_terms_with_a_real_model(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / PAPER)
     workdir.create()
     (workdir.build / mask.PRECOMPILE_FILENAME).write_text(
@@ -41,6 +25,8 @@ def test_survey_proposes_terms_with_a_real_model(tmp_path: Path, monkeypatch: py
     assert mask.run(workdir).status.value == "ok"
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK, manifest.message
+    assert manifest.warnings == []
+    assert manifest.terms_total + manifest.do_not_translate_total > 0
     log_path = workdir.logs / survey.TERMS_LOG_FILENAME
     assert log_path.is_file()
     record = json.loads(log_path.read_text(encoding="utf-8"))
