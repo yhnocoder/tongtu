@@ -113,7 +113,7 @@ def _request(
             )
         else:
             client = openai.OpenAI(
-                base_url=provider.base_url, api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1
+                base_url=f"{provider.base_url}/v1", api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1
             )
             caller = _responses if api is Api.RESPONSES else _chat
             outcome, extra = caller(client, resolved.model, resolved.effort, system, messages, schema)
@@ -198,9 +198,7 @@ def _messages(
             f"模型 {model} 走 messages 接口， 该接口按 token 预算给推理强度， "
             f"档位只有 {'、'.join(THINKING_BUDGET_TOKENS)}， 配置里给的是 {effort}。"
         )
-    client = anthropic.Anthropic(
-        base_url=base_url.removesuffix("/v1"), api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1
-    )
+    client = anthropic.Anthropic(base_url=base_url, api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1)
     response = client.messages.create(
         model=model,
         max_tokens=MESSAGES_MAX_TOKENS,

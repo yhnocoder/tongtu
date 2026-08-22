@@ -59,11 +59,13 @@ def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> 
 def test_template_parses_and_validates() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
     assert set(config.provider) == {"opencode", "anthropic"}
-    assert set(config.runtime) == {"claude_code"}
+    assert set(config.runtime) == {"claude_code", "claude_code_opencode"}
     assert set(config.roles) == {"survey_terms", "translate", "review", "precompile_fix", "compile_fix"}
     assert config.provider["opencode"].models["deepseek-v4-flash"] == Api.CHAT
     assert config.roles["precompile_fix"].bash == ["latexmk", "xelatex", "kpsewhich"]
     assert config.roles["review"].bash == ["python3 -I validate.py"]
+    assert config.provider["opencode"].base_url == "https://opencode.ai/zen/go"
+    assert config.provider["anthropic"].base_url == "https://api.anthropic.com"
     assert config.provider["opencode"].api_key == ""
     assert config.provider["opencode"].api_key_env == "OPENCODE_API_KEY"
     assert set(DEFAULT_ASK_MODEL) == set(config.provider)
@@ -85,6 +87,28 @@ def test_template_runtime_carries_sandbox_settings() -> None:
     assert "--strict-mcp-config" in runtime.command
     assert "Edit(.claude/skills/**)" in runtime.command
     assert "{settings}" in runtime.command
+    assert runtime.provider is None
+    assert runtime.env == {"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_BASE_URL": ""}
+
+
+def test_template_opencode_runtime_carries_provider_and_env() -> None:
+    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    runtime = config.runtime["claude_code_opencode"]
+    plain = config.runtime["claude_code"]
+    assert runtime.provider == "opencode"
+    assert runtime.command == plain.command
+    assert runtime.skill_path == plain.skill_path
+    assert runtime.settings == plain.settings
+    assert runtime.env == {
+        "ANTHROPIC_BASE_URL": "{base_url}",
+        "ANTHROPIC_API_KEY": "{api_key}",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "{model}",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "{model}",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "{model}",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
+    }
+    assert {entry.runtime for entry in config.roles.values() if entry.runtime} == {"claude_code"}
 
 
 def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

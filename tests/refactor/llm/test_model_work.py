@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,16 @@ pytestmark = pytest.mark.llm
 
 work_module = importlib.import_module("tongtu.model.work")
 
+OPENCODE_KEY_ABSENT = not os.environ.get("OPENCODE_API_KEY")
+
 TABLE = """
+[provider.opencode]
+base_url = "https://opencode.ai/zen/go"
+api_key_env = "OPENCODE_API_KEY"
+
+[provider.opencode.models]
+"deepseek-v4-flash" = "chat"
+
 [runtime.claude_code]
 skill_path = ".claude/skills/{role}"
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
@@ -23,9 +33,23 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
            "--settings", "{settings}"]
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 
+[runtime.claude_code_opencode]
+provider = "opencode"
+skill_path = ".claude/skills/{role}"
+command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
+           "--output-format", "stream-json", "--verbose",
+           "--setting-sources", "", "--strict-mcp-config",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--disallowedTools", "Edit(.claude/skills/**)",
+           "--settings", "{settings}"]
+settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
+env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
+
 [roles]
 smoke = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
 sandbox_probe = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 8, timeout_seconds = 300, bash = ["touch"] }
+smoke_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
+sandbox_probe_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 8, timeout_seconds = 300, bash = ["touch"] }
 """
 
 SMOKE_SKILL = """---
@@ -89,6 +113,35 @@ def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: py
     workdir.mkdir(parents=True)
     trace_path = tmp_path / "logs" / "sandbox_probe.jsonl"
     outcome = work("sandbox_probe", workdir, trace_path=trace_path)
+    print(f"trace： {trace_path} ")
+    print(f"现场： {workdir} ")
+    print(f"越界写的 tool_result： {tool_result_for(trace_path, 'outside.txt')}")
+    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
+    assert (workdir / "inside.txt").exists()
+    assert not (workdir.parent / "outside.txt").exists()
+
+
+@pytest.mark.skipif(OPENCODE_KEY_ABSENT, reason="没有 OPENCODE_API_KEY")
+def test_work_runs_claude_code_on_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared(tmp_path, monkeypatch, "smoke_opencode", SMOKE_SKILL)
+    workdir = tmp_path / "paper"
+    workdir.mkdir()
+    trace_path = tmp_path / "logs" / "smoke_opencode.jsonl"
+    outcome = work("smoke_opencode", workdir, trace_path=trace_path)
+    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
+    assert "hello" in (workdir / "hello.txt").read_text(encoding="utf-8").strip().lower()
+    assert trace_path.stat().st_size > 0
+    print(f"trace： {trace_path} ")
+    print(f"现场： {workdir} ")
+
+
+@pytest.mark.skipif(OPENCODE_KEY_ABSENT, reason="没有 OPENCODE_API_KEY")
+def test_opencode_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared(tmp_path, monkeypatch, "sandbox_probe_opencode", PROBE_SKILL)
+    workdir = tmp_path / "probe" / "paper"
+    workdir.mkdir(parents=True)
+    trace_path = tmp_path / "logs" / "sandbox_probe_opencode.jsonl"
+    outcome = work("sandbox_probe_opencode", workdir, trace_path=trace_path)
     print(f"trace： {trace_path} ")
     print(f"现场： {workdir} ")
     print(f"越界写的 tool_result： {tool_result_for(trace_path, 'outside.txt')}")

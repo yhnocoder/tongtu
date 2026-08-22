@@ -35,7 +35,22 @@ base_url = "https://unused.example/v1"
 api_key_env = "UNUSED_KEY"
 api = "chat"
 
+[provider.behind_runtime]
+base_url = "https://behind.example"
+api_key = "behind-key"
+api = "chat"
+
 [runtime.demo_runtime]
+skill_path = ".agent/skills/{role}"
+command = ["runner", "-p"]
+
+[runtime.gateway_runtime]
+provider = "written"
+skill_path = ".agent/skills/{role}"
+command = ["runner", "-p"]
+
+[runtime.behind_runtime]
+provider = "behind_runtime"
 skill_path = ".agent/skills/{role}"
 command = ["runner", "-p"]
 
@@ -43,6 +58,8 @@ command = ["runner", "-p"]
 translate = { provider = "demo", model = "m1", effort = "low" }
 survey_terms = { provider = "written", model = "m1", effort = "low" }
 review = { runtime = "demo_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
+precompile_fix = { runtime = "gateway_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
+compile_fix = { runtime = "behind_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
 """
 
 
@@ -218,6 +235,19 @@ def test_doctor_lists_only_referenced_providers(tmp_path: Path, monkeypatch: pyt
     assert "运行时demo_runtime" in output
     assert "环境变量DEMO_KEY" in output
     assert "models.toml的api_key" in output
+
+
+def test_doctor_checks_the_provider_a_runtime_points_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "密钥behind_runtime" in output
+    assert output.count("密钥written") == 1
+    assert "运行时gateway_runtime" in output
 
 
 def test_doctor_reports_missing_key_without_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

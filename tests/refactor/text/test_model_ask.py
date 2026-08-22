@@ -12,7 +12,7 @@ from tongtu.model.ask import ASK_TIMEOUT_SECONDS, THINKING_BUDGET_TOKENS, AskSta
 
 TABLE = """
 [provider.demo]
-base_url = "https://demo.example/v1"
+base_url = "https://demo.example"
 api_key_env = "DEMO_KEY"
 
 [provider.demo.models]
@@ -26,7 +26,7 @@ api_key_env = "ODD_KEY"
 api = "grpc"
 
 [provider.inline]
-base_url = "https://inline.example/v1"
+base_url = "https://inline.example"
 api_key = "written-key"
 api = "chat"
 
@@ -180,6 +180,12 @@ def test_responses_request_shape(configured: Path, monkeypatch: pytest.MonkeyPat
     assert outcome.text == "你好"
     assert recorded["instructions"] == "你是译者"
     assert recorded["input"] == [{"role": "user", "content": MESSAGES[0][1]}]
+    assert recorded["client"] == {
+        "base_url": "https://demo.example/v1",
+        "api_key": "demo-key",
+        "timeout": ASK_TIMEOUT_SECONDS,
+        "max_retries": 1,
+    }
     assert recorded["reasoning"] == {"effort": "high"}
     assert read_log(configured / "log.json")["finish_reason"] == "completed"
 

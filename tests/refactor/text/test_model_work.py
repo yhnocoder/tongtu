@@ -25,6 +25,25 @@ settings = { sandbox = { enabled = true, network = { allowedDomains = [] } } }
 skill_path = ".other/{role}"
 command = ["other-runner", "--model", "{model}", "--effort", "{effort}"]
 
+[provider.gateway]
+base_url = "https://gateway.example"
+api_key_env = "GATEWAY_KEY"
+
+[runtime.demo_gateway]
+provider = "gateway"
+skill_path = ".agent/skills/{role}"
+command = ["runner", "--model", "{model}", "--base-url", "{base_url}"]
+env = { API_BASE = "{base_url}", API_KEY = "{api_key}", MODEL = "{model}" }
+
+[runtime.ghost_gateway]
+provider = "nowhere"
+skill_path = ".agent/skills/{role}"
+command = ["runner", "--base-url", "{base_url}"]
+
+[runtime.unbound_gateway]
+skill_path = ".agent/skills/{role}"
+command = ["runner", "--base-url", "{base_url}"]
+
 [runtime.bare_settings]
 skill_path = ".bare/{role}"
 command = ["runner", "--settings", "{settings}"]
@@ -34,6 +53,9 @@ smoke = { runtime = "demo", model = "m1", effort = "high", max_turns = 4, timeou
 bare = { runtime = "demo", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 lost = { runtime = "nowhere", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 unsettled = { runtime = "bare_settings", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
+gated = { runtime = "demo_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
+ghosted = { runtime = "ghost_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
+unbound = { runtime = "unbound_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 asker = { provider = "demo", model = "m1", effort = "low" }
 halfway = { runtime = "demo", model = "m1", effort = "low" }
 """
@@ -46,7 +68,7 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
-    for role in ("smoke", "bare"):
+    for role in ("smoke", "bare", "gated"):
         (skill_root / role).mkdir(parents=True, exist_ok=True)
         (skill_root / role / "SKILL.md").write_text(f"{role} 的做法", encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
@@ -262,3 +284,44 @@ def test_missing_skill_directory_is_error(configured: Path, monkeypatch: pytest.
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "skill" in outcome.detail
+
+
+def test_provider_fills_command_and_session_environment(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_KEY", "gateway-key")
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    outcome = work("gated", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert recorded["command"] == ["/fake/bin/runner", "--model", "m1", "--base-url", "https://gateway.example"]
+    assert recorded["env"]["API_BASE"] == "https://gateway.example"
+    assert recorded["env"]["API_KEY"] == "gateway-key"
+    assert recorded["env"]["MODEL"] == "m1"
+    assert recorded["env"]["TONGTU_DISABLE"] == "1"
+    assert recorded["env"]["PATH"] == "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def test_runtime_without_provider_adds_no_environment(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert "API_BASE" not in recorded["env"]
+    assert "API_KEY" not in recorded["env"]
+
+
+def test_runtime_provider_not_declared_is_error(configured: Path) -> None:
+    outcome = work("ghosted", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "nowhere" in outcome.detail
+
+
+def test_provider_without_key_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GATEWAY_KEY", raising=False)
+    outcome = work("gated", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "GATEWAY_KEY" in outcome.detail
+
+
+def test_placeholder_without_provider_is_error(configured: Path) -> None:
+    outcome = work("unbound", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "provider" in outcome.detail

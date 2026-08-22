@@ -10,7 +10,7 @@ pytestmark = pytest.mark.llm
 
 TABLE = """
 [provider.opencode]
-base_url = "https://opencode.ai/zen/go/v1"
+base_url = "https://opencode.ai/zen/go"
 api_key_env = "OPENCODE_API_KEY"
 
 [provider.opencode.models]
