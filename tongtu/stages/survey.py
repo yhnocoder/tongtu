@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -27,9 +28,10 @@ from ..artifacts.survey import (
 )
 from ..assets import asset_path
 from ..config import config_dir
+from ..console import console
 from ..manifests import describe_error, write_manifest
-from ..model.ask import AskStatus, ask
-from ..model.config import load_config
+from ..model.ask import ASK_TIMEOUT_SECONDS, AskStatus, ask
+from ..model.config import RoleTable, load_config, resolve_role
 from ..workdir import Workdir
 
 STAGE_NAME = "survey"
@@ -171,7 +173,7 @@ def _execute(
             "摘要未找到：blocks.json 里没有 abstract 槽位，masked.tex 里也没有 abstract 环境，brief 的 abstract 为 null。"
         )
     proposed, proposal_warnings = _propose(
-        paper_workdir, abstract, heading_tree, masked, no_terms, ask_model, ask_effort
+        paper_workdir, abstract, heading_tree, masked, document.encoder, no_terms, ask_model, ask_effort
     )
     warnings.extend(proposal_warnings)
 
@@ -412,6 +414,7 @@ def _propose(
     abstract: str | None,
     heading_tree: Sequence[Heading],
     masked: str,
+    encoder: tiktoken.Encoding,
     no_terms: bool,
     ask_model: str | None,
     ask_effort: str | None,
@@ -423,15 +426,25 @@ def _propose(
         return [], [f"读不到模型配置，术语提议按空提议继续（{detail[:WARNING_DETAIL_CHARS]}）"]
     if ROLE not in config.roles:
         return [], []
+    payload = _payload(abstract, heading_tree, masked)
+    resolved, _detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
+    if resolved is not None:
+        thousands = len(encoder.encode(payload, disallowed_special=())) / 1000
+        console.print(
+            f"  {ROLE}：{resolved.provider}/{resolved.model}，"
+            f"输入约 {thousands:.1f}k token，超时 {ASK_TIMEOUT_SECONDS} s"
+        )
+    started = time.monotonic()
     outcome = ask(
         role=ROLE,
         system=(asset_path("skill") / ROLE / SKILL_FILENAME).read_text(encoding=ENCODING),
-        messages=[("user", _payload(abstract, heading_tree, masked))],
+        messages=[("user", payload)],
         schema=TERMS_SCHEMA,
         log_path=paper_workdir.logs / TERMS_LOG_FILENAME,
         model=ask_model,
         effort=ask_effort,
     )
+    console.print(f"  {ROLE} 返回 {outcome.status}，用时 {time.monotonic() - started:.1f} s")
     if outcome.status is AskStatus.ERROR:
         return [], [f"术语提议调用失败，按空提议继续（{outcome.detail[:WARNING_DETAIL_CHARS]}）"]
     try:

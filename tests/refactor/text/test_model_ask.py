@@ -8,7 +8,7 @@ import anthropic
 import openai
 import pytest
 
-from tongtu.model.ask import THINKING_BUDGET_TOKENS, AskStatus, ask
+from tongtu.model.ask import ASK_TIMEOUT_SECONDS, THINKING_BUDGET_TOKENS, AskStatus, ask
 
 TABLE = """
 [provider.demo]
@@ -119,7 +119,12 @@ def test_chat_request_shape_and_log(configured: Path, monkeypatch: pytest.Monkey
     outcome = ask("chat_role", "你是译者", MESSAGES, log_path=log_path)
     assert outcome.status == AskStatus.OK
     assert outcome.text == "你好，世界。"
-    assert recorded["client"] == {"base_url": "https://demo.example/v1", "api_key": "demo-key"}
+    assert recorded["client"] == {
+        "base_url": "https://demo.example/v1",
+        "api_key": "demo-key",
+        "timeout": ASK_TIMEOUT_SECONDS,
+        "max_retries": 1,
+    }
     assert recorded["model"] == "chat-model"
     assert recorded["reasoning_effort"] == "low"
     assert recorded["messages"] == [
@@ -185,7 +190,12 @@ def test_messages_request_shape(configured: Path, monkeypatch: pytest.MonkeyPatc
     outcome = ask("messages_role", "你是译者", MESSAGES, log_path=configured / "log.json")
     assert outcome.status == AskStatus.OK
     assert outcome.text == "你好"
-    assert recorded["client"] == {"base_url": "https://demo.example", "api_key": "demo-key"}
+    assert recorded["client"] == {
+        "base_url": "https://demo.example",
+        "api_key": "demo-key",
+        "timeout": ASK_TIMEOUT_SECONDS,
+        "max_retries": 1,
+    }
     assert recorded["system"] == "你是译者"
     assert recorded["max_tokens"] == 32768
     assert recorded["thinking"] == {"type": "enabled", "budget_tokens": 2048}
@@ -268,7 +278,12 @@ def test_api_key_written_in_config_is_used(configured: Path, monkeypatch: pytest
     monkeypatch.setattr(openai, "OpenAI", openai_stub(recorded, chat_response("你好")))
     outcome = ask("inline_role", "", MESSAGES, log_path=configured / "log.json")
     assert outcome.status == AskStatus.OK
-    assert recorded["client"] == {"base_url": "https://inline.example/v1", "api_key": "written-key"}
+    assert recorded["client"] == {
+        "base_url": "https://inline.example/v1",
+        "api_key": "written-key",
+        "timeout": ASK_TIMEOUT_SECONDS,
+        "max_retries": 1,
+    }
 
 
 def test_missing_api_key_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
