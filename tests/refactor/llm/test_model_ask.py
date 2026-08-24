@@ -26,7 +26,7 @@ messages_role = { provider = "opencode", model = "qwen3.7-plus", effort = "low" 
 
 
 @pytest.fixture
-def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_env: str) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     path = tmp_path / "tongtu" / "models.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
