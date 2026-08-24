@@ -1,7 +1,7 @@
 ---
 name: translate
 description: 把一段已掩码的英文 LaTeX 正文译成简体中文。
-version: 9
+version: 10
 ---
 
 # 逐块翻译
@@ -67,6 +67,7 @@ LaTeX**——符号词改写成命令，或者给裸变量名补上 `$`：
 | `a rotation of 30 degrees` | `旋转 $30^\circ$` | `旋转 30 度` |
 | `costs 5 dollars` | `花费 \$5` | `花费 5 美元` |
 | `the kth highest component of $v$` | `第 $k$ 个最大分量` | `第 k 个最大分量` |
+| `Research \& Engineering` | `研究与工程` | `研究 \& 工程` |
 
 原文作者写单词而不写符号是他的排版选择，翻译不改排版。反过来同样成立：原文写 `\%` 的地方
 译文也必须写 `\%`，不许改成「百分之」。
