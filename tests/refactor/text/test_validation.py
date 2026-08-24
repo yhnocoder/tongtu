@@ -156,3 +156,15 @@ def test_paragraphs_without_translatable_text_are_not_counted(paragraph: str) ->
 
 def test_paragraph_with_command_argument_is_counted() -> None:
     assert validation.translatable_paragraphs("\\section{Introduction}") == 1
+
+
+def test_blank_lines_after_a_heading_do_not_change_the_paragraph_count() -> None:
+    source = "\\subsection{Model \\dsviii{} as a judge}\n\n\nSome text here.\n"
+    translation = "\\subsection{以 \\dsviii{} 为评审的模型}\n一些文本。\n"
+    assert validation.validate(source, translation).ok
+
+
+def test_a_heading_moved_off_the_prose_line_does_not_change_the_paragraph_count() -> None:
+    source = "Prose ends here. \\section{Architecture}\n⟦BLK-0⟧ tail text.\n"
+    translation = "正文到此结束。\n\n\\section{Architecture}\n⟦BLK-0⟧ 尾部文本。\n"
+    assert validation.validate(source, translation).ok

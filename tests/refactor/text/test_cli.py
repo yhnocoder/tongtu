@@ -131,8 +131,8 @@ def test_setup_interactive_fills_first_provider(tmp_path: Path, monkeypatch: pyt
     assert written["provider"]["anthropic"]["api_key"] == ""
     assert written["roles"]["translate"] == {
         "provider": "opencode",
-        "model": "deepseek-v4-flash",
-        "effort": "low",
+        "model": "deepseek-v4-pro",
+        "effort": "none",
     }
     assert written["roles"]["survey_terms"]["provider"] == "opencode"
     assert written["roles"]["review"]["runtime"] == "claude_code"
@@ -150,7 +150,7 @@ def test_setup_interactive_points_ask_roles_at_second_provider(tmp_path: Path, m
     assert written["roles"]["translate"] == {
         "provider": "anthropic",
         "model": "claude-sonnet-5",
-        "effort": "low",
+        "effort": "none",
     }
 
 

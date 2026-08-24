@@ -12,7 +12,7 @@ from ..config import config_dir
 
 MODELS_FILENAME = "models.toml"
 
-DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-flash", "anthropic": "claude-sonnet-5"}
+DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-pro", "anthropic": "claude-sonnet-5"}
 
 
 class Api(StrEnum):

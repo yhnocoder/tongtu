@@ -197,6 +197,16 @@ def test_two_failed_checks_fall_back_to_the_source(tmp_path: Path, monkeypatch: 
     assert outputs_present(workdir, "translate")
 
 
+def test_a_small_paper_still_allows_one_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_ask(monkeypatch, failing_after(2))
+    workdir = make_workdir(tmp_path, sentences(3))
+    manifest = translate.run(workdir, jobs=2)
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.fallback_ratio == pytest.approx(1 / 3)
+    assert manifest.chunks["c002"].status is ChunkTranslateStatus.FALLBACK
+    assert outputs_present(workdir, "translate")
+
+
 def test_too_many_fallbacks_fail_the_stage_without_writing_translations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -218,7 +228,8 @@ def test_an_ask_error_does_not_spend_the_retry_and_is_capped(tmp_path: Path, mon
     calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="服务商拒绝了请求"))
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.fallback_ratio == pytest.approx(1.0)
     record = manifest.chunks["c000"]
     assert record.status is ChunkTranslateStatus.FALLBACK
     assert record.attempts == translate.MAX_ASK_CALLS == 4

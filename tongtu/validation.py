@@ -50,10 +50,14 @@ NON_TEXT_COMMAND_RE = re.compile(
 
 DIFFERENCE_ITEMS_MAX = 8
 
-HEADING_LINE_RE = re.compile(
-    r"(\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?"
-    r"(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\})[ \t]*\n(?:[ \t]*\n)+"
+HEADING_COMMAND = (
+    r"\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?"
+    r"(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}"
 )
+
+HEADING_LINE_RE = re.compile(rf"({HEADING_COMMAND})[ \t]*\n(?:[ \t]*\n)+")
+
+RUN_IN_HEADING_RE = re.compile(rf"(\S[ \t]*)({HEADING_COMMAND})")
 
 OPEN_BRACE = "{"
 
@@ -217,7 +221,8 @@ def scan(text: str) -> Scan:
 
 
 def _attach_headings(text: str) -> str:
-    return HEADING_LINE_RE.sub(lambda match: match.group(1) + "\n", text)
+    detached = RUN_IN_HEADING_RE.sub(lambda match: f"{match.group(1)}\n\n{match.group(2)}", text)
+    return HEADING_LINE_RE.sub(lambda match: match.group(1) + "\n", detached)
 
 
 def translatable_paragraphs(text: str) -> int:

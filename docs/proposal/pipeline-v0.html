@@ -406,7 +406,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <li><b>四层 validate</b>（见下），全过 → <b>translated</b></li>
 <li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次（<code>MAX_RETRIES</code> = 1）；ask 报错或返回空不消耗这一次，调用总数由 <code>MAX_ASK_CALLS</code> = <code>MAX_RETRIES</code> + 3 封顶</li>
 <li class="branch">仍不过 → <b>fallback</b>，译文文件写原文，记最后一次未通过的层</li>
-<li>全部跑完后一次写出 <code>build/translated/</code>（中途被杀不留半套产物）；fallback 占比 &gt; 0.2 → 整体 <code>translate_failed</code>，不写 <code>build/translated/</code>（失败 ⇒ 产物不在，已翻译的 chunk 在 logs/translate-*.json 里）；不提前中断（中断只会丢掉已翻译的 chunk）</li>
+<li>全部跑完后一次写出 <code>build/translated/</code>（中途被杀不留半套产物）；fallback 数 &gt; max(⌊0.2 × 参与翻译的 chunk 数⌋, 1) → 整体 <code>translate_failed</code>（chunk 少的论文也放行 1 个回退，留给 review 阶段翻出来），不写 <code>build/translated/</code>（失败 ⇒ 产物不在，已翻译的 chunk 在 logs/translate-*.json 里）；不提前中断（中断只会丢掉已翻译的 chunk）</li>
 </ol>
 <span class="label" style="display:block;margin-top:10px">四层 validate —— 全是机械比对，不含判断；失败信息写成人读的差异说明，原样回灌给模型</span>
 <table style="border-collapse:collapse;font-size:13.5px;margin-top:6px;width:100%">

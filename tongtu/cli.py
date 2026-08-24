@@ -510,7 +510,9 @@ def _fill_template(keys: dict[str, str], ask_roles: list[str]) -> str:
                 provider_name = section.split(".")[1]
         elif section.startswith("provider.") and stripped.startswith("api_key ") and provider_name in keys:
             line = line.replace('""', json.dumps(keys[provider_name]), 1)
-        elif section == "roles" and stripped.split("=")[0].strip() in ask_roles:
+        elif (
+            section == "roles" and stripped.split("=")[0].strip() in ask_roles and f'provider = "{chosen}"' not in line
+        ):
             line = re.sub(r'provider = "[^"]*"', f'provider = "{chosen}"', line)
             line = re.sub(r'model = "[^"]*"', f'model = "{DEFAULT_ASK_MODEL[chosen]}"', line)
         lines.append(line)

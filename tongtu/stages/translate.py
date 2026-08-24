@@ -321,13 +321,15 @@ def _finish(
     attempted = sum(1 for record in chunks.values() if record.status is not ChunkTranslateStatus.SKIPPED)
     fallback = sum(1 for record in chunks.values() if record.status is ChunkTranslateStatus.FALLBACK)
     ratio = fallback / attempted if attempted else 0.0
+    allowed = max(int(MAX_FALLBACK_RATIO * attempted), 1)
     status = TranslateStatus.OK
     message = ""
-    if ratio > MAX_FALLBACK_RATIO:
+    if fallback > allowed:
         status = TranslateStatus.TRANSLATE_FAILED
         message = (
-            f"{attempted} 个参与翻译的 chunk 里有 {fallback} 个回退原文，比例 {ratio:.0%} 超过 "
-            f"{MAX_FALLBACK_RATIO:.0%}，不进 compile；逐 chunk 的失败现场在 manifest 的 chunks 里，"
+            f"{attempted} 个参与翻译的 chunk 里有 {fallback} 个回退原文，超过允许的 "
+            f"{allowed} 个（{MAX_FALLBACK_RATIO:.0%}，至少放行 1 个），不进 compile；"
+            f"逐 chunk 的失败现场在 manifest 的 chunks 里，"
             f"已翻译的 chunk 在 logs/{STAGE_NAME}-*.json 里。"
         )
     else:
