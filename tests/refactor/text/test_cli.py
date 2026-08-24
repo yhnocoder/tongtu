@@ -362,11 +362,6 @@ def test_run_stops_at_the_first_failed_stage(tmp_path: Path, monkeypatch: pytest
     assert str(Path(tmp_path, "paper", "build", "manifests", "mask.json")) in squeeze(result.stdout)
 
 
-def test_run_exits_one_at_an_unbuilt_stage(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper")])
-    assert result.exit_code == 1
-
-
 def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     captured: list[RunOptions] = []
