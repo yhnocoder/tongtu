@@ -35,6 +35,12 @@ skill_path = ".agent/skills/{role}"
 command = ["runner", "--model", "{model}", "--base-url", "{base_url}"]
 env = { API_BASE = "{base_url}", API_KEY = "{api_key}", MODEL = "{model}" }
 
+[runtime.temp_gateway]
+provider = "gateway"
+skill_path = ".agent/skills/{role}"
+command = ["runner", "--home", "{tmp_dir}"]
+env = { CODEX_HOME = "{tmp_dir}", API_KEY = "{api_key}" }
+
 [runtime.ghost_gateway]
 provider = "nowhere"
 skill_path = ".agent/skills/{role}"
@@ -54,6 +60,7 @@ bare = { runtime = "demo", model = "m1", effort = "low", max_turns = 2, timeout_
 lost = { runtime = "nowhere", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 unsettled = { runtime = "bare_settings", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 gated = { runtime = "demo_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
+homed = { runtime = "temp_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 ghosted = { runtime = "ghost_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 unbound = { runtime = "unbound_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
 asker = { provider = "demo", model = "m1", effort = "low" }
@@ -68,7 +75,7 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
-    for role in ("smoke", "bare", "gated"):
+    for role in ("smoke", "bare", "gated", "homed"):
         (skill_root / role).mkdir(parents=True, exist_ok=True)
         (skill_root / role / "SKILL.md").write_text(f"{role} 的做法", encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
@@ -325,3 +332,29 @@ def test_placeholder_without_provider_is_error(configured: Path) -> None:
     outcome = work("unbound", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "provider" in outcome.detail
+
+
+def test_temporary_directory_is_filled_and_removed(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_KEY", "gateway-key")
+    seen: dict = {}
+
+    def fake_run(
+        command: list[str],
+        cwd: Path,
+        timeout_seconds: float,
+        *,
+        stdout: IO[bytes],
+        input_bytes: bytes,
+        env: dict[str, str],
+    ) -> ProcessOutcome:
+        seen.update(command=command, env=env, existed=Path(env["CODEX_HOME"]).is_dir())
+        return finished()
+
+    monkeypatch.setattr(work_module, "run_in_process_group", fake_run)
+    outcome = work("homed", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+    tmp_dir = seen["env"]["CODEX_HOME"]
+    assert Path(tmp_dir).is_absolute()
+    assert seen["command"] == ["/fake/bin/runner", "--home", tmp_dir]
+    assert seen["existed"]
+    assert not Path(tmp_dir).exists()

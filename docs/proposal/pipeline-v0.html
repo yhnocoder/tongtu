@@ -569,7 +569,7 @@ api_key     = ""
 api_key_env = "ANTHROPIC_API_KEY"
 api         = "messages"          <span class="c"># 整个服务商一种接口时不必逐模型列</span>
 
-<span class="c"># 会话运行时：一条命令模板，{model} {effort} {max_turns} 由 work 填入</span>
+<span class="c"># 会话运行时：一条命令模板，{model} {effort} {max_turns} {tmp_dir} 由 work 填入；{tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删</span>
 [runtime.claude_code]
 skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现场的哪里</span>
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
@@ -582,7 +582,7 @@ settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowU
 env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   <span class="c"># 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录</span>
 <span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
 <span class="c"># {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
-# Codex 的运行时条目在这套机制之上做（issue #27）；已验证的参数：-s workspace-write -c approval_policy="never" --skip-git-repo-check -C &lt;现场&gt;。
+# Codex 的运行时条目按同一套机制写在下面的 [runtime.codex_opencode]（issue #27）。
 # .codex/rules 的 allow 是「沙箱外执行」，不用它做放行（issue #26 实测，2026-08-22）</span>
 
 <span class="c"># 同一个 Claude Code，模型换成 opencode 上的：一个运行时条目 = 一个「工具 × 服务商」组合</span>
@@ -596,6 +596,24 @@ env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTH
 # Claude Code 把 ANTHROPIC_BASE_URL 当根，自己拼 /v1/messages，所以这里填的是不带 /v1 的 base_url
 # 三个 DEFAULT_*_MODEL 都指同一个模型，防止后台的小调用拿 claude 系列的名字去打 opencode
 # 密钥经进程环境传入而不是写进命令行参数：命令行参数在 ps 里可见</span>
+
+<span class="c"># Codex + opencode：只靠 Codex 自带的沙箱（-s workspace-write + approval never），不写 .codex/rules——它的 allow 是「沙箱外执行」</span>
+[runtime.codex_opencode]
+provider   = "opencode"
+skill_path = ".codex/skills/{role}"
+command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+           "-s", "workspace-write", "-c", 'approval_policy="never"',
+           "-m", "{model}", "-c", 'model_reasoning_effort="{effort}"',
+           "-c", 'model_provider="opencode"', "-c", 'model_providers.opencode.name="opencode"',
+           "-c", 'model_providers.opencode.base_url="{base_url}/v1"',
+           "-c", 'model_providers.opencode.env_key="OPENCODE_API_KEY"',
+           "-c", 'model_providers.opencode.wire_api="responses"']
+env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
+<span class="c"># prompt 不作为位置参数：codex exec 没给 prompt 参数时从 stdin 读，work 正是经 stdin 喂 PROMPT；cwd 由 work 设为现场，不加 -C
+# CODEX_HOME 指向 work 为本次会话建的临时目录，会话结束整个删掉；~/.codex/ 不被读也不被写
+# 角色的 bash 放行清单与 max_turns 对 Codex 不生效：沙箱只靠 -s workspace-write 与 approval_policy="never"，写范围 = 现场 + 临时目录，默认断网
+# wire_api 只接受 responses，所以这个条目只能跑 opencode 的 responses 端点支持的模型：gpt-5.6-luna、grok-4.5、muse-spark-1.2-contributor、deepseek-v4-flash
+# codex 须是原生二进制（brew cask 装的）：npm 装的是 node 启动脚本，work 把子进程 PATH 收成 TeX + 系统 bin 后找不到 node，退出码 127</span>
 
 <span class="c"># 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么</span>
 [roles]

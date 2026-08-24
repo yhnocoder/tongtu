@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -81,35 +82,36 @@ def work(
             return _error(detail)
         base_url = provider.base_url
 
-    built, detail = _build_invocation(runtime, name, resolved, entry, base_url, api_key)
-    if built is None:
-        return _error(detail)
-    command, session_env = built
-    executable = shutil.which(command[0])
-    if executable is None:
-        return _error(f"运行时 {name} 不在 PATH 里， 它的命令是 {command[0]}。")
+    with tempfile.TemporaryDirectory(prefix="tongtu-work-") as tmp_dir:
+        built, detail = _build_invocation(runtime, name, resolved, entry, base_url, api_key, tmp_dir)
+        if built is None:
+            return _error(detail)
+        command, session_env = built
+        executable = shutil.which(command[0])
+        if executable is None:
+            return _error(f"运行时 {name} 不在 PATH 里， 它的命令是 {command[0]}。")
 
-    source = SKILL_ROOT / role
-    if not source.is_dir():
-        return _error(f"skill 目录 {source} 不存在， 角色 {role} 没有可拷进现场的 skill。")
-    skill_path = runtime.skill_path.format(role=role)
-    destination = workdir / skill_path
-    shutil.rmtree(destination, ignore_errors=True)
-    shutil.copytree(source, destination)
+        source = SKILL_ROOT / role
+        if not source.is_dir():
+            return _error(f"skill 目录 {source} 不存在， 角色 {role} 没有可拷进现场的 skill。")
+        skill_path = runtime.skill_path.format(role=role)
+        destination = workdir / skill_path
+        shutil.rmtree(destination, ignore_errors=True)
+        shutil.copytree(source, destination)
 
-    trace_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with trace_path.open("wb") as trace_file:
-            outcome = run_in_process_group(
-                [executable, *command[1:]],
-                workdir,
-                entry.timeout_seconds or 0.0,
-                stdout=trace_file,
-                input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
-                env=_session_env() | session_env,
-            )
-    except OSError as error:
-        return _error(f"拉起 {executable} 失败（{type(error).__name__}： {error}）。 确认工作目录 {workdir} 存在。")
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with trace_path.open("wb") as trace_file:
+                outcome = run_in_process_group(
+                    [executable, *command[1:]],
+                    workdir,
+                    entry.timeout_seconds or 0.0,
+                    stdout=trace_file,
+                    input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
+                    env=_session_env() | session_env,
+                )
+        except OSError as error:
+            return _error(f"拉起 {executable} 失败（{type(error).__name__}： {error}）。 确认工作目录 {workdir} 存在。")
     if outcome.timed_out:
         return WorkOutcome(stop_reason=StopReason.TIMEOUT)
     if outcome.returncode == 0:
@@ -135,6 +137,7 @@ def _build_invocation(
     entry: RoleConfig,
     base_url: str | None,
     api_key: str | None,
+    tmp_dir: str,
 ) -> tuple[tuple[list[str], dict[str, str]] | None, str]:
     bash_allow = ",".join(f"Bash({prefix}:*)" for prefix in entry.bash or [])
     templates = list(runtime.command) + list((runtime.env or {}).values())
@@ -156,6 +159,7 @@ def _build_invocation(
         "{settings}": json.dumps(runtime.settings, separators=(",", ":")),
         "{base_url}": base_url or "",
         "{api_key}": api_key or "",
+        "{tmp_dir}": tmp_dir,
     }
 
     def substituted(text: str) -> str:
