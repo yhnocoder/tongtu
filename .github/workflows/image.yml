@@ -18,8 +18,9 @@ name: image
 #                      给（默认 dev），不动 latest
 #
 # push 那一条不加 paths 过滤：GitHub 的 paths 过滤会同时作用到 branches 与 tags，加了它打
-# tag 时反而可能不触发。每次合并多跑一次本作业，环境没变时各层全部缓存命中，且不阻塞任何
-# 检查。pull_request 是独立的触发条目，它的 paths 不影响上面那条。
+# tag 时反而可能不触发。改由前置作业 changes 判断：push 到分支时 git diff 本次推送，只有动了
+# 镜像相关文件（清单与 pull_request 的 paths 一致，改一处要同步另一处）才跑构建作业；tag、
+# pull_request、workflow_dispatch 一律构建。判断不了（比如 before 不可达）就当动过，宁可多跑。
 
 on:
   push:
@@ -56,8 +57,41 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  changes:
+    name: Check relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff pushed commits against the image file list
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          build=true
+          if [ "$EVENT" = "push" ] && [ "${REF#refs/heads/}" != "$REF" ] \
+            && git cat-file -e "$BEFORE" 2>/dev/null; then
+            changed=$(git diff --name-only "$BEFORE" "$SHA")
+            if ! printf '%s\n' "$changed" \
+              | grep -qE '^(docker/Dockerfile|\.dockerignore|pyproject\.toml|uv\.lock|fonts/|\.github/workflows/image\.yml)'; then
+              build=false
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "本次触发是否构建：$build"
+
   image:
     name: Build and push image
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
