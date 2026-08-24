@@ -50,6 +50,11 @@ NON_TEXT_COMMAND_RE = re.compile(
 
 DIFFERENCE_ITEMS_MAX = 8
 
+HEADING_LINE_RE = re.compile(
+    r"(\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?"
+    r"(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\})[ \t]*\n(?:[ \t]*\n)+"
+)
+
 OPEN_BRACE = "{"
 
 CLOSE_BRACE = "}"
@@ -179,8 +184,8 @@ def _unbalanced_position(scanned: Scan) -> int | None:
 
 
 def _check_paragraph_count(source: str, translation: str) -> Failure | None:
-    expected = translatable_paragraphs(source)
-    actual = translatable_paragraphs(translation)
+    expected = translatable_paragraphs(_attach_headings(source))
+    actual = translatable_paragraphs(_attach_headings(translation))
     if expected == actual:
         return None
     return Failure(
@@ -209,6 +214,10 @@ def scan(text: str) -> Scan:
             specials.append((character, position))
         position += 1
     return Scan(control_sequences=tuple(sequences), specials=tuple(specials))
+
+
+def _attach_headings(text: str) -> str:
+    return HEADING_LINE_RE.sub(lambda match: match.group(1) + "\n", text)
 
 
 def translatable_paragraphs(text: str) -> int:

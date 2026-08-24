@@ -119,7 +119,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
   <div class="file-box"><span class="f">build/masked.tex</span><span class="f">build/blocks.json</span></div>
   <span class="arrow">→</span><div class="stage-box">survey</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/brief.json</span><span class="f">build/chunks/c000.tex …</span></div>
-  <span class="arrow">→</span><div class="stage-box rework">translate</div><span class="arrow">→</span>
+  <span class="arrow">→</span><div class="stage-box">translate</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/translated/c000.tex …</span></div>
   <span class="arrow">→</span><div class="stage-box todo">review</div><span class="arrow">→</span>
   <div class="file-box"><span class="f todo">build/reviewed/c000.tex …</span></div>
@@ -404,9 +404,9 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <li>组装 <b>system</b>（稳定部分在前、本 chunk 特有部分在后，见右）与 <b>user</b>（只有待译正文）</li>
 <li><b>ask</b>，拿回译文；整段包在代码围栏里时剥掉围栏</li>
 <li><b>四层 validate</b>（见下），全过 → <b>translated</b></li>
-<li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次（<code>MAX_RETRIES</code> = 1）；ask 报错或返回空不消耗这一次</li>
+<li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次（<code>MAX_RETRIES</code> = 1）；ask 报错或返回空不消耗这一次，调用总数由 <code>MAX_ASK_CALLS</code> = <code>MAX_RETRIES</code> + 3 封顶</li>
 <li class="branch">仍不过 → <b>fallback</b>，译文文件写原文，记最后一次未通过的层</li>
-<li>全部跑完后，fallback 占比 &gt; 0.2 → 整体 <code>translate_failed</code>，不进 compile；不提前中断（中断只会丢掉已付费的译文）</li>
+<li>全部跑完后一次写出 <code>build/translated/</code>（中途被杀不留半套产物）；fallback 占比 &gt; 0.2 → 整体 <code>translate_failed</code>，不写 <code>build/translated/</code>（失败 ⇒ 产物不在，已翻译的 chunk 在 logs/translate-*.json 里）；不提前中断（中断只会丢掉已翻译的 chunk）</li>
 </ol>
 <span class="label" style="display:block;margin-top:10px">四层 validate —— 全是机械比对，不含判断；失败信息写成人读的差异说明，原样回灌给模型</span>
 <table style="border-collapse:collapse;font-size:13.5px;margin-top:6px;width:100%">
@@ -414,7 +414,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 <tbody style="vertical-align:top">
 <tr><td style="padding:4px 10px 4px 0"><code>placeholders</code></td><td style="padding:4px 10px 4px 0">⟦BLK-n⟧ / ⟦CAP-n⟧ 的 multiset 相等；另查 ⟦ ⟧ 数量与完整 placeholder 数吻合（拦 ⟦BLK-3⟧⟧ 这类碎片）</td><td style="padding:4px 0">「译文缺少 ⟦BLK-12⟧；多出 ⟦BLK-21⟧」</td></tr>
 <tr><td style="padding:4px 10px 4px 0"><code>control_sequences</code></td><td style="padding:4px 10px 4px 0">控制序列 multiset 相等：取 <code>\cmd</code> 的命令名，带紧随的星号（<code>\section*</code> ≠ <code>\section</code>）；<code>\%</code> 一类符号控制序列取符号本身</td><td style="padding:4px 0">「\cite 原文 3 次、译文 2 次；\emph 原文 0 次、译文 1 次」</td></tr>
-<tr><td style="padding:4px 10px 4px 0"><code>braces_and_math</code></td><td style="padding:4px 10px 4px 0">未转义的 <code>{</code> <code>}</code> <b>配对平衡</b>（深度不转负、结尾归零）；未转义的 <code>$</code> <b>偶数且不少于原文</b>。<span style="color:var(--muted)">现状是三者计数分别相等，本地 5 个失败案例里它抓的全是化妆品级漂移（多个 \textit、数字包进 $、去掉 \dsviii{} 的空括号），却让一个 chunk 回退成英文——放宽后那个 chunk 第二次就过，其余四个仍被别的层拦住</span></td><td style="padding:4px 0">「{ } 在第 312 字符处不平衡」「$ 原文 14 个、译文 12 个」</td></tr>
+<tr><td style="padding:4px 10px 4px 0"><code>braces_and_math</code></td><td style="padding:4px 10px 4px 0">未转义的 <code>{</code> <code>}</code> <b>配对平衡</b>（深度不转负、结尾归零）；未转义的 <code>$</code> <b>偶数且不少于原文</b>；未转义的 <code>%</code> <b>不多于原文</b>（裸 % 把该行后半截整个注释掉，别的层抓不到）；分节命令（\section 一族与 \paragraph 一族）后的空行两侧规范化后再比段数（这类空行不改变渲染，b751db9 后 2412.19437 的 c007 曾因此整块回退）。<span style="color:var(--muted)">现状是三者计数分别相等，本地 5 个失败案例里它抓的全是化妆品级漂移（多个 \textit、数字包进 $、去掉 \dsviii{} 的空括号），却让一个 chunk 回退成英文——放宽后那个 chunk 第二次就过，其余四个仍被别的层拦住</span></td><td style="padding:4px 0">「{ } 在第 312 字符处不平衡」「$ 原文 14 个、译文 12 个」</td></tr>
 <tr><td style="padding:4px 10px 4px 0"><code>paragraph_count</code></td><td style="padding:4px 10px 4px 0">含可译文本的段落数相等。一段剥除 placeholder、<code>\begin{X}</code> / <code>\end{X}</code>、其余命令名之后仍有非空白字符才计入——模型合并只含 placeholder 或只含 <code>\maketitle</code> 的空行不算错</td><td style="padding:4px 0">「原文 9 段、译文 8 段」</td></tr>
 </tbody></table>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0">同一份实现三处用：translate 的出口校验、<code>tongtu validate</code>、compile 对正文控制序列的比对（只用第 2 层）。</p>

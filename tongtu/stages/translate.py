@@ -45,6 +45,8 @@ MAX_ASK_CALLS = MAX_RETRIES + 3
 
 MAX_FALLBACK_RATIO = 0.2
 
+RETRY_EFFORT = "low"
+
 NEIGHBOR_PARAGRAPHS = 3
 
 EMPTY_REPLY_DETAIL = "ask 返回空译文：调用本身成功，正文一个字符都没有。"
@@ -247,7 +249,7 @@ def _ask_until_valid(
             messages=messages,
             log_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempts}.json",
             model=ask_model,
-            effort=ask_effort,
+            effort=RETRY_EFFORT if judged else ask_effort,
         )
         if outcome.status is AskStatus.ERROR:
             failures = [outcome.detail]
