@@ -80,6 +80,7 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (skill_root / role / "SKILL.md").write_text(f"{role} 的做法", encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
     monkeypatch.setattr(shutil, "which", lambda name: EXECUTABLES.get(name))
+    monkeypatch.delenv("TONGTU_NESTED_SANDBOX", raising=False)
     (tmp_path / "paper").mkdir()
     return tmp_path
 
@@ -151,6 +152,17 @@ def test_settings_are_filled_as_json(configured: Path, monkeypatch: pytest.Monke
     work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     filled = recorded["command"][recorded["command"].index("--settings") + 1]
     assert json.loads(filled) == {"sandbox": {"enabled": True, "network": {"allowedDomains": []}}}
+
+
+def test_nested_sandbox_variable_weakens_sandbox_settings(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    monkeypatch.setenv("TONGTU_NESTED_SANDBOX", "1")
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    filled = recorded["command"][recorded["command"].index("--settings") + 1]
+    assert json.loads(filled) == {
+        "sandbox": {"enabled": True, "network": {"allowedDomains": []}, "enableWeakerNestedSandbox": True}
+    }
 
 
 def test_session_environment_is_narrowed(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:

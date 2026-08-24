@@ -130,6 +130,13 @@ def _session_env() -> dict[str, str]:
     return os.environ | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}
 
 
+def _settings_json(settings: dict | None) -> str:
+    sandbox = settings.get("sandbox") if settings else None
+    if isinstance(sandbox, dict) and os.environ.get("TONGTU_NESTED_SANDBOX"):
+        settings = (settings or {}) | {"sandbox": sandbox | {"enableWeakerNestedSandbox": True}}
+    return json.dumps(settings, separators=(",", ":"))
+
+
 def _build_invocation(
     runtime: RuntimeConfig,
     name: str,
@@ -156,7 +163,7 @@ def _build_invocation(
         "{effort}": resolved.effort,
         "{max_turns}": str(entry.max_turns),
         "{bash_allow}": bash_allow,
-        "{settings}": json.dumps(runtime.settings, separators=(",", ":")),
+        "{settings}": _settings_json(runtime.settings),
         "{base_url}": base_url or "",
         "{api_key}": api_key or "",
         "{tmp_dir}": tmp_dir,
