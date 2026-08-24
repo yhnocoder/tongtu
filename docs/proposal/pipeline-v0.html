@@ -434,7 +434,7 @@ skill/translate/SKILL.md          <span class="c"># 翻译规则，随 prompt_ve
 user:       chunk 本身
 assistant:  上一次的译文                                  <span class="tag" style="font-size:11px">第一次失败后追加</span>
 user:       各层差异说明 + 请修正并重新输出完整译文         <span class="tag" style="font-size:11px">第一次失败后追加</span></pre>
-<p style="font-size:13px;color:var(--muted);margin:6px 0 0">前缀逐字节不变，第一次的整个提示词都命中缓存；模型看得见自己上一次的输出，修的是具体错误而不是从头再翻。</p>
+<p style="font-size:13px;color:var(--muted);margin:6px 0 0">前缀逐字节不变，第一次的整个提示词都命中缓存；模型看得见自己上一次的输出，修的是具体错误而不是从头再翻。首译用角色配置的强度（默认 none，思考对首译无增益）；重试固定升到 low——关思考的重试输出逐字节不变，思考对修复是必要的（思考开销的调研课题见 #44）。</p>
 <div class="io" style="margin-top:12px">
 <span class="label">读</span><dl><dt>build/</dt><dd><span class="f in">brief.json</span> <span class="f in">chunks/*.tex</span></dd><dt>仓库</dt><dd><span class="f in">skill/translate/SKILL.md</span></dd><dt>网络</dt><dd>模型 API</dd></dl>
 <span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">translated/c000.tex …</span> <span class="f">manifests/translate.json</span></dd><dt>logs/</dt><dd><span class="f">translate-c000-1.json …</span></dd></dl>
@@ -600,7 +600,7 @@ env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTH
 <span class="c"># 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么</span>
 [roles]
 survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   <span class="c"># 可选；不配就不提议</span>
-translate      = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
+translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
 review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 -I validate.py"] }
 precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
 compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }</pre>
