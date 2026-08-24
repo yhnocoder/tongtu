@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -12,8 +11,6 @@ from tongtu.model.work import StopReason, work
 pytestmark = pytest.mark.llm
 
 work_module = importlib.import_module("tongtu.model.work")
-
-OPENCODE_KEY_ABSENT = not os.environ.get("OPENCODE_API_KEY")
 
 TABLE = """
 [provider.opencode]
@@ -153,7 +150,7 @@ def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: py
     assert not HOME_PROBE.exists()
 
 
-@pytest.mark.skipif(OPENCODE_KEY_ABSENT, reason="没有 OPENCODE_API_KEY")
+@pytest.mark.usefixtures("opencode_env")
 def test_work_runs_claude_code_on_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prepared(tmp_path, monkeypatch, "smoke_opencode", SMOKE_SKILL)
     workdir = tmp_path / "paper"
@@ -167,7 +164,7 @@ def test_work_runs_claude_code_on_opencode(tmp_path: Path, monkeypatch: pytest.M
     print(f"现场： {workdir} ")
 
 
-@pytest.mark.skipif(OPENCODE_KEY_ABSENT, reason="没有 OPENCODE_API_KEY")
+@pytest.mark.usefixtures("opencode_env")
 def test_opencode_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prepared(tmp_path, monkeypatch, "sandbox_probe_opencode", PROBE_SKILL)
     workdir = tmp_path / "probe" / "paper"
@@ -183,7 +180,7 @@ def test_opencode_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkey
     assert not HOME_PROBE.exists()
 
 
-@pytest.mark.skipif(OPENCODE_KEY_ABSENT, reason="没有 OPENCODE_API_KEY")
+@pytest.mark.usefixtures("opencode_env")
 def test_work_runs_codex_on_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prepared(tmp_path, monkeypatch, "smoke_codex", SMOKE_SKILL)
     workdir = tmp_path / "paper"
@@ -197,7 +194,7 @@ def test_work_runs_codex_on_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyP
     print(f"现场： {workdir} ")
 
 
-@pytest.mark.skipif(OPENCODE_KEY_ABSENT, reason="没有 OPENCODE_API_KEY")
+@pytest.mark.usefixtures("opencode_env")
 def test_codex_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prepared(tmp_path, monkeypatch, "sandbox_probe_codex", PROBE_SKILL)
     workdir = tmp_path / "probe" / "paper"
