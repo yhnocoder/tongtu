@@ -45,7 +45,7 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def echo(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-    return AskOutcome(status=AskStatus.OK, text=str(kwargs["messages"][0][1]))
+    return AskOutcome(status=AskStatus.OK, text=unwrapped(str(kwargs["messages"][0][1])))
 
 
 def wire_ask(monkeypatch: pytest.MonkeyPatch, reply: Reply = echo) -> list[dict]:
@@ -126,7 +126,7 @@ def test_a_chunk_translated_on_the_first_try(tmp_path: Path, monkeypatch: pytest
     assert translated(workdir, "c000") == "你好世界。\n"
     assert len(calls) == 1
     assert calls[0]["role"] == translate.ROLE
-    assert calls[0]["messages"] == [("user", "Hello world.")]
+    assert calls[0]["messages"] == [("user", wrapped("Hello world."))]
     assert calls[0]["log_path"] == workdir.logs / "translate-c000-1.json"
     assert (manifest.model, manifest.effort) == ("p/m", "low")
     assert manifest.prompt_version
@@ -155,7 +155,7 @@ def test_a_failed_check_is_retried_in_the_same_conversation(tmp_path: Path, monk
     assert record.attempts == 2
     assert record.failures == []
     assert len(calls) == 2
-    assert calls[1]["messages"][0] == ("user", "Hello $x$ world.")
+    assert calls[1]["messages"][0] == ("user", wrapped("Hello $x$ world."))
     assert calls[1]["messages"][1] == ("assistant", "你好 x 世界。")
     role, retry = calls[1]["messages"][2]
     assert role == "user"
@@ -170,9 +170,17 @@ def sentences(count: int) -> list[str]:
     return [f"Sentence {index} $x$.\n" for index in range(count)]
 
 
+def wrapped(body: str) -> str:
+    return f"请翻译：\n\n```\n{body}\n```"
+
+
+def unwrapped(message: str) -> str:
+    return message.split("```\n", 1)[1].rsplit("\n```", 1)[0]
+
+
 def failing_after(first_bad: int) -> Reply:
     def reply(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-        body = str(kwargs["messages"][0][1])
+        body = unwrapped(str(kwargs["messages"][0][1]))
         number = int(body.split()[1])
         if number >= first_bad:
             return AskOutcome(status=AskStatus.OK, text=f"句子 {number}。")
@@ -235,7 +243,7 @@ def test_an_ask_error_does_not_spend_the_retry_and_is_capped(tmp_path: Path, mon
     assert record.attempts == translate.MAX_ASK_CALLS == 4
     assert record.failures == ["服务商拒绝了请求"]
     assert [call["log_path"].name for call in calls] == [f"translate-c000-{n}.json" for n in (1, 2, 3, 4)]
-    assert all(call["messages"] == [("user", "Hello world.")] for call in calls)
+    assert all(call["messages"] == [("user", wrapped("Hello world."))] for call in calls)
 
 
 def test_an_empty_reply_is_handled_like_an_ask_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,12 +320,12 @@ def test_neighbours_take_three_paragraphs_from_each_side(tmp_path: Path, monkeyp
     workdir = make_workdir(tmp_path, [FRONT_BODY, "middle one.\n", TAIL_BODY], parts={0: Part.FRONT}, brief=RICH_BRIEF)
     translate.run(workdir, jobs=1)
     systems = {call["log_path"].name.split("-")[1]: str(call["system"]) for call in calls}
-    assert "### 前一块的结尾\n\n[START]" in systems["c000"]
-    assert "### 后一块的开头\n\nmiddle one." in systems["c000"]
-    assert "### 前一块的结尾\n\nfront beta.\n\nfront gamma.\n\nfront delta." in systems["c001"]
-    assert "### 后一块的开头\n\ntail alpha.\n\ntail beta.\n\ntail gamma." in systems["c001"]
-    assert "### 前一块的结尾\n\nmiddle one." in systems["c002"]
-    assert "### 后一块的开头\n\n[END]" in systems["c002"]
+    assert "### 前一块的结尾\n\n```\n[START]\n```" in systems["c000"]
+    assert "### 后一块的开头\n\n```\nmiddle one.\n```" in systems["c000"]
+    assert "### 前一块的结尾\n\n```\nfront beta.\n\nfront gamma.\n\nfront delta.\n```" in systems["c001"]
+    assert "### 后一块的开头\n\n```\ntail alpha.\n\ntail beta.\n\ntail gamma.\n```" in systems["c001"]
+    assert "### 前一块的结尾\n\n```\nmiddle one.\n```" in systems["c002"]
+    assert "### 后一块的开头\n\n```\n[END]\n```" in systems["c002"]
 
 
 def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -392,7 +400,7 @@ def test_leading_and_trailing_whitespace_is_kept(tmp_path: Path, monkeypatch: py
     calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
     workdir = make_workdir(tmp_path, ["\n\n  Hello world.  \n\n"])
     translate.run(workdir, jobs=1)
-    assert calls[0]["messages"] == [("user", "Hello world.")]
+    assert calls[0]["messages"] == [("user", wrapped("Hello world."))]
     assert translated(workdir, "c000") == "\n\n  你好世界。  \n\n"
 
 

@@ -1,7 +1,7 @@
 ---
 name: translate
 description: 把一段已掩码的英文 LaTeX 正文译成简体中文。
-version: 8
+version: 9
 ---
 
 # 逐块翻译
@@ -208,6 +208,8 @@ Beyond closed-source models, open-source models, including DeepSeek series~\cite
 token、译其后全部文本、结果仍是一行；`$F$ denotes` 这类句型融进中文语序。
 
 ## 八、输出格式
+
+待译正文在 user 消息里以「请翻译：」加 ``` 围栏给出；围栏只是包装，不属于原文。
 
 **只输出译文本身。** 不要解释、不要前言、不要总结、不要「以下是翻译：」，不要用
 ``` 代码块把译文包起来，不要在末尾报告你保留了哪些占位符。

@@ -396,7 +396,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 
 <!-- ============ translate ============ -->
 <div class="card" id="translate" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">translate</span><span class="one">逐 chunk 调模型翻译，脚本驱动校验与重试</span><span class="tag agent">调 ask</span><span class="tag">user 只放待译正文；重试是多轮续写，至多 1 次</span></div>
+<div class="card-head"><span class="name">translate</span><span class="one">逐 chunk 调模型翻译，脚本驱动校验与重试</span><span class="tag agent">调 ask</span><span class="tag">user 是「请翻译：」加围栏包住的待译正文；重试是多轮续写，至多 1 次</span></div>
 <div class="cols">
 <div><span class="label">任务（每个 chunk，线程池并发，结果按文档序落盘）</span>
 <ol class="steps">
@@ -428,10 +428,11 @@ skill/translate/SKILL.md          <span class="c"># 翻译规则，随 prompt_ve
 ## 额外要求                        <span class="c"># brief.style</span>
 <span class="c"># —— 本 chunk 特有，从这里起缓存失效 ——</span>
 ## 全文章节标题树                  <span class="c"># 只给 front chunk（正文 chunk 带它只增推理量）</span>
-## 相邻上下文（原文）              <span class="c"># 前一 chunk 末 3 段 + 后一 chunk 首 3 段，取源文本，chunk 间无数据依赖</span></pre>
-<span class="label" style="display:block;margin-top:12px">对话 —— user 只有待译正文；重试是在同一段对话后续写</span>
+## 相邻上下文（原文）              <span class="c"># 前一 chunk 末 3 段 + 后一 chunk 首 3 段，取源文本包在 ``` 围栏里，chunk 间无数据依赖；
+                                   # 全文边界标 [START] / [END]。裸正文收尾曾诱使模型续写邻块而不翻译（2512.02556 c004）</span></pre>
+<span class="label" style="display:block;margin-top:12px">对话 —— user 是「请翻译：」加围栏包住的待译正文；重试是在同一段对话后续写</span>
 <pre style="margin-top:6px;font-size:12px">system:     上面那一段
-user:       chunk 本身
+user:       请翻译：+ ``` 围栏包住的 chunk
 assistant:  上一次的译文                                  <span class="tag" style="font-size:11px">第一次失败后追加</span>
 user:       各层差异说明 + 请修正并重新输出完整译文         <span class="tag" style="font-size:11px">第一次失败后追加</span></pre>
 <p style="font-size:13px;color:var(--muted);margin:6px 0 0">前缀逐字节不变，第一次的整个提示词都命中缓存；模型看得见自己上一次的输出，修的是具体错误而不是从头再翻。首译用角色配置的强度（默认 none，思考对首译无增益）；重试固定升到 low——关思考的重试输出逐字节不变，思考对修复是必要的（思考开销的调研课题见 #44）。</p>

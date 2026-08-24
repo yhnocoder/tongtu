@@ -211,7 +211,14 @@ def _format_heading_tree(brief: BriefFile) -> str:
 def _neighbor_section(bodies: Sequence[str], index: int) -> str:
     before = _paragraphs(bodies[index - 1], tail=True) if index > 0 else "[START]"
     after = _paragraphs(bodies[index + 1], tail=False) if index + 1 < len(bodies) else "[END]"
-    return f"## 相邻上下文（原文）\n\n供衔接参考。\n\n### 前一块的结尾\n\n{before}\n\n### 后一块的开头\n\n{after}"
+    return (
+        "## 相邻上下文（原文）\n\n供衔接参考。\n\n"
+        f"### 前一块的结尾\n\n```\n{before}\n```\n\n### 后一块的开头\n\n```\n{after}\n```"
+    )
+
+
+def _task_message(body: str) -> str:
+    return f"请翻译：\n\n```\n{body}\n```"
 
 
 def _paragraphs(text: str, *, tail: bool) -> str:
@@ -233,7 +240,7 @@ def _translate_chunk(
 def _ask_until_valid(
     context: _Context, paper_workdir: Workdir, ask_model: str | None, ask_effort: str | None
 ) -> _Outcome:
-    messages: list[tuple[str, str]] = [("user", context.body)]
+    messages: list[tuple[str, str]] = [("user", _task_message(context.body))]
     failures: list[str] = []
     attempts = 0
     judged = 0
@@ -269,7 +276,11 @@ def _ask_until_valid(
         judged += 1
         if judged > MAX_RETRIES:
             break
-        messages = [("user", context.body), ("assistant", translated), ("user", _retry_message(failures))]
+        messages = [
+            ("user", _task_message(context.body)),
+            ("assistant", translated),
+            ("user", _retry_message(failures)),
+        ]
     return _Outcome(
         id=context.id,
         status=ChunkTranslateStatus.FALLBACK,
