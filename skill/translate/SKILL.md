@@ -1,7 +1,7 @@
 ---
 name: translate
 description: 把一段已掩码的英文 LaTeX 正文译成简体中文。
-version: 10
+version: 1
 ---
 
 # 逐块翻译
