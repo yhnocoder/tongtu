@@ -59,7 +59,7 @@ def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> 
 def test_template_parses_and_validates() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
     assert set(config.provider) == {"opencode", "anthropic"}
-    assert set(config.runtime) == {"claude_code", "claude_code_opencode"}
+    assert set(config.runtime) == {"claude_code", "claude_code_opencode", "codex_opencode"}
     assert set(config.roles) == {"survey_terms", "translate", "review", "precompile_fix", "compile_fix"}
     assert config.provider["opencode"].models["deepseek-v4-flash"] == Api.CHAT
     assert config.roles["precompile_fix"].bash == ["latexmk", "xelatex", "kpsewhich"]
@@ -109,6 +109,18 @@ def test_template_opencode_runtime_carries_provider_and_env() -> None:
         "DISABLE_TELEMETRY": "1",
     }
     assert {entry.runtime for entry in config.roles.values() if entry.runtime} == {"claude_code"}
+
+
+def test_template_codex_runtime_carries_provider_and_env() -> None:
+    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    runtime = config.runtime["codex_opencode"]
+    assert runtime.provider == "opencode"
+    assert runtime.skill_path == ".codex/skills/{role}"
+    assert runtime.command[0] == "codex"
+    assert "--ignore-user-config" in runtime.command
+    assert "--ignore-rules" in runtime.command
+    assert runtime.settings is None
+    assert runtime.env == {"OPENCODE_API_KEY": "{api_key}", "CODEX_HOME": "{tmp_dir}"}
 
 
 def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
