@@ -209,12 +209,9 @@ def _format_heading_tree(brief: BriefFile) -> str:
 
 
 def _neighbor_section(bodies: Sequence[str], index: int) -> str:
-    parts = ["## 相邻上下文（原文）\n\n供衔接参考。"]
-    if index > 0:
-        parts.append(f"### 前一块的结尾\n\n{_paragraphs(bodies[index - 1], tail=True)}")
-    if index + 1 < len(bodies):
-        parts.append(f"### 后一块的开头\n\n{_paragraphs(bodies[index + 1], tail=False)}")
-    return "\n\n".join(parts) if len(parts) > 1 else ""
+    before = _paragraphs(bodies[index - 1], tail=True) if index > 0 else "[START]"
+    after = _paragraphs(bodies[index + 1], tail=False) if index + 1 < len(bodies) else "[END]"
+    return f"## 相邻上下文（原文）\n\n供衔接参考。\n\n### 前一块的结尾\n\n{before}\n\n### 后一块的开头\n\n{after}"
 
 
 def _paragraphs(text: str, *, tail: bool) -> str:

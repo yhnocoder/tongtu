@@ -312,12 +312,12 @@ def test_neighbours_take_three_paragraphs_from_each_side(tmp_path: Path, monkeyp
     workdir = make_workdir(tmp_path, [FRONT_BODY, "middle one.\n", TAIL_BODY], parts={0: Part.FRONT}, brief=RICH_BRIEF)
     translate.run(workdir, jobs=1)
     systems = {call["log_path"].name.split("-")[1]: str(call["system"]) for call in calls}
-    assert "### 前一块的结尾" not in systems["c000"]
+    assert "### 前一块的结尾\n\n[START]" in systems["c000"]
     assert "### 后一块的开头\n\nmiddle one." in systems["c000"]
     assert "### 前一块的结尾\n\nfront beta.\n\nfront gamma.\n\nfront delta." in systems["c001"]
     assert "### 后一块的开头\n\ntail alpha.\n\ntail beta.\n\ntail gamma." in systems["c001"]
     assert "### 前一块的结尾\n\nmiddle one." in systems["c002"]
-    assert "### 后一块的开头" not in systems["c002"]
+    assert "### 后一块的开头\n\n[END]" in systems["c002"]
 
 
 def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
