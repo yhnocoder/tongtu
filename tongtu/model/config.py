@@ -12,7 +12,7 @@ from ..config import config_dir
 
 MODELS_FILENAME = "models.toml"
 
-DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-flash", "anthropic": "claude-sonnet-5"}
+DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-pro", "anthropic": "claude-sonnet-5"}
 
 
 class Api(StrEnum):
@@ -248,7 +248,7 @@ env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 # 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么
 [roles]
 survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   # 可选；不配就不提议
-translate      = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
+translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
 review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 -I validate.py"] }
 precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
 compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }

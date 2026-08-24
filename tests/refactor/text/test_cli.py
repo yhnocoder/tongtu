@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from tongtu import __version__, cli
+from tongtu import __version__, cli, validation
 from tongtu.artifacts.common import Manifest
 from tongtu.cli import RunOptions, app, main
 from tongtu.model.config import MODELS_TEMPLATE
@@ -131,8 +131,8 @@ def test_setup_interactive_fills_first_provider(tmp_path: Path, monkeypatch: pyt
     assert written["provider"]["anthropic"]["api_key"] == ""
     assert written["roles"]["translate"] == {
         "provider": "opencode",
-        "model": "deepseek-v4-flash",
-        "effort": "low",
+        "model": "deepseek-v4-pro",
+        "effort": "none",
     }
     assert written["roles"]["survey_terms"]["provider"] == "opencode"
     assert written["roles"]["review"]["runtime"] == "claude_code"
@@ -150,7 +150,7 @@ def test_setup_interactive_points_ask_roles_at_second_provider(tmp_path: Path, m
     assert written["roles"]["translate"] == {
         "provider": "anthropic",
         "model": "claude-sonnet-5",
-        "effort": "low",
+        "effort": "none",
     }
 
 
@@ -483,6 +483,29 @@ def test_status_does_not_create_the_workdir(tmp_path: Path) -> None:
     result = runner.invoke(app, ["status", "2002.05202", "--workdir", str(target)])
     assert result.exit_code == 0
     assert not target.exists()
+
+
+def test_validate_exits_zero_when_every_layer_passes(tmp_path: Path) -> None:
+    src = tmp_path / "c000.tex"
+    dst = tmp_path / "zh.tex"
+    src.write_text("We use $x$ here.\n", encoding="utf-8")
+    dst.write_text("我们这里用 $x$。\n", encoding="utf-8")
+    result = runner.invoke(app, ["validate", str(src), str(dst)])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert all(f"[通过]{layer}" in output for layer in validation.CHECK_NAMES)
+
+
+def test_validate_exits_one_when_a_layer_fails(tmp_path: Path) -> None:
+    src = tmp_path / "c000.tex"
+    dst = tmp_path / "zh.tex"
+    src.write_text("We use $x$ here.\n", encoding="utf-8")
+    dst.write_text("我们这里用 x。\n", encoding="utf-8")
+    result = runner.invoke(app, ["validate", str(src), str(dst)])
+    assert result.exit_code == 1
+    output = squeeze(result.stdout)
+    assert "[失败]braces_and_math" in output
+    assert "[通过]placeholders" in output
 
 
 def test_version_flag() -> None:

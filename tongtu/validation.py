@@ -50,14 +50,33 @@ NON_TEXT_COMMAND_RE = re.compile(
 
 DIFFERENCE_ITEMS_MAX = 8
 
+HEADING_COMMAND = (
+    r"\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?"
+    r"(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}"
+)
 
-COUNTED_CHARACTERS: tuple[str, ...] = ("{", "}", "$", "%")
+HEADING_LINE_RE = re.compile(rf"({HEADING_COMMAND})[ \t]*\n(?:[ \t]*\n)+")
+
+RUN_IN_HEADING_RE = re.compile(rf"(\S[ \t]*)({HEADING_COMMAND})")
+
+OPEN_BRACE = "{"
+
+CLOSE_BRACE = "}"
+
+DOLLAR = "$"
+
+PERCENT = "%"
+
+COUNTED_CHARACTERS: tuple[str, ...] = (OPEN_BRACE, CLOSE_BRACE, DOLLAR, PERCENT)
 
 
 @dataclass(frozen=True)
 class Scan:
     control_sequences: tuple[str, ...]
-    counts: dict[str, int]
+    specials: tuple[tuple[str, int], ...]
+
+    def count(self, character: str) -> int:
+        return sum(1 for found, _position in self.specials if found == character)
 
 
 @dataclass(frozen=True)
@@ -95,7 +114,14 @@ def _check_placeholders(source: str, translation: str) -> Failure | None:
     expected = Counter(match.group(0) for match in masking.TOKEN_RE.finditer(source))
     actual = Counter(match.group(0) for match in masking.TOKEN_RE.finditer(translation))
     if expected != actual:
-        return Failure(check=CHECK_PLACEHOLDERS, message=_describe_multiset(expected, actual))
+        missing = expected - actual
+        extra = actual - expected
+        parts = []
+        if missing:
+            parts.append(f"译文缺少 {_describe_counter(missing)}")
+        if extra:
+            parts.append(f"多出 {_describe_counter(extra)}")
+        return Failure(check=CHECK_PLACEHOLDERS, message="；".join(parts))
     complete = sum(actual.values())
     opens = translation.count(masking.SENTINEL_OPEN)
     closes = translation.count(masking.SENTINEL_CLOSE)
@@ -116,22 +142,54 @@ def _check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
     actual = Counter(translation.control_sequences)
     if expected == actual:
         return None
-    return Failure(check=CHECK_CONTROL_SEQUENCES, message=_describe_multiset(expected, actual))
+    names = sorted(set(expected) | set(actual))
+    differing = [name for name in names if expected[name] != actual[name]]
+    listed = "；".join(
+        f"\\{name} 原文 {expected[name]} 次、译文 {actual[name]} 次" for name in differing[:DIFFERENCE_ITEMS_MAX]
+    )
+    if len(differing) > DIFFERENCE_ITEMS_MAX:
+        listed = f"{listed} 等 {len(differing)} 项"
+    return Failure(check=CHECK_CONTROL_SEQUENCES, message=listed)
 
 
 def _check_braces_and_math(source: Scan, translation: Scan) -> Failure | None:
-    expected = source.counts
-    actual = translation.counts
-    differing = [name for name in COUNTED_CHARACTERS if expected[name] != actual[name]]
-    if not differing:
+    problems: list[str] = []
+    position = _unbalanced_position(translation)
+    if position is not None and _unbalanced_position(source) is None:
+        problems.append(f"{OPEN_BRACE} {CLOSE_BRACE} 在第 {position} 字符处不平衡")
+    dollars = translation.count(DOLLAR)
+    expected_dollars = source.count(DOLLAR)
+    if dollars % 2:
+        problems.append(f"{DOLLAR} 译文 {dollars} 个，是奇数，没有成对")
+    if dollars < expected_dollars:
+        problems.append(f"{DOLLAR} 原文 {expected_dollars} 个、译文 {dollars} 个")
+    percents = translation.count(PERCENT)
+    expected_percents = source.count(PERCENT)
+    if percents > expected_percents:
+        problems.append(
+            f"未转义的 {PERCENT} 原文 {expected_percents} 个、译文 {percents} 个；"
+            f"{PERCENT} 是注释符，要写百分号只能写 \\{PERCENT}"
+        )
+    if not problems:
         return None
-    listed = "；".join(f"未转义的 {name} 原文 {expected[name]} 个、译文 {actual[name]} 个" for name in differing)
-    return Failure(check=CHECK_BRACES_AND_MATH, message=listed)
+    return Failure(check=CHECK_BRACES_AND_MATH, message="；".join(problems))
+
+
+def _unbalanced_position(scanned: Scan) -> int | None:
+    opened: list[int] = []
+    for character, position in scanned.specials:
+        if character == OPEN_BRACE:
+            opened.append(position)
+        elif character == CLOSE_BRACE:
+            if not opened:
+                return position
+            opened.pop()
+    return opened[0] if opened else None
 
 
 def _check_paragraph_count(source: str, translation: str) -> Failure | None:
-    expected = translatable_paragraphs(source)
-    actual = translatable_paragraphs(translation)
+    expected = translatable_paragraphs(_attach_headings(source))
+    actual = translatable_paragraphs(_attach_headings(translation))
     if expected == actual:
         return None
     return Failure(
@@ -144,7 +202,7 @@ def _check_paragraph_count(source: str, translation: str) -> Failure | None:
 
 def scan(text: str) -> Scan:
     sequences: list[str] = []
-    counts = dict.fromkeys(COUNTED_CHARACTERS, 0)
+    specials: list[tuple[str, int]] = []
     position = 0
     length = len(text)
     while position < length:
@@ -156,10 +214,15 @@ def scan(text: str) -> Scan:
             sequences.append(name)
             position = after
             continue
-        if character in counts:
-            counts[character] += 1
+        if character in COUNTED_CHARACTERS:
+            specials.append((character, position))
         position += 1
-    return Scan(control_sequences=tuple(sequences), counts=counts)
+    return Scan(control_sequences=tuple(sequences), specials=tuple(specials))
+
+
+def _attach_headings(text: str) -> str:
+    detached = RUN_IN_HEADING_RE.sub(lambda match: f"{match.group(1)}\n\n{match.group(2)}", text)
+    return HEADING_LINE_RE.sub(lambda match: match.group(1) + "\n", detached)
 
 
 def translatable_paragraphs(text: str) -> int:
@@ -176,17 +239,6 @@ def _has_translatable_text(paragraph: str) -> bool:
     stripped = NON_TEXT_COMMAND_RE.sub("", stripped)
     stripped = CONTROL_SEQUENCE_NAME_RE.sub("", stripped)
     return bool(stripped.strip())
-
-
-def _describe_multiset(expected: Counter[str], actual: Counter[str]) -> str:
-    missing = expected - actual
-    extra = actual - expected
-    parts = []
-    if missing:
-        parts.append(f"译文缺 {_describe_counter(missing)}")
-    if extra:
-        parts.append(f"译文多出 {_describe_counter(extra)}")
-    return "；".join(parts)
 
 
 def _describe_counter(counter: Counter[str]) -> str:

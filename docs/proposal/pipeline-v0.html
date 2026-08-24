@@ -23,7 +23,7 @@
   <div class="file-box"><span class="f">build/masked.tex</span><span class="f">build/blocks.json</span></div>
   <span class="arrow">→</span><div class="stage-box">survey</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/brief.json</span><span class="f">build/chunks/c000.tex …</span></div>
-  <span class="arrow">→</span><div class="stage-box rework">translate</div><span class="arrow">→</span>
+  <span class="arrow">→</span><div class="stage-box">translate</div><span class="arrow">→</span>
   <div class="file-box"><span class="f">build/translated/c000.tex …</span></div>
   <span class="arrow">→</span><div class="stage-box todo">review</div><span class="arrow">→</span>
   <div class="file-box"><span class="f todo">build/reviewed/c000.tex …</span></div>
@@ -300,7 +300,7 @@
 
 <!-- ============ translate ============ -->
 <div class="card" id="translate" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">translate</span><span class="one">逐 chunk 调模型翻译，脚本驱动校验与重试</span><span class="tag agent">调 ask</span><span class="tag">user 只放待译正文；重试是多轮续写，至多 1 次</span></div>
+<div class="card-head"><span class="name">translate</span><span class="one">逐 chunk 调模型翻译，脚本驱动校验与重试</span><span class="tag">步骤 6 完成（PR #46）</span><span class="tag agent">调 ask</span><span class="tag">user 是「请翻译：」加围栏包住的待译正文；重试是多轮续写，至多 1 次</span></div>
 <div class="cols">
 <div><span class="label">任务（每个 chunk，线程池并发，结果按文档序落盘）</span>
 <ol class="steps">
@@ -308,9 +308,9 @@
 <li>组装 <b>system</b>（稳定部分在前、本 chunk 特有部分在后，见右）与 <b>user</b>（只有待译正文）</li>
 <li><b>ask</b>，拿回译文；整段包在代码围栏里时剥掉围栏</li>
 <li><b>四层 validate</b>（见下），全过 → <b>translated</b></li>
-<li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次（<code>MAX_RETRIES</code> = 1）；ask 报错或返回空不消耗这一次</li>
+<li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次（<code>MAX_RETRIES</code> = 1）；ask 报错或返回空不消耗这一次，调用总数由 <code>MAX_ASK_CALLS</code> = <code>MAX_RETRIES</code> + 3 封顶</li>
 <li class="branch">仍不过 → <b>fallback</b>，译文文件写原文，记最后一次未通过的层</li>
-<li>全部跑完后，fallback 占比 &gt; 0.2 → 整体 <code>translate_failed</code>，不进 compile；不提前中断（中断只会丢掉已付费的译文）</li>
+<li>全部跑完后一次写出 <code>build/translated/</code>（中途被杀不留半套产物）；fallback 数 &gt; max(⌊0.2 × 参与翻译的 chunk 数⌋, 1) → 整体 <code>translate_failed</code>（chunk 少的论文也放行 1 个回退，留给 review 阶段翻出来），不写 <code>build/translated/</code>（失败 ⇒ 产物不在，已翻译的 chunk 在 logs/translate-*.json 里）；不提前中断（中断只会丢掉已翻译的 chunk）</li>
 </ol>
 <span class="label" style="display:block;margin-top:10px">四层 validate —— 全是机械比对，不含判断；失败信息写成人读的差异说明，原样回灌给模型</span>
 <table style="border-collapse:collapse;font-size:13.5px;margin-top:6px;width:100%">
@@ -318,7 +318,7 @@
 <tbody style="vertical-align:top">
 <tr><td style="padding:4px 10px 4px 0"><code>placeholders</code></td><td style="padding:4px 10px 4px 0">⟦BLK-n⟧ / ⟦CAP-n⟧ 的 multiset 相等；另查 ⟦ ⟧ 数量与完整 placeholder 数吻合（拦 ⟦BLK-3⟧⟧ 这类碎片）</td><td style="padding:4px 0">「译文缺少 ⟦BLK-12⟧；多出 ⟦BLK-21⟧」</td></tr>
 <tr><td style="padding:4px 10px 4px 0"><code>control_sequences</code></td><td style="padding:4px 10px 4px 0">控制序列 multiset 相等：取 <code>\cmd</code> 的命令名，带紧随的星号（<code>\section*</code> ≠ <code>\section</code>）；<code>\%</code> 一类符号控制序列取符号本身</td><td style="padding:4px 0">「\cite 原文 3 次、译文 2 次；\emph 原文 0 次、译文 1 次」</td></tr>
-<tr><td style="padding:4px 10px 4px 0"><code>braces_and_math</code></td><td style="padding:4px 10px 4px 0">未转义的 <code>{</code> <code>}</code> <b>配对平衡</b>（深度不转负、结尾归零）；未转义的 <code>$</code> <b>偶数且不少于原文</b>。<span style="color:var(--muted)">现状是三者计数分别相等，本地 5 个失败案例里它抓的全是化妆品级漂移（多个 \textit、数字包进 $、去掉 \dsviii{} 的空括号），却让一个 chunk 回退成英文——放宽后那个 chunk 第二次就过，其余四个仍被别的层拦住</span></td><td style="padding:4px 0">「{ } 在第 312 字符处不平衡」「$ 原文 14 个、译文 12 个」</td></tr>
+<tr><td style="padding:4px 10px 4px 0"><code>braces_and_math</code></td><td style="padding:4px 10px 4px 0">未转义的 <code>{</code> <code>}</code> <b>配对平衡</b>（深度不转负、结尾归零）；未转义的 <code>$</code> <b>偶数且不少于原文</b>；未转义的 <code>%</code> <b>不多于原文</b>（裸 % 把该行后半截整个注释掉，别的层抓不到）；分节命令（\section 一族与 \paragraph 一族）后的空行两侧规范化后再比段数（这类空行不改变渲染，b751db9 后 2412.19437 的 c007 曾因此整块回退）。<span style="color:var(--muted)">现状是三者计数分别相等，本地 5 个失败案例里它抓的全是化妆品级漂移（多个 \textit、数字包进 $、去掉 \dsviii{} 的空括号），却让一个 chunk 回退成英文——放宽后那个 chunk 第二次就过，其余四个仍被别的层拦住</span></td><td style="padding:4px 0">「{ } 在第 312 字符处不平衡」「$ 原文 14 个、译文 12 个」</td></tr>
 <tr><td style="padding:4px 10px 4px 0"><code>paragraph_count</code></td><td style="padding:4px 10px 4px 0">含可译文本的段落数相等。一段剥除 placeholder、<code>\begin{X}</code> / <code>\end{X}</code>、其余命令名之后仍有非空白字符才计入——模型合并只含 placeholder 或只含 <code>\maketitle</code> 的空行不算错</td><td style="padding:4px 0">「原文 9 段、译文 8 段」</td></tr>
 </tbody></table>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0">同一份实现三处用：translate 的出口校验、<code>tongtu validate</code>、compile 对正文控制序列的比对（只用第 2 层）。</p>
@@ -332,13 +332,14 @@ skill/translate/SKILL.md          <span class="c"># 翻译规则，随 prompt_ve
 ## 额外要求                        <span class="c"># brief.style</span>
 <span class="c"># —— 本 chunk 特有，从这里起缓存失效 ——</span>
 ## 全文章节标题树                  <span class="c"># 只给 front chunk（正文 chunk 带它只增推理量）</span>
-## 相邻上下文（原文）              <span class="c"># 前一 chunk 末 3 段 + 后一 chunk 首 3 段，取源文本，chunk 间无数据依赖</span></pre>
-<span class="label" style="display:block;margin-top:12px">对话 —— user 只有待译正文；重试是在同一段对话后续写</span>
+## 相邻上下文（原文）              <span class="c"># 前一 chunk 末 3 段 + 后一 chunk 首 3 段，取源文本包在 ``` 围栏里，chunk 间无数据依赖；
+                                   # 全文边界标 [START] / [END]。裸正文收尾曾诱使模型续写邻块而不翻译（2512.02556 c004）</span></pre>
+<span class="label" style="display:block;margin-top:12px">对话 —— user 是「请翻译：」加围栏包住的待译正文；重试是在同一段对话后续写</span>
 <pre style="margin-top:6px;font-size:12px">system:     上面那一段
-user:       chunk 本身
+user:       请翻译：+ ``` 围栏包住的 chunk
 assistant:  上一次的译文                                  <span class="tag" style="font-size:11px">第一次失败后追加</span>
 user:       各层差异说明 + 请修正并重新输出完整译文         <span class="tag" style="font-size:11px">第一次失败后追加</span></pre>
-<p style="font-size:13px;color:var(--muted);margin:6px 0 0">前缀逐字节不变，第一次的整个提示词都命中缓存；模型看得见自己上一次的输出，修的是具体错误而不是从头再翻。</p>
+<p style="font-size:13px;color:var(--muted);margin:6px 0 0">前缀逐字节不变，第一次的整个提示词都命中缓存；模型看得见自己上一次的输出，修的是具体错误而不是从头再翻。首译用角色配置的强度（默认 none，思考对首译无增益）；重试固定升到 low——关思考的重试输出逐字节不变，思考对修复是必要的（思考开销的调研课题见 #44）。</p>
 <div class="io" style="margin-top:12px">
 <span class="label">读</span><dl><dt>build/</dt><dd><span class="f in">brief.json</span> <span class="f in">chunks/*.tex</span></dd><dt>仓库</dt><dd><span class="f in">skill/translate/SKILL.md</span></dd><dt>网络</dt><dd>模型 API</dd></dl>
 <span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">translated/c000.tex …</span> <span class="f">manifests/translate.json</span></dd><dt>logs/</dt><dd><span class="f">translate-c000-1.json …</span></dd></dl>
@@ -522,7 +523,7 @@ env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 <span class="c"># 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么</span>
 [roles]
 survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   <span class="c"># 可选；不配就不提议</span>
-translate      = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
+translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
 review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 -I validate.py"] }
 precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
 compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }</pre>

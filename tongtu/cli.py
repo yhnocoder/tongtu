@@ -24,7 +24,7 @@ from .manifests import describe_error, load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
-from .stages import fetch, mask, precompile, survey
+from .stages import fetch, mask, precompile, survey, translate
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .workdir import Workdir, WorkdirError, resolve
 
@@ -111,11 +111,21 @@ def _survey_entry(options: RunOptions) -> Manifest:
     )
 
 
+def _translate_entry(options: RunOptions) -> Manifest:
+    return translate.run(
+        options.workdir,
+        jobs=options.jobs,
+        ask_model=options.ask_model,
+        ask_effort=options.ask_effort,
+    )
+
+
 STAGE_ENTRIES: dict[str, Callable[[RunOptions], Manifest]] = {name: _pending_stage(name) for name in STAGES}
 STAGE_ENTRIES["fetch"] = _fetch_entry
 STAGE_ENTRIES["precompile"] = _precompile_entry
 STAGE_ENTRIES["mask"] = _mask_entry
 STAGE_ENTRIES["survey"] = _survey_entry
+STAGE_ENTRIES["translate"] = _translate_entry
 
 
 PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")]
@@ -500,7 +510,9 @@ def _fill_template(keys: dict[str, str], ask_roles: list[str]) -> str:
                 provider_name = section.split(".")[1]
         elif section.startswith("provider.") and stripped.startswith("api_key ") and provider_name in keys:
             line = line.replace('""', json.dumps(keys[provider_name]), 1)
-        elif section == "roles" and stripped.split("=")[0].strip() in ask_roles:
+        elif (
+            section == "roles" and stripped.split("=")[0].strip() in ask_roles and f'provider = "{chosen}"' not in line
+        ):
             line = re.sub(r'provider = "[^"]*"', f'provider = "{chosen}"', line)
             line = re.sub(r'model = "[^"]*"', f'model = "{DEFAULT_ASK_MODEL[chosen]}"', line)
         lines.append(line)
