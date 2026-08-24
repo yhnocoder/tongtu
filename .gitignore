@@ -1,4 +1,5 @@
 .DS_Store
+docs/proposal/proposal.html
 .env*
 credentials.json
 auth.json
