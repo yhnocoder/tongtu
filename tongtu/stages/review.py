@@ -32,9 +32,9 @@ TRACE_FILENAME = "review.jsonl"
 
 ENCODING = "utf-8"
 
-TIMEOUT_WARNING = "审校会话以 timeout 结束，它已做出的修订照常经脚本校验后拷出"
+TIMEOUT_WARNING = "the review session ended in timeout; the revisions it did make are validated and copied out as usual"
 
-SKIPPED_MESSAGE = "--no-review：不拉审校会话，translated/ 原样拷成 reviewed/。"
+SKIPPED_MESSAGE = "--no-review: no review session was started; translated/ was copied to reviewed/ unchanged."
 
 
 def run(
@@ -60,7 +60,7 @@ def _reset_outputs(paper_workdir: Workdir) -> None:
 def _execute(paper_workdir: Workdir, skip: bool, model_override: str | None, effort: str | None) -> ReviewManifest:
     chunk_ids = sorted(path.stem for path in (paper_workdir.build / CHUNKS_DIRNAME).glob("*.tex"))
     if not chunk_ids:
-        return _failed(f"build/{CHUNKS_DIRNAME}/ 下一个 chunk 文件都没有，先跑 survey。")
+        return _failed(f"build/{CHUNKS_DIRNAME}/ holds no chunk file; run survey first.")
     try:
         sources = {chunk_id: _read(paper_workdir, CHUNKS_DIRNAME, chunk_id) for chunk_id in chunk_ids}
         translated = {chunk_id: _read(paper_workdir, TRANSLATED_DIRNAME, chunk_id) for chunk_id in chunk_ids}

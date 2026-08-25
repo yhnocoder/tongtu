@@ -158,7 +158,7 @@ def test_a_failed_check_is_retried_in_the_same_conversation(tmp_path: Path, monk
     assert calls[1]["messages"][1] == ("assistant", "你好 x 世界。")
     role, retry = calls[1]["messages"][2]
     assert role == "user"
-    assert "- braces_and_math：$ 原文 2 个、译文 0 个" in retry
+    assert "- braces_and_math: $ count differs: 2 in source, 0 in translation" in retry
     assert "只输出译文本身" in retry
     assert calls[1]["log_path"] == workdir.logs / "translate-c000-2.json"
     assert calls[1]["system"] == calls[0]["system"]
@@ -196,7 +196,7 @@ def test_two_failed_checks_fall_back_to_the_source(tmp_path: Path, monkeypatch: 
     record = manifest.chunks["c004"]
     assert record.status is ChunkTranslateStatus.FALLBACK
     assert record.attempts == 2
-    assert record.failures == ["braces_and_math：$ 原文 2 个、译文 0 个"]
+    assert record.failures == ["braces_and_math: $ count differs: 2 in source, 0 in translation"]
     assert translated(workdir, "c004") == "Sentence 4 $x$.\n"
     assert translated(workdir, "c000") == "句子 0 $x$.\n"
     assert len(calls) == 6
@@ -212,7 +212,9 @@ def test_every_fallback_chunk_is_reported_as_a_warning(tmp_path: Path, monkeypat
     assert manifest.chunks["c003"].status is ChunkTranslateStatus.FALLBACK
     assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
     assert manifest.warnings == [
-        f"c00{number} 回退成英文原文，最后一次未通过：braces_and_math：$ 原文 2 个、译文 0 个" for number in (3, 4)
+        f"c00{number} fell back to the English source; the last attempt failed: "
+        "braces_and_math: $ count differs: 2 in source, 0 in translation"
+        for number in (3, 4)
     ]
     assert translated(workdir, "c003") == "Sentence 3 $x$.\n"
     assert outputs_present(workdir, "translate")
@@ -398,3 +400,31 @@ def test_a_rerun_clears_the_previous_translations_and_logs(tmp_path: Path, monke
     assert not (stale_dir / "c999.tex").exists()
     assert not (workdir.logs / "translate-c999-1.json").exists()
     assert sorted(path.name for path in stale_dir.iterdir()) == ["c000.tex"]
+
+
+def test_report_counts_skipped_into_the_initial_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
+    workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n", "Hello one.\n", "Hello two.\n"])
+    reports: list[tuple[int, int, tuple[str, ...], int, int]] = []
+
+    def report(done: int, total: int, inflight: tuple[str, ...], done_tokens: int, total_tokens: int) -> None:
+        reports.append((done, total, inflight, done_tokens, total_tokens))
+
+    manifest = translate.run(workdir, jobs=2, report=report)
+    assert manifest.status is TranslateStatus.OK
+    assert all(total == 3 and total_tokens == 3 for _d, total, _i, _dt, total_tokens in reports)
+    assert reports[0] == (1, 3, (), 1, 3)
+    done_values = [done for done, _t, _i, _dt, _tt in reports]
+    assert done_values == sorted(done_values)
+    token_values = [done_tokens for _d, _t, _i, done_tokens, _tt in reports]
+    assert token_values == sorted(token_values)
+    assert reports[-1] == (3, 3, (), 3, 3)
+    assert {chunk_id for _d, _t, inflight, _dt, _tt in reports for chunk_id in inflight} == {"c001", "c002"}
+
+
+def test_report_absent_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
+    workdir = make_workdir(tmp_path, ["Hello world.\n"])
+    manifest = translate.run(workdir, jobs=1)
+    assert manifest.status is TranslateStatus.OK
+    assert translated(workdir, "c000") == "你好世界。\n"

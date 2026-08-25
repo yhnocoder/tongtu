@@ -317,5 +317,5 @@ def test_run_broken_environments_table_is_mask_failed(tmp_path: Path, monkeypatc
     workdir = make_workdir(tmp_path)
     manifest = mask.run(workdir)
     assert manifest.status is MaskStatus.MASK_FAILED
-    assert "分类表" in manifest.message
+    assert "environment table" in manifest.message
     assert not outputs_present(workdir, "mask")

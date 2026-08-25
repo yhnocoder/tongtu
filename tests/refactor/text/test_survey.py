@@ -246,7 +246,7 @@ def test_abstract_absent_is_a_warning_not_a_failure(tmp_path: Path) -> None:
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK
     assert read_brief(workdir).abstract is None
-    assert any("摘要未找到" in warning for warning in manifest.warnings)
+    assert any("abstract not found" in warning for warning in manifest.warnings)
 
 
 CHUNK_FAILURES = {
@@ -465,7 +465,7 @@ def test_a_reply_off_schema_degrades_to_an_empty_proposal(tmp_path: Path, monkey
     workdir = make_workdir(tmp_path)
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK
-    assert any("不合 schema" in warning for warning in manifest.warnings)
+    assert any("does not match the schema" in warning for warning in manifest.warnings)
     assert read_brief(workdir).terms == []
 
 
@@ -542,7 +542,7 @@ def proposal(monkeypatch: pytest.MonkeyPatch, terms: dict[str, str], do_not_tran
 
 
 def term_warnings(manifest: SurveyManifest) -> list[str]:
-    return [line for line in manifest.warnings if line.startswith("术语")]
+    return [line for line in manifest.warnings if line.startswith("term")]
 
 
 def test_a_plural_and_its_singular_from_the_user_are_both_kept(tmp_path: Path) -> None:
@@ -553,7 +553,7 @@ def test_a_plural_and_its_singular_from_the_user_are_both_kept(tmp_path: Path) -
     assert [entry.word for entry in brief.do_not_translate] == ["LLM"]
     assert [entry.word for entry in brief.terms] == ["LLMs"]
     assert len(term_warnings(manifest)) == 1
-    assert all(part in term_warnings(manifest)[0] for part in ("'LLM'", "'LLMs'", "cli", "都保留"))
+    assert all(part in term_warnings(manifest)[0] for part in ("'LLM'", "'LLMs'", "cli", "both are kept"))
 
 
 def test_a_plural_and_its_singular_from_the_model_keep_do_not_translate(
@@ -566,7 +566,7 @@ def test_a_plural_and_its_singular_from_the_model_keep_do_not_translate(
     assert [entry.word for entry in brief.do_not_translate] == ["LLM"]
     assert brief.terms == []
     assert len(term_warnings(manifest)) == 1
-    assert all(part in term_warnings(manifest)[0] for part in ("'LLM'", "'LLMs'", "survey", "丢弃"))
+    assert all(part in term_warnings(manifest)[0] for part in ("'LLM'", "'LLMs'", "survey", "dropping"))
 
 
 def test_a_higher_layer_overrides_a_lower_layer_plural(tmp_path: Path) -> None:
@@ -604,7 +604,7 @@ def test_two_user_layers_in_conflict_keep_both_entries(tmp_path: Path) -> None:
     assert [entry.word for entry in brief.terms] == ["mixed RL training"]
     assert [entry.word for entry in brief.do_not_translate] == ["RL"]
     assert len(term_warnings(manifest)) == 1
-    assert all(part in term_warnings(manifest)[0] for part in ("'RL'", "global", "cli", "都保留"))
+    assert all(part in term_warnings(manifest)[0] for part in ("'RL'", "global", "cli", "both are kept"))
 
 
 def test_a_user_compound_term_drops_the_proposed_word(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -616,7 +616,7 @@ def test_a_user_compound_term_drops_the_proposed_word(tmp_path: Path, monkeypatc
     assert [(entry.word, entry.decided_by) for entry in brief.terms] == [("mixed RL training", DecidedBy.CLI)]
     assert brief.do_not_translate == []
     assert len(term_warnings(manifest)) == 1
-    assert "丢弃这个不译词" in term_warnings(manifest)[0]
+    assert "dropping this do_not_translate word" in term_warnings(manifest)[0]
 
 
 def test_a_user_word_drops_the_proposed_compound_term(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -628,7 +628,7 @@ def test_a_user_word_drops_the_proposed_compound_term(tmp_path: Path, monkeypatc
     assert brief.terms == []
     assert [(entry.word, entry.decided_by) for entry in brief.do_not_translate] == [("RL", DecidedBy.CLI)]
     assert len(term_warnings(manifest)) == 1
-    assert "丢弃这条术语" in term_warnings(manifest)[0]
+    assert "dropping this term" in term_warnings(manifest)[0]
 
 
 def test_two_proposed_entries_in_conflict_keep_the_untranslated_word(
@@ -641,7 +641,7 @@ def test_two_proposed_entries_in_conflict_keep_the_untranslated_word(
     assert brief.terms == []
     assert [(entry.word, entry.decided_by) for entry in brief.do_not_translate] == [("RL", DecidedBy.SURVEY)]
     assert len(term_warnings(manifest)) == 1
-    assert "丢弃这条术语" in term_warnings(manifest)[0]
+    assert "dropping this term" in term_warnings(manifest)[0]
 
 
 def test_a_proposed_translation_gets_spaces_around_latin_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

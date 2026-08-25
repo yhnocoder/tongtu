@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,7 +48,7 @@ RETRY_EFFORT = "low"
 
 NEIGHBOR_PARAGRAPHS = 3
 
-EMPTY_REPLY_DETAIL = "ask 返回空译文：调用本身成功，正文一个字符都没有。"
+EMPTY_REPLY_DETAIL = "ask returned an empty translation: the call succeeded with not a single character of body."
 
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
@@ -66,6 +67,7 @@ class _Context:
     raw: str
     body: str
     system: str
+    tokens: int
 
 
 @dataclass
@@ -83,10 +85,17 @@ def run(
     jobs: int,
     ask_model: str | None = None,
     ask_effort: str | None = None,
+    report: Callable[[int, int, tuple[str, ...], int, int], None] | None = None,
 ) -> TranslateManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, jobs, ask_model, ask_effort)
+    manifest = _execute(
+        paper_workdir,
+        jobs,
+        ask_model,
+        ask_effort,
+        report or (lambda done, total, inflight, done_tokens, total_tokens: None),
+    )
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -97,7 +106,13 @@ def _reset_outputs(paper_workdir: Workdir) -> None:
         path.unlink(missing_ok=True)
 
 
-def _execute(paper_workdir: Workdir, jobs: int, ask_model: str | None, ask_effort: str | None) -> TranslateManifest:
+def _execute(
+    paper_workdir: Workdir,
+    jobs: int,
+    ask_model: str | None,
+    ask_effort: str | None,
+    report: Callable[[int, int, tuple[str, ...], int, int], None],
+) -> TranslateManifest:
     try:
         brief = BriefFile.model_validate_json((paper_workdir.build / BRIEF_FILENAME).read_text(encoding=ENCODING))
         bodies = [_chunk_path(paper_workdir, record.id).read_text(encoding=ENCODING) for record in brief.chunks]
@@ -117,7 +132,10 @@ def _execute(paper_workdir: Workdir, jobs: int, ask_model: str | None, ask_effor
                 status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
             )
         model, effort = resolved
-        console.print(f"  {STAGE_NAME}：{model}，{len(brief.chunks)} 个 chunk，并发 {jobs}")
+        console.print(
+            f"  {STAGE_NAME}: {model}, {len(brief.chunks)} chunks, "
+            f"{sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}"
+        )
 
     contexts = _contexts(brief, bodies, skill)
     outcomes = {
@@ -127,9 +145,27 @@ def _execute(paper_workdir: Workdir, jobs: int, ask_model: str | None, ask_effor
     }
     if pending:
         translatable = [context for context in contexts if context.id not in outcomes]
+        total = len(brief.chunks)
+        tokens_by_id = {record.id: record.tokens for record in brief.chunks}
+        total_tokens = sum(tokens_by_id.values())
+        lock = threading.Lock()
+        done = len(outcomes)
+        done_tokens = sum(tokens_by_id[chunk_id] for chunk_id in outcomes)
+        inflight: set[str] = set()
+        report(done, total, (), done_tokens, total_tokens)
 
         def worker(context: _Context) -> _Outcome:
-            return _translate_chunk(context, paper_workdir, ask_model, ask_effort)
+            nonlocal done, done_tokens
+            with lock:
+                inflight.add(context.id)
+                report(done, total, tuple(sorted(inflight)), done_tokens, total_tokens)
+            outcome = _translate_chunk(context, paper_workdir, ask_model, ask_effort)
+            with lock:
+                inflight.discard(context.id)
+                done += 1
+                done_tokens += tokens_by_id[context.id]
+                report(done, total, tuple(sorted(inflight)), done_tokens, total_tokens)
+            return outcome
 
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
             for outcome in pool.map(worker, translatable):
@@ -153,11 +189,11 @@ def _prompt_asset() -> tuple[str, str, str]:
     try:
         content = path.read_text(encoding=ENCODING)
     except OSError as error:
-        return "", "", f"读不到 prompt 资产 {path}（{describe_error(error)}）"
+        return "", "", f"cannot read the prompt asset {path} ({describe_error(error)})"
     frontmatter = FRONTMATTER_RE.match(content)
     version = None if frontmatter is None else PROMPT_VERSION_RE.search(frontmatter.group(1))
     if version is None:
-        return "", "", f"prompt 资产 {path} 的 frontmatter 里没有 version 字段"
+        return "", "", f"the frontmatter of prompt asset {path} has no version field"
     return FRONTMATTER_RE.sub("", content).strip(), version.group(1), ""
 
 
@@ -172,7 +208,15 @@ def _contexts(brief: BriefFile, bodies: Sequence[str], skill: str) -> list[_Cont
         neighbors = _neighbor_section(bodies, index)
         if neighbors:
             sections.append(neighbors)
-        contexts.append(_Context(id=record.id, raw=raw, body=raw.strip(), system="\n\n".join(sections)))
+        contexts.append(
+            _Context(
+                id=record.id,
+                raw=raw,
+                body=raw.strip(),
+                system="\n\n".join(sections),
+                tokens=record.tokens,
+            )
+        )
     return contexts
 
 
@@ -220,7 +264,8 @@ def _translate_chunk(
     started = time.monotonic()
     outcome = _ask_until_valid(context, paper_workdir, ask_model, ask_effort)
     console.print(
-        f"  {context.id} {outcome.status}，ask 调用 {outcome.attempts} 次，用时 {time.monotonic() - started:.1f} s"
+        f"  {context.id} {outcome.status}  ask x{outcome.attempts}  {context.tokens} tok  "
+        f"{time.monotonic() - started:.1f}s"
     )
     return outcome
 
@@ -257,7 +302,7 @@ def _ask_until_valid(
                 body=translated,
                 attempts=attempts,
             )
-        failures = [f"{failure.check}：{failure.message}" for failure in result.failures]
+        failures = [f"{failure.check}: {failure.message}" for failure in result.failures]
         judged += 1
         if judged > MAX_RETRIES:
             break
@@ -309,8 +354,8 @@ def _finish(
     for context in contexts:
         outcome = outcomes[context.id]
         if outcome.status is ChunkTranslateStatus.FALLBACK:
-            listed = "；".join(outcome.failures) or "没有留下失败说明"
-            warnings.append(f"{context.id} 回退成英文原文，最后一次未通过：{listed}")
+            listed = "; ".join(outcome.failures) or "no failure detail was recorded"
+            warnings.append(f"{context.id} fell back to the English source; the last attempt failed: {listed}")
     status = TranslateStatus.OK
     message = ""
     _write_translated(paper_workdir, contexts, outcomes)
@@ -319,8 +364,8 @@ def _finish(
         shutil.rmtree(paper_workdir.build / TRANSLATED_DIRNAME, ignore_errors=True)
         status = TranslateStatus.TRANSLATE_FAILED
         message = (
-            f"自检不过：build/{TRANSLATED_DIRNAME}/ 下有 {len(absent)} 个译文文件缺失或为空"
-            f"（{'、'.join(absent[:5])}）。"
+            f"self-check failed: {len(absent)} translation files under build/{TRANSLATED_DIRNAME}/ "
+            f"are missing or empty ({', '.join(absent[:5])})."
         )
     return TranslateManifest(
         status=status,

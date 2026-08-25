@@ -149,26 +149,30 @@ def parse_environment_table(content: str) -> dict[str, TableEntry]:
     try:
         raw = json.loads(content)
     except json.JSONDecodeError as error:
-        raise MaskError(f"环境分类表不是合法 JSON：{error}") from error
+        raise MaskError(f"environment table is not valid JSON: {error}") from error
     if not isinstance(raw, dict):
-        raise MaskError("环境分类表的顶层要是「环境名 → 对象」的映射")
+        raise MaskError("environment table top level must map environment names to objects")
     table: dict[str, TableEntry] = {}
     for name, entry in raw.items():
         if not isinstance(entry, dict):
-            raise MaskError(f"环境分类表的 {name} 条目要是对象")
+            raise MaskError(f"environment table entry {name} must be an object")
         try:
             classification = EnvironmentClass(entry.get("class"))
         except ValueError as error:
-            raise MaskError(f"环境分类表的 {name} 条目 class 取值不在词表里：{entry.get('class')!r}") from error
+            raise MaskError(
+                f"environment table entry {name} has a class outside the vocabulary: {entry.get('class')!r}"
+            ) from error
         category_value = entry.get("category")
         if classification is EnvironmentClass.NON_TRANSLATABLE:
             try:
                 category = BlockCategory(category_value)
             except ValueError as error:
-                raise MaskError(f"环境分类表的 {name} 条目 category 取值不在词表里：{category_value!r}") from error
+                raise MaskError(
+                    f"environment table entry {name} has a category outside the vocabulary: {category_value!r}"
+                ) from error
         else:
             if category_value is not None:
-                raise MaskError(f"环境分类表的 {name} 条目是 text，不该带 category")
+                raise MaskError(f"environment table entry {name} is text and must not carry a category")
             category = None
         table[name] = TableEntry(classification=classification, category=category)
     return table
@@ -186,7 +190,9 @@ def unmask(masked: str, blocks: Sequence[Block], captions: Sequence[Caption]) ->
     text = _restore_blocks(stream, blocks, filled)
     residual = [ch for ch in (SENTINEL_OPEN, SENTINEL_CLOSE) if ch in text]
     if residual:
-        raise MaskError(f"unmask 的输出里仍有哨兵字符 {'、'.join(residual)}，掩码文本里有残缺的 placeholder")
+        raise MaskError(
+            f"unmask output still contains sentinel characters {', '.join(residual)}; the masked text has broken placeholders"
+        )
     return UnmaskOutcome(text=text, fallbacks=tuple(fallbacks), translated=translated)
 
 
@@ -324,7 +330,7 @@ class _MaskRun:
     def _mask_preamble(self) -> int:
         end = self._find_begin_document()
         if end is None:
-            raise MaskError("注释外找不到 \\begin{document}，判定不出前导区的范围")
+            raise MaskError("no \\begin{document} outside comments; cannot delimit the preamble")
         slots = self._preamble_abstract_slots(end)
         self._emit_block(0, end, BlockCategory.PREAMBLE, environment="", decided_by=None, slots=slots)
         return end
@@ -390,7 +396,7 @@ class _MaskRun:
     def _environment_close_start(self, environment_end: int, name: str) -> int:
         close = self.text.rfind("\\end", 0, environment_end)
         if close < 0:
-            raise MaskError(f"环境 {name} 的 \\end 定位失败")
+            raise MaskError(f"failed to locate the \\end of environment {name}")
         return close
 
     def _mask_body(self, position: int) -> None:
@@ -435,7 +441,7 @@ class _MaskRun:
                 continue
             position = after_name
         if not seen_end_document:
-            self.warnings.append("扫描中没有在流内遇到 \\end{document}，不设 postamble block")
+            self.warnings.append("no \\end{document} met in the stream; no postamble block emitted")
 
     def _mask_comment(self, position: int) -> int:
         line_start = self.text.rfind("\n", 0, position) + 1
@@ -548,7 +554,9 @@ class _MaskRun:
                     slots.append(slot)
                 continue
             position = after_name
-        raise MaskError(f"环境 {name}（起于第 {self._line_of(body_start)} 行）到文件尾仍未找到配对的 \\end")
+        raise MaskError(
+            f"environment {name} (opened at line {self._line_of(body_start)}) has no matching \\end before end of file"
+        )
 
     def _decision_for(self, name: str) -> EnvironmentDecision:
         decision = self.environments.get(name)
@@ -663,7 +671,7 @@ def _skip_code_environment(text: str, body_start: int, name: str) -> int:
     marker = f"\\end{{{name}}}"
     close = text.find(marker, body_start)
     if close < 0:
-        raise MaskError(f"环境 {name} 到文件尾仍未找到配对的 {marker}")
+        raise MaskError(f"environment {name} has no matching {marker} before end of file")
     return close + len(marker)
 
 
@@ -714,7 +722,7 @@ def _match_delimited(text: str, position: int, opening: str, closing: str) -> in
             if depth == 0:
                 return cursor + 1
         cursor += 1
-    raise MaskError(f"从偏移 {position} 起的 {opening}…{closing} 到文件尾仍未配对，花括号不平衡")
+    raise MaskError(f"{opening}...{closing} starting at offset {position} never closes; braces are unbalanced")
 
 
 def skip_to_delimiter(text: str, position: int, closing: str, opening: str) -> int:
@@ -727,7 +735,7 @@ def skip_to_delimiter(text: str, position: int, closing: str, opening: str) -> i
         if text.startswith(closing, index):
             return index + len(closing)
         cursor = index + 2
-    raise MaskError(f"从偏移 {position} 起的 {opening} 到文件尾仍未找到配对的 {closing}")
+    raise MaskError(f"{opening} starting at offset {position} has no matching {closing} before end of file")
 
 
 def find_inline_dollar_close(text: str, position: int) -> int:
@@ -741,7 +749,7 @@ def find_inline_dollar_close(text: str, position: int) -> int:
         if character == "$":
             return cursor + 1
         cursor += 1
-    raise MaskError(f"从偏移 {position - 1} 起的 inline math 到文件尾仍未找到配对的 $")
+    raise MaskError(f"inline math starting at offset {position - 1} has no closing $ before end of file")
 
 
 def _find_display_dollar_close(text: str, position: int) -> int:
@@ -755,7 +763,7 @@ def _find_display_dollar_close(text: str, position: int) -> int:
         if character == "$" and text[cursor + 1 : cursor + 2] == "$":
             return cursor + 2
         cursor += 1
-    raise MaskError(f"从偏移 {position - 2} 起的 display math 到文件尾仍未找到配对的 $$")
+    raise MaskError(f"display math starting at offset {position - 2} has no closing $$ before end of file")
 
 
 def _line_end(text: str, position: int) -> int:
@@ -775,7 +783,9 @@ def _line_starts(text: str) -> list[int]:
 def _check_sentinels(text: str) -> None:
     present = [character for character in (SENTINEL_OPEN, SENTINEL_CLOSE) if character in text]
     if present:
-        raise MaskError(f"原文里出现了 placeholder 的哨兵字符 {'、'.join(present)}，与掩码文本的形态冲突")
+        raise MaskError(
+            f"source contains placeholder sentinel characters {', '.join(present)}, conflicting with the masked text format"
+        )
 
 
 def _apply_slots(text: str, start: int, end: int, slots: Sequence[_CaptionSlot], caption_ids: Sequence[str]) -> str:
@@ -808,8 +818,8 @@ def _describe_difference(source: str, restored: str) -> str:
     start = max(0, position - DIFFERENCE_CONTEXT_CHARS)
     stop = position + DIFFERENCE_CONTEXT_CHARS
     return (
-        f"往返自检不恒等：首处差异在字符偏移 {position}（原文 {len(source)} 字符，"
-        f"还原 {len(restored)} 字符）；原文 {source[start:stop]!r}；还原 {restored[start:stop]!r}"
+        f"roundtrip check failed: first difference at offset {position} (source {len(source)} chars, "
+        f"restored {len(restored)} chars); source {source[start:stop]!r}; restored {restored[start:stop]!r}"
     )
 
 
@@ -824,7 +834,9 @@ def _restore_captions(
         token = block_token(caption.id)
         occurrences = stream.count(token)
         if occurrences > 1:
-            raise MaskError(f"{token} 在流中出现 {occurrences} 次，每个 caption token 至多出现一次")
+            raise MaskError(
+                f"{token} appears {occurrences} times in the stream; each caption token may appear at most once"
+            )
         if occurrences == 0:
             filled[caption.id] = caption.tex
             fallbacks.append(caption.id)
@@ -857,7 +869,7 @@ def _restore_blocks(stream: str, blocks: Sequence[Block], filled: Mapping[str, s
         token_id = f"{match.group(1)}-{match.group(2)}"
         block = block_by_id.get(token_id)
         if block is None:
-            raise MaskError(f"流中的 {match.group(0)} 在 blocks 记录里不存在")
+            raise MaskError(f"{match.group(0)} in the stream has no entry in the blocks records")
         used[token_id] = used.get(token_id, 0) + 1
         return _fill_slots(block.tex, filled)
 
@@ -865,7 +877,9 @@ def _restore_blocks(stream: str, blocks: Sequence[Block], filled: Mapping[str, s
     for block in blocks:
         count = used.get(block.id, 0)
         if count != 1:
-            raise MaskError(f"{block_token(block.id)} 在流中使用了 {count} 次，每个 block 的 token 要恰好使用一次")
+            raise MaskError(
+                f"{block_token(block.id)} is used {count} times in the stream; each block token must be used exactly once"
+            )
     return text
 
 
@@ -875,7 +889,7 @@ def _fill_slots(tex: str, filled: Mapping[str, str]) -> str:
         token_id = f"{match.group(1)}-{match.group(2)}"
         text = filled.get(token_id)
         if text is None:
-            raise MaskError(f"block 内的 {match.group(0)} 在 captions 记录里不存在")
+            raise MaskError(f"{match.group(0)} inside a block has no entry in the captions records")
         return text
 
     return TOKEN_RE.sub(replace, tex)

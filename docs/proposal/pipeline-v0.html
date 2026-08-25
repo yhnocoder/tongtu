@@ -10,100 +10,33 @@
 <body>
 <div class="wrap">
 <h1>通途流水线 V0 提案</h1>
-<p class="sub">七个阶段到中文 PDF：fetch → precompile → mask → survey → translate → review → compile。每张卡写这个阶段读什么、写什么、做什么，产物的类定义附在卡底。相对现状的差别记在各卡的「去掉」注释里；另有命令行、模型调用层与待验证事项。</p>
+<p class="sub">七个阶段到中文 PDF：fetch → precompile → mask → survey → translate → review → compile。每张卡写这个阶段读什么、写什么、做什么，产物的类定义附在卡底。命令行与重跑语义见 <a href="cli.html">cli.html</a>，模型调用层见 <a href="model.html">model.html</a>。</p>
 
 <h2>流水线</h2>
-<div class="strip"><div class="strip-inner">
-  <div class="file-box"><span class="f">arXiv 编号 / 链接 / 本地目录</span></div>
-  <span class="arrow">→</span><div class="stage-box">fetch</div><span class="arrow">→</span>
-  <div class="file-box"><span class="f">src/ 全部源文件</span></div>
-  <span class="arrow">→</span><div class="stage-box">precompile</div><span class="arrow">→</span>
-  <div class="file-box"><span class="f">build/precompile.tex</span><span class="f">build/sandbox/precompile/flat.pdf</span></div>
-  <span class="arrow">→</span><div class="stage-box">mask</div><span class="arrow">→</span>
-  <div class="file-box"><span class="f">build/masked.tex</span><span class="f">build/blocks.json</span></div>
-  <span class="arrow">→</span><div class="stage-box">survey</div><span class="arrow">→</span>
-  <div class="file-box"><span class="f">build/brief.json</span><span class="f">build/chunks/c000.tex …</span></div>
-  <span class="arrow">→</span><div class="stage-box">translate</div><span class="arrow">→</span>
-  <div class="file-box"><span class="f">build/translated/c000.tex …</span></div>
-  <span class="arrow">→</span><div class="stage-box todo">review</div><span class="arrow">→</span>
-  <div class="file-box"><span class="f todo">build/reviewed/c000.tex …</span></div>
-  <span class="arrow">→</span><div class="stage-box todo">compile</div><span class="arrow">→</span>
-  <div class="file-box"><span class="f todo">build/zh.tex</span><span class="f todo">out/zh.pdf</span></div>
-</div></div>
+<div class="ladder">
+  <a class="st" href="#fetch">fetch</a><span class="one">把论文源码落进 src/</span><div class="out"><span class="f">src/</span><span class="f">build/e-print.bin</span></div>
+  <span class="dn">↓</span><span></span><span></span>
+  <a class="st" href="#precompile">precompile</a><span class="one">展开、注入中文排版、编译出基线</span><div class="out"><span class="f">build/precompile.tex</span><span class="f">build/sandbox/precompile/flat.pdf</span></div>
+  <span class="dn">↓</span><span></span><span></span>
+  <a class="st" href="#mask">mask</a><span class="one">不该翻译的部分换成 placeholder</span><div class="out"><span class="f">build/masked.tex</span><span class="f">build/blocks.json</span></div>
+  <span class="dn">↓</span><span></span><span></span>
+  <a class="st" href="#survey">survey</a><span class="one">通览全文，产出翻译任务单</span><div class="out"><span class="f">build/brief.json</span><span class="f">build/chunks/</span></div>
+  <span class="dn">↓</span><span></span><span></span>
+  <a class="st" href="#translate">translate</a><span class="one">逐 chunk 调模型翻译，脚本校验与重试</span><div class="out"><span class="f">build/translated/</span></div>
+  <span class="dn">↓</span><span></span><span></span>
+  <a class="st" href="#review">review</a><span class="one">agent 通读，补翻回退、修跨 chunk 不一致</span><div class="out"><span class="f">build/reviewed/</span></div>
+  <span class="dn">↓</span><span></span><span></span>
+  <a class="st todo" href="#compile">compile</a><span class="one">译文回填、编译出 PDF</span><div class="out"><span class="f todo">build/zh.tex</span><span class="f todo">out/zh.pdf</span></div>
+</div>
 <div class="legend">
-  <span><span class="sw" style="background:var(--accent-soft);border:1.5px solid var(--accent)"></span>完成（按本提案建好）</span>
-  <span><span class="sw" style="background:var(--card);border:1.5px solid var(--accent)"></span>待改造（现有实现，要按本提案改）</span>
+  <span><span class="sw" style="background:var(--accent-soft);border:1.5px solid var(--accent)"></span>已建</span>
   <span><span class="sw" style="background:var(--todo-bg);border:1.5px dashed var(--todo)"></span>未建</span>
-  <span>七个阶段到 PDF；figures / export 在主线之外，本页不画</span>
-</div>
-
-<h2>重跑语义<small>一条规则，没有 hash</small> <span class="tag" style="font-size:12px;padding:1px 8px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:500">步骤 2 完成（PR #30）</span></h2>
-<div class="card" style="margin-top:8px">
-<pre style="margin:0">tongtu run &lt;paper&gt; [--from &lt;stage&gt;]</pre>
-<ol class="steps" style="margin-top:14px">
-<li>给了 <code>--from X</code>：删掉 X 及其下游的全部产物，从 X 起按序全部执行</li>
-<li>没给：从第一个「产物不在」的阶段开始，之前的全部视为完成；一个产物都没有就从 fetch 开始</li>
-<li>中途某阶段失败：停下，写它的 manifest，退出码非 0；下次 <code>run</code> 自然从它重来（它的产物不在）</li>
-<li><code>tongtu stage X &lt;paper&gt;</code> 只跑 X 一个阶段，上游产物不在就直接报错退出，不写 manifest</li>
-</ol>
-<p style="font-size:13.5px;color:var(--muted);margin:6px 0 0;max-width:none">改了 SKILL 就 <code>--from translate</code>，改了环境分类表就 <code>--from mask</code>，改了术语表就 <code>--from survey</code>，手改了 src/ 里的源码就 <code>--from precompile</code>。忘了给 <code>--from</code> 的后果是用旧产物，这在只有一个用户的阶段是可接受的。manifest 从此只记「这次跑出了什么」，不再背「下次要不要跑」的判断。</p>
-</div>
-
-<h2>骨架<small>从六步减到四步</small></h2>
-<div class="skeleton" style="grid-template-columns:repeat(4,1fr)">
-  <div><b>① 清旧产物</b>删本阶段上次的产物</div>
-  <div><b>② 执行</b>本阶段的实际工作</div>
-  <div><b>③ 自检</b>机械判据，全部成立才是 ok</div>
-  <div><b>④ 写 manifest</b>状态、观察值、warnings、message</div>
-</div>
-<p style="font-size:13.5px;color:var(--muted)">去掉的两步：前置条件检查（由 <code>run</code> 的顺序保证，<code>stage</code> 直接报错，退出码 2）与跳过判定（由 <code>--from</code> 替代）。各 manifest 的共用字段是 status / warnings / message；类 <code>Manifest</code>（<code>tongtu/artifacts/common.py</code>）只是命令行读这三个字段的读取器，各阶段 manifest 按本页卡片的字段序自定义，不继承它（步骤 2 拍板）。</p>
-
-<h2>命令行 <span class="tag" style="font-size:12px;padding:1px 8px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:500">步骤 2 完成（PR #30）</span></h2>
-<div class="card" style="margin-top:8px">
-<pre style="margin:0"><span class="k">tongtu run</span> PAPER [--from STAGE] [--ask-model PROVIDER/MODEL] [--ask-effort LEVEL] [--work-model RUNTIME/MODEL] [--work-effort LEVEL] [--glossary FILE]... [--workdir DIR] [--jobs N] [--no-terms] [--no-review]
-<span class="k">tongtu stage</span> STAGE PAPER [同上，不含 --from]
-<span class="k">tongtu status</span> PAPER [--workdir DIR]  <span class="c"># 按阶段序打一张表：状态 / 一行 message / 产物在不在 / manifest 路径；只读</span>
-<span class="k">tongtu validate</span> SRC DST            <span class="c"># 四层校验，0 = 通过</span>
-<span class="k">tongtu doctor</span>                       <span class="c"># 工具链（含 TeX Live 年份不低于 2026）、字体、密钥逐项检查</span>
-<span class="k">tongtu setup</span> [-i]                  <span class="c"># 写出带注释的 models.toml 模板（已存在不覆盖，权限 0600）；-i 逐个问要不要配置模板里的服务商并填 API key，ask 类角色指向第一个选中的服务商</span></pre>
-<div class="cols" style="margin-top:16px">
-<div class="io">
-<span class="label">参数</span>
-<dl>
-<dt>PAPER</dt><dd>arXiv 编号 / arXiv 链接 / 本地源码目录</dd>
-<dt>--from</dt><dd>从该阶段起全部重做，下游产物先删；不给则从第一个产物不在的阶段开始。帮助文本按序列出全部阶段名，<code>tongtu stage</code> 不带参数也列</dd>
-<dt>--ask-model</dt><dd><code>服务商/模型</code>，覆盖本次涉及的全部 ask 类角色（survey_terms、translate）；服务商名 = <code>[provider.*]</code> 的名字。只想换一个角色就改配置文件</dd>
-<dt>--ask-effort</dt><dd>推理强度，同上覆盖 ask 类角色</dd>
-<dt>--work-model</dt><dd><code>运行时/模型</code>，覆盖本次涉及的全部 work 类角色（review、precompile_fix、compile_fix）；运行时名 = <code>[runtime.*]</code> 的名字，例 <code>claude_code/claude-sonnet-5</code></dd>
-<dt>--work-effort</dt><dd>同上覆盖 work 类角色</dd>
-<dt>--glossary</dt><dd>命令行层术语表，可多次给，靠后优先</dd>
-<dt>--workdir</dt><dd>直接指定论文工作目录（默认 <code>$TONGTU_HOME/&lt;编号&gt;</code>，再默认 <code>~/.local/share/tongtu/</code>）</dd>
-<dt>--jobs</dt><dd>translate 并发度</dd>
-<dt>--no-terms</dt><dd>survey 不调模型提议术语表，只用你写的三层</dd>
-</dl>
-<p style="font-size:13px;color:var(--muted);margin:8px 0 0"><code>status</code> 是「上次跑挂了、不想重跑、想知道为什么」的入口：失败阶段那一行有 message 与 warnings，再细看去 logs/。</p>
-<span class="label" style="display:block;margin-top:12px">退出码</span>
-<dl><dt>0</dt><dd>成功（validate：通过；doctor：工具链与字体齐全——models.toml、密钥、运行时只报告不计入，镜像构建期可当断言用）</dd><dt>1</dt><dd>某阶段失败，manifest 里有原因</dd><dt>2</dt><dd>用法错误</dd></dl>
-</div>
-<div class="io">
-<span class="label">配置目录 <code>~/.config/tongtu/</code>（<code>$XDG_CONFIG_HOME</code> 覆盖）</span>
-<dl>
-<dt><span class="f">models.toml</span></dt><dd>服务商、模型清单、各角色默认用哪个模型（见下「模型调用层」）</dd>
-<dt><span class="f">glossary.json</span></dt><dd>全局层术语表</dd>
-</dl>
-<span class="label" style="display:block;margin-top:12px">论文工作目录</span>
-<dl><dt><span class="f">glossary.json</span></dt><dd>论文层术语表，放在工作目录根</dd></dl>
-<span class="label" style="display:block;margin-top:12px">环境变量</span>
-<dl><dt>TONGTU_HOME</dt><dd>工作目录根</dd><dt>各服务商密钥</dt><dd>服务商条目的 <code>api_key</code> 留空时，用 <code>api_key_env</code> 指的环境变量</dd></dl>
-<p style="font-size:13px;color:var(--muted);margin:10px 0 0">去掉的命令与选项：<code>retranslate</code>（chunk 级重翻，随复用一起放下）、<code>preview</code>、<code>tex compile</code>、<code>--force</code>（被 <code>--from</code> 替代）、<code>--agent</code>（被配置文件的角色表替代）、<code>--json</code>（事件流 schema 从未定义）、<code>--max-fallback-ratio</code>（常量即可）。</p>
-</div>
-</div>
+  <span>输入是 arXiv 编号 / 链接 / 本地目录；figures / export 在主线之外，本页不画</span>
 </div>
 
 <!-- ============ fetch ============ -->
 <div class="card" id="fetch">
-<div class="card-head"><span class="name">fetch</span><span class="one">把论文源码落进 <code>src/</code></span><span class="tag">步骤 3 完成（PR #33）</span></div>
-<div class="cols">
+<div class="card-head"><span class="name">fetch</span><span class="one">把论文源码落进 <code>src/</code></span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
 <li>识别参数：本地目录 / arXiv 链接 / 编号</li>
@@ -111,12 +44,21 @@
 <li>按头几个字节分流解包（PDF / tar.gz / gz / tar / 裸 tex），拒绝链接与设备文件</li>
 <li>收尾判定：没有 .tex → <code>pdf_only</code> / <code>empty</code>；.tex 太少视为 PDF 套壳</li>
 </ol></div>
+<div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">pdf_only</span><span class="e">empty</span><span class="e">download_failed</span><span class="e">unpack_failed</span><span class="e">source_missing</span></div>
 <div class="io">
-<span class="label">读</span><dl><dt>参数</dt><dd>编号 / 链接 / 目录</dd><dt>网络</dt><dd>export.arxiv.org</dd></dl>
-<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>src/</dt><dd><span class="f">全部源文件</span></dd><dt>build/</dt><dd><span class="f">e-print.bin</span> <span class="f">manifests/fetch.json</span></dd></dl>
-<div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">pdf_only</span><span class="e">empty</span><span class="e">download_failed</span><span class="e">unpack_failed</span><span class="e">source_missing</span></div>
-</div></div>
-<details open><summary>FetchManifest</summary>
+<span class="label">读</span>
+<table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
+<tr><td>PAPER</td><td class="src">用户</td><td><span class="ty">参数</span></td><td>arXiv 编号、arXiv 链接或本地源码目录；目录时直接拷贝，不下载</td></tr>
+<tr><td>export.arxiv.org</td><td class="src">外部</td><td><span class="ty">Link</span></td><td>下载 e-print</td></tr>
+</tbody></table>
+<span class="label" style="display:block;margin-top:12px">写</span>
+<table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
+<tr><td>build/e-print.bin</td><td class="src">—</td><td><span class="ty">Binary</span></td><td>下载到的原始字节；解包失败时留作现场</td></tr>
+<tr><td>src/</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">目录</span></td><td>解包出的全部源文件：tex、bib、bbl、图、cls、sty</td></tr>
+<tr><td>build/manifests/fetch.json</td><td class="src">—</td><td><a href="#def-fetch">FetchManifest</a></td><td>来源、格式、tex 文件清单、被拒绝的 tar 成员</td></tr>
+</tbody></table>
+</div>
+<details open id="def-fetch"><summary>FetchManifest</summary>
 <pre><span class="k">class</span> FetchManifest(BaseModel):
     status: <span class="t">FetchStatus</span>
     source: <span class="t">str</span>                 <span class="c"># arXiv 编号，或本地目录绝对路径</span>
@@ -127,31 +69,38 @@
     tex_chars: <span class="t">int</span>
     rejected: <span class="t">list[str]</span>        <span class="c"># 解包时被拒绝的 tar 成员</span>
     warnings: <span class="t">list[str]</span>
-    message: <span class="t">str</span>
-<span class="c"># 去掉：stage、payload_sha256、files</span></pre></details>
+    message: <span class="t">str</span></pre></details>
 </div>
 
 <!-- ============ precompile ============ -->
 <div class="card" id="precompile" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">precompile</span><span class="one">把原文变成一份带中文排版设置、能编译通过的单文件 LaTeX，产出基线</span><span class="tag">步骤 3 完成（PR #33）</span><span class="tag">吸收 flatten</span><span class="tag agent">失败时拉 agent work</span></div>
-<div class="cols">
+<div class="card-head"><span class="name">precompile</span><span class="one">把原文变成一份带中文排版设置、能编译通过的单文件 LaTeX，产出基线</span><span class="tag agent">work（失败时）</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
-<li><b>判定主文件</b>：含 <code>\documentclass</code> → 含 <code>\begin{document}</code> → <code>main.tex</code>；仍不唯一 → <code>main_ambiguous</code>（将来可改为逐个试编译）</li>
-<li><b>展开</b>：<code>latexpand --keep-comments --fatal</code>，同名 .bbl 存在且恰一处 <code>\bibliography{}</code> 时内联；出口：非空、含 <code>\begin{document}</code> 与 <code>\end{document}</code></li>
-<li><b>注入中文排版设置</b>：在前导区加 xeCJK / ctex 宏包与字体设置（V2 的 inject_cjk）。在这里而不在 compile 注入，是为了让宏包冲突在翻译之前、在这一步的修复会话里暴露并修掉；compile 与 precompile 的差别因此只剩正文文字，编译再出错就只可能是译文引起的</li>
-<li><b>搭编译树</b>（隔离现场，<code>build/sandbox/precompile/</code>）：src/ 拷进去，注入后的展开结果写为树内 <code>flat.tex</code></li>
-<li><b>编译</b>：<code>latexmk -xelatex</code> 一次</li>
-<li class="branch">失败 → 拉一次 agent work 修复会话：<code>skill/precompile_fix/</code> 拷进编译树，agent 自己读 skill 与 flat.log；现场就是编译树 <code>build/sandbox/precompile/</code></li>
-<li><b>校验编译</b>：首编通过即以首编为校验编译；拉过修复会话后 <code>latexmk -C</code> 再编一遍，结论只认这一次；判据：退出码 0、pdf 非空、页数 &gt; 0</li>
-<li>从 flat.log 解析五个基线计数；拷出（可能已修过的）flat.tex 为 <code>build/precompile.tex</code></li>
+<li><b>选主文件</b>：src/ 下含 <code>\documentclass</code>（注释外）的 .tex 是候选；多个候选时取唯一含 <code>\begin{document}</code> 的，再不唯一取名为 <code>main.tex</code> 的。一个候选都没有 → <code>main_not_found</code>；仍不唯一 → <code>main_ambiguous</code>，message 列出全部候选</li>
+<li><b>展开成单文件</b>：<code>latexpand --keep-comments --fatal</code> 把 <code>\input</code> / <code>\include</code> 全部内联；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>，否则 <code>expand_failed</code>；仍残留 <code>\input</code> 的行数记 warning</li>
+<li><b>注入中文排版设置</b>：在 <code>\documentclass</code> 之后插入 xeCJK 设置（仓库自带的霞鹜文楷作主字体，Path 指向编译树里的 <code>fonts/</code>；行长断行按中文规则）。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包则先剥掉再注入。放在这一步而不是 compile，是让宏包冲突在翻译之前、在本阶段的修复会话里暴露并修掉：之后 compile 与 precompile 的差别只剩正文文字，再出错只可能是译文引起</li>
+<li><b>搭编译树</b> <code>build/sandbox/precompile/</code>：src/ 整体拷贝，写入 <code>flat.tex</code>，拷入仓库的 <code>fonts/</code></li>
+<li><b>首次编译</b>：<code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒。通过的判据：退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0。latexmk 跑不起来或超时 → <code>compile_failed</code></li>
+<li class="branch"><b>不通过 → 修复会话</b>：拉一次 agent work（角色 <code>precompile_fix</code>），现场就是编译树，agent 自己读 skill 与 flat.log、改 flat.tex；会话结束 <code>latexmk -C</code> 清掉中间产物，再<b>校验编译</b>一次，结论只认这一次，仍不通过 → <code>compile_failed</code>。会话改了 flat.tex 之外的文件记 warning（这些改动不会传到 compile，compile 的编译树仍从 src/ 搭）；会话以 error / timeout 结束也记 warning，判定仍由校验编译给出</li>
 </ol></div>
+<div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
 <div class="io">
-<span class="label">读</span><dl><dt>src/</dt><dd><span class="f in">全部</span></dd><dt>仓库</dt><dd><span class="f in">skill/precompile_fix/</span></dd></dl>
-<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">sandbox/precompile/（编译树，含 flat.tex 与 flat.pdf）</span> <span class="f">precompile.tex</span> <span class="f">manifests/precompile.json</span></dd><dt>logs/</dt><dd><span class="f">precompile-fix.jsonl</span></dd></dl>
-<div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
-</div></div>
-<details open><summary>PrecompileManifest（两个子模型与 compile 共用）</summary>
+<span class="label">读</span>
+<table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
+<tr><td>src/</td><td class="src"><a href="#fetch">fetch</a></td><td><span class="ty">目录</span></td><td>判定主文件；latexpand 展开；整体拷成编译树</td></tr>
+<tr><td>skill/precompile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>编译失败时拷进编译树，修复会话读它</td></tr>
+<tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>编译失败时拉一次 work，角色 precompile_fix 用哪个运行时与模型</td></tr>
+</tbody></table>
+<span class="label" style="display:block;margin-top:12px">写</span>
+<table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
+<tr><td>build/sandbox/precompile/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>编译树：src/ 拷贝 + flat.tex + flat.pdf + flat.log；修复会话的现场</td></tr>
+<tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
+<tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过才有</td></tr>
+<tr><td>build/manifests/precompile.json</td><td class="src"><a href="#compile">compile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>主文件、原文的 CompileReport（页数等五个基线计数）、修复会话结局</td></tr>
+</tbody></table>
+</div>
+<details open id="def-precompile"><summary>PrecompileManifest（两个子模型与 compile 共用）</summary>
 <pre><span class="c"># 一次校验编译的结果。precompile 记原文的，compile 记译文的，同一个类，并排可比。</span>
 <span class="k">class</span> CompileReport(BaseModel):
     pages: <span class="t">int</span>
@@ -174,31 +123,47 @@
     report: <span class="t">CompileReport | None</span>         <span class="c"># 校验编译通过才有</span>
     fix_session: <span class="t">FixSession | None</span>       <span class="c"># 拉起过才有</span>
     warnings: <span class="t">list[str]</span>                 <span class="c"># 含：bbl 内联与否、残留 \input、会话改动了 flat.tex 之外的文件</span>
-    message: <span class="t">str</span>                        <span class="c"># 失败原因；main_ambiguous 时列出全部候选</span>
-<span class="c"># 顶层 20 个字段 → 6 个。去掉：candidates（进 message）、bbl_file / changed_files（进 warnings）、
-# expand_command / command（每次都一样，没有信息量）、全部 hash 与 *_status</span></pre></details>
+    message: <span class="t">str</span>                        <span class="c"># 失败原因；main_ambiguous 时列出全部候选</span></pre></details>
 </div>
 
 <!-- ============ mask ============ -->
 <div class="card" id="mask">
-<div class="card-head"><span class="name">mask</span><span class="one">不该翻译的部分换成 placeholder</span><span class="tag">步骤 4 完成（PR #34）</span><span class="tag">工作不变</span></div>
-<div class="cols">
+<div class="card-head"><span class="name">mask</span><span class="one">不该翻译的部分换成 placeholder</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
-<li>UTF-8 严格解码，哨兵 <code>⟦ ⟧</code> 不得已存在</li>
-<li>词法扫描，按 <code>tongtu/data/environments.json</code> 定每个环境 text / non_translatable</li>
-<li>摘 block → <code>⟦BLK-n⟧</code>；抽 caption / abstract → <code>⟦CAP-n⟧</code></li>
-<li>往返自检：unmask 后与 precompile.tex 逐字符恒等</li>
+<li><b>读入</b> precompile.tex，UTF-8 严格解码；文中已经出现哨兵 <code>⟦</code> <code>⟧</code> 即 <code>mask_failed</code>——placeholder 靠这两个字符唯一</li>
+<li><b>判定每个环境</b>：先扫一遍全文，数出每个 <code>\begin{X}</code> 的出现次数，收集文内的 <code>\newtheorem</code> / <code>\newenvironment</code> / <code>\renewenvironment</code> 声明。每个环境按序查：文内声明过 → <code>text</code>；<code>environments.json</code> 有条目（<code>X*</code> 查不到退回 <code>X</code>）→ 取表里的 class 与 category；都没有 → <code>non_translatable</code> / <code>unknown</code>。判定与来源记进 manifest 的 <code>environments</code></li>
+<li><b>摘 block</b>：第二遍扫描，每个不译区域整块摘走，masked.tex 里换成 <code>⟦BLK-n⟧</code>，原文进 blocks.json。摘的是：
+  <ul>
+  <li><code>preamble</code>：文件头到 <code>\begin{document}</code>；<code>postamble</code>：<code>\end{document}</code> 到文件尾</li>
+  <li><code>comment</code>：注释——连续的整行注释合成一块，行尾注释单独一块</li>
+  <li><code>math</code>：<code>$$…$$</code>、<code>\[…\]</code>；行内 <code>$…$</code> 与 <code>\(…\)</code> 留在正文里不摘</li>
+  <li><code>non_translatable</code> 环境：按表的 category（math / table / figure / tikz / code / algorithm / bibliography / box / unknown），嵌套时整个外层一块</li>
+  <li><code>metadata</code>：<code>\title</code> <code>\author</code> <code>\date</code> <code>\affiliation</code> <code>\email</code> 的花括号参数</li>
+  </ul>
+  <code>text</code> 环境（theorem 一族、abstract、center…）透明：<code>\begin</code> / <code>\end</code> 留在正文，只摘它里面的块。<code>\verb</code> 跳过不摘。每块记下 category、环境名、判定来源、内含的 <code>\label</code>、字符区间与行号</li>
+<li><b>抽 caption</b>：block 里仍要翻的文字单独抽出成 <code>⟦CAP-n⟧</code>——figure / table 等块内的 <code>\caption{…}</code>、<code>\captionof{…}{…}</code>，以及前导区里的 <code>abstract</code> 环境正文（revtex 一类把摘要写在前导区）。块的原文里该位置换成 <code>⟦CAP-n⟧</code>；masked.tex 里紧跟 <code>⟦BLK-n⟧</code> 另起一行放「<code>⟦CAP-n⟧</code> 压成单行的 caption 原文」，让它跟正文一起送翻。<code>code</code> 类块不抽 caption</li>
+<li><b>往返自检</b>：unmask(masked.tex, blocks.json) 与 precompile.tex 逐字符恒等；不等即 <code>mask_failed</code>，message 给出第一处差异的位置与上下文</li>
+<li>写 masked.tex 与 blocks.json。没遇到 <code>\end{document}</code> 记一条 warning，不算失败</li>
 </ol></div>
+<div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">mask_failed</span></div>
 <div class="io">
-<span class="label">读</span><dl><dt>build/</dt><dd><span class="f in">precompile.tex</span></dd><dt>仓库</dt><dd><span class="f in">data/environments.json</span></dd></dl>
-<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">masked.tex</span> <span class="f">blocks.json</span> <span class="f">manifests/mask.json</span></dd></dl>
-<div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">mask_failed</span></div>
-</div></div>
-<details open><summary>MaskManifest / BlocksFile</summary>
+<span class="label">读</span>
+<table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
+<tr><td>build/precompile.tex</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">LaTeX</span></td><td>掩码对象；unmask 后须与它逐字符恒等</td></tr>
+<tr><td>tongtu/data/environments.json</td><td class="src">仓库</td><td><span class="ty">JSON</span></td><td>每个 LaTeX 环境 text / non_translatable 的判定表</td></tr>
+</tbody></table>
+<span class="label" style="display:block;margin-top:12px">写</span>
+<table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
+<tr><td>build/masked.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>全文掩码文本：不译部分换成 ⟦BLK-n⟧，caption / abstract 换成 ⟦CAP-n⟧</td></tr>
+<tr><td>build/blocks.json</td><td class="src"><a href="#survey">survey</a> <a href="#compile">compile</a></td><td><a href="#def-mask">BlocksFile</a></td><td>placeholder → 原文的映射；survey 从 abstract 槽位取摘要，compile 用它回填</td></tr>
+<tr><td>build/manifests/mask.json</td><td class="src">—</td><td><a href="#def-mask">MaskManifest</a></td><td>各环境的判定记录、block / caption 计数、掩码比例</td></tr>
+</tbody></table>
+</div>
+<details open id="def-mask"><summary>MaskManifest / BlocksFile</summary>
 <pre><span class="k">class</span> MaskManifest(BaseModel):
     status: <span class="t">MaskStatus</span>
-    environments: <span class="t">dict[str, EnvironmentDecisionRecord]</span>
+    environments: <span class="t">dict[str, EnvironmentDecisionRecord]</span>   <span class="c"># 按环境名，本篇出现过的每个环境怎么判的</span>
     blocks_total: <span class="t">int</span>
     captions_total: <span class="t">int</span>
     precompile_chars: <span class="t">int</span>
@@ -206,23 +171,45 @@
     masked_chars_ratio: <span class="t">float</span>
     warnings: <span class="t">list[str]</span>
     message: <span class="t">str</span>
-<span class="c"># 去掉：stage、precompile_sha256、environments_table_sha256、masked_sha256、masked_bytes、blocks_sha256、precompile_status、fetch_status</span>
 
-<span class="c"># build/blocks.json —— 不变</span>
+<span class="k">class</span> EnvironmentDecisionRecord(BaseModel):
+    classification: <span class="t">"text"|"non_translatable"</span>
+    category: <span class="t">str</span>                    <span class="c"># non_translatable 时的 BlockCategory；text 为空</span>
+    decided_by: <span class="t">"newtheorem"|"newenvironment"|"table"|"default"</span>   <span class="c"># 判据来源：文内定义、environments.json 表、缺省</span>
+    occurrences: <span class="t">int</span>
+    blocks: <span class="t">int</span>
+
+<span class="c"># ===== build/blocks.json —— placeholder 与原文的映射；survey 取 abstract，compile 回填 =====</span>
 <span class="k">class</span> BlocksFile(BaseModel):
-    blocks: <span class="t">list[BlockRecord]</span>     <span class="c"># id / category / environment / decided_by / labels / tex / start / end / line</span>
-    captions: <span class="t">list[CaptionRecord]</span> <span class="c"># id / block_id / kind / tex / masked_text</span></pre></details>
+    blocks: <span class="t">list[BlockRecord]</span>
+    captions: <span class="t">list[CaptionRecord]</span>
+
+<span class="k">class</span> BlockRecord(BaseModel):
+    id: <span class="t">str</span>                          <span class="c"># BLK-n</span>
+    category: <span class="t">"math"|"table"|"figure"|"tikz"|"code"|"algorithm"|"bibliography"|"box"|"unknown"|"preamble"|"postamble"|"comment"|"metadata"</span>
+    environment: <span class="t">str</span>                 <span class="c"># 环境名；前导区、注释等非环境 block 为空</span>
+    decided_by: <span class="t">str</span>
+    labels: <span class="t">list[str]</span>               <span class="c"># block 内的 \label</span>
+    tex: <span class="t">str</span>                         <span class="c"># 原文，回填用</span>
+    start: <span class="t">int</span>; end: <span class="t">int</span>              <span class="c"># 在 precompile.tex 字符序列上的区间</span>
+    line: <span class="t">int</span>
+
+<span class="k">class</span> CaptionRecord(BaseModel):
+    id: <span class="t">str</span>                          <span class="c"># CAP-n</span>
+    block_id: <span class="t">str</span>                    <span class="c"># 所属 block；abstract 不在任何 block 里时为空</span>
+    kind: <span class="t">"caption"|"abstract"</span>
+    tex: <span class="t">str</span>                         <span class="c"># 原文整条命令 / 环境</span>
+    masked_text: <span class="t">str</span>                 <span class="c"># tex 压成单行；masked.tex 里跟在 ⟦CAP-n⟧ 后面送翻的就是它</span></pre></details>
 </div>
 
 <!-- ============ survey ============ -->
 <div class="card" id="survey" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">survey</span><span class="one">通览全文，产出翻译任务单</span><span class="tag">步骤 5 完成（PR #36）</span><span class="tag">吸收 chunk</span><span class="tag agent">可选一次 ask</span></div>
-<div class="cols">
+<div class="card-head"><span class="name">survey</span><span class="one">通览全文，产出翻译任务单</span><span class="tag agent">ask（可选）</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
-<li><b>切 chunk</b>：扫标题结构选首选层级 → 按章节切 → 大于 SPLIT_ABOVE 下分、小于 MERGE_BELOW 合并 → 定区 front / body / appendix → 自检拼接恒等。token 数用 <code>tiktoken</code>（o200k_base）实数，不再按字符数除 4 估</li>
+<li><b>切 chunk</b>：扫标题结构选首选层级 → 按章节切 → 大于 SPLIT_ABOVE 下分、小于 MERGE_BELOW 合并 → 定区 front / body / appendix → 自检拼接恒等。token 数用 <code>tiktoken</code>（o200k_base）实数</li>
 <li class="branch"><b>模型提议术语表</b>（可选，角色 <code>survey_terms</code>，<code>--no-terms</code> 或角色未配置时跳过）：一次 ask，输入摘要 + 标题树 + 全文掩码文本，schema 约束输出 <code>{terms, do_not_translate}</code>；模型不可用降级为空提议并记 warning，不是失败。提议的译名机械补空格：中文字符与 ASCII 字母数字相邻处插一个空格（<code>细粒度token选择</code> → <code>细粒度 token 选择</code>），用户三层的译名原样不动</li>
-<li><b>合并四层术语表</b>：模型提议（最低层 <code>survey</code>）→ 全局配置目录 → 论文工作目录 → 命令行 <code>--glossary</code>，后者覆盖前者；按全文命中过滤，未命中记 <code>filtered</code>；用户 <code>style</code> 段原样转录。<code>terms</code> 与 <code>do_not_translate</code> 的区别就是词写在了输入文件的哪一段。命中规则：词边界匹配，允许尾缀 s / es；全大写的词（缩写）区分大小写，其余不区分——<code>LLM</code> 命中 <code>LLM</code> / <code>LLMs</code>，不命中 <code>vLLM</code> / <code>llm</code>；<code>large language model</code> 命中 <code>Large Language Models</code>。现状是大小写不敏感的子串查找，<code>LLM</code> 会命中 <code>vLLM</code>，要改。
+<li><b>合并四层术语表</b>：模型提议（最低层 <code>survey</code>）→ 全局配置目录 → 论文工作目录 → 命令行 <code>--glossary</code>，后者覆盖前者；按全文命中过滤，未命中记 <code>filtered</code>；用户 <code>style</code> 段原样转录。<code>terms</code> 与 <code>do_not_translate</code> 的区别就是词写在了输入文件的哪一段。命中规则：词边界匹配，允许尾缀 s / es；全大写的词（缩写）区分大小写，其余不区分——<code>LLM</code> 命中 <code>LLM</code> / <code>LLMs</code>，不命中 <code>vLLM</code> / <code>llm</code>；<code>large language model</code> 命中 <code>Large Language Models</code>。
 <b>去重按归一化键</b>：casefold、空白与连字符折成单个空格、去掉词尾 <code>es</code>/<code>s</code>（与命中规则认复数的口径一致），<code>LLM</code> 与 <code>LLMs</code> 是同一条。
 <b>复合术语</b>：一条术语的原词里以整词形式含有某个 <code>do_not_translate</code> 词时，它的译名必须原样含有该词（<code>mixed RL training</code> 译作「混合 RL 训练」，不是「混合强化学习训练」）。
 <b>两类冲突（同键冲突、复合术语丢词）同一套处置</b>：双方都来自用户层（全局 / 论文 / 命令行）→ 两条都保留，只记 warning 请用户自己改；一方来自 <code>survey</code> 提议、另一方来自用户层 → 丢 <code>survey</code> 那条并记 warning；双方都来自 <code>survey</code> → <code>do_not_translate</code> 胜出并记 warning。跨层同键是覆盖不是冲突，后层照常覆盖前层</li>
@@ -231,12 +218,25 @@
 </ol>
 <p style="font-size:13.5px;color:var(--muted);margin:4px 0 0">术语提议是跨 chunk 一致性的预防手段：所有 chunk 的 system 里从一开始就是同一份词；而且它是产物（brief.json），翻译前可以打开改两条再跑。治疗手段是 review 阶段。</p>
 </div>
+<div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">glossary_invalid</span><span class="e">chunk_failed</span></div>
 <div class="io">
-<span class="label">读</span><dl><dt>build/</dt><dd><span class="f in">masked.tex</span> <span class="f in">blocks.json</span></dd><dt>术语表</dt><dd><span class="f in">三层 glossary 输入</span></dd><dt>网络</dt><dd>模型 API（可选）</dd></dl>
-<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">brief.json</span> <span class="f">chunks/c000.tex …</span> <span class="f">manifests/survey.json</span></dd></dl>
-<div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">glossary_invalid</span><span class="e">chunk_failed</span></div>
-</div></div>
-<details open><summary>survey 的全部类定义：BriefFile（翻译任务单）及其成员、SurveyManifest、输入文件格式</summary>
+<span class="label">读</span>
+<table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
+<tr><td>build/masked.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>切 chunk；取标题树；找 abstract 环境；送模型提议术语；按命中过滤术语表</td></tr>
+<tr><td>build/blocks.json</td><td class="src"><a href="#mask">mask</a></td><td><a href="#def-mask">BlocksFile</a></td><td>abstract 槽位（照录摘要的第一条来路）</td></tr>
+<tr><td>~/.config/tongtu/glossary.json</td><td class="src">用户</td><td><a href="#def-survey">GlossaryFile</a></td><td>术语表全局层</td></tr>
+<tr><td>glossary.json</td><td class="src">用户</td><td><a href="#def-survey">GlossaryFile</a></td><td>术语表论文层（工作目录根）</td></tr>
+<tr><td>--glossary FILE</td><td class="src">用户</td><td><a href="#def-survey">GlossaryFile</a></td><td>术语表命令行层，可多个，靠后优先</td></tr>
+<tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 survey_terms 用哪个服务商与模型；提议术语表这一步可选，模型不可用时降级为空提议</td></tr>
+</tbody></table>
+<span class="label" style="display:block;margin-top:12px">写</span>
+<table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
+<tr><td>build/brief.json</td><td class="src"><a href="#translate">translate</a> <a href="#review">review</a> <a href="#compile">compile</a></td><td><a href="#def-survey">BriefFile</a></td><td>翻译任务单：摘要、标题树、合并后的术语表、style、chunk 清单</td></tr>
+<tr><td>build/chunks/*.tex</td><td class="src"><a href="#translate">translate</a> <a href="#review">review</a></td><td><span class="ty">LaTeX</span></td><td>masked.tex 的切片，按 id 拼接恒等于 masked.tex</td></tr>
+<tr><td>build/manifests/survey.json</td><td class="src">—</td><td><a href="#def-survey">SurveyManifest</a></td><td>chunk 计数、术语表各层命中与过滤情况</td></tr>
+</tbody></table>
+</div>
+<details open id="def-survey"><summary>BriefFile 及其成员 / SurveyManifest / GlossaryFile</summary>
 <pre><span class="c"># ===== build/brief.json —— translate 只读这一个文件加 chunks/ =====</span>
 <span class="k">class</span> BriefFile(BaseModel):
     abstract: <span class="t">str | None</span>                   <span class="c"># 论文原文摘要照录；两条来路都落空为 null（不是失败，记一条 warning）</span>
@@ -246,8 +246,7 @@
     style: <span class="t">str | None</span>                      <span class="c"># 用户写给译者的额外要求；三层都没写为 null</span>
     chunks: <span class="t">list[ChunkRecord]</span>
 
-<span class="c"># 一条标题。全文树与 chunk 内清单用同一个类（现状分 DocumentHeading / BriefHeading 与 Heading 两个，
-# 区别只是前者多一个 depth；合并成一个，chunk 内的 depth 也如实填）。</span>
+<span class="c"># 一条标题。全文树与 chunk 内清单用同一个类，chunk 内的 depth 也如实填。</span>
 <span class="k">class</span> Heading(BaseModel):
     command: <span class="t">str</span>                  <span class="c"># 标题命令名：section / subsection / …（星号变体等同无星）</span>
     argument: <span class="t">str</span>                 <span class="c"># 标题参数原文，未翻译</span>
@@ -266,44 +265,37 @@
     id: <span class="t">str</span>                       <span class="c"># c012</span>
     start: <span class="t">int</span>; end: <span class="t">int</span>           <span class="c"># 在 masked.tex 字符序列上的区间，文件内容即该切片</span>
     part: <span class="t">"front"|"body"|"appendix"</span>
-    tokens: <span class="t">int</span>                   <span class="c"># tiktoken 实数，只用于分块决策（现状 token_estimate = 字符数 / 4）</span>
+    tokens: <span class="t">int</span>                   <span class="c"># tiktoken 实数，只用于分块决策</span>
     paragraphs: <span class="t">int</span>
     headings: <span class="t">list[Heading]</span>       <span class="c"># chunk 内有效深度 0 的标题，按文档序</span>
     translatable_chars: <span class="t">int</span>       <span class="c"># 剥除 placeholder 后的非空白字符数；0 即纯 placeholder，不调模型</span>
-<span class="c"># 去掉：sha256；internal_cuts（聚合进本 chunk 的各单元起点，本意是给「按更细边界拆分重试」用，
-# 那条重试从未实现、全仓库没有读它的地方，随复用精细化一起放下）</span>
 
 <span class="c"># ===== build/manifests/survey.json =====</span>
 <span class="k">class</span> SurveyManifest(BaseModel):
-    status: <span class="t">"ok" | "glossary_invalid" | "chunk_failed"</span>
+    status: <span class="t">SurveyStatus</span>
     chunks_total: <span class="t">int</span>
-    transparent_environments: <span class="t">list[str]</span>   <span class="c"># 体内出现首选层级标题、不计入深度的环境名（如 CJK*）；本篇的事实，留</span>
+    transparent_environments: <span class="t">list[str]</span>   <span class="c"># 切 chunk 时当作可穿透的环境名</span>
     terms_total: <span class="t">int</span>
     do_not_translate_total: <span class="t">int</span>
-    filtered: <span class="t">list[FilteredTerm]</span>          <span class="c"># 合并后未在全文命中、没进 brief 的词条：word / decided_by</span>
-    warnings: <span class="t">list[str]</span>                   <span class="c"># 含：摘要未找到、仍超 SPLIT_ABOVE 的 chunk</span>
+    filtered: <span class="t">list[FilteredTerm]</span>       <span class="c"># 全文未命中、被过滤掉的术语</span>
+    warnings: <span class="t">list[str]</span>
     message: <span class="t">str</span>
-<span class="c"># 去掉：split_above / merge_below / chars_per_token（它们进 manifest 只为参与跳过判定，现在是代码常量）；
-# heading_level（首个 chunk 的 headings 已经说明按哪一级切的）；abstract_source（摘要为 null 时原因唯一）；
-# appendix_source（chunk 的 part 已经说明 appendix 有没有被识别）；glossary_inputs / GlossaryInputRecord
-# （「我写的词生效了没」看 brief 里词条的 decided_by 与这里的 filtered 就够；读了哪些文件由 CLI 运行时打印）；
-# 全部 hash 与 *_status；glossary.json 并入 brief.json</span>
 
-<span class="c"># ===== 用户写的 input glossary 文件（三层同一格式，三段皆可缺省）=====</span>
+<span class="k">class</span> FilteredTerm(BaseModel):
+    word: <span class="t">str</span>
+    decided_by: <span class="t">"survey" | "global" | "paper" | "cli"</span>
+
+<span class="c"># ===== GlossaryFile —— 三层术语表文件共用的格式；不是 pydantic model，survey 手工解析，任何字段类型不对即 glossary_invalid =====</span>
 {
-  "terms": { "attention head": "注意力头", "LLM": "大语言模型", "large language model": "大语言模型" },
-  "do_not_translate": ["Transformer", "softmax", "vLLM"],
-  "style": "术语首次出现时附英文原文。"
-}
-<span class="c"># 合并：同一个词（大小写不敏感）后一层整条覆盖前一层，跨段也覆盖；同一份文件内同一个词出现在两段是配置错误。
-# 变种：LLM 与 large language model 是两条，各写各的；LLM 的 s 尾缀自动覆盖，不必再写 LLMs。
-# 全大写的词区分大小写，是因为短缩写小写后会撞上普通英文词：MAP / ART / SAM / CAT 小写就是 map / art / sam / cat。
-# 命中只决定「这条要不要进本 chunk 的提示词」，翻译仍由模型做，不是查找替换；误命中是噪声，漏命中是模型自己选译法。</span></pre></details>
+  "terms": {<span class="t">"原文写法": "本篇译法"</span>, …},      <span class="c"># 可省；空译法不允许</span>
+  "do_not_translate": [<span class="t">"原文写法"</span>, …],     <span class="c"># 可省；同层内同一个词既在 terms 又在这里即 glossary_invalid（大小写不敏感）</span>
+  "style": <span class="t">"写给译者的额外要求"</span>            <span class="c"># 可省；多层都写时靠后层覆盖</span>
+}</pre></details>
 </div>
 
 <!-- ============ translate ============ -->
 <div class="card" id="translate" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">translate</span><span class="one">逐 chunk 调模型翻译，脚本驱动校验与重试</span><span class="tag">步骤 6 完成（PR #46）</span><span class="tag agent">调 ask</span><span class="tag">user 是「请翻译：」加围栏包住的待译正文；重试是多轮续写，至多 1 次</span></div>
+<div class="card-head"><span class="name">translate</span><span class="one">逐 chunk 调模型翻译，脚本驱动校验与重试</span><span class="tag agent">ask</span><span class="tag">user 是「请翻译：」加围栏包住的待译正文；重试是多轮续写，至多 1 次</span></div>
 <div class="cols">
 <div><span class="label">任务（每个 chunk，线程池并发，结果按文档序落盘）</span>
 <ol class="steps">
@@ -321,7 +313,7 @@
 <tbody style="vertical-align:top">
 <tr><td style="padding:4px 10px 4px 0"><code>placeholders</code></td><td style="padding:4px 10px 4px 0">⟦BLK-n⟧ / ⟦CAP-n⟧ 的 multiset 相等；另查 ⟦ ⟧ 数量与完整 placeholder 数吻合（拦 ⟦BLK-3⟧⟧ 这类碎片）</td><td style="padding:4px 0">「译文缺少 ⟦BLK-12⟧；多出 ⟦BLK-21⟧」</td></tr>
 <tr><td style="padding:4px 10px 4px 0"><code>control_sequences</code></td><td style="padding:4px 10px 4px 0">控制序列 multiset 相等：取 <code>\cmd</code> 的命令名，带紧随的星号（<code>\section*</code> ≠ <code>\section</code>）；<code>\%</code> 一类符号控制序列取符号本身</td><td style="padding:4px 0">「\cite 原文 3 次、译文 2 次；\emph 原文 0 次、译文 1 次」</td></tr>
-<tr><td style="padding:4px 10px 4px 0"><code>braces_and_math</code></td><td style="padding:4px 10px 4px 0">未转义的 <code>{</code> <code>}</code> <b>配对平衡</b>（深度不转负、结尾归零）；未转义的 <code>$</code> <b>偶数且不少于原文</b>；未转义的 <code>%</code> <b>不多于原文</b>（裸 % 把该行后半截整个注释掉，别的层抓不到）；分节命令（\section 一族与 \paragraph 一族）后的空行两侧规范化后再比段数（这类空行不改变渲染，b751db9 后 2412.19437 的 c007 曾因此整块回退）。<span style="color:var(--muted)">现状是三者计数分别相等，本地 5 个失败案例里它抓的全是化妆品级漂移（多个 \textit、数字包进 $、去掉 \dsviii{} 的空括号），却让一个 chunk 回退成英文——放宽后那个 chunk 第二次就过，其余四个仍被别的层拦住</span></td><td style="padding:4px 0">「{ } 在第 312 字符处不平衡」「$ 原文 14 个、译文 12 个」</td></tr>
+<tr><td style="padding:4px 10px 4px 0"><code>braces_and_math</code></td><td style="padding:4px 10px 4px 0">未转义的 <code>{</code> <code>}</code> <b>配对平衡</b>（深度不转负、结尾归零）；未转义的 <code>$</code> <b>偶数且不少于原文</b>；未转义的 <code>%</code> <b>不多于原文</b>（裸 % 把该行后半截整个注释掉，别的层抓不到）；分节命令（\section 一族与 \paragraph 一族）后的空行两侧规范化后再比段数（这类空行不改变渲染，2412.19437 的 c007 曾因此整块回退）</td><td style="padding:4px 0">「{ } 在第 312 字符处不平衡」「$ 原文 14 个、译文 12 个」</td></tr>
 <tr><td style="padding:4px 10px 4px 0"><code>paragraph_count</code></td><td style="padding:4px 10px 4px 0">含可译文本的段落数相等。一段剥除 placeholder、<code>\begin{X}</code> / <code>\end{X}</code>、其余命令名之后仍有非空白字符才计入——模型合并只含 placeholder 或只含 <code>\maketitle</code> 的空行不算错</td><td style="padding:4px 0">「原文 9 段、译文 8 段」</td></tr>
 </tbody></table>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0">同一份实现三处用：translate 的出口校验、<code>tongtu validate</code>、compile 对正文控制序列的比对（只用第 2 层）。</p>
@@ -343,13 +335,24 @@ user:       请翻译：+ ``` 围栏包住的 chunk
 assistant:  上一次的译文                                  <span class="tag" style="font-size:11px">第一次失败后追加</span>
 user:       各层差异说明 + 请修正并重新输出完整译文         <span class="tag" style="font-size:11px">第一次失败后追加</span></pre>
 <p style="font-size:13px;color:var(--muted);margin:6px 0 0">前缀逐字节不变，第一次的整个提示词都命中缓存；模型看得见自己上一次的输出，修的是具体错误而不是从头再翻。首译用角色配置的强度（默认 none，思考对首译无增益）；重试固定升到 low——关思考的重试输出逐字节不变，思考对修复是必要的（思考开销的调研课题见 #44）。</p>
-<div class="io" style="margin-top:12px">
-<span class="label">读</span><dl><dt>build/</dt><dd><span class="f in">brief.json</span> <span class="f in">chunks/*.tex</span></dd><dt>仓库</dt><dd><span class="f in">skill/translate/SKILL.md</span></dd><dt>网络</dt><dd>模型 API</dd></dl>
-<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">translated/c000.tex …</span> <span class="f">manifests/translate.json</span></dd><dt>logs/</dt><dd><span class="f">translate-c000-1.json …</span></dd></dl>
-<div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">translate_failed</span></div>
-</div>
+<div><div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">translate_failed</span></div></div>
 </div></div>
-<details open><summary>TranslateManifest</summary>
+<div class="io">
+<span class="label">读</span>
+<table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
+<tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>摘要、标题树、术语表、style 进 system；chunks 清单定顺序、每 chunk 的标题与 translatable_chars</td></tr>
+<tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>待译正文，每个 chunk 一次 ask</td></tr>
+<tr><td>skill/translate/SKILL.md</td><td class="src">仓库</td><td><span class="ty">Markdown</span></td><td>翻译规则，system 的首段；改了它 --from translate</td></tr>
+<tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 translate 用哪个服务商与模型；每 chunk 至多 MAX_ASK_CALLS 次调用</td></tr>
+</tbody></table>
+<span class="label" style="display:block;margin-top:12px">写</span>
+<table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
+<tr><td>build/translated/*.tex</td><td class="src"><a href="#review">review</a></td><td><span class="ty">LaTeX</span></td><td>每 chunk 的译文，与 chunks/ 同名；fallback 与 skipped 的内容是原文；全部跑完才一次写出，失败不写</td></tr>
+<tr><td>logs/translate-cNNN-k.json</td><td class="src">—</td><td><span class="ty">JSON</span></td><td>每次 ask 的完整请求与响应；整体失败时已译出的内容只在这里</td></tr>
+<tr><td>build/manifests/translate.json</td><td class="src">—</td><td><a href="#def-translate">TranslateManifest</a></td><td>用的模型与 effort、每 chunk 的状态 / 次数 / 失败说明、回退的 chunk 记在 warnings</td></tr>
+</tbody></table>
+</div>
+<details open id="def-translate"><summary>TranslateManifest</summary>
 <pre><span class="k">class</span> TranslateManifest(BaseModel):
     status: <span class="t">"ok" | "translate_failed"</span>
     model: <span class="t">str</span>                          <span class="c"># 实际用的 provider/model，观察值</span>
@@ -363,18 +366,15 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <span class="k">class</span> ChunkTranslateRecord(BaseModel):
     status: <span class="t">"translated" | "fallback" | "skipped"</span>
     attempts: <span class="t">int</span>                        <span class="c"># ask 调用次数：1 即一次通过，2 即重试后通过或回退；skipped 为 0</span>
-    failures: <span class="t">list[str]</span>                 <span class="c"># fallback 时最后一次的各层差异说明（「层名：说明」），或 ask 的失败现场</span>
-<span class="c"># 去掉：chunks_total / fallback_chunks / skipped_chunks（都能从 chunks 的 status 数出来）、
-# max_fallback_ratio（常量）、fallback_ratio、记录里的 id 与 sha256、全部 hash 与 *_status</span></pre></details>
+    failures: <span class="t">list[str]</span>                 <span class="c"># fallback 时最后一次的各层差异说明（「层名：说明」），或 ask 的失败现场</span></pre></details>
 </div>
 
 <!-- ============ review ============ -->
 <div class="card" id="review" style="border-color:var(--accent)">
-<div class="card-head"><span class="name">review</span><span class="one">全文译完之后，agent 通读原文与译文：补翻回退的 chunk，修跨 chunk 的不一致</span><span class="tag">步骤 7 完成（PR #58）</span><span class="tag agent">拉 agent work</span></div>
-<div class="cols">
+<div class="card-head"><span class="name">review</span><span class="one">全文译完之后，agent 通读原文与译文：补翻回退的 chunk，修跨 chunk 的不一致</span><span class="tag agent">work</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
-<li><b>搭隔离现场</b> <code>build/sandbox/review/</code>，只放：<code>chunks/</code>（原文，只读）、<code>reviewed/</code>（译文，可改）、<code>brief.json</code>，加 skill 目录（<code>validate.py</code> 由本阶段拷进去，SKILL.md 随后由 work 拷 <code>skill/review/</code> 时叠上）。manifest、blocks.json、masked.tex 都不在这棵树里，agent 碰不到</li>
+<li><b>搭隔离现场</b> <code>build/sandbox/review/</code>，只放：<code>chunks/</code>（原文，只读）、<code>reviewed/</code>（译文，可改）、<code>brief.json</code>，加 skill 目录（<code>validate.py</code> 由本阶段从 <code>tongtu/validation.py</code> 拷进去，SKILL.md 随后由 work 拷 <code>skill/review/</code> 时叠上）。manifest、blocks.json、masked.tex 都不在这棵树里，agent 碰不到</li>
 <li>拉一次 agent work（角色 <code>review</code>）：通读全部原文与译文，<b>把 translate 回退成英文的 chunk 翻出来</b>，修订术语不一致、同一概念前后译法不同、记号与称呼不统一、明显误译；只许改 <code>reviewed/</code> 下的文件，不许增删文件。SKILL 要求它每改完一个文件就跑 <code>python3 -I .claude/skills/review/validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改——与脚本校验同一份实现。Bash 在沙箱内自由使用，不做前缀放行</li>
 <li><b>脚本校验</b>：先查 <code>reviewed/</code> 的文件名集合与 <code>chunks/</code> 完全一致（多的忽略，少的视为回退；一个文件就是一个 chunk，边界改不了）；再对每个文件对着它的源 chunk 跑四层 validate——placeholder 那一层就是拦「多一个少一个 ⟦BLK-21⟧」的；<b>不过的 chunk 整个回退到 translate 的版本</b>，其他 chunk 的修订保留；拷出到 <code>build/reviewed/</code> 时把正文首尾的空白按源 chunk 原样包回（chunk 文件是 masked.tex 的精确切片，compile 按序拼接，首尾空白是拼接正确性的一部分）</li>
 <li><code>tongtu run --no-review</code> <b>跳过审校</b>：不拉会话、不搭现场，<code>translated/</code> 原样拷成 <code>reviewed/</code>，status ok，<code>changed</code> / <code>reverted</code> 空，<code>session</code> 为 null</li>
@@ -382,17 +382,28 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </ol>
 <p style="font-size:13.5px;margin:6px 0 0">agent 能造成的最大损害 = 某个 chunk 的修订被丢弃。它的改动全部经过与 translate 同一套机械校验；它只见隔离现场里的文本；<code>--from review</code> 可以反复跑而不重翻。</p>
 </div>
-<div>
-<div class="io" style="margin-top:12px">
-<span class="label">读</span><dl><dt>build/</dt><dd><span class="f in">chunks/</span> <span class="f in">translated/</span> <span class="f in">brief.json</span></dd><dt>仓库</dt><dd><span class="f in">skill/review/</span></dd></dl>
-<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">sandbox/review/（隔离现场）</span> <span class="f">reviewed/</span> <span class="f">manifests/review.json</span></dd><dt>logs/</dt><dd><span class="f">review.jsonl</span></dd></dl>
-<div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">review_failed</span></div>
+<div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">review_failed</span></div>
+<div class="io">
+<span class="label">读</span>
+<table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
+<tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>原文，拷进隔离现场只读；校验的源</td></tr>
+<tr><td>build/translated/*.tex</td><td class="src"><a href="#translate">translate</a></td><td><span class="ty">LaTeX</span></td><td>修订的起点，拷进现场为 reviewed/；未过校验的 chunk 回退到这一版</td></tr>
+<tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>术语表与全局语境，拷进现场</td></tr>
+<tr><td>skill/review/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>SKILL.md，由 work 拷进现场的 skill 目录</td></tr>
+<tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>拉一次 work，角色 review 用哪个运行时与模型</td></tr>
+</tbody></table>
+<span class="label" style="display:block;margin-top:12px">写</span>
+<table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
+<tr><td>build/sandbox/review/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>隔离现场：chunks/、reviewed/、brief.json、skill；agent 只见这棵树</td></tr>
+<tr><td>build/reviewed/*.tex</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">LaTeX</span></td><td>通过四层校验的修订版；文件集合与 chunks/ 一致，未过的用 translate 的版本</td></tr>
+<tr><td>logs/review.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>会话的逐轮记录</td></tr>
+<tr><td>build/manifests/review.json</td><td class="src">—</td><td><a href="#def-review">ReviewManifest</a></td><td>会话结局、改过的与被回退的 chunk id</td></tr>
+</tbody></table>
 </div>
-</div></div>
-<details open><summary>ReviewManifest</summary>
+<details open id="def-review"><summary>ReviewManifest</summary>
 <pre><span class="k">class</span> ReviewManifest(BaseModel):
     status: <span class="t">"ok" | "review_failed"</span>      <span class="c"># 会话拉不起来才是 failed；改了 0 个 chunk 也是 ok</span>
-    session: <span class="t">FixSession | None</span>       <span class="c"># 没拉起会话时为 None：直通，或会话之前就失败</span>
+    session: <span class="t">FixSession | None</span>       <span class="c"># 没拉起会话时为 None：--no-review 直通，或会话之前就失败</span>
     changed: <span class="t">list[str]</span>                  <span class="c"># agent 改过的 chunk id</span>
     reverted: <span class="t">list[str]</span>                 <span class="c"># 改完没过 validate、被回退的 chunk id</span>
     warnings: <span class="t">list[str]</span>
@@ -401,8 +412,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 
 <!-- ============ compile ============ -->
 <div class="card" id="compile" style="border-style:dashed">
-<div class="card-head"><span class="name">compile</span><span class="one">译文回填、编译出 PDF</span><span class="tag todo">未建，按 V2 路径推测</span><span class="tag agent">失败时拉 agent work</span></div>
-<div class="cols">
+<div class="card-head"><span class="name">compile</span><span class="one">译文回填、编译出 PDF</span><span class="tag todo">提案，未建</span><span class="tag agent">work（失败时）</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
 <li>按 chunk 序拼接 <code>reviewed/</code> 得到译后掩码文本</li>
@@ -412,12 +422,28 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <li>出口：编译通过、页数与 precompile 基线相差在容差内、正文控制序列与原文一致（validate 第 2 层）</li>
 <li>拷出 <code>out/zh.pdf</code></li>
 </ol></div>
+<div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">compile_failed</span></div>
 <div class="io">
-<span class="label">读</span><dl><dt>build/</dt><dd><span class="f in">reviewed/</span> <span class="f in">blocks.json</span> <span class="f in">brief.json</span> <span class="f in">manifests/precompile.json</span></dd><dt>src/</dt><dd><span class="f in">全部</span></dd></dl>
-<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/</dt><dd><span class="f">zh.tex</span> <span class="f">compile/</span> <span class="f">manifests/compile.json</span></dd><dt>out/</dt><dd><span class="f">zh.pdf</span></dd><dt>logs/</dt><dd><span class="f">compile-fix.jsonl</span></dd></dl>
-<div class="enum"><span class="label">状态</span><br><span class="e ok">ok</span><span class="e">compile_failed</span></div>
-</div></div>
-<details open><summary>CompileManifest（推测）</summary>
+<span class="label">读</span>
+<table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
+<tr><td>build/reviewed/*.tex</td><td class="src"><a href="#review">review</a></td><td><span class="ty">LaTeX</span></td><td>按 chunk 序拼接成译后掩码全文</td></tr>
+<tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>chunk 顺序</td></tr>
+<tr><td>build/blocks.json</td><td class="src"><a href="#mask">mask</a></td><td><a href="#def-mask">BlocksFile</a></td><td>回填 ⟦BLK-n⟧ ⟦CAP-n⟧</td></tr>
+<tr><td>build/manifests/precompile.json</td><td class="src"><a href="#precompile">precompile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>report 转录为 baseline；页数容差以它为准</td></tr>
+<tr><td>src/</td><td class="src"><a href="#fetch">fetch</a></td><td><span class="ty">目录</span></td><td>拷成编译树，提供图、bib、cls</td></tr>
+<tr><td>skill/compile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>编译失败时拷进编译树</td></tr>
+<tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>编译失败时拉一次 work，角色 compile_fix 用哪个运行时与模型</td></tr>
+</tbody></table>
+<span class="label" style="display:block;margin-top:12px">写</span>
+<table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
+<tr><td>build/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>回填后的中文全文；前导区即 precompile 注入过的</td></tr>
+<tr><td>build/compile/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>编译树：src/ 拷贝 + zh.tex；修复会话的现场</td></tr>
+<tr><td>out/zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物</td></tr>
+<tr><td>logs/compile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过才有</td></tr>
+<tr><td>build/manifests/compile.json</td><td class="src">—</td><td><a href="#def-compile">CompileManifest</a></td><td>译文的 CompileReport 与 precompile 基线并排、修复会话结局</td></tr>
+</tbody></table>
+</div>
+<details open id="def-compile"><summary>CompileManifest（推测）</summary>
 <pre><span class="k">class</span> CompileManifest(BaseModel):
     status: <span class="t">CompileStatus</span>
     report: <span class="t">CompileReport | None</span>         <span class="c"># 译文的校验结果，与 precompile 的 report 同类</span>
@@ -427,135 +453,6 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
     message: <span class="t">str</span></pre></details>
 </div>
 
-<h2>模型调用层<small><code>tongtu/model/</code>，原「agent 适配层」；流水线只认两个函数</small> <span class="tag" style="font-size:12px;padding:1px 8px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:500">步骤 1 完成（PR #24）</span></h2>
-<div class="card" style="margin-top:8px">
-<div class="cols">
-<div>
-<span class="label">ask —— 单次问答，无状态</span>
-<pre style="margin-top:6px">ask(role, system, messages, *, schema=None, log_path, model=None, effort=None) -> AskOutcome
-  role:     "translate" | "survey_terms" | …   <span class="c"># 角色名，在 models.toml 的 [roles] 查到服务商 / 模型 / 强度</span>
-  system:   系统提示词
-  messages: [(role, content), …]               <span class="c"># 第一次只有一条 user；重试续上 assistant + user</span>
-  schema:   JSON Schema，要结构化输出时给            <span class="c"># 只有 chat 接口支持；另两个接口给了 schema 以 error 返回</span>
-  model:    "服务商/模型"，None 用角色配置          <span class="c"># --ask-model 的原字符串；effort 同理，None 用角色配置</span>
-  → AskOutcome(status: "ok"|"error", text, detail)</pre>
-<span class="label" style="display:block;margin-top:14px">三种接口，各用官方 SDK</span>
-<dl class="io" style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13.5px;margin:6px 0 0">
-<dt><code>chat</code></dt><dd>OpenAI chat/completions：<code>openai</code> SDK；system → system message；强度 → <code>reasoning_effort</code>；schema → <code>response_format</code></dd>
-<dt><code>responses</code></dt><dd>OpenAI responses：<code>openai</code> SDK；system → <code>instructions</code>；强度 → <code>reasoning.effort</code></dd>
-<dt><code>messages</code></dt><dd>Anthropic Messages：<code>anthropic</code> SDK（现状是 httpx 手发，换掉）；system → <code>system</code>；强度 → <code>thinking.budget_tokens</code> 档位表</dd>
-</dl>
-<p style="font-size:13px;color:var(--muted);margin:10px 0 0">每次调用写一个 JSON 日志（请求要素、正文、usage、耗时）到 <code>log_path</code>；失败以值返回不抛异常。这些现状都保留。</p>
-</div>
-<div>
-<span class="label">work —— 在一棵目录树里拉起一次多轮会话</span>
-<pre style="margin-top:6px">work(role, workdir, *, trace_path, model=None, effort=None) -> WorkOutcome
-  role:     "precompile_fix" | "compile_fix" | "review"
-  workdir:  会话的 cwd，也是它能读写的全部范围
-  model:    "运行时/模型"，None 用角色配置          <span class="c"># --work-model 的原字符串；effort 同理</span>
-  → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail)</pre>
-<p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>，它就是 <code>tongtu/validation.py</code> 本身（只依赖标准库，带 <code>main</code>），由 review 阶段拷进现场，agent 跑的是它，不是 <code>tongtu</code>。work 拷 skill 时用 <code>dirs_exist_ok</code> 叠加，不清空目的地。</p>
-
-<span class="label" style="display:block;margin-top:14px">运行时 = 一条命令模板</span>
-<p style="font-size:13.5px;margin:6px 0 0">Claude Code、Codex、opencode 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放哪。所以运行时不写代码，写在配置里（见下）；<code>work</code> 本身只做：拷 skill → 拼命令 → 新进程组跑 → 超时杀组 → stdout 落 trace → 按退出码与超时给 stop_reason。</p>
-<p style="font-size:13.5px;margin:8px 0 0">一个运行时条目 = 一个「工具 × 服务商」组合<small style="text-transform:none;letter-spacing:0"> （<a href="https://github.com/yhnocoder/tongtu/issues/26">issue #26</a>，2026-08-22）</small>：条目可选写 <code>provider</code> 指向 <code>[provider.*]</code>，<code>work</code> 据此把 <code>{base_url}</code> 与 <code>{api_key}</code> 填进命令模板与 <code>env</code> 表，密钥经 <code>env</code> 表进子进程环境，不出现在命令行参数里。角色表、<code>resolve_role</code>、<code>--work-model 运行时/模型</code> 的语义都不变。</p>
-<p style="font-size:13.5px;margin:8px 0 0"><b>去掉 <code>budget_exhausted</code></b>：它要解析各运行时的 transcript 才能判，而调用方反正不信 stop_reason、会自己复验，轮数耗尽与其他错误在调用方眼里没有区别。<code>max_turns</code> 仍作为参数传给运行时，只是不再从结果里读回。</p>
-<p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">自建 agent 循环（用 <code>ask</code> + 工具调用自己写）是第三条路，CLI 运行时不够用再说。</p>
-</div>
-</div>
-<details open><summary>models.toml（配置目录）</summary>
-<pre><span class="c"># 服务商：一个 API 前缀 + 一个密钥 + 哪个模型走哪种接口（api 取 chat / responses / messages）</span>
-[provider.opencode]
-base_url    = "https://opencode.ai/zen/go"   <span class="c"># 接口前缀的根，chat / responses / messages 都在它下面的 /v1/...</span>
-api_key     = ""                  <span class="c"># 直接写密钥，或留空改用下面的环境变量；setup -i 填的是这里</span>
-api_key_env = "OPENCODE_API_KEY"
-models = { "deepseek-v4-flash" = "chat", "gpt-5.6-luna" = "responses", "minimax-m3" = "messages" }
-
-[provider.deepseek]
-base_url    = "https://api.deepseek.com"
-api_key     = ""
-api_key_env = "DEEPSEEK_API_KEY"
-api         = "chat"              <span class="c"># OpenAI 兼容；模型 deepseek-v4-flash / deepseek-v4-pro</span>
-
-[provider.anthropic]
-base_url    = "https://api.anthropic.com"
-api_key     = ""
-api_key_env = "ANTHROPIC_API_KEY"
-api         = "messages"          <span class="c"># 整个服务商一种接口时不必逐模型列</span>
-
-<span class="c"># 会话运行时：一条命令模板，{model} {effort} {max_turns} {tmp_dir} 由 work 填入；{tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删</span>
-[runtime.claude_code]
-skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现场的哪里</span>
-command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
-           "--output-format", "stream-json", "--verbose",
-           "--setting-sources", "", "--strict-mcp-config",                       <span class="c"># 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）</span>
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
-           "--disallowedTools", "Edit(.claude/skills/**)",                       <span class="c"># agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦</span>
-           "--settings", "{settings}"]                                           <span class="c"># 下面 settings 表序列化成 JSON 填入</span>
-settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
-env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   <span class="c"># 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录</span>
-<span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
-<span class="c"># Bash 在沙箱内自由使用：写范围 = 现场，断网；agent 做得对不对由驱动器在现场外重跑校验终判。work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
-# Codex 的运行时条目按同一套机制写在下面的 [runtime.codex_opencode]（issue #27）。
-# .codex/rules 的 allow 是「沙箱外执行」，不用它做放行（issue #26 实测，2026-08-22）</span>
-
-<span class="c"># 同一个 Claude Code，模型换成 opencode 上的：一个运行时条目 = 一个「工具 × 服务商」组合</span>
-[runtime.claude_code_opencode]
-provider = "opencode"                    <span class="c"># {base_url} 与 {api_key} 由 work 从 [provider.opencode] 填入</span>
-skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现场的哪里</span>
-command = [同 runtime.claude_code 一字不差]
-settings = { sandbox = { … 同 runtime.claude_code … } }
-env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
-<span class="c"># opencode 的 messages 端点只认 x-api-key，所以密钥写进 ANTHROPIC_API_KEY；ANTHROPIC_AUTH_TOKEN 走 Bearer，会 401
-# Claude Code 把 ANTHROPIC_BASE_URL 当根，自己拼 /v1/messages，所以这里填的是不带 /v1 的 base_url
-# 三个 DEFAULT_*_MODEL 都指同一个模型，防止后台的小调用拿 claude 系列的名字去打 opencode
-# 密钥经进程环境传入而不是写进命令行参数：命令行参数在 ps 里可见</span>
-
-<span class="c"># Codex + opencode：只靠 Codex 自带的沙箱（-s workspace-write + approval never），不写 .codex/rules——它的 allow 是「沙箱外执行」</span>
-[runtime.codex_opencode]
-provider   = "opencode"
-skill_path = ".codex/skills/{role}"
-command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-           "-s", "workspace-write", "-c", 'approval_policy="never"',
-           "-m", "{model}", "-c", 'model_reasoning_effort="{effort}"',
-           "-c", 'model_provider="opencode"', "-c", 'model_providers.opencode.name="opencode"',
-           "-c", 'model_providers.opencode.base_url="{base_url}/v1"',
-           "-c", 'model_providers.opencode.env_key="OPENCODE_API_KEY"',
-           "-c", 'model_providers.opencode.wire_api="responses"']
-env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
-<span class="c"># prompt 不作为位置参数：codex exec 没给 prompt 参数时从 stdin 读，work 正是经 stdin 喂 PROMPT；cwd 由 work 设为现场，不加 -C
-# CODEX_HOME 指向 work 为本次会话建的临时目录，会话结束整个删掉；~/.codex/ 不被读也不被写
-# max_turns 对 Codex 不生效：沙箱只靠 -s workspace-write 与 approval_policy="never"，写范围 = 现场 + 临时目录，默认断网
-# wire_api 只接受 responses，所以这个条目只能跑 opencode 的 responses 端点支持的模型：gpt-5.6-luna、grok-4.5、muse-spark-1.2-contributor、deepseek-v4-flash
-# codex 须是原生二进制（brew cask 装的）：npm 装的是 node 启动脚本，work 把子进程 PATH 收成 TeX + 系统 bin 后找不到 node，退出码 127</span>
-
-<span class="c"># 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么</span>
-[roles]
-survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   <span class="c"># 可选；不配就不提议</span>
-translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
-review         = { runtime = "claude_code", model = "claude-opus-5", effort = "medium", max_turns = 300, timeout_seconds = 3600 }
-precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
-compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }</pre>
-<p style="font-size:13px;color:var(--muted);margin:8px 0 0">命令行 <code>--ask-model</code> / <code>--ask-effort</code> 覆盖全部 ask 类角色，<code>--work-model</code> / <code>--work-effort</code> 覆盖全部 work 类角色；没有 <code>tongtu config</code> 子命令，文件手改。密钥写在服务商条目的 <code>api_key</code>（文件 0600），留空则用 <code>api_key_env</code> 指的环境变量；credentials.json 与 opencode 登录态两级来源去掉。messages 接口的推理强度按档位表换算成 <code>thinking.budget_tokens</code>（low 1024 / medium 2048 / high 4096），<code>max_tokens</code> 32768。<code>tongtu doctor</code> 只检查 <code>[roles]</code> 引用到的服务商与运行时。</p>
-</details>
-<div style="margin-top:18px">
-<span class="label">会话的约束——四件事，各管一件<small style="text-transform:none;letter-spacing:0;margin-left:8px">issue #20 实测结论，2026-08-20</small></span>
-<ol style="margin:8px 0 0;padding-left:22px;font-size:14px;max-width:none">
-<li><b>Bash 不做前缀放行</b>：运行时的 <code>autoAllowBashIfSandboxed</code> 让沙箱内的命令一律放行，<code>failIfUnavailable</code> 又保证沙箱不可用时会话直接失败，角色级放行清单起不了作用，故去掉（实测，2026-08-24）。约束交给第 2 条的沙箱，正确性交给驱动器在现场外重跑校验。仍 deny 对 skill 目录的编辑：agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它。</li>
-<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 本来就能执行任意代码，前缀放行拦不住，靠沙箱把写范围限制在会话 cwd、断网。</li>
-<li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻退出码 2。给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过——有意绕过只能走第 2 条管住的那条路：嵌套的 run 要写 cwd 之外的工作目录根、要出网，第一个阶段就失败。</li>
-<li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin + 系统 bin）。</li>
-</ol>
-<p style="font-size:13.5px;color:var(--muted);margin:8px 0 0;max-width:none">运行时只认 Claude Code 与 Codex：Codex 不用 <code>.codex/rules</code> 做放行——<code>decision="allow"</code> 的规则是「沙箱外执行」（<a href="https://github.com/yhnocoder/tongtu/issues/26">issue #26</a> 实测，2026-08-22）——只靠沙箱 <code>-s workspace-write -c approval_policy="never"</code> 把写范围限制在现场；opencode 作为运行时没有沙箱，在它有之前不作为使用方案。</p>
-</div>
-</div>
-
-<h2>待验证<small>讨论中记下、还没有答案的事</small></h2>
-<div class="card" style="margin-top:8px">
-<ul style="margin:0;padding-left:18px;font-size:14px">
-<li><b>Bash 前缀放行的严密性</b>——<b>已作废</b>（<a href="https://github.com/yhnocoder/tongtu/issues/20">issue #20</a>，2026-08-20 验证；2026-08-24 去掉）：各运行时确实按子命令逐个判定、复合命令绕不过，但沙箱开着时命令一律放行，放行清单本身不生效；<code>latexmk -e</code> / <code>xelatex -shell-escape</code> 一类本来也是任意代码。约束只剩沙箱与现场外的脚本校验。</li>
-</ul>
-</div>
 </div>
 
 </body>
