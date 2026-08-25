@@ -8,13 +8,16 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-SENTINEL_OPEN = "⟦"
-SENTINEL_CLOSE = "⟧"
-
-BLOCK_ID_PREFIX = "BLK"
-CAPTION_ID_PREFIX = "CAP"
-
-TOKEN_RE = re.compile(rf"{SENTINEL_OPEN}({BLOCK_ID_PREFIX}|{CAPTION_ID_PREFIX})-([0-9]+){SENTINEL_CLOSE}")
+from .validation import (
+    BLANK_LINE_RE,
+    BLOCK_ID_PREFIX,
+    CAPTION_ID_PREFIX,
+    ENVIRONMENT_NAME_RE,
+    SENTINEL_CLOSE,
+    SENTINEL_OPEN,
+    TOKEN_RE,
+    read_control_sequence,
+)
 
 ENVIRONMENTS_TABLE_PATH = Path(__file__).resolve().parent / "data" / "environments.json"
 
@@ -33,15 +36,11 @@ DECLARATION_COMMANDS: dict[str, str] = {
     "renewenvironment": "newenvironment",
 }
 
-ENVIRONMENT_NAME_RE = re.compile(r"[A-Za-z0-9@]+\*?")
-
 LABEL_RE = re.compile(r"\\label\s*\{([^{}]*)\}")
 
 TOP_LEVEL_SPECIAL_RE = re.compile(r"[\\%$]")
 
 BODY_SPECIAL_RE = re.compile(r"[\\%]")
-
-BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
 
 WHITESPACE_RUN_RE = re.compile(r"\s+")
 
@@ -612,18 +611,6 @@ class _MaskRun:
 
     def _line_of(self, position: int) -> int:
         return bisect_right(self.line_starts, position)
-
-
-def read_control_sequence(text: str, position: int) -> tuple[str, int]:
-    start = position + 1
-    if start >= len(text):
-        return "", start
-    if text[start].isascii() and text[start].isalpha():
-        end = start
-        while end < len(text) and text[end].isascii() and text[end].isalpha():
-            end += 1
-        return text[start:end], end
-    return text[start], start + 1
 
 
 def read_environment_name(text: str, position: int) -> tuple[str | None, int]:

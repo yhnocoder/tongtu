@@ -110,7 +110,6 @@ def test_a_chunk_without_translatable_text_is_skipped(tmp_path: Path) -> None:
     assert record.failures == []
     assert translated(workdir, "c000") == "⟦BLK-0⟧\n"
     assert (manifest.model, manifest.effort) == ("", "")
-    assert manifest.fallback_ratio == 0.0
     assert outputs_present(workdir, "translate")
 
 
@@ -194,7 +193,6 @@ def test_two_failed_checks_fall_back_to_the_source(tmp_path: Path, monkeypatch: 
     workdir = make_workdir(tmp_path, sentences(5))
     manifest = translate.run(workdir, jobs=2)
     assert manifest.status is TranslateStatus.OK
-    assert manifest.fallback_ratio == pytest.approx(0.2)
     record = manifest.chunks["c004"]
     assert record.status is ChunkTranslateStatus.FALLBACK
     assert record.attempts == 2
@@ -205,30 +203,21 @@ def test_two_failed_checks_fall_back_to_the_source(tmp_path: Path, monkeypatch: 
     assert outputs_present(workdir, "translate")
 
 
-def test_a_small_paper_still_allows_one_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, failing_after(2))
-    workdir = make_workdir(tmp_path, sentences(3))
-    manifest = translate.run(workdir, jobs=2)
-    assert manifest.status is TranslateStatus.OK
-    assert manifest.fallback_ratio == pytest.approx(1 / 3)
-    assert manifest.chunks["c002"].status is ChunkTranslateStatus.FALLBACK
-    assert outputs_present(workdir, "translate")
-
-
-def test_too_many_fallbacks_fail_the_stage_without_writing_translations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_every_fallback_chunk_is_reported_as_a_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire_ask(monkeypatch, failing_after(3))
     workdir = make_workdir(tmp_path, sentences(5))
     manifest = translate.run(workdir, jobs=2)
-    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert manifest.fallback_ratio == pytest.approx(0.4)
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.message == ""
     assert manifest.chunks["c003"].status is ChunkTranslateStatus.FALLBACK
     assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
-    assert "over the allowed" in manifest.message
-    assert "completed translations" in manifest.message
-    assert not (workdir.build / translate.TRANSLATED_DIRNAME).exists()
-    assert not outputs_present(workdir, "translate")
+    assert manifest.warnings == [
+        f"c00{number} fell back to the English source; the last attempt failed: "
+        "braces_and_math: $ count differs: 2 in source, 0 in translation"
+        for number in (3, 4)
+    ]
+    assert translated(workdir, "c003") == "Sentence 3 $x$.\n"
+    assert outputs_present(workdir, "translate")
     assert manifest == read_manifest(workdir)
 
 
@@ -237,7 +226,6 @@ def test_an_ask_error_does_not_spend_the_retry_and_is_capped(tmp_path: Path, mon
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
-    assert manifest.fallback_ratio == pytest.approx(1.0)
     record = manifest.chunks["c000"]
     assert record.status is ChunkTranslateStatus.FALLBACK
     assert record.attempts == translate.MAX_ASK_CALLS == 4
@@ -257,16 +245,14 @@ def test_an_empty_reply_is_handled_like_an_ask_error(tmp_path: Path, monkeypatch
     assert len(calls) == translate.MAX_ASK_CALLS
 
 
-def test_a_fenced_translation_is_unwrapped_and_warned_about(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_fenced_translation_is_unwrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="```latex\n你好世界。\n```"))
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
     assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
     assert translated(workdir, "c000") == "你好世界。\n"
-    assert len(manifest.warnings) == 1
-    assert "c000" in manifest.warnings[0]
-    assert "code fence" in manifest.warnings[0]
+    assert manifest.warnings == []
 
 
 FRONT_BODY = "front alpha.\n\nfront beta.\n\nfront gamma.\n\nfront delta.\n"
@@ -388,7 +374,6 @@ def test_manifest_field_order_matches_card(tmp_path: Path, monkeypatch: pytest.M
         "prompt_version",
         "jobs",
         "chunks",
-        "fallback_ratio",
         "warnings",
         "message",
     ]

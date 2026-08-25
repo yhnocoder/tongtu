@@ -31,7 +31,7 @@ def test_translate_revtex_with_a_real_model(tmp_path: Path) -> None:
     manifest = translate.run(workdir, jobs=JOBS)
     duration = time.monotonic() - started
     print(f"model {manifest.model} effort {manifest.effort} prompt_version {manifest.prompt_version}")
-    print(f"status {manifest.status} fallback_ratio {manifest.fallback_ratio:.2f} duration {duration:.1f}s")
+    print(f"status {manifest.status} duration {duration:.1f}s")
     for chunk_id, record in manifest.chunks.items():
         print(f"  {chunk_id} {record.status} attempts {record.attempts} failures {record.failures}")
     print(f"warnings {manifest.warnings}")

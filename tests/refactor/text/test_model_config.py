@@ -44,7 +44,7 @@ command = ["claude", "-p"]
 
 [roles]
 translate = { provider = "demo", model = "chat-model", effort = "low" }
-review = { runtime = "claude_code", model = "sonnet", effort = "high", max_turns = 8, timeout_seconds = 60, bash = [] }
+review = { runtime = "claude_code", model = "sonnet", effort = "high", max_turns = 8, timeout_seconds = 60 }
 """
 
 
@@ -58,12 +58,11 @@ def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> 
 
 def test_template_parses_and_validates() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
-    assert set(config.provider) == {"opencode", "anthropic"}
+    assert set(config.provider) == {"opencode", "deepseek", "anthropic"}
     assert set(config.runtime) == {"claude_code", "claude_code_opencode", "codex_opencode"}
     assert set(config.roles) == {"survey_terms", "translate", "review", "precompile_fix", "compile_fix"}
     assert config.provider["opencode"].models["deepseek-v4-flash"] == Api.CHAT
-    assert config.roles["precompile_fix"].bash == ["latexmk", "xelatex", "kpsewhich"]
-    assert config.roles["review"].bash == ["python3 -I validate.py"]
+    assert config.roles["review"].max_turns == 300
     assert config.provider["opencode"].base_url == "https://opencode.ai/zen/go"
     assert config.provider["anthropic"].base_url == "https://api.anthropic.com"
     assert config.provider["opencode"].api_key == ""

@@ -25,7 +25,7 @@ skill_path = ".claude/skills/{role}"
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
            "--disallowedTools", "Edit(.claude/skills/**)",
            "--settings", "{settings}"]
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
@@ -36,7 +36,7 @@ skill_path = ".claude/skills/{role}"
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
            "--disallowedTools", "Edit(.claude/skills/**)",
            "--settings", "{settings}"]
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
@@ -55,12 +55,12 @@ command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-
 env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 
 [roles]
-smoke = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
-sandbox_probe = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 8, timeout_seconds = 300, bash = ["touch"] }
-smoke_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
-sandbox_probe_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 8, timeout_seconds = 300, bash = ["touch"] }
-smoke_codex = { runtime = "codex_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 5, timeout_seconds = 300, bash = [] }
-sandbox_probe_codex = { runtime = "codex_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 8, timeout_seconds = 300, bash = ["touch"] }
+smoke = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300 }
+sandbox_probe = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 8, timeout_seconds = 300 }
+smoke_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 5, timeout_seconds = 300 }
+sandbox_probe_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 8, timeout_seconds = 300 }
+smoke_codex = { runtime = "codex_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 5, timeout_seconds = 300 }
+sandbox_probe_codex = { runtime = "codex_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 8, timeout_seconds = 300 }
 """
 
 SMOKE_SKILL = """---

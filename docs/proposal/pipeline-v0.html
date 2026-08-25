@@ -16,7 +16,7 @@
 <div class="ladder">
   <a class="st" href="#fetch">fetch</a><span class="one">把论文源码落进 src/</span><div class="out"><span class="f">src/</span><span class="f">build/e-print.bin</span></div>
   <span class="dn">↓</span><span></span><span></span>
-  <a class="st" href="#precompile">precompile</a><span class="one">展开、注入中文排版、编译出基线</span><div class="out"><span class="f">build/precompile.tex</span><span class="f">build/precompile/flat.pdf</span></div>
+  <a class="st" href="#precompile">precompile</a><span class="one">展开、注入中文排版、编译出基线</span><div class="out"><span class="f">build/precompile.tex</span><span class="f">build/sandbox/precompile/flat.pdf</span></div>
   <span class="dn">↓</span><span></span><span></span>
   <a class="st" href="#mask">mask</a><span class="one">不该翻译的部分换成 placeholder</span><div class="out"><span class="f">build/masked.tex</span><span class="f">build/blocks.json</span></div>
   <span class="dn">↓</span><span></span><span></span>
@@ -24,7 +24,7 @@
   <span class="dn">↓</span><span></span><span></span>
   <a class="st" href="#translate">translate</a><span class="one">逐 chunk 调模型翻译，脚本校验与重试</span><div class="out"><span class="f">build/translated/</span></div>
   <span class="dn">↓</span><span></span><span></span>
-  <a class="st todo" href="#review">review</a><span class="one">agent 通读，补翻回退、修跨 chunk 不一致</span><div class="out"><span class="f todo">build/reviewed/</span></div>
+  <a class="st" href="#review">review</a><span class="one">agent 通读，补翻回退、修跨 chunk 不一致</span><div class="out"><span class="f">build/reviewed/</span></div>
   <span class="dn">↓</span><span></span><span></span>
   <a class="st todo" href="#compile">compile</a><span class="one">译文回填、编译出 PDF</span><div class="out"><span class="f todo">build/zh.tex</span><span class="f todo">out/zh.pdf</span></div>
 </div>
@@ -80,7 +80,7 @@
 <li><b>选主文件</b>：src/ 下含 <code>\documentclass</code>（注释外）的 .tex 是候选；多个候选时取唯一含 <code>\begin{document}</code> 的，再不唯一取名为 <code>main.tex</code> 的。一个候选都没有 → <code>main_not_found</code>；仍不唯一 → <code>main_ambiguous</code>，message 列出全部候选</li>
 <li><b>展开成单文件</b>：<code>latexpand --keep-comments --fatal</code> 把 <code>\input</code> / <code>\include</code> 全部内联；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>，否则 <code>expand_failed</code>；仍残留 <code>\input</code> 的行数记 warning</li>
 <li><b>注入中文排版设置</b>：在 <code>\documentclass</code> 之后插入 xeCJK 设置（仓库自带的霞鹜文楷作主字体，Path 指向编译树里的 <code>fonts/</code>；行长断行按中文规则）。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包则先剥掉再注入。放在这一步而不是 compile，是让宏包冲突在翻译之前、在本阶段的修复会话里暴露并修掉：之后 compile 与 precompile 的差别只剩正文文字，再出错只可能是译文引起</li>
-<li><b>搭编译树</b> <code>build/precompile/</code>：src/ 整体拷贝，写入 <code>flat.tex</code>，拷入仓库的 <code>fonts/</code></li>
+<li><b>搭编译树</b> <code>build/sandbox/precompile/</code>：src/ 整体拷贝，写入 <code>flat.tex</code>，拷入仓库的 <code>fonts/</code></li>
 <li><b>首次编译</b>：<code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒。通过的判据：退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0。latexmk 跑不起来或超时 → <code>compile_failed</code></li>
 <li class="branch"><b>不通过 → 修复会话</b>：拉一次 agent work（角色 <code>precompile_fix</code>），现场就是编译树，agent 自己读 skill 与 flat.log、改 flat.tex；会话结束 <code>latexmk -C</code> 清掉中间产物，再<b>校验编译</b>一次，结论只认这一次，仍不通过 → <code>compile_failed</code>。会话改了 flat.tex 之外的文件记 warning（这些改动不会传到 compile，compile 的编译树仍从 src/ 搭）；会话以 error / timeout 结束也记 warning，判定仍由校验编译给出</li>
 </ol></div>
@@ -94,7 +94,7 @@
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>build/precompile/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>编译树：src/ 拷贝 + flat.tex + flat.pdf + flat.log；修复会话的现场</td></tr>
+<tr><td>build/sandbox/precompile/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>编译树：src/ 拷贝 + flat.tex + flat.pdf + flat.log；修复会话的现场</td></tr>
 <tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
 <tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过才有</td></tr>
 <tr><td>build/manifests/precompile.json</td><td class="src"><a href="#compile">compile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>主文件、原文的 CompileReport（页数等五个基线计数）、修复会话结局</td></tr>
@@ -113,7 +113,7 @@
 
 <span class="c"># 一次 agent 修复会话的结局。拉起过才有。</span>
 <span class="k">class</span> FixSession(BaseModel):
-    stop_reason: <span class="t">"finished"|"budget_exhausted"|"timeout"|"error"</span>
+    stop_reason: <span class="t">"finished"|"timeout"|"error"</span>
     model: <span class="t">str</span>
     duration_seconds: <span class="t">float</span>
 
@@ -208,8 +208,11 @@
 <div><span class="label">任务</span>
 <ol class="steps">
 <li><b>切 chunk</b>：扫标题结构选首选层级 → 按章节切 → 大于 SPLIT_ABOVE 下分、小于 MERGE_BELOW 合并 → 定区 front / body / appendix → 自检拼接恒等。token 数用 <code>tiktoken</code>（o200k_base）实数</li>
-<li class="branch"><b>模型提议术语表</b>（可选，角色 <code>survey_terms</code>，<code>--no-terms</code> 或角色未配置时跳过）：一次 ask，输入摘要 + 标题树 + 全文掩码文本，schema 约束输出 <code>{terms, do_not_translate}</code>；模型不可用降级为空提议并记 warning，不是失败</li>
-<li><b>合并四层术语表</b>：模型提议（最低层 <code>survey</code>）→ 全局配置目录 → 论文工作目录 → 命令行 <code>--glossary</code>，后者覆盖前者；按全文命中过滤，未命中记 <code>filtered</code>；用户 <code>style</code> 段原样转录。<code>terms</code> 与 <code>do_not_translate</code> 的区别就是词写在了输入文件的哪一段。命中规则：词边界匹配，允许尾缀 s / es；全大写的词（缩写）区分大小写，其余不区分——<code>LLM</code> 命中 <code>LLM</code> / <code>LLMs</code>，不命中 <code>vLLM</code> / <code>llm</code>；<code>large language model</code> 命中 <code>Large Language Models</code></li>
+<li class="branch"><b>模型提议术语表</b>（可选，角色 <code>survey_terms</code>，<code>--no-terms</code> 或角色未配置时跳过）：一次 ask，输入摘要 + 标题树 + 全文掩码文本，schema 约束输出 <code>{terms, do_not_translate}</code>；模型不可用降级为空提议并记 warning，不是失败。提议的译名机械补空格：中文字符与 ASCII 字母数字相邻处插一个空格（<code>细粒度token选择</code> → <code>细粒度 token 选择</code>），用户三层的译名原样不动</li>
+<li><b>合并四层术语表</b>：模型提议（最低层 <code>survey</code>）→ 全局配置目录 → 论文工作目录 → 命令行 <code>--glossary</code>，后者覆盖前者；按全文命中过滤，未命中记 <code>filtered</code>；用户 <code>style</code> 段原样转录。<code>terms</code> 与 <code>do_not_translate</code> 的区别就是词写在了输入文件的哪一段。命中规则：词边界匹配，允许尾缀 s / es；全大写的词（缩写）区分大小写，其余不区分——<code>LLM</code> 命中 <code>LLM</code> / <code>LLMs</code>，不命中 <code>vLLM</code> / <code>llm</code>；<code>large language model</code> 命中 <code>Large Language Models</code>。
+<b>去重按归一化键</b>：casefold、空白与连字符折成单个空格、去掉词尾 <code>es</code>/<code>s</code>（与命中规则认复数的口径一致），<code>LLM</code> 与 <code>LLMs</code> 是同一条。
+<b>复合术语</b>：一条术语的原词里以整词形式含有某个 <code>do_not_translate</code> 词时，它的译名必须原样含有该词（<code>mixed RL training</code> 译作「混合 RL 训练」，不是「混合强化学习训练」）。
+<b>两类冲突（同键冲突、复合术语丢词）同一套处置</b>：双方都来自用户层（全局 / 论文 / 命令行）→ 两条都保留，只记 warning 请用户自己改；一方来自 <code>survey</code> 提议、另一方来自用户层 → 丢 <code>survey</code> 那条并记 warning；双方都来自 <code>survey</code> → <code>do_not_translate</code> 胜出并记 warning。跨层同键是覆盖不是冲突，后层照常覆盖前层</li>
 <li><b>取全局语境</b>：照录摘要（blocks.json 的 abstract 槽位或 masked.tex 的 abstract 环境）；章节标题树</li>
 <li>写 <code>brief.json</code>（上面三样合一）与 <code>chunks/</code></li>
 </ol>
@@ -302,7 +305,7 @@
 <li><b>四层 validate</b>（见下），全过 → <b>translated</b></li>
 <li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次（<code>MAX_RETRIES</code> = 1）；ask 报错或返回空不消耗这一次，调用总数由 <code>MAX_ASK_CALLS</code> = <code>MAX_RETRIES</code> + 3 封顶</li>
 <li class="branch">仍不过 → <b>fallback</b>，译文文件写原文，记最后一次未通过的层</li>
-<li>全部跑完后一次写出 <code>build/translated/</code>（中途被杀不留半套产物）；fallback 数 &gt; max(⌊0.2 × 参与翻译的 chunk 数⌋, 1) → 整体 <code>translate_failed</code>（chunk 少的论文也放行 1 个回退，留给 review 阶段翻出来），不写 <code>build/translated/</code>（失败 ⇒ 产物不在，已翻译的 chunk 在 logs/translate-*.json 里）；不提前中断（中断只会丢掉已翻译的 chunk）</li>
+<li>全部跑完后一次写出 <code>build/translated/</code>（中途被杀不留半套产物）；<b>回退多少都照常写出</b>——回退件是原样的合法 LaTeX，编译得过，有 review 时由它补翻；每个回退的 chunk 在 <code>warnings</code> 记一条（chunk id + 最后一次未通过的层）。<code>translate_failed</code> 只留给配置错、读不到输入、写出后自检不过这类失败（2026-08-25 拍板，原先的 0.2 比例门与 <code>fallback_ratio</code> 一并去掉）；不提前中断（中断只会丢掉已翻译的 chunk）</li>
 </ol>
 <span class="label" style="display:block;margin-top:10px">四层 validate —— 全是机械比对，不含判断；失败信息写成人读的差异说明，原样回灌给模型</span>
 <table style="border-collapse:collapse;font-size:13.5px;margin-top:6px;width:100%">
@@ -346,7 +349,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
 <tr><td>build/translated/*.tex</td><td class="src"><a href="#review">review</a></td><td><span class="ty">LaTeX</span></td><td>每 chunk 的译文，与 chunks/ 同名；fallback 与 skipped 的内容是原文；全部跑完才一次写出，失败不写</td></tr>
 <tr><td>logs/translate-cNNN-k.json</td><td class="src">—</td><td><span class="ty">JSON</span></td><td>每次 ask 的完整请求与响应；整体失败时已译出的内容只在这里</td></tr>
-<tr><td>build/manifests/translate.json</td><td class="src">—</td><td><a href="#def-translate">TranslateManifest</a></td><td>用的模型与 effort、每 chunk 的状态 / 次数 / 失败说明、fallback 比例</td></tr>
+<tr><td>build/manifests/translate.json</td><td class="src">—</td><td><a href="#def-translate">TranslateManifest</a></td><td>用的模型与 effort、每 chunk 的状态 / 次数 / 失败说明、回退的 chunk 记在 warnings</td></tr>
 </tbody></table>
 </div>
 <details open id="def-translate"><summary>TranslateManifest</summary>
@@ -357,7 +360,6 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
     prompt_version: <span class="t">str</span>
     jobs: <span class="t">int</span>
     chunks: <span class="t">dict[str, ChunkTranslateRecord]</span>   <span class="c"># 按 chunk id 索引，按文档序写出</span>
-    fallback_ratio: <span class="t">float</span>                <span class="c"># fallback 数 ÷ 真正调了模型的 chunk 数（skipped 不计入分母）</span>
     warnings: <span class="t">list[str]</span>
     message: <span class="t">str</span>
 
@@ -368,13 +370,14 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </div>
 
 <!-- ============ review ============ -->
-<div class="card" id="review" style="border-style:dashed">
-<div class="card-head"><span class="name">review</span><span class="one">全文译完之后，agent 通读原文与译文：补翻回退的 chunk，修跨 chunk 的不一致</span><span class="tag todo">提案，未建</span><span class="tag agent">work</span></div>
+<div class="card" id="review" style="border-color:var(--accent)">
+<div class="card-head"><span class="name">review</span><span class="one">全文译完之后，agent 通读原文与译文：补翻回退的 chunk，修跨 chunk 的不一致</span><span class="tag agent">work</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
-<li><b>搭隔离现场</b> <code>build/review/</code>，只放：<code>chunks/</code>（原文，只读）、<code>reviewed/</code>（译文，可改）、<code>brief.json</code>，加 skill 目录（SKILL.md + <code>validate.py</code>）。manifest、blocks.json、masked.tex 都不在这棵树里，agent 碰不到</li>
-<li>拉一次 agent work（角色 <code>review</code>）：通读全部原文与译文，<b>把 translate 回退成英文的 chunk 翻出来</b>，修订术语不一致、同一概念前后译法不同、记号与称呼不统一、明显误译；只许改 <code>reviewed/</code> 下的文件，不许增删文件。SKILL 要求它每改完一个文件就跑 <code>python3 -I validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改——与脚本校验同一份实现；Bash 只放行这一条</li>
-<li><b>脚本校验</b>：先查 <code>reviewed/</code> 的文件名集合与 <code>chunks/</code> 完全一致（多的忽略，少的视为回退；一个文件就是一个 chunk，边界改不了）；再对每个文件对着它的源 chunk 跑四层 validate——placeholder 那一层就是拦「多一个少一个 ⟦BLK-21⟧」的；<b>不过的 chunk 整个回退到 translate 的版本</b>，其他 chunk 的修订保留；通过的拷出到 <code>build/reviewed/</code></li>
+<li><b>搭隔离现场</b> <code>build/sandbox/review/</code>，只放：<code>chunks/</code>（原文，只读）、<code>reviewed/</code>（译文，可改）、<code>brief.json</code>，加 skill 目录（<code>validate.py</code> 由本阶段从 <code>tongtu/validation.py</code> 拷进去，SKILL.md 随后由 work 拷 <code>skill/review/</code> 时叠上）。manifest、blocks.json、masked.tex 都不在这棵树里，agent 碰不到</li>
+<li>拉一次 agent work（角色 <code>review</code>）：通读全部原文与译文，<b>把 translate 回退成英文的 chunk 翻出来</b>，修订术语不一致、同一概念前后译法不同、记号与称呼不统一、明显误译；只许改 <code>reviewed/</code> 下的文件，不许增删文件。SKILL 要求它每改完一个文件就跑 <code>python3 -I .claude/skills/review/validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改——与脚本校验同一份实现。Bash 在沙箱内自由使用，不做前缀放行</li>
+<li><b>脚本校验</b>：先查 <code>reviewed/</code> 的文件名集合与 <code>chunks/</code> 完全一致（多的忽略，少的视为回退；一个文件就是一个 chunk，边界改不了）；再对每个文件对着它的源 chunk 跑四层 validate——placeholder 那一层就是拦「多一个少一个 ⟦BLK-21⟧」的；<b>不过的 chunk 整个回退到 translate 的版本</b>，其他 chunk 的修订保留；拷出到 <code>build/reviewed/</code> 时把正文首尾的空白按源 chunk 原样包回（chunk 文件是 masked.tex 的精确切片，compile 按序拼接，首尾空白是拼接正确性的一部分）</li>
+<li><code>tongtu run --no-review</code> <b>跳过审校</b>：不拉会话、不搭现场，<code>translated/</code> 原样拷成 <code>reviewed/</code>，status ok，<code>changed</code> / <code>reverted</code> 空，<code>session</code> 为 null</li>
 <li>compile 读 <code>reviewed/</code></li>
 </ol>
 <p style="font-size:13.5px;margin:6px 0 0">agent 能造成的最大损害 = 某个 chunk 的修订被丢弃。它的改动全部经过与 translate 同一套机械校验；它只见隔离现场里的文本；<code>--from review</code> 可以反复跑而不重翻。</p>
@@ -386,21 +389,21 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>原文，拷进隔离现场只读；校验的源</td></tr>
 <tr><td>build/translated/*.tex</td><td class="src"><a href="#translate">translate</a></td><td><span class="ty">LaTeX</span></td><td>修订的起点，拷进现场为 reviewed/；未过校验的 chunk 回退到这一版</td></tr>
 <tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>术语表与全局语境，拷进现场</td></tr>
-<tr><td>skill/review/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>SKILL.md 与 validate.py，拷进现场</td></tr>
+<tr><td>skill/review/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>SKILL.md，由 work 拷进现场的 skill 目录</td></tr>
 <tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>拉一次 work，角色 review 用哪个运行时与模型</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>build/review/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>隔离现场：chunks/、reviewed/、brief.json、skill；agent 只见这棵树</td></tr>
+<tr><td>build/sandbox/review/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>隔离现场：chunks/、reviewed/、brief.json、skill；agent 只见这棵树</td></tr>
 <tr><td>build/reviewed/*.tex</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">LaTeX</span></td><td>通过四层校验的修订版；文件集合与 chunks/ 一致，未过的用 translate 的版本</td></tr>
 <tr><td>logs/review.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>会话的逐轮记录</td></tr>
 <tr><td>build/manifests/review.json</td><td class="src">—</td><td><a href="#def-review">ReviewManifest</a></td><td>会话结局、改过的与被回退的 chunk id</td></tr>
 </tbody></table>
 </div>
-<details open id="def-review"><summary>ReviewManifest（推测）</summary>
+<details open id="def-review"><summary>ReviewManifest</summary>
 <pre><span class="k">class</span> ReviewManifest(BaseModel):
     status: <span class="t">"ok" | "review_failed"</span>      <span class="c"># 会话拉不起来才是 failed；改了 0 个 chunk 也是 ok</span>
-    session: <span class="t">FixSession</span>
+    session: <span class="t">FixSession | None</span>       <span class="c"># 没拉起会话时为 None：--no-review 直通，或会话之前就失败</span>
     changed: <span class="t">list[str]</span>                  <span class="c"># agent 改过的 chunk id</span>
     reverted: <span class="t">list[str]</span>                 <span class="c"># 改完没过 validate、被回退的 chunk id</span>
     warnings: <span class="t">list[str]</span>

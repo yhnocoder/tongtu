@@ -1,10 +1,41 @@
 from __future__ import annotations
 
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
-from . import masking
+SENTINEL_OPEN = "⟦"
+SENTINEL_CLOSE = "⟧"
+
+BLOCK_ID_PREFIX = "BLK"
+CAPTION_ID_PREFIX = "CAP"
+
+TOKEN_RE = re.compile(rf"{SENTINEL_OPEN}({BLOCK_ID_PREFIX}|{CAPTION_ID_PREFIX})-([0-9]+){SENTINEL_CLOSE}")
+
+BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
+
+ENVIRONMENT_NAME_RE = re.compile(r"[A-Za-z0-9@]+\*?")
+
+USAGE = "usage: validate.py SOURCE_FILE TRANSLATED_FILE"
+
+EXIT_OK = 0
+
+EXIT_FAILURE = 1
+
+
+def read_control_sequence(text: str, position: int) -> tuple[str, int]:
+    start = position + 1
+    if start >= len(text):
+        return "", start
+    if text[start].isascii() and text[start].isalpha():
+        end = start
+        while end < len(text) and text[end].isascii() and text[end].isalpha():
+            end += 1
+        return text[start:end], end
+    return text[start], start + 1
+
 
 CHECK_PLACEHOLDERS = "placeholders"
 CHECK_CONTROL_SEQUENCES = "control_sequences"
@@ -18,8 +49,8 @@ CHECK_NAMES: tuple[str, ...] = (
 )
 
 ENVIRONMENT_DELIMITER_RE = re.compile(
-    r"\\begin\s*\{" + masking.ENVIRONMENT_NAME_RE.pattern + r"\}(?:\[[^\]]*\])*(?:\{[^{}]*\})*"
-    r"|\\end\s*\{" + masking.ENVIRONMENT_NAME_RE.pattern + r"\}"
+    r"\\begin\s*\{" + ENVIRONMENT_NAME_RE.pattern + r"\}(?:\[[^\]]*\])*(?:\{[^{}]*\})*"
+    r"|\\end\s*\{" + ENVIRONMENT_NAME_RE.pattern + r"\}"
 )
 
 CONTROL_SEQUENCE_NAME_RE = re.compile(r"\\(?:[A-Za-z]+\*?|.)", re.DOTALL)
@@ -111,8 +142,8 @@ def validate(source: str, translation: str) -> ValidationResult:
 
 
 def _check_placeholders(source: str, translation: str) -> Failure | None:
-    expected = Counter(match.group(0) for match in masking.TOKEN_RE.finditer(source))
-    actual = Counter(match.group(0) for match in masking.TOKEN_RE.finditer(translation))
+    expected = Counter(match.group(0) for match in TOKEN_RE.finditer(source))
+    actual = Counter(match.group(0) for match in TOKEN_RE.finditer(translation))
     if expected != actual:
         missing = expected - actual
         extra = actual - expected
@@ -123,15 +154,15 @@ def _check_placeholders(source: str, translation: str) -> Failure | None:
             parts.append(f"translation has extra {_describe_counter(extra)}")
         return Failure(check=CHECK_PLACEHOLDERS, message="; ".join(parts))
     complete = sum(actual.values())
-    opens = translation.count(masking.SENTINEL_OPEN)
-    closes = translation.count(masking.SENTINEL_CLOSE)
+    opens = translation.count(SENTINEL_OPEN)
+    closes = translation.count(SENTINEL_CLOSE)
     if opens != complete or closes != complete:
         return Failure(
             check=CHECK_PLACEHOLDERS,
             message=(
-                f"translation has {complete} complete placeholders but {opens} {masking.SENTINEL_OPEN} and "
-                f"{closes} {masking.SENTINEL_CLOSE}: broken placeholder fragments are present; "
-                f"{masking.SENTINEL_OPEN} and {masking.SENTINEL_CLOSE} may only appear inside complete placeholders"
+                f"translation has {complete} complete placeholders but {opens} {SENTINEL_OPEN} and "
+                f"{closes} {SENTINEL_CLOSE}: broken placeholder fragments are present; "
+                f"{SENTINEL_OPEN} and {SENTINEL_CLOSE} may only appear inside complete placeholders"
             ),
         )
     return None
@@ -210,7 +241,7 @@ def scan(text: str) -> Scan:
     while position < length:
         character = text[position]
         if character == "\\":
-            name, after = masking.read_control_sequence(text, position)
+            name, after = read_control_sequence(text, position)
             if text[after : after + 1] == "*" and name.isalpha():
                 name, after = name + "*", after + 1
             sequences.append(name)
@@ -229,14 +260,12 @@ def _attach_headings(text: str) -> str:
 
 def translatable_paragraphs(text: str) -> int:
     return sum(
-        1
-        for paragraph in masking.BLANK_LINE_RE.split(text)
-        if paragraph.strip() and _has_translatable_text(paragraph.strip())
+        1 for paragraph in BLANK_LINE_RE.split(text) if paragraph.strip() and _has_translatable_text(paragraph.strip())
     )
 
 
 def _has_translatable_text(paragraph: str) -> bool:
-    stripped = masking.TOKEN_RE.sub("", paragraph)
+    stripped = TOKEN_RE.sub("", paragraph)
     stripped = ENVIRONMENT_DELIMITER_RE.sub("", stripped)
     stripped = NON_TEXT_COMMAND_RE.sub("", stripped)
     stripped = CONTROL_SEQUENCE_NAME_RE.sub("", stripped)
@@ -249,3 +278,27 @@ def _describe_counter(counter: Counter[str]) -> str:
     if len(items) > DIFFERENCE_ITEMS_MAX:
         return f"{listed} and more ({len(items)} items in total)"
     return listed
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print(USAGE)
+        return EXIT_FAILURE
+    try:
+        source = Path(argv[0]).read_text(encoding="utf-8")
+        translation = Path(argv[1]).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        print(f"cannot read file: {error}")
+        return EXIT_FAILURE
+    result = validate(source.strip(), translation.strip())
+    failures = {failure.check: failure.message for failure in result.failures}
+    for layer in CHECK_NAMES:
+        if layer in failures:
+            print(f"  [fail] {layer}: {failures[layer]}")
+        else:
+            print(f"  [pass] {layer}")
+    return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

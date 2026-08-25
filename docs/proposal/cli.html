@@ -13,7 +13,7 @@
 <p class="sub"><code>tongtu</code> 是通途的命令行入口：给它一个 arXiv 编号，它把论文源码取下来、翻译成中文、编译出与原版同样排版的 PDF。日常只用 <code>tongtu run</code> 一条命令；其余命令服务于它——<code>status</code> 查看一篇论文跑到哪了，<code>stage</code> 单独重跑某个阶段，<code>validate</code> 校验一对译文，<code>doctor</code> 检查环境，<code>setup</code> 生成配置。七个阶段各自做什么见 <a href="pipeline-v0.html">pipeline-v0.html</a>，模型与服务商的配置见 <a href="model.html">model.html</a>。</p>
 
 <h2>SYNOPSIS</h2>
-<pre><span class="k">tongtu run</span>      PAPER [--from STAGE] [OPTIONS]
+<pre><span class="k">tongtu run</span>      PAPER [--from STAGE] [--no-review] [OPTIONS]
 <span class="k">tongtu stage</span>    [STAGE PAPER] [OPTIONS]
 <span class="k">tongtu status</span>   PAPER [--workdir DIR]
 <span class="k">tongtu validate</span> SRC DST
@@ -24,7 +24,7 @@
 
 <h2>COMMANDS <small>示例输出为示意，待实跑替换</small></h2>
 <dl>
-<dt>run PAPER [--from STAGE]</dt>
+<dt>run PAPER [--from STAGE] [--no-review]</dt>
 <dd>翻译一篇论文，生成与原版同样排版的中文 PDF。终端逐阶段打一行结果（✓/✗ 阶段 状态 摘要 耗时），translate、review 显示进度条。依次跑完 fetch → precompile → mask → survey → translate → review → compile。
 <table>
 <tr><td>失败了</td><td>停在出错的阶段，退出 1，终端打出原因与 manifest 路径。修好后再执行一次同样的命令，就从这个阶段接着跑，前面的阶段不会重做。</td></tr>
@@ -117,6 +117,7 @@ wrote /Users/zach/.config/tongtu/models.toml.</pre></div></dd>
 <dt>--work-model RUNTIME/MODEL，--work-effort LEVEL</dt><dd>这一次换个模型做 agent 工作：覆盖所有 agent 会话（work）类角色（review、precompile_fix、compile_fix）。RUNTIME 是 <code>[runtime.*]</code> 的名字，例 <code>claude_code/claude-sonnet-5</code>。</dd>
 <dt>--glossary FILE</dt><dd>给这篇论文额外指定术语表，可多次给，靠后的优先。与全局、论文层术语表叠加。</dd>
 <dt>--no-terms</dt><dd>不让模型提议术语，只用自己给的术语表。</dd>
+<dt>--no-review</dt><dd>只 <code>run</code> 有。跳过审校会话：不拉 agent、不搭现场，translate 的译文原样拷成 <code>build/reviewed/</code> 进 compile。</dd>
 <dt>--jobs N</dt><dd>translate 同时翻几个 chunk。</dd>
 <dt>--workdir DIR</dt><dd>把这篇论文的工作目录放到指定位置。默认 <code>$TONGTU_HOME/&lt;编号&gt;</code>，再默认 <code>~/.local/share/tongtu/&lt;编号&gt;</code>。</dd>
 </dl>

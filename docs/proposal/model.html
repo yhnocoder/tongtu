@@ -38,7 +38,7 @@
   workdir:  会话的 cwd，也是它能读写的全部范围
   model:    "运行时/模型"，None 用角色配置          <span class="c"># --work-model 的原字符串；effort 同理</span>
   → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail)</pre>
-<p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>（从 tongtu 的实现生成，不入库），agent 跑的是它，不是 <code>tongtu</code>。</p>
+<p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>，它就是 <code>tongtu/validation.py</code> 本身（只依赖标准库，带 <code>main</code>），由 review 阶段拷进现场，agent 跑的是它，不是 <code>tongtu</code>。work 拷 skill 时用 <code>dirs_exist_ok</code> 叠加，不清空目的地。</p>
 
 <span class="label" style="display:block;margin-top:14px">运行时 = 一条命令模板</span>
 <p style="font-size:13.5px;margin:6px 0 0">Claude Code、Codex、opencode 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放哪。所以运行时不写代码，写在配置里（见下）；<code>work</code> 本身只做：拷 skill → 拼命令 → 新进程组跑 → 超时杀组 → stdout 落 trace → 按退出码与超时给 stop_reason。</p>
@@ -55,6 +55,12 @@ api_key     = ""                  <span class="c"># 直接写密钥，或留空�
 api_key_env = "OPENCODE_API_KEY"
 models = { "deepseek-v4-flash" = "chat", "gpt-5.6-luna" = "responses", "minimax-m3" = "messages" }
 
+[provider.deepseek]
+base_url    = "https://api.deepseek.com"
+api_key     = ""
+api_key_env = "DEEPSEEK_API_KEY"
+api         = "chat"              <span class="c"># OpenAI 兼容；模型 deepseek-v4-flash / deepseek-v4-pro</span>
+
 [provider.anthropic]
 base_url    = "https://api.anthropic.com"
 api_key     = ""
@@ -67,13 +73,13 @@ skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",                       <span class="c"># 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）</span>
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
            "--disallowedTools", "Edit(.claude/skills/**)",                       <span class="c"># agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦</span>
            "--settings", "{settings}"]                                           <span class="c"># 下面 settings 表序列化成 JSON 填入</span>
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   <span class="c"># 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录</span>
 <span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
-<span class="c"># {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
+<span class="c"># Bash 在沙箱内自由使用：写范围 = 现场，断网；agent 做得对不对由驱动器在现场外重跑校验终判。work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
 # Codex 的运行时条目按同一套机制写在下面的 [runtime.codex_opencode]（issue #27）。
 # .codex/rules 的 allow 是「沙箱外执行」，不用它做放行（issue #26 实测，2026-08-22）</span>
 
@@ -103,7 +109,7 @@ command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-
 env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 <span class="c"># prompt 不作为位置参数：codex exec 没给 prompt 参数时从 stdin 读，work 正是经 stdin 喂 PROMPT；cwd 由 work 设为现场，不加 -C
 # CODEX_HOME 指向 work 为本次会话建的临时目录，会话结束整个删掉；~/.codex/ 不被读也不被写
-# 角色的 bash 放行清单与 max_turns 对 Codex 不生效：沙箱只靠 -s workspace-write 与 approval_policy="never"，写范围 = 现场 + 临时目录，默认断网
+# max_turns 对 Codex 不生效：沙箱只靠 -s workspace-write 与 approval_policy="never"，写范围 = 现场 + 临时目录，默认断网
 # wire_api 只接受 responses，所以这个条目只能跑 opencode 的 responses 端点支持的模型：gpt-5.6-luna、grok-4.5、muse-spark-1.2-contributor、deepseek-v4-flash
 # codex 须是原生二进制（brew cask 装的）：npm 装的是 node 启动脚本，work 把子进程 PATH 收成 TeX + 系统 bin 后找不到 node，退出码 127</span>
 
@@ -111,16 +117,16 @@ env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 [roles]
 survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   <span class="c"># 可选；不配就不提议</span>
 translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
-review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 -I validate.py"] }
-precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
-compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }</pre>
+review         = { runtime = "claude_code", model = "claude-opus-5", effort = "medium", max_turns = 300, timeout_seconds = 3600 }
+precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
+compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }</pre>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0">命令行 <code>--ask-model</code> / <code>--ask-effort</code> 覆盖全部 API 直调（ask）类角色，<code>--work-model</code> / <code>--work-effort</code> 覆盖全部 agent 会话（work）类角色；没有 <code>tongtu config</code> 子命令，文件手改。密钥写在服务商条目的 <code>api_key</code>（文件 0600），留空则用 <code>api_key_env</code> 指的环境变量。messages 接口的推理强度按档位表换算成 <code>thinking.budget_tokens</code>（low 1024 / medium 2048 / high 4096），<code>max_tokens</code> 32768。<code>tongtu doctor</code> 只检查 <code>[roles]</code> 引用到的服务商与运行时。</p>
 </details>
 <div style="margin-top:18px">
 <span class="label">会话的约束——四件事，各管一件<small style="text-transform:none;letter-spacing:0;margin-left:8px">issue #20 实测结论，2026-08-20</small></span>
 <ol style="margin:8px 0 0;padding-left:22px;font-size:14px;max-width:none">
-<li><b>命令放行规则</b>：运行时自带，按子命令逐个判定，复合命令与命令替换绕不过。review 只给 <code>python3 -I validate.py</code>（<code>-I</code> 不把脚本目录放进 sys.path）；precompile_fix / compile_fix 只给 <code>latexmk</code>、<code>xelatex</code>、<code>kpsewhich</code>。同时 deny 对 skill 目录的编辑：agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它。</li>
-<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 在放行之后仍能执行任意代码，靠沙箱把写范围限制在会话 cwd、断网。</li>
+<li><b>Bash 不做前缀放行</b>：运行时的 <code>autoAllowBashIfSandboxed</code> 让沙箱内的命令一律放行，<code>failIfUnavailable</code> 又保证沙箱不可用时会话直接失败，角色级放行清单起不了作用，故去掉（<a href="https://github.com/yhnocoder/tongtu/issues/20">issue #20</a> 实测，2026-08-24）。约束交给第 2 条的沙箱，正确性交给驱动器在现场外重跑校验。仍 deny 对 skill 目录的编辑：agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它。</li>
+<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 本来就能执行任意代码，前缀放行拦不住，靠沙箱把写范围限制在会话 cwd、断网。</li>
 <li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻退出码 2。给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过——有意绕过只能走第 2 条管住的那条路：嵌套的 run 要写 cwd 之外的工作目录根、要出网，第一个阶段就失败。</li>
 <li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin + 系统 bin）。</li>
 </ol>

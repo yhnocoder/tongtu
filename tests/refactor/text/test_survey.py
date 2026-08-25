@@ -515,3 +515,149 @@ def test_fixture_papers_survey_after_mask(tmp_path: Path, paper: str) -> None:
         )
         == masked
     )
+
+
+COMPOUND = """\
+\\section{Method}
+
+We use mixed RL training and plain RL for the LLM and several LLMs.
+"""
+
+
+def proposal(monkeypatch: pytest.MonkeyPatch, terms: dict[str, str], do_not_translate: list[str]) -> None:
+    monkeypatch.setattr(survey, "load_config", lambda: (role_config(), ""))
+    monkeypatch.setattr(
+        survey,
+        "ask",
+        lambda **kwargs: AskOutcome(
+            status=AskStatus.OK,
+            text=json.dumps(
+                {
+                    "terms": [{"word": word, "translation": value} for word, value in terms.items()],
+                    "do_not_translate": do_not_translate,
+                }
+            ),
+        ),
+    )
+
+
+def term_warnings(manifest: SurveyManifest) -> list[str]:
+    return [line for line in manifest.warnings if line.startswith("term")]
+
+
+def test_a_plural_and_its_singular_from_the_user_are_both_kept(tmp_path: Path) -> None:
+    cli_path = write_glossary(tmp_path / "cli.json", {"do_not_translate": ["LLM"], "terms": {"LLMs": "大语言模型"}})
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir, glossary=(cli_path,))
+    brief = read_brief(workdir)
+    assert [entry.word for entry in brief.do_not_translate] == ["LLM"]
+    assert [entry.word for entry in brief.terms] == ["LLMs"]
+    assert len(term_warnings(manifest)) == 1
+    assert all(part in term_warnings(manifest)[0] for part in ("'LLM'", "'LLMs'", "cli", "both are kept"))
+
+
+def test_a_plural_and_its_singular_from_the_model_keep_do_not_translate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proposal(monkeypatch, {"LLMs": "大语言模型"}, ["LLM"])
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir)
+    brief = read_brief(workdir)
+    assert [entry.word for entry in brief.do_not_translate] == ["LLM"]
+    assert brief.terms == []
+    assert len(term_warnings(manifest)) == 1
+    assert all(part in term_warnings(manifest)[0] for part in ("'LLM'", "'LLMs'", "survey", "dropping"))
+
+
+def test_a_higher_layer_overrides_a_lower_layer_plural(tmp_path: Path) -> None:
+    write_glossary(
+        Path(str(tmp_path / "config")) / "tongtu" / survey.GLOSSARY_FILENAME, {"terms": {"LLMs": "全局译法"}}
+    )
+    cli_path = write_glossary(tmp_path / "cli.json", {"terms": {"LLM": "命令行译法"}})
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir, glossary=(cli_path,))
+    brief = read_brief(workdir)
+    assert [(entry.word, entry.translation, entry.decided_by) for entry in brief.terms] == [
+        ("LLM", "命令行译法", DecidedBy.CLI)
+    ]
+    assert term_warnings(manifest) == []
+
+
+def test_a_compound_translation_keeping_the_untranslated_word_survives(tmp_path: Path) -> None:
+    cli_path = write_glossary(
+        tmp_path / "cli.json", {"do_not_translate": ["RL"], "terms": {"mixed RL training": "混合 RL 训练"}}
+    )
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir, glossary=(cli_path,))
+    brief = read_brief(workdir)
+    assert [entry.word for entry in brief.terms] == ["mixed RL training"]
+    assert [entry.word for entry in brief.do_not_translate] == ["RL"]
+    assert term_warnings(manifest) == []
+
+
+def test_two_user_layers_in_conflict_keep_both_entries(tmp_path: Path) -> None:
+    write_glossary(Path(str(tmp_path / "config")) / "tongtu" / survey.GLOSSARY_FILENAME, {"do_not_translate": ["RL"]})
+    cli_path = write_glossary(tmp_path / "cli.json", {"terms": {"mixed RL training": "混合强化学习训练"}})
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir, glossary=(cli_path,))
+    brief = read_brief(workdir)
+    assert [entry.word for entry in brief.terms] == ["mixed RL training"]
+    assert [entry.word for entry in brief.do_not_translate] == ["RL"]
+    assert len(term_warnings(manifest)) == 1
+    assert all(part in term_warnings(manifest)[0] for part in ("'RL'", "global", "cli", "both are kept"))
+
+
+def test_a_user_compound_term_drops_the_proposed_word(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proposal(monkeypatch, {}, ["RL"])
+    cli_path = write_glossary(tmp_path / "cli.json", {"terms": {"mixed RL training": "混合强化学习训练"}})
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir, glossary=(cli_path,))
+    brief = read_brief(workdir)
+    assert [(entry.word, entry.decided_by) for entry in brief.terms] == [("mixed RL training", DecidedBy.CLI)]
+    assert brief.do_not_translate == []
+    assert len(term_warnings(manifest)) == 1
+    assert "dropping this do_not_translate word" in term_warnings(manifest)[0]
+
+
+def test_a_user_word_drops_the_proposed_compound_term(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proposal(monkeypatch, {"mixed RL training": "混合强化学习训练"}, [])
+    cli_path = write_glossary(tmp_path / "cli.json", {"do_not_translate": ["RL"]})
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir, glossary=(cli_path,))
+    brief = read_brief(workdir)
+    assert brief.terms == []
+    assert [(entry.word, entry.decided_by) for entry in brief.do_not_translate] == [("RL", DecidedBy.CLI)]
+    assert len(term_warnings(manifest)) == 1
+    assert "dropping this term" in term_warnings(manifest)[0]
+
+
+def test_two_proposed_entries_in_conflict_keep_the_untranslated_word(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proposal(monkeypatch, {"mixed RL training": "混合强化学习训练"}, ["RL"])
+    workdir = make_workdir(tmp_path, COMPOUND)
+    manifest = survey.run(workdir)
+    brief = read_brief(workdir)
+    assert brief.terms == []
+    assert [(entry.word, entry.decided_by) for entry in brief.do_not_translate] == [("RL", DecidedBy.SURVEY)]
+    assert len(term_warnings(manifest)) == 1
+    assert "dropping this term" in term_warnings(manifest)[0]
+
+
+def test_a_proposed_translation_gets_spaces_around_latin_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proposal(monkeypatch, {"mixed RL training": "混合RL训练", "LLM": "LLM 模型"}, [])
+    workdir = make_workdir(tmp_path, COMPOUND)
+    survey.run(workdir)
+    brief = read_brief(workdir)
+    assert [(entry.word, entry.translation) for entry in brief.terms] == [
+        ("LLM", "LLM 模型"),
+        ("mixed RL training", "混合 RL 训练"),
+    ]
+
+
+def test_a_user_translation_keeps_its_spacing(tmp_path: Path) -> None:
+    cli_path = write_glossary(tmp_path / "cli.json", {"terms": {"mixed RL training": "混合RL训练"}})
+    workdir = make_workdir(tmp_path, COMPOUND)
+    survey.run(workdir, glossary=(cli_path,))
+    brief = read_brief(workdir)
+    assert [(entry.word, entry.translation) for entry in brief.terms] == [("mixed RL training", "混合RL训练")]
