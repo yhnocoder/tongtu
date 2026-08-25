@@ -62,7 +62,7 @@
 <div class="card" style="margin-top:8px">
 <pre style="margin:0"><span class="k">tongtu run</span> PAPER [--from STAGE] [--ask-model PROVIDER/MODEL] [--ask-effort LEVEL] [--work-model RUNTIME/MODEL] [--work-effort LEVEL] [--glossary FILE]... [--workdir DIR] [--jobs N] [--no-terms]
 <span class="k">tongtu stage</span> STAGE PAPER [同上，不含 --from]
-<span class="k">tongtu status</span> PAPER [--workdir DIR]  <span class="c"># 按阶段序打一张表：状态 / 一行 message / 产物在不在 / manifest 路径；只读</span>
+<span class="k">tongtu status</span> PAPER [--workdir DIR]  <span class="c"># 按阶段序逐行打：状态 / 产物在不在 / manifest 相对路径，message 与 warnings 挂在行下；只读</span>
 <span class="k">tongtu validate</span> SRC DST            <span class="c"># 四层校验，0 = 通过</span>
 <span class="k">tongtu doctor</span>                       <span class="c"># 工具链（含 TeX Live 年份不低于 2026）、字体、密钥逐项检查</span>
 <span class="k">tongtu setup</span> [-i]                  <span class="c"># 写出带注释的 models.toml 模板（已存在不覆盖，权限 0600）；-i 逐个问要不要配置模板里的服务商并填 API key，ask 类角色指向第一个选中的服务商</span></pre>
@@ -82,6 +82,7 @@
 <dt>--no-terms</dt><dd>survey 不调模型提议术语表，只用你写的三层</dd>
 </dl>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0"><code>status</code> 是「上次跑挂了、不想重跑、想知道为什么」的入口：失败阶段那一行有 message 与 warnings，再细看去 logs/。</p>
+<p style="font-size:13px;color:var(--muted);margin:8px 0 0">终端输出一律英文<small style="text-transform:none;letter-spacing:0">（<a href="https://github.com/yhnocoder/tongtu/issues/45">issue #45</a>，2026-08-25）</small>：每个阶段结束打一行「✓/✗ + 阶段名 + 状态 + 观察值摘要 + 耗时」，摘要取自该阶段 manifest 已有字段。阶段内进度：有逐块单位的阶段（translate、review）运行时，spinner 行显示进度条、n/m 与 inflight chunk id 列表；无逐块单位的阶段（precompile、compile）显示当前动作文案。通道是 <code>run()</code> 的 keyword-only 可选参数 <code>report</code>——chunked 阶段签名 <code>report(done, total, inflight_ids)</code>，其余 <code>report(action)</code>——显示专用，不进 manifest、不落文件。manifest 的 message / warnings / detail 同样用英文；发给模型的 prompt 素材、注入的中文排版设置与 models.toml 模板注释不变。</p>
 <span class="label" style="display:block;margin-top:12px">退出码</span>
 <dl><dt>0</dt><dd>成功（validate：通过；doctor：工具链与字体齐全——models.toml、密钥、运行时只报告不计入，镜像构建期可当断言用）</dd><dt>1</dt><dd>某阶段失败，manifest 里有原因</dd><dt>2</dt><dd>用法错误</dd></dl>
 </div>

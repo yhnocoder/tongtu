@@ -232,7 +232,7 @@ def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: p
 def test_model_override_without_slash_is_error(configured: Path) -> None:
     outcome = ask("chat_role", "", MESSAGES, log_path=configured / "log.json", model="chat-model")
     assert outcome.status == AskStatus.ERROR
-    assert "provider/模型名" in outcome.detail
+    assert "provider/model" in outcome.detail
 
 
 def test_model_override_with_unknown_provider_is_error(configured: Path) -> None:
@@ -359,7 +359,7 @@ def test_unwritable_log_is_error(configured: Path, monkeypatch: pytest.MonkeyPat
     blocker.write_text("", encoding="utf-8")
     outcome = ask("chat_role", "", MESSAGES, log_path=blocker / "log.json")
     assert outcome.status == AskStatus.ERROR
-    assert "日志" in outcome.detail
+    assert "call log" in outcome.detail
 
 
 def test_thinking_budget_table_matches_efforts() -> None:

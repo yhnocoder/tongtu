@@ -147,7 +147,7 @@ def test_expand_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert manifest.main_file == "main.tex"
-    assert "退出码 1" in manifest.message
+    assert "exited with code 1" in manifest.message
     assert any("body.tex" in line for line in manifest.warnings)
 
 
@@ -242,7 +242,7 @@ def test_bbl_is_inlined_when_exactly_one_bibliography(tmp_path: Path, monkeypatc
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert "\\begin{thebibliography}" in output
     assert "\\bibliography{refs}" not in output
-    assert any("main.bbl" in line and "内联" in line for line in manifest.warnings)
+    assert any("main.bbl" in line and "inlined" in line for line in manifest.warnings)
 
 
 def test_bbl_not_inlined_when_ambiguous(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,7 +252,7 @@ def test_bbl_not_inlined_when_ambiguous(tmp_path: Path, monkeypatch: pytest.Monk
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert "thebibliography" not in output
-    assert any("未内联" in line for line in manifest.warnings)
+    assert any("not inlined" in line for line in manifest.warnings)
 
 
 def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -282,7 +282,7 @@ def test_fix_session_error_still_goes_to_verification(tmp_path: Path, monkeypatc
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
-    assert "修复会话以 error 结束（运行时 claude_code 不在 PATH 里），结论仍由脚本校验给出" in manifest.warnings
+    assert any("the fix session ended with error" in line and "claude_code" in line for line in manifest.warnings)
     assert calls == {"compile": 2, "clean": 1}
     assert outputs_present(workdir, "precompile")
 
@@ -296,8 +296,8 @@ def test_fix_session_error_then_verification_failure(tmp_path: Path, monkeypatch
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
-    assert any("修复会话以 error 结束" in line for line in manifest.warnings)
-    assert manifest.message.startswith("经过修复会话，校验编译未过出口判据：")
+    assert any("the fix session ended with error" in line for line in manifest.warnings)
+    assert manifest.message.startswith("after the fix session the verify compile still fails the exit checks:")
     assert calls == {"compile": 2, "clean": 1}
     assert not outputs_present(workdir, "precompile")
 
@@ -322,7 +322,7 @@ def test_final_verification_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert manifest.report is None
-    assert "校验" in manifest.message
+    assert "verify" in manifest.message
     assert "! Undefined control sequence." in manifest.message
     assert not (workdir.build / "precompile.tex").exists()
 
@@ -334,7 +334,7 @@ def test_first_compile_timeout_skips_the_fix_session(tmp_path: Path, monkeypatch
     work_calls = wire_work(monkeypatch)
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
-    assert "超时" in manifest.message
+    assert "timeout" in manifest.message
     assert work_calls == []
     assert manifest.fix_session is None
 
@@ -346,7 +346,7 @@ def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.Monkey
     wire_work(monkeypatch)
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
-    assert "页数" in manifest.message
+    assert "page count" in manifest.message
 
 
 def test_session_changes_outside_flat_tex_are_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -375,3 +375,22 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     assert not (workdir.build / "precompile").exists()
     assert not (workdir.build / "precompile.tex").exists()
     assert not (workdir.logs / "precompile-fix.jsonl").exists()
+
+
+def test_report_traces_the_compile_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    actions: list[str] = []
+    manifest = precompile.run(workdir, report=actions.append)
+    assert manifest.status is PrecompileStatus.OK
+    assert actions == ["compiling flat.tex"]
+
+
+def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
+    wire_expand(monkeypatch)
+    wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
+    wire_work(monkeypatch)
+    actions: list[str] = []
+    manifest = precompile.run(workdir, report=actions.append)
+    assert manifest.status is PrecompileStatus.OK
+    assert actions == ["compiling flat.tex", "fix session running", "verifying compile"]

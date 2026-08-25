@@ -53,14 +53,14 @@ def parse_arxiv_url(url: str) -> str:
     parts = urlsplit(url)
     host = parts.hostname or ""
     if host != "arxiv.org" and not host.endswith(".arxiv.org"):
-        raise PaperArgumentError(f"不是 arxiv.org 链接：{url}")
+        raise PaperArgumentError(f"not an arxiv.org URL: {url}")
     for prefix in ("/abs/", "/pdf/", "/html/"):
         if parts.path.startswith(prefix):
             arxiv_id = parts.path[len(prefix) :].rstrip("/").removesuffix(".pdf")
             if not arxiv_id:
-                raise PaperArgumentError(f"链接的路径前缀之后没有编号：{url}")
+                raise PaperArgumentError(f"no id after the path prefix in URL: {url}")
             return arxiv_id
-    raise PaperArgumentError(f"链接路径不含 /abs/、/pdf/、/html/ 前缀：{url}")
+    raise PaperArgumentError(f"URL path has none of the /abs/, /pdf/, /html/ prefixes: {url}")
 
 
 def _as_source_directory(paper: str) -> Path | None:
@@ -110,7 +110,10 @@ def _fetch_remote(arxiv_id: str, paper_workdir: Workdir) -> FetchManifest:
         )
     if not payload:
         return FetchManifest(
-            status=FetchStatus.DOWNLOAD_FAILED, source=arxiv_id, url=url, message="下载成功但响应体为空。"
+            status=FetchStatus.DOWNLOAD_FAILED,
+            source=arxiv_id,
+            url=url,
+            message="download succeeded but the response body is empty.",
         )
     payload_path.write_bytes(payload)
     try:
@@ -141,7 +144,7 @@ def _fetch_local(source_dir: Path, paper_workdir: Workdir) -> FetchManifest:
             status=FetchStatus.SOURCE_MISSING,
             source=str(source),
             kind="local",
-            message=f"源目录不存在或不是目录：{source}",
+            message=f"source directory does not exist or is not a directory: {source}",
         )
     source_real = source.resolve()
     workdir_real = paper_workdir.path.resolve()
@@ -150,7 +153,7 @@ def _fetch_local(source_dir: Path, paper_workdir: Workdir) -> FetchManifest:
             status=FetchStatus.UNPACK_FAILED,
             source=str(source),
             kind="local",
-            message="源目录与工作目录重叠，无法把它拷贝进本工作目录的 src/。",
+            message="source directory overlaps the working directory; cannot copy it into src/ of this workdir.",
         )
     _reset_src(paper_workdir)
     try:
@@ -217,7 +220,8 @@ def _extract_tar_members(archive: tarfile.TarFile, dest: Path) -> tuple[list[str
     warnings: list[str] = []
     if rejected:
         warnings.append(
-            f"解包拒绝了 {len(rejected)} 个 tar 成员（不是普通文件或目录，或路径不安全），名单见 rejected 字段"
+            f"unpacking rejected {len(rejected)} tar members (not regular files or directories, "
+            "or unsafe paths); see the rejected field for the list"
         )
     return rejected, warnings
 
@@ -278,16 +282,16 @@ def _manifest_from_src(
 def _verdict(has_pdf: bool, tex_files: list[str], tex_chars: int, has_includepdf: bool) -> tuple[FetchStatus, str]:
     if not tex_files:
         if has_pdf:
-            return FetchStatus.PDF_ONLY, "src/ 里没有 .tex 文件、只有 PDF，无法从源码翻译。"
-        return FetchStatus.EMPTY, "src/ 里既没有 .tex 文件也没有 PDF。"
+            return FetchStatus.PDF_ONLY, "src/ has no .tex files, only a PDF; cannot translate from source."
+        return FetchStatus.EMPTY, "src/ has neither .tex files nor a PDF."
     if tex_chars < MIN_TEX_CHARS:
         return FetchStatus.PDF_ONLY, (
-            f".tex 字符总量 {tex_chars} 低于 {MIN_TEX_CHARS}，没有实质文本内容，按 PDF 套壳处理。"
+            f"total .tex characters {tex_chars} is below {MIN_TEX_CHARS}; no substantial text, treated as a PDF shell."
         )
     if has_includepdf and tex_chars < MIN_TEX_CHARS_WITH_INCLUDEPDF:
         return FetchStatus.PDF_ONLY, (
-            f".tex 里出现 \\includepdf 且字符总量 {tex_chars} 低于 {MIN_TEX_CHARS_WITH_INCLUDEPDF}，"
-            "判定为 pdfpages 套壳。"
+            f".tex uses \\includepdf and total characters {tex_chars} is below {MIN_TEX_CHARS_WITH_INCLUDEPDF}; "
+            "judged a pdfpages shell."
         )
     return FetchStatus.OK, ""
 

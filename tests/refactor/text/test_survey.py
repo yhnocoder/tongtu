@@ -246,7 +246,7 @@ def test_abstract_absent_is_a_warning_not_a_failure(tmp_path: Path) -> None:
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK
     assert read_brief(workdir).abstract is None
-    assert any("摘要未找到" in warning for warning in manifest.warnings)
+    assert any("abstract not found" in warning for warning in manifest.warnings)
 
 
 CHUNK_FAILURES = {
@@ -465,7 +465,7 @@ def test_a_reply_off_schema_degrades_to_an_empty_proposal(tmp_path: Path, monkey
     workdir = make_workdir(tmp_path)
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK
-    assert any("不合 schema" in warning for warning in manifest.warnings)
+    assert any("does not match the schema" in warning for warning in manifest.warnings)
     assert read_brief(workdir).terms == []
 
 

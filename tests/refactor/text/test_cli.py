@@ -118,7 +118,7 @@ def test_setup_does_not_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     assert path.read_text(encoding="utf-8") == "手改过的配置\n"
-    assert "不覆盖" in squeeze(result.stdout)
+    assert "notoverwriting" in squeeze(result.stdout)
 
 
 def test_setup_interactive_fills_first_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,7 +169,7 @@ def test_doctor_without_config_exits_zero(tmp_path: Path, monkeypatch: pytest.Mo
     assert result.exit_code == 0
     output = squeeze(result.stdout)
     assert "tongtusetup" in output
-    assert "工具链与字体齐全" in output
+    assert "toolchainandfontscomplete" in output
 
 
 def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,9 +179,9 @@ def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     output = squeeze(result.stdout)
-    assert "环境有缺失：xelatex" in output
-    assert "[缺失]TeXLive" in output
-    assert "xelatex不在PATH里，无法检查" in output
+    assert "environmentincomplete:xelatex" in output
+    assert "[missing]TeXLive" in output
+    assert "xelatexisnotinPATH;cannotcheck" in output
 
 
 def test_doctor_accepts_the_required_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,7 +192,7 @@ def test_doctor_accepts_the_required_texlive_year(tmp_path: Path, monkeypatch: p
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "[通过]TeXLive" in output
+    assert "[ok]TeXLive" in output
     assert "(TeXLive2026)" in output
 
 
@@ -204,9 +204,9 @@ def test_doctor_rejects_an_older_texlive_year(tmp_path: Path, monkeypatch: pytes
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     output = squeeze(result.stdout)
-    assert "[缺失]TeXLive" in output
-    assert "TeXLive2022低于要求的2026" in output
-    assert "环境有缺失：TeXLive" in output
+    assert "[missing]TeXLive" in output
+    assert "TeXLive2022isbelowtherequired2026" in output
+    assert "environmentincomplete:TeXLive" in output
 
 
 def test_doctor_rejects_output_without_a_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,7 +217,7 @@ def test_doctor_rejects_output_without_a_texlive_year(tmp_path: Path, monkeypatc
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     output = squeeze(result.stdout)
-    assert "[缺失]TeXLive" in output
+    assert "[missing]TeXLive" in output
     assert "(MiKTeX24.1)" in output
 
 
@@ -229,12 +229,12 @@ def test_doctor_lists_only_referenced_providers(tmp_path: Path, monkeypatch: pyt
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "环境齐全。" in output
-    assert "密钥demo" in output
-    assert "密钥unused" not in output
-    assert "运行时demo_runtime" in output
-    assert "环境变量DEMO_KEY" in output
-    assert "models.toml的api_key" in output
+    assert "environmentcomplete." in output
+    assert "keydemo" in output
+    assert "keyunused" not in output
+    assert "runtimedemo_runtime" in output
+    assert "environmentvariableDEMO_KEY" in output
+    assert "api_keyinmodels.toml" in output
 
 
 def test_doctor_checks_the_provider_a_runtime_points_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -245,9 +245,9 @@ def test_doctor_checks_the_provider_a_runtime_points_at(tmp_path: Path, monkeypa
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "密钥behind_runtime" in output
-    assert output.count("密钥written") == 1
-    assert "运行时gateway_runtime" in output
+    assert "keybehind_runtime" in output
+    assert output.count("keywritten") == 1
+    assert "runtimegateway_runtime" in output
 
 
 def test_doctor_reports_missing_key_without_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,8 +258,8 @@ def test_doctor_reports_missing_key_without_failing(tmp_path: Path, monkeypatch:
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "工具链与字体齐全" in output
-    assert "密钥demo" in output
+    assert "toolchainandfontscomplete" in output
+    assert "keydemo" in output
 
 
 def test_doctor_keeps_table_names_in_the_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -278,7 +278,7 @@ def test_setup_keeps_the_path_on_one_line(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("COLUMNS", "60")
     result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
-    assert [line for line in result.stdout.splitlines() if "已写出" in line and str(path) in line]
+    assert [line for line in result.stdout.splitlines() if "wrote" in line and str(path) in line]
 
 
 def test_entry_point_refuses_to_run_inside_a_session(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,7 +295,7 @@ def wire_entries(
     captured: list[RunOptions] | None = None,
 ) -> None:
     def make(name: str):
-        def entry(options: RunOptions) -> Manifest:
+        def entry(options: RunOptions, display: cli.StageDisplay) -> Manifest:
             calls.append(name)
             if captured is not None:
                 captured.append(options)
@@ -323,7 +323,7 @@ def test_run_resumes_from_the_first_absent_output(tmp_path: Path, monkeypatch: p
     result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert calls == ["mask", "survey", "translate", "review", "compile"]
-    assert "从mask开始" in squeeze(result.stdout)
+    assert "resumingfrommask" in squeeze(result.stdout)
 
 
 def test_run_with_all_outputs_runs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -466,11 +466,12 @@ def test_status_prints_one_row_per_stage(tmp_path: Path, monkeypatch: pytest.Mon
     for name in STAGES:
         assert name in output
     assert "mask_failed" in output
-    assert "哨兵已存在；警告一条" in output
-    assert "在" in output
-    assert "不在" in output
-    assert squeeze(str(mask_path)) in output
-    assert squeeze(str(workdir.manifest_path("fetch"))) in output
+    assert "哨兵已存在" in output
+    assert "警告一条" in output
+    assert "present" in output
+    assert "absent" in output
+    assert squeeze(str(mask_path.relative_to(workdir.path))) in output
+    assert squeeze(str(workdir.manifest_path("fetch").relative_to(workdir.path))) in output
 
 
 def test_status_does_not_create_the_workdir(tmp_path: Path) -> None:
@@ -488,7 +489,7 @@ def test_validate_exits_zero_when_every_layer_passes(tmp_path: Path) -> None:
     result = runner.invoke(app, ["validate", str(src), str(dst)])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert all(f"[通过]{layer}" in output for layer in validation.CHECK_NAMES)
+    assert all(f"[pass]{layer}" in output for layer in validation.CHECK_NAMES)
 
 
 def test_validate_exits_one_when_a_layer_fails(tmp_path: Path) -> None:
@@ -499,8 +500,8 @@ def test_validate_exits_one_when_a_layer_fails(tmp_path: Path) -> None:
     result = runner.invoke(app, ["validate", str(src), str(dst)])
     assert result.exit_code == 1
     output = squeeze(result.stdout)
-    assert "[失败]braces_and_math" in output
-    assert "[通过]placeholders" in output
+    assert "[fail]braces_and_math" in output
+    assert "[pass]placeholders" in output
 
 
 def test_version_flag() -> None:
