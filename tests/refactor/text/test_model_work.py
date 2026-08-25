@@ -173,6 +173,14 @@ def test_session_environment_is_narrowed(configured: Path, monkeypatch: pytest.M
     assert recorded["env"]["PATH"] == "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 
+def test_session_environment_drops_claude_code_remote(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert "CLAUDE_CODE_REMOTE" not in recorded["env"]
+
+
 def test_session_environment_without_tex(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())

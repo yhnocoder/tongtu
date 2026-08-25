@@ -127,7 +127,8 @@ def _error(detail: str) -> WorkOutcome:
 def _session_env() -> dict[str, str]:
     tex = shutil.which(TEX_EXECUTABLE)
     entries = ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
-    return os.environ | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}
+    environment = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_REMOTE"}
+    return environment | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}
 
 
 def _settings_json(settings: dict | None) -> str:
