@@ -217,6 +217,7 @@ def _review_entry(options: RunOptions, display: StageDisplay) -> Manifest:
         skip=options.no_review,
         model_override=options.work_model,
         effort=options.work_effort,
+        report=display.action,
     )
 
 

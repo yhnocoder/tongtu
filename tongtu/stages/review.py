@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .. import chunks, validation
@@ -43,10 +44,11 @@ def run(
     skip: bool = False,
     model_override: str | None = None,
     effort: str | None = None,
+    report: Callable[[str], None] | None = None,
 ) -> ReviewManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, skip, model_override, effort)
+    manifest = _execute(paper_workdir, skip, model_override, effort, report or (lambda action: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -57,7 +59,13 @@ def _reset_outputs(paper_workdir: Workdir) -> None:
     (paper_workdir.logs / TRACE_FILENAME).unlink(missing_ok=True)
 
 
-def _execute(paper_workdir: Workdir, skip: bool, model_override: str | None, effort: str | None) -> ReviewManifest:
+def _execute(
+    paper_workdir: Workdir,
+    skip: bool,
+    model_override: str | None,
+    effort: str | None,
+    report: Callable[[str], None],
+) -> ReviewManifest:
     chunk_ids = sorted(path.stem for path in (paper_workdir.build / CHUNKS_DIRNAME).glob("*.tex"))
     if not chunk_ids:
         return _failed(f"build/{CHUNKS_DIRNAME}/ holds no chunk file; run survey first.")
@@ -68,6 +76,7 @@ def _execute(paper_workdir: Workdir, skip: bool, model_override: str | None, eff
         return _failed(describe_error(error))
 
     if skip:
+        report(f"--no-review, copying {TRANSLATED_DIRNAME}/ to {REVIEWED_DIRNAME}/")
         _write_reviewed(paper_workdir, sources, translated)
         return ReviewManifest(status=ReviewStatus.OK, message=SKIPPED_MESSAGE)
 
@@ -81,6 +90,7 @@ def _execute(paper_workdir: Workdir, skip: bool, model_override: str | None, eff
     except OSError as error:
         return _failed(describe_error(error))
 
+    report(f"review session running on {model}")
     started = time.monotonic()
     outcome = work(
         ROLE,
@@ -94,6 +104,7 @@ def _execute(paper_workdir: Workdir, skip: bool, model_override: str | None, eff
         return ReviewManifest(status=ReviewStatus.REVIEW_FAILED, session=session, message=outcome.detail)
 
     changed, reverted, bodies = _judge(paper_workdir, sources, translated)
+    report(f"session {outcome.stop_reason}, {len(changed)} chunks changed, {len(reverted)} reverted")
     _write_reviewed(paper_workdir, sources, bodies)
     warnings = [TIMEOUT_WARNING] if outcome.stop_reason is StopReason.TIMEOUT else []
     return ReviewManifest(

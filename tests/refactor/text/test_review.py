@@ -303,3 +303,19 @@ def test_the_site_carries_a_validate_script_that_judges_as_the_library_does(
         translation_path.write_text(body, encoding="utf-8")
         expected = validation.validate(SOURCE.strip(), body.strip()).ok
         assert run_validate_script(site, source_path, translation_path) == (0 if expected else 1)
+
+
+def test_the_session_reports_progress_before_and_after(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_work(monkeypatch, write_site("c000", REVISED))
+    workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
+    actions: list[str] = []
+    manifest = review.run(workdir, report=actions.append)
+    assert manifest.status is ReviewStatus.OK
+    assert actions == ["review session running on demo/m1", "session finished, 1 chunks changed, 0 reverted"]
+
+
+def test_skip_reports_one_line(tmp_path: Path) -> None:
+    workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
+    actions: list[str] = []
+    review.run(workdir, skip=True, report=actions.append)
+    assert actions == ["--no-review, copying translated/ to reviewed/"]
