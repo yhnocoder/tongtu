@@ -30,7 +30,7 @@
 
 - V2 原型（`~/Projects/arxiv_trans/arXiv-2606.19348v1/arxiv-translator/`，约 1300 行脚本）已经跑通四篇论文出中文 PDF，是本仓库的参考基线。
 - 本仓库 fetch、flatten、precompile、mask、survey、chunk、translate 已实现，但还没有出过一份中文 PDF。这一版封存在 commit `b751db9`（重构前的最后一版）。
-- 设计依据只有一份：`docs/proposal/pipeline-v0.html`（下称提案图）。它是 2026-08-20 逐卡、逐字段讨论定下的共识：七个阶段 fetch → precompile → mask → survey → translate → review → compile，每张卡写这个阶段读什么、写什么、做什么，产物的类定义附在卡底，另有命令行、模型调用层与待验证事项。人只需记住本文件；AI 实现某个阶段时读对应那张卡（卡片有 `id`，例如 `#translate`）。旧的 docs/ 已删除，不要再建第二份设计文档。
+- 设计依据只有一份：`docs/proposal/pipeline-v0.html`（下称提案图）。它是 2026-08-20 逐卡、逐字段讨论定下的共识：七个阶段 fetch → precompile → mask → survey → translate → review → compile，每张卡写这个阶段读什么、写什么、做什么，产物的类定义附在卡底；模型调用层在同目录的 `model.html`，命令行与重跑语义在 `cli.html`。人只需记住本文件；AI 实现某个阶段时读对应那张卡（卡片有 `id`，例如 `#translate`）。旧的 docs/ 已删除，不要再建第二份设计文档。
 - 下一步是按提案图重构，不是在现有代码上继续建。理由：现状的阶段划分、重跑语义、manifest 形态都与提案不同，在上面继续建 compile 只会扩大要改的面。重构完成的判据是第一份中文 PDF——重构就是到它的最短路。
 
 ## 重构怎么做
