@@ -13,7 +13,7 @@ from ..artifacts.common import CompileReport, FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
 from ..manifests import describe_error, write_manifest
-from ..model.config import RoleTable, load_config, resolve_role
+from ..model.config import FontsConfig, RoleTable, load_config, resolve_role
 from ..model.work import StopReason
 from ..workdir import Workdir
 
@@ -77,23 +77,30 @@ DOCUMENTCLASS_RE = re.compile(rb"\\(?:documentclass|documentstyle)\s*(\[[^\]]*\]
 
 CJK_ENV_RE = re.compile(rb"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\})*|\\end\s*\{CJK\*?\}|\\CJKfamily\s*\{[^}]*\}")
 
-XECJK_BLOCK = rb"""% ---- injected by tongtu (precompile) ----
+FONT_FILE_SUFFIXES = (".ttf", ".otf", ".ttc")
+
+XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 \usepackage{xeCJK}
-\setCJKmainfont[
-  Path = {fonts/},
-  BoldFont = LXGWWenKai-Medium.ttf
-]{LXGWWenKai-Light.ttf}
-\IfFontExistsTF{Hiragino Sans GB}
+"""
+
+XECJK_SANS_DETECT = rb"""\IfFontExistsTF{Hiragino Sans GB}
   {\setCJKsansfont{Hiragino Sans GB}}
   {\IfFontExistsTF{Noto Sans CJK SC}
     {\setCJKsansfont{Noto Sans CJK SC}}
     {\setCJKsansfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}}}
-\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Light.ttf}
-\XeTeXlinebreaklocale "zh"
+"""
+
+XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 \XeTeXlinebreakskip = 0pt plus 1pt
 \linespread{1.4}
 % ---- end tongtu (precompile) ----
 """
+
+
+@dataclass(frozen=True)
+class ResolvedFont:
+    name: str
+    is_file: bool
 
 
 @dataclass(frozen=True)
@@ -152,9 +159,9 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
     if residual:
         warnings.append(f"展开后仍有 {residual} 行在注释外含 \\input{{ 或 \\include{{，这些文件没有被展开")
 
-    injected = _inject_cjk(expanded, warnings)
+    injected, font_files = _inject_cjk(expanded, warnings, _fonts_config())
     tree = _precompile_dir(paper_workdir)
-    _assemble_tree(paper_workdir, tree, injected, warnings)
+    _assemble_tree(paper_workdir, tree, injected, warnings, font_files)
 
     try:
         first = _attempt_compile(tree)
@@ -315,14 +322,14 @@ def _code_before_comment(line: bytes) -> bytes:
     return line
 
 
-def _inject_cjk(source: bytes, warnings: list[str]) -> bytes:
+def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> tuple[bytes, list[Path]]:
     lines = source.splitlines(keepends=True)
     document_index = _line_index_of(lines, BEGIN_DOCUMENT_MARKER)
     preamble_end = document_index if document_index is not None else len(lines)
     packages = _preamble_packages(lines[:preamble_end])
     documentclass, class_end_index = _find_documentclass(lines, preamble_end)
     if packages & CJK_PACKAGES or documentclass in CTEX_CLASSES:
-        return source
+        return source, []
     if packages & CJK_LEGACY_PACKAGES:
         lines = _strip_legacy_cjk(lines, preamble_end, warnings)
         document_index = _line_index_of(lines, BEGIN_DOCUMENT_MARKER)
@@ -333,8 +340,62 @@ def _inject_cjk(source: bytes, warnings: list[str]) -> bytes:
         insert_at = 0
     else:
         insert_at = class_end_index + 1
-    block = XECJK_BLOCK if XECJK_BLOCK.endswith(b"\n") else XECJK_BLOCK + b"\n"
-    return b"".join(lines[:insert_at]) + block + b"".join(lines[insert_at:])
+    font_files: list[Path] = []
+    block = _xecjk_block(fonts, warnings, font_files)
+    return b"".join(lines[:insert_at]) + block + b"".join(lines[insert_at:]), font_files
+
+
+def _fonts_config() -> FontsConfig:
+    config, _ = load_config()
+    if config is None:
+        return FontsConfig()
+    return config.fonts
+
+
+def _xecjk_block(fonts: FontsConfig, warnings: list[str], font_files: list[Path]) -> bytes:
+    default = FontsConfig()
+    main = _resolve_font("main", fonts.main, warnings, font_files) or ResolvedFont(default.main, True)
+    bold_value = fonts.bold
+    if bold_value == default.bold and fonts.main != default.main:
+        bold_value = None
+    bold = _resolve_font("bold", bold_value, warnings, font_files) if bold_value else None
+    if bold is not None and bold.is_file != main.is_file:
+        warnings.append("models.toml 配置的 bold 字体与 main 字体一个是文件一个是字体名，无法配对，忽略 bold")
+        bold = None
+    sans = _resolve_font("sans", fonts.sans, warnings, font_files) if fonts.sans else None
+    mono = _resolve_font("mono", fonts.mono, warnings, font_files) if fonts.mono else None
+    parts = [XECJK_HEAD, _font_command(rb"\setCJKmainfont", main, bold)]
+    parts.append(_font_command(rb"\setCJKsansfont", sans, None) if sans is not None else XECJK_SANS_DETECT)
+    parts.append(_font_command(rb"\setCJKmonofont", mono if mono is not None else main, None))
+    parts.append(XECJK_TAIL)
+    return b"".join(parts)
+
+
+def _resolve_font(slot: str, value: str, warnings: list[str], font_files: list[Path]) -> ResolvedFont | None:
+    if not value.lower().endswith(FONT_FILE_SUFFIXES):
+        return ResolvedFont(value, False)
+    path = Path(value).expanduser()
+    if len(path.parts) > 1:
+        if path.is_file():
+            font_files.append(path)
+            return ResolvedFont(path.name, True)
+        warnings.append(f"models.toml 配置的 {slot} 字体文件 {value} 不存在，改用默认字体")
+        return None
+    if (FONTS_DIR / value).is_file():
+        return ResolvedFont(value, True)
+    warnings.append(f"models.toml 配置的 {slot} 字体文件 {value} 在 {FONTS_DIR} 下不存在，改用默认字体")
+    return None
+
+
+def _font_command(command: bytes, font: ResolvedFont, bold: ResolvedFont | None) -> bytes:
+    options: list[bytes] = []
+    if font.is_file:
+        options.append(b"Path={fonts/}")
+    if bold is not None:
+        options.append(b"BoldFont=" + bold.name.encode("utf-8"))
+    if options:
+        return command + b"[" + b",".join(options) + b"]{" + font.name.encode("utf-8") + b"}\n"
+    return command + b"{" + font.name.encode("utf-8") + b"}\n"
 
 
 def _line_index_of(lines: list[bytes], marker: bytes) -> int | None:
@@ -409,7 +470,9 @@ def _strip_legacy_cjk(lines: list[bytes], preamble_end: int, warnings: list[str]
     return rewritten
 
 
-def _assemble_tree(paper_workdir: Workdir, tree: Path, flat: bytes, warnings: list[str]) -> None:
+def _assemble_tree(
+    paper_workdir: Workdir, tree: Path, flat: bytes, warnings: list[str], font_files: list[Path]
+) -> None:
     shutil.copytree(paper_workdir.src, tree, dirs_exist_ok=True)
     tree_flat_path = tree / FLAT_FILENAME
     if tree_flat_path.exists():
@@ -419,6 +482,10 @@ def _assemble_tree(paper_workdir: Workdir, tree: Path, flat: bytes, warnings: li
         shutil.copytree(FONTS_DIR, tree / FONTS_DIRNAME, dirs_exist_ok=True)
     else:
         warnings.append(f"仓库字体目录 {FONTS_DIR} 不存在，注入的 xeCJK 配置将找不到字体")
+    if font_files:
+        (tree / FONTS_DIRNAME).mkdir(exist_ok=True)
+        for path in font_files:
+            shutil.copy2(path, tree / FONTS_DIRNAME / path.name)
 
 
 def _attempt_compile(tree: Path) -> CompileAttempt:

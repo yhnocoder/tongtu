@@ -50,6 +50,13 @@ class RuntimeConfig(BaseModel):
     env: dict[str, str] | None = None
 
 
+class FontsConfig(BaseModel):
+    main: str = "LXGWWenKai-Light.ttf"
+    bold: str | None = "LXGWWenKai-Medium.ttf"
+    sans: str | None = None
+    mono: str | None = None
+
+
 class RoleConfig(BaseModel):
     model: str
     effort: str
@@ -63,6 +70,7 @@ class RoleConfig(BaseModel):
 class ModelsConfig(BaseModel):
     provider: dict[str, ProviderConfig] = {}
     runtime: dict[str, RuntimeConfig] = {}
+    fonts: FontsConfig = FontsConfig()
     roles: dict[str, RoleConfig] = {}
 
 
@@ -245,6 +253,14 @@ env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 # 角色的 bash 放行清单与 max_turns 对 Codex 不生效：沙箱只靠 -s workspace-write 与 approval_policy="never"，写范围 = 现场 + 临时目录，默认断网
 # wire_api 只接受 responses，所以这个条目只能跑 opencode 的 responses 端点支持的模型：gpt-5.6-luna、grok-4.5、muse-spark-1.2-contributor、deepseek-v4-flash
 # codex 须是原生二进制（brew cask 装的）：npm 装的是 node 启动脚本，work 把子进程 PATH 收成 TeX + 系统 bin 后找不到 node，退出码 127
+
+# 中文字体：main 正文、bold 粗体、sans 无衬线、mono 等宽；改这里即可切换译文 PDF 的字体
+# 取值两类：字体文件（.ttf / .otf / .ttc——仓库 fonts/ 里的文件名，或一个文件路径，可用 ~）、系统字体名（如 "Noto Serif CJK SC"）
+# bold 要与 main 同类（同为文件或同为字体名）才生效，默认的 bold 只与默认的 main 配对
+# sans 不写则按平台探测（Hiragino Sans GB → Noto Sans CJK SC → 霞鹜文楷）；mono 不写则用 main
+[fonts]
+main = "LXGWWenKai-Light.ttf"
+bold = "LXGWWenKai-Medium.ttf"
 
 # 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么
 [roles]
