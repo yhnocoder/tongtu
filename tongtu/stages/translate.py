@@ -70,6 +70,7 @@ class _Context:
     leading: str
     trailing: str
     system: str
+    tokens: int
 
 
 @dataclass
@@ -88,11 +89,17 @@ def run(
     jobs: int,
     ask_model: str | None = None,
     ask_effort: str | None = None,
-    report: Callable[[int, int, tuple[str, ...]], None] | None = None,
+    report: Callable[[int, int, tuple[str, ...], int, int], None] | None = None,
 ) -> TranslateManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, jobs, ask_model, ask_effort, report or (lambda done, total, inflight: None))
+    manifest = _execute(
+        paper_workdir,
+        jobs,
+        ask_model,
+        ask_effort,
+        report or (lambda done, total, inflight, done_tokens, total_tokens: None),
+    )
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -108,7 +115,7 @@ def _execute(
     jobs: int,
     ask_model: str | None,
     ask_effort: str | None,
-    report: Callable[[int, int, tuple[str, ...]], None],
+    report: Callable[[int, int, tuple[str, ...], int, int], None],
 ) -> TranslateManifest:
     try:
         brief = BriefFile.model_validate_json((paper_workdir.build / BRIEF_FILENAME).read_text(encoding=ENCODING))
@@ -129,7 +136,10 @@ def _execute(
                 status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
             )
         model, effort = resolved
-        console.print(f"  {STAGE_NAME}: {model}, {len(brief.chunks)} chunks, jobs {jobs}")
+        console.print(
+            f"  {STAGE_NAME}: {model}, {len(brief.chunks)} chunks, "
+            f"{sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}"
+        )
 
     contexts = _contexts(brief, bodies, skill)
     outcomes = {
@@ -140,21 +150,25 @@ def _execute(
     if pending:
         translatable = [context for context in contexts if context.id not in outcomes]
         total = len(brief.chunks)
+        tokens_by_id = {record.id: record.tokens for record in brief.chunks}
+        total_tokens = sum(tokens_by_id.values())
         lock = threading.Lock()
         done = len(outcomes)
+        done_tokens = sum(tokens_by_id[chunk_id] for chunk_id in outcomes)
         inflight: set[str] = set()
-        report(done, total, ())
+        report(done, total, (), done_tokens, total_tokens)
 
         def worker(context: _Context) -> _Outcome:
-            nonlocal done
+            nonlocal done, done_tokens
             with lock:
                 inflight.add(context.id)
-                report(done, total, tuple(sorted(inflight)))
+                report(done, total, tuple(sorted(inflight)), done_tokens, total_tokens)
             outcome = _translate_chunk(context, paper_workdir, ask_model, ask_effort)
             with lock:
                 inflight.discard(context.id)
                 done += 1
-                report(done, total, tuple(sorted(inflight)))
+                done_tokens += tokens_by_id[context.id]
+                report(done, total, tuple(sorted(inflight)), done_tokens, total_tokens)
             return outcome
 
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -205,6 +219,7 @@ def _contexts(brief: BriefFile, bodies: Sequence[str], skill: str) -> list[_Cont
                 leading=raw[: len(raw) - len(raw.lstrip())],
                 trailing=raw[len(raw.rstrip()) :],
                 system="\n\n".join(sections),
+                tokens=record.tokens,
             )
         )
     return contexts
@@ -253,7 +268,10 @@ def _translate_chunk(
 ) -> _Outcome:
     started = time.monotonic()
     outcome = _ask_until_valid(context, paper_workdir, ask_model, ask_effort)
-    console.print(f"  {context.id} {outcome.status}  ask x{outcome.attempts}  {time.monotonic() - started:.1f}s")
+    console.print(
+        f"  {context.id} {outcome.status}  ask x{outcome.attempts}  {context.tokens} tok  "
+        f"{time.monotonic() - started:.1f}s"
+    )
     return outcome
 
 

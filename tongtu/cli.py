@@ -15,7 +15,15 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 from . import __version__, validation
 from .artifacts.common import Manifest
@@ -47,6 +55,8 @@ CHUNKED_STAGES = frozenset({"translate", "review"})
 INFLIGHT_SHOWN = 4
 
 BAR_WIDTH = 16
+
+ETA_ESTIMATE_SECONDS = 1800
 
 MARK_OK = "✓"
 
@@ -107,17 +117,32 @@ class RunOptions:
     no_terms: bool
 
 
+class PendingStageError(Exception):
+    pass
+
+
+def _kilo(tokens: int) -> str:
+    return f"{tokens / 1000:.1f}k"
+
+
 @dataclass(frozen=True)
 class StageDisplay:
     progress: Progress
     task: TaskID
     name: str
 
-    def chunks(self, done: int, total: int, inflight: tuple[str, ...]) -> None:
+    def chunks(self, done: int, total: int, inflight: tuple[str, ...], done_tokens: int, total_tokens: int) -> None:
         listed = " ".join(inflight[:INFLIGHT_SHOWN])
         if len(inflight) > INFLIGHT_SHOWN:
             listed = f"{listed} +{len(inflight) - INFLIGHT_SHOWN} more"
-        self.progress.update(self.task, completed=done, total=total, inflight=f"inflight {listed}" if listed else "")
+        self.progress.update(
+            self.task,
+            completed=done_tokens,
+            total=total_tokens,
+            chunks=f"{done}/{total}",
+            tokens=f"{_kilo(done_tokens)}/{_kilo(total_tokens)} tok",
+            inflight=f"inflight {listed}" if listed else "",
+        )
 
     def action(self, text: str) -> None:
         self.progress.update(self.task, description=f"{self.name}  {text}")
@@ -125,10 +150,7 @@ class StageDisplay:
 
 def _pending_stage(name: str) -> Callable[[RunOptions, StageDisplay], Manifest]:
     def entry(options: RunOptions, display: StageDisplay) -> Manifest:
-        error_console.print(
-            f"stage {name} is not rebuilt yet; the pipeline stops here (refactor steps 3-8 wire the stages in)."
-        )
-        raise typer.Exit(EXIT_FAILURE)
+        raise PendingStageError(name)
 
     return entry
 
@@ -333,21 +355,34 @@ def _progress_columns(name: str) -> tuple:
     if name in CHUNKED_STAGES:
         columns += [
             BarColumn(bar_width=BAR_WIDTH),
-            MofNCompleteColumn(),
+            TextColumn("{task.fields[chunks]}"),
+            TextColumn("{task.fields[tokens]}"),
             TextColumn("{task.fields[inflight]}"),
         ]
     columns.append(TimeElapsedColumn())
+    if name in CHUNKED_STAGES:
+        columns += [TextColumn("eta"), TimeRemainingColumn()]
     return tuple(columns)
 
 
 def _run_stage(name: str, options: RunOptions) -> Manifest:
     started = time.monotonic()
-    with Progress(
-        *_progress_columns(name), console=console, transient=True, disable=not console.is_terminal
-    ) as progress:
-        task = progress.add_task(name, total=None, inflight="")
-        display = StageDisplay(progress=progress, task=task, name=name)
-        manifest = STAGE_ENTRIES[name](options, display)
+    try:
+        with Progress(
+            *_progress_columns(name),
+            console=console,
+            transient=True,
+            disable=not console.is_terminal,
+            speed_estimate_period=ETA_ESTIMATE_SECONDS,
+        ) as progress:
+            task = progress.add_task(name, total=None, chunks="", tokens="", inflight="")
+            display = StageDisplay(progress=progress, task=task, name=name)
+            manifest = STAGE_ENTRIES[name](options, display)
+    except PendingStageError:
+        error_console.print(
+            f"stage {name} is not rebuilt yet; the pipeline stops here (refactor steps 3-8 wire the stages in)."
+        )
+        raise typer.Exit(EXIT_FAILURE) from None
     _print_stage_result(name, manifest, options.workdir, time.monotonic() - started)
     return manifest
 

@@ -420,17 +420,21 @@ def test_a_rerun_clears_the_previous_translations_and_logs(tmp_path: Path, monke
 def test_report_counts_skipped_into_the_initial_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
     workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n", "Hello one.\n", "Hello two.\n"])
-    reports: list[tuple[int, int, tuple[str, ...]]] = []
-    manifest = translate.run(
-        workdir, jobs=2, report=lambda done, total, inflight: reports.append((done, total, inflight))
-    )
+    reports: list[tuple[int, int, tuple[str, ...], int, int]] = []
+
+    def report(done: int, total: int, inflight: tuple[str, ...], done_tokens: int, total_tokens: int) -> None:
+        reports.append((done, total, inflight, done_tokens, total_tokens))
+
+    manifest = translate.run(workdir, jobs=2, report=report)
     assert manifest.status is TranslateStatus.OK
-    assert all(total == 3 for _done, total, _inflight in reports)
-    assert reports[0] == (1, 3, ())
-    done_values = [done for done, _total, _inflight in reports]
+    assert all(total == 3 and total_tokens == 3 for _d, total, _i, _dt, total_tokens in reports)
+    assert reports[0] == (1, 3, (), 1, 3)
+    done_values = [done for done, _t, _i, _dt, _tt in reports]
     assert done_values == sorted(done_values)
-    assert reports[-1] == (3, 3, ())
-    assert {chunk_id for _done, _total, inflight in reports for chunk_id in inflight} == {"c001", "c002"}
+    token_values = [done_tokens for _d, _t, _i, done_tokens, _tt in reports]
+    assert token_values == sorted(token_values)
+    assert reports[-1] == (3, 3, (), 3, 3)
+    assert {chunk_id for _d, _t, inflight, _dt, _tt in reports for chunk_id in inflight} == {"c001", "c002"}
 
 
 def test_report_absent_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
