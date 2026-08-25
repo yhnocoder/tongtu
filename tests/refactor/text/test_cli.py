@@ -314,6 +314,8 @@ def test_run_from_scratch_runs_all_stages(tmp_path: Path, monkeypatch: pytest.Mo
     result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper")])
     assert result.exit_code == 0
     assert calls == list(STAGES)
+    header = [line for line in result.stdout.splitlines() if "summary" in line and "elapsed" in line]
+    assert len(header) == 1
 
 
 def test_run_resumes_from_the_first_absent_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -441,6 +443,7 @@ def test_stage_runs_only_the_named_stage(tmp_path: Path, monkeypatch: pytest.Mon
     result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert calls == ["mask"]
+    assert [line for line in result.stdout.splitlines() if "summary" in line and "elapsed" in line]
 
 
 def test_stage_exits_one_when_the_stage_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

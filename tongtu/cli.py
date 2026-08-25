@@ -18,12 +18,14 @@ import typer
 from rich.progress import (
     BarColumn,
     Progress,
+    ProgressColumn,
     SpinnerColumn,
+    Task,
     TaskID,
     TextColumn,
     TimeElapsedColumn,
-    TimeRemainingColumn,
 )
+from rich.text import Text
 
 from . import __version__, validation
 from .artifacts.common import Manifest
@@ -56,7 +58,7 @@ INFLIGHT_SHOWN = 4
 
 BAR_WIDTH = 16
 
-ETA_ESTIMATE_SECONDS = 1800
+HEADER_STYLE = "bold"
 
 MARK_OK = "✓"
 
@@ -125,13 +127,30 @@ def _kilo(tokens: int) -> str:
     return f"{tokens / 1000:.1f}k"
 
 
-@dataclass(frozen=True)
+class TokenEtaColumn(ProgressColumn):
+    def render(self, task: Task) -> Text:
+        start = task.fields.get("rate_start")
+        start_tokens = task.fields.get("rate_start_tokens")
+        if start is None or task.total is None:
+            return Text("eta -:--:--")
+        advanced = task.completed - start_tokens
+        elapsed = time.monotonic() - start
+        if advanced <= 0 or elapsed <= 0:
+            return Text("eta -:--:--")
+        remaining = max(0.0, task.total - task.completed)
+        return Text(f"eta {timedelta(seconds=int(remaining * elapsed / advanced))}")
+
+
+@dataclass
 class StageDisplay:
     progress: Progress
     task: TaskID
     name: str
+    rate_baseline: tuple[float, int] | None = None
 
     def chunks(self, done: int, total: int, inflight: tuple[str, ...], done_tokens: int, total_tokens: int) -> None:
+        if self.rate_baseline is None:
+            self.rate_baseline = (time.monotonic(), done_tokens)
         listed = " ".join(inflight[:INFLIGHT_SHOWN])
         if len(inflight) > INFLIGHT_SHOWN:
             listed = f"{listed} +{len(inflight) - INFLIGHT_SHOWN} more"
@@ -142,6 +161,8 @@ class StageDisplay:
             chunks=f"{done}/{total}",
             tokens=f"{_kilo(done_tokens)}/{_kilo(total_tokens)} tok",
             inflight=f"inflight {listed}" if listed else "",
+            rate_start=self.rate_baseline[0],
+            rate_start_tokens=self.rate_baseline[1],
         )
 
     def action(self, text: str) -> None:
@@ -336,6 +357,12 @@ def _stage_summary(manifest: Manifest) -> str:
     return ""
 
 
+def _print_stage_header() -> None:
+    console.print(
+        f"  {'stage':<{NAME_WIDTH}}{'status':<{STATUS_WIDTH}}{'summary':<{SUMMARY_WIDTH}}elapsed", style=HEADER_STYLE
+    )
+
+
 def _print_stage_result(name: str, manifest: Manifest, workdir: Workdir, seconds: float) -> None:
     ok = manifest.status == STATUS_OK
     mark = MARK_OK if ok else MARK_FAILED
@@ -361,7 +388,7 @@ def _progress_columns(name: str) -> tuple:
         ]
     columns.append(TimeElapsedColumn())
     if name in CHUNKED_STAGES:
-        columns += [TextColumn("eta"), TimeRemainingColumn()]
+        columns.append(TokenEtaColumn())
     return tuple(columns)
 
 
@@ -369,11 +396,7 @@ def _run_stage(name: str, options: RunOptions) -> Manifest:
     started = time.monotonic()
     try:
         with Progress(
-            *_progress_columns(name),
-            console=console,
-            transient=True,
-            disable=not console.is_terminal,
-            speed_estimate_period=ETA_ESTIMATE_SECONDS,
+            *_progress_columns(name), console=console, transient=True, disable=not console.is_terminal
         ) as progress:
             task = progress.add_task(name, total=None, chunks="", tokens="", inflight="")
             display = StageDisplay(progress=progress, task=task, name=name)
@@ -423,6 +446,7 @@ def run(
             console.print(f"resuming from {start} (upstream outputs present)")
     options.workdir.create()
     console.print("")
+    _print_stage_header()
     raise _run_stages(start, options)
 
 
@@ -458,6 +482,7 @@ def stage(
             f"Run tongtu run first, or tongtu run --from {missing[0]} to redo."
         )
         raise typer.Exit(EXIT_USAGE)
+    _print_stage_header()
     manifest = _run_stage(name.value, options)
     raise typer.Exit(0 if manifest.status == STATUS_OK else EXIT_FAILURE)
 
@@ -467,7 +492,9 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None) -> None:
     _paper_input, paper_workdir = _paper_workdir(paper, workdir)
     console.print(f"workdir {paper_workdir.path}")
     console.print("")
-    console.print(f"{'stage':<{NAME_WIDTH}}{'status':<{STATUS_WIDTH}}{'outputs':<{OUTPUTS_WIDTH}}manifest")
+    console.print(
+        f"{'stage':<{NAME_WIDTH}}{'status':<{STATUS_WIDTH}}{'outputs':<{OUTPUTS_WIDTH}}manifest", style=HEADER_STYLE
+    )
     for name in STAGES:
         manifest_path = paper_workdir.manifest_path(name)
         manifest = load_manifest(manifest_path, Manifest)
