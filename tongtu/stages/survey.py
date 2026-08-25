@@ -153,8 +153,9 @@ def _execute(
         return SurveyManifest(
             status=SurveyStatus.CHUNK_FAILED,
             message=(
-                f"取不到 tiktoken 编码器 {TOKEN_ENCODING_NAME}（{describe_error(error)}）。"
-                "首次使用要联网下载 BPE 文件，或把已下载的缓存目录设进环境变量 TIKTOKEN_CACHE_DIR。"
+                f"cannot load the tiktoken encoding {TOKEN_ENCODING_NAME} ({describe_error(error)}). "
+                "The first use downloads the BPE file from the network; alternatively point "
+                "TIKTOKEN_CACHE_DIR at a directory that already holds it."
             ),
         )
     try:
@@ -170,7 +171,8 @@ def _execute(
     abstract = _abstract(blocks, masked)
     if abstract is None:
         warnings.append(
-            "摘要未找到：blocks.json 里没有 abstract 槽位，masked.tex 里也没有 abstract 环境，brief 的 abstract 为 null。"
+            "abstract not found: no abstract slot in blocks.json and no abstract environment "
+            "in masked.tex; the brief carries abstract = null."
         )
     proposed, proposal_warnings = _propose(
         paper_workdir, abstract, heading_tree, masked, document.encoder, no_terms, ask_model, ask_effort
@@ -182,13 +184,14 @@ def _execute(
     kept = [term for term, hit in decisions if hit]
     filtered = [term for term, hit in decisions if not hit]
     if len(kept) + len(filtered) != len(merged):
-        raise RuntimeError("命中与未命中两份清单没有恰好切分合并结果，实现有误")
+        raise RuntimeError("the hit and miss lists do not exactly partition the merged terms; implementation bug")
 
     records = [
         _record(index, chunk, body, document) for index, (chunk, body) in enumerate(zip(chunks, contents, strict=True))
     ]
     warnings.extend(
-        f"{record.id} 有 {record.tokens} token，超过下分线 {SPLIT_ABOVE}，该单元内没有更细的切点。"
+        f"{record.id} has {record.tokens} tokens, over the split line {SPLIT_ABOVE}, "
+        "with no finer cut point inside the unit."
         for record in records
         if record.tokens > SPLIT_ABOVE
     )
@@ -249,13 +252,13 @@ def _record(index: int, chunk: _Chunk, body: str, document: _Document) -> ChunkR
 
 def _verify(masked: str, chunks: Sequence[_Chunk], contents: Sequence[str]) -> None:
     if not chunks:
-        raise ChunkError(f"masked.tex 有 {len(masked)} 字符，却一个 chunk 也没切出")
+        raise ChunkError(f"masked.tex has {len(masked)} characters but not a single chunk was produced")
     if "".join(contents) != masked:
-        raise ChunkError("chunk 切片按序拼接后与 masked.tex 不逐字符相等，切分实现有误")
+        raise ChunkError("chunks concatenated in order do not equal masked.tex character for character; chunking bug")
     empty = [index for index, body in enumerate(contents) if _paragraph_count(body) < 1]
     if empty:
-        starts = "、".join(str(chunks[index].start) for index in empty)
-        raise ChunkError(f"有 {len(empty)} 个 chunk 一个非空段落都没有（起始偏移 {starts}），切分实现有误")
+        starts = ", ".join(str(chunks[index].start) for index in empty)
+        raise ChunkError(f"{len(empty)} chunks have no non-empty paragraph (start offsets {starts}); chunking bug")
 
 
 def _paragraph_count(text: str) -> int:
@@ -290,10 +293,10 @@ def _read_layers(paper_workdir: Workdir, glossary_paths: Sequence[Path]) -> list
             content = path.read_text(encoding=ENCODING)
         except FileNotFoundError as error:
             if required:
-                raise GlossaryError(f"{path} 读不到（{describe_error(error)}）") from error
+                raise GlossaryError(f"cannot read {path} ({describe_error(error)})") from error
             continue
         except (OSError, UnicodeDecodeError) as error:
-            raise GlossaryError(f"{path} 读不到（{describe_error(error)}）") from error
+            raise GlossaryError(f"cannot read {path} ({describe_error(error)})") from error
         units.append(_parse(content, str(path), layer))
     return units
 
@@ -302,12 +305,14 @@ def _parse(content: str, origin: str, layer: DecidedBy) -> tuple[list[Term], str
     try:
         data = json.loads(content)
     except json.JSONDecodeError as error:
-        raise GlossaryError(f"{origin} 不是合法 JSON：{error}") from error
+        raise GlossaryError(f"{origin} is not valid JSON: {error}") from error
     if not isinstance(data, dict):
-        raise GlossaryError(f"{origin} 的顶层必须是对象，实际是 {type(data).__name__}")
+        raise GlossaryError(f"the top level of {origin} must be an object, got {type(data).__name__}")
     unknown = [key for key in data if key not in KNOWN_FIELDS]
     if unknown:
-        raise GlossaryError(f"{origin} 出现未知字段 {unknown[0]!r}，术语表文件只认 {'、'.join(KNOWN_FIELDS)} 三段")
+        raise GlossaryError(
+            f"{origin} has an unknown field {unknown[0]!r}; a glossary file only accepts {', '.join(KNOWN_FIELDS)}"
+        )
     terms: list[Term] = []
     seen: dict[str, Term] = {}
     for word in _parse_do_not_translate(data.get(DO_NOT_TRANSLATE_FIELD), origin):
@@ -321,16 +326,18 @@ def _parse_do_not_translate(value: object, origin: str) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise GlossaryError(f"{origin} 的 {DO_NOT_TRANSLATE_FIELD} 必须是字符串列表，实际是 {type(value).__name__}")
+        raise GlossaryError(
+            f"{DO_NOT_TRANSLATE_FIELD} in {origin} must be a list of strings, got {type(value).__name__}"
+        )
     words: list[str] = []
     for index, item in enumerate(value):
         if not isinstance(item, str):
             raise GlossaryError(
-                f"{origin} 的 {DO_NOT_TRANSLATE_FIELD}[{index}] 必须是字符串，实际是 {type(item).__name__}"
+                f"{DO_NOT_TRANSLATE_FIELD}[{index}] in {origin} must be a string, got {type(item).__name__}"
             )
         word = item.strip()
         if not word:
-            raise GlossaryError(f"{origin} 的 {DO_NOT_TRANSLATE_FIELD}[{index}] 是空词")
+            raise GlossaryError(f"{DO_NOT_TRANSLATE_FIELD}[{index}] in {origin} is an empty word")
         words.append(word)
     return words
 
@@ -339,20 +346,24 @@ def _parse_terms(value: object, origin: str) -> list[tuple[str, str]]:
     if value is None:
         return []
     if not isinstance(value, dict):
-        raise GlossaryError(f"{origin} 的 {TERMS_FIELD} 必须是对象（词到译法的映射），实际是 {type(value).__name__}")
+        raise GlossaryError(
+            f"{TERMS_FIELD} in {origin} must be an object mapping words to translations, got {type(value).__name__}"
+        )
     pairs: list[tuple[str, str]] = []
     for raw_word, raw_translation in value.items():
         word = raw_word.strip()
         if not word:
-            raise GlossaryError(f"{origin} 的 {TERMS_FIELD} 里有空词")
+            raise GlossaryError(f"{TERMS_FIELD} in {origin} contains an empty word")
         if not isinstance(raw_translation, str):
             raise GlossaryError(
-                f"{origin} 的 {TERMS_FIELD}[{word!r}] 的译法必须是字符串，实际是 {type(raw_translation).__name__}"
+                f"the translation of {TERMS_FIELD}[{word!r}] in {origin} must be a string, "
+                f"got {type(raw_translation).__name__}"
             )
         translation = raw_translation.strip()
         if not translation:
             raise GlossaryError(
-                f"{origin} 的 {TERMS_FIELD}[{word!r}] 译法为空；要保留原文请写进 {DO_NOT_TRANSLATE_FIELD}"
+                f"the translation of {TERMS_FIELD}[{word!r}] in {origin} is empty; "
+                f"to keep the original wording put the word into {DO_NOT_TRANSLATE_FIELD}"
             )
         pairs.append((word, translation))
     return pairs
@@ -363,7 +374,8 @@ def _parse_style(value: object, origin: str) -> str | None:
         return None
     if not isinstance(value, str):
         raise GlossaryError(
-            f"{origin} 的 {STYLE_FIELD} 必须是字符串（一段写给译者的额外要求），实际是 {type(value).__name__}"
+            f"{STYLE_FIELD} in {origin} must be a string (extra requirements addressed to the translator), "
+            f"got {type(value).__name__}"
         )
     return value.strip()
 
@@ -378,15 +390,15 @@ def _add(terms: list[Term], seen: dict[str, Term], term: Term, origin: str) -> N
     if previous == term:
         return
     raise GlossaryError(
-        f"{origin} 里 {term.word!r} 给出了两条不一致的记录"
-        f"（{_describe_term(previous)}、{_describe_term(term)}），同一份文件内不判定优先级"
+        f"{origin} gives two conflicting records for {term.word!r}"
+        f" ({_describe_term(previous)}, {_describe_term(term)}); no precedence is applied within one file"
     )
 
 
 def _describe_term(term: Term) -> str:
     if term.translation is None:
-        return f"{DO_NOT_TRANSLATE_FIELD} 中的 {term.word!r}"
-    return f"{TERMS_FIELD} 中的 {term.word!r} → {term.translation!r}"
+        return f"{term.word!r} in {DO_NOT_TRANSLATE_FIELD}"
+    return f"{term.word!r} -> {term.translation!r} in {TERMS_FIELD}"
 
 
 def _merge(units: Sequence[tuple[list[Term], str | None]]) -> tuple[list[Term], str | None]:
@@ -424,7 +436,7 @@ def _propose(
         return [], []
     config, detail = load_config()
     if config is None:
-        return [], [f"读不到模型配置，术语提议按空提议继续（{detail[:WARNING_DETAIL_CHARS]}）"]
+        return [], [f"cannot read the model config; term proposal continues as empty ({detail[:WARNING_DETAIL_CHARS]})"]
     if ROLE not in config.roles:
         return [], []
     payload = _payload(abstract, heading_tree, masked)
@@ -432,8 +444,8 @@ def _propose(
     if resolved is not None:
         thousands = len(encoder.encode(payload, disallowed_special=())) / 1000
         console.print(
-            f"  {ROLE}：{resolved.provider}/{resolved.model}，"
-            f"输入约 {thousands:.1f}k token，超时 {ASK_TIMEOUT_SECONDS} s"
+            f"  {ROLE}: {resolved.provider}/{resolved.model}, "
+            f"~{thousands:.1f}k tokens in, timeout {ASK_TIMEOUT_SECONDS}s"
         )
     started = time.monotonic()
     outcome = ask(
@@ -445,13 +457,15 @@ def _propose(
         model=ask_model,
         effort=ask_effort,
     )
-    console.print(f"  {ROLE} 返回 {outcome.status}，用时 {time.monotonic() - started:.1f} s")
+    console.print(f"  {ROLE} returned {outcome.status} in {time.monotonic() - started:.1f}s")
     if outcome.status is AskStatus.ERROR:
-        return [], [f"术语提议调用失败，按空提议继续（{outcome.detail[:WARNING_DETAIL_CHARS]}）"]
+        return [], [f"the term proposal call failed; continuing as empty ({outcome.detail[:WARNING_DETAIL_CHARS]})"]
     try:
         return _proposed_terms(outcome.text), []
     except (json.JSONDecodeError, TypeError, KeyError, AttributeError) as error:
-        return [], [f"术语提议的回复不合 schema，按空提议继续（{describe_error(error)[:WARNING_DETAIL_CHARS]}）"]
+        return [], [
+            f"the term proposal reply does not match the schema; continuing as empty ({describe_error(error)[:WARNING_DETAIL_CHARS]})"
+        ]
 
 
 def _proposed_terms(text: str) -> list[Term]:
@@ -546,10 +560,12 @@ def _scan(text: str) -> _Scan:
                 position = after_name
                 continue
             if not stack:
-                raise ChunkError(f"偏移 {position} 处的 \\end{{{environment}}} 没有对应的 \\begin，环境配对不上")
+                raise ChunkError(f"\\end{{{environment}}} at offset {position} has no matching \\begin")
             opened, body_start = stack.pop()
             if opened != environment:
-                raise ChunkError(f"偏移 {position} 处的 \\end{{{environment}}} 与未闭合的 \\begin{{{opened}}} 配对不上")
+                raise ChunkError(
+                    f"\\end{{{environment}}} at offset {position} does not match the open \\begin{{{opened}}}"
+                )
             environments.append(_Environment(name=environment, body_start=body_start, body_end=position))
             position = after
         elif name in HEADING_COMMANDS:
@@ -561,7 +577,7 @@ def _scan(text: str) -> _Scan:
         else:
             position = after_name
     if stack:
-        raise ChunkError(f"到文件尾仍未闭合的环境：{'、'.join(name for name, _ in stack)}")
+        raise ChunkError(f"environments still open at end of file: {', '.join(name for name, _ in stack)}")
     return _Scan(
         headings=tuple(headings),
         environments=tuple(environments),

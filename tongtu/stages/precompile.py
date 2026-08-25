@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -111,15 +112,23 @@ class CompileAttempt:
         )
 
 
-def run(paper_workdir: Workdir, *, model_override: str | None = None, effort: str | None = None) -> PrecompileManifest:
+def run(
+    paper_workdir: Workdir,
+    *,
+    model_override: str | None = None,
+    effort: str | None = None,
+    report: Callable[[str], None] | None = None,
+) -> PrecompileManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, model_override, effort)
+    manifest = _execute(paper_workdir, model_override, effort, report or (lambda action: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | None) -> PrecompileManifest:
+def _execute(
+    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str], None]
+) -> PrecompileManifest:
     src = paper_workdir.src
     warnings: list[str] = []
     candidates = _scan_candidates(src, warnings)
@@ -127,14 +136,17 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
         return PrecompileManifest(
             status=PrecompileStatus.MAIN_NOT_FOUND,
             warnings=warnings,
-            message="src/ 的 .tex 文件里没有一个在注释外含 \\documentclass，判定不出主文件。",
+            message="no .tex file under src/ contains \\documentclass outside comments; cannot pick a main file.",
         )
     main_file = _select_main_file(candidates)
     if main_file is None:
         return PrecompileManifest(
             status=PrecompileStatus.MAIN_AMBIGUOUS,
             warnings=warnings,
-            message=f"主文件候选不唯一，判定规则收敛不到单个结果，候选：{'、'.join(name for name, _ in candidates)}",
+            message=(
+                "multiple main file candidates and the selection rules do not converge on one: "
+                f"{', '.join(name for name, _ in candidates)}"
+            ),
         )
 
     expanded, failure = _expand(src, main_file, warnings)
@@ -150,19 +162,24 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
         )
     residual = _count_residual_input_lines(expanded)
     if residual:
-        warnings.append(f"展开后仍有 {residual} 行在注释外含 \\input{{ 或 \\include{{，这些文件没有被展开")
+        warnings.append(
+            f"{residual} lines still contain \\input{{ or \\include{{ outside comments "
+            "after expansion; those files were not expanded"
+        )
 
     injected = _inject_cjk(expanded, warnings)
     tree = _precompile_dir(paper_workdir)
     _assemble_tree(paper_workdir, tree, injected, warnings)
 
+    report(f"compiling {FLAT_FILENAME}")
     try:
         first = _attempt_compile(tree)
     except OSError as error:
         return _compile_failed(
             main_file,
             warnings,
-            f"执行 latexmk 失败（{describe_error(error)}）。latexmk 随 TeX 发行版分发，确认已安装且在 PATH 里。",
+            f"failed to run latexmk ({describe_error(error)}). latexmk ships with the TeX "
+            "distribution; check that it is installed and in PATH.",
         )
     if first.outcome.timed_out:
         return _compile_failed(main_file, warnings, _timeout_message(first))
@@ -170,23 +187,31 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
     fix_session: FixSession | None = None
     final = first
     if not first.passed:
+        report("fix session running")
         fix_session = _fix(paper_workdir, tree, warnings, model_override, effort)
         warnings.extend(_clean_tree(tree))
+        report("verifying compile")
         try:
             final = _attempt_compile(tree)
         except OSError as error:
             return _compile_failed(
-                main_file, warnings, f"校验编译时执行 latexmk 失败（{describe_error(error)}）。", fix_session
+                main_file,
+                warnings,
+                f"failed to run latexmk for the verify compile ({describe_error(error)}).",
+                fix_session,
             )
         if final.outcome.timed_out:
             return _compile_failed(main_file, warnings, _timeout_message(final), fix_session)
         if not final.passed:
             return _compile_failed(
-                main_file, warnings, f"经过修复会话，校验编译未过出口判据：{_failure_message(final)}", fix_session
+                main_file,
+                warnings,
+                f"after the fix session the verify compile still fails the exit checks: {_failure_message(final)}",
+                fix_session,
             )
 
     _precompile_path(paper_workdir).write_bytes((tree / FLAT_FILENAME).read_bytes())
-    report = CompileReport(
+    compile_report = CompileReport(
         pages=final.counts.pages,
         pdf_bytes=final.pdf_bytes,
         overfull_hboxes=final.counts.overfull_hboxes,
@@ -196,7 +221,11 @@ def _execute(paper_workdir: Workdir, model_override: str | None, effort: str | N
         duration_seconds=final.outcome.duration_seconds,
     )
     return PrecompileManifest(
-        status=PrecompileStatus.OK, main_file=main_file, report=report, fix_session=fix_session, warnings=warnings
+        status=PrecompileStatus.OK,
+        main_file=main_file,
+        report=compile_report,
+        fix_session=fix_session,
+        warnings=warnings,
     )
 
 
@@ -223,7 +252,7 @@ def _scan_candidates(src: Path, warnings: list[str]) -> list[tuple[str, bool]]:
         try:
             content = path.read_bytes()
         except OSError as error:
-            warnings.append(f"主文件判定时读不到 {relative}：{describe_error(error)}")
+            warnings.append(f"cannot read {relative} while picking the main file: {describe_error(error)}")
             continue
         has_document_class = False
         has_begin_document = False
@@ -257,13 +286,15 @@ def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | Non
         completed = subprocess.run(command, cwd=src, capture_output=True, check=False)
     except OSError as error:
         return None, (
-            f"执行 latexpand 失败（{describe_error(error)}）。latexpand 随 TeX Live 分发，确认已安装且在 PATH 里。"
+            f"failed to run latexpand ({describe_error(error)}). latexpand ships with TeX Live; "
+            "check that it is installed and in PATH."
         )
     stderr_text = completed.stderr.decode("utf-8", errors="replace")
     warnings.extend(line for line in stderr_text.splitlines() if line.strip())
     if completed.returncode != 0:
         return None, (
-            f"latexpand 退出码 {completed.returncode}；stderr：{stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]}"
+            f"latexpand exited with code {completed.returncode}; "
+            f"stderr: {stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]}"
         )
     return completed.stdout, ""
 
@@ -280,23 +311,23 @@ def _inline_bbl(output: bytes, src: Path, main_file: str, warnings: list[str]) -
         matches.extend((index, match) for match in BIBLIOGRAPHY_COMMAND_RE.finditer(code))
     if len(matches) != 1:
         warnings.append(
-            f"主文件同目录有 {bbl_relative}，但展开结果里注释外的 \\bibliography 命令有 {len(matches)} 处"
-            "（内联要求恰一处），未内联"
+            f"{bbl_relative} sits next to the main file, but the expansion has {len(matches)} "
+            "\\bibliography commands outside comments (inlining requires exactly one); not inlined"
         )
         return output
     index, match = matches[0]
     line = lines[index]
     lines[index] = line[: match.start()] + bbl_path.read_bytes() + line[match.end() :]
-    warnings.append(f"已把 {bbl_relative} 内联进 \\bibliography 命令处")
+    warnings.append(f"inlined {bbl_relative} at the \\bibliography command")
     return b"".join(lines)
 
 
 def _exit_check_message(output: bytes) -> str:
     if not output:
-        return "latexpand 的输出为空。"
+        return "latexpand produced empty output."
     missing = [marker.decode() for marker in (BEGIN_DOCUMENT_MARKER, END_DOCUMENT_MARKER) if marker not in output]
     if missing:
-        return f"展开结果缺少 {'、'.join(missing)}，不是一份完整的文档。"
+        return f"the expansion is missing {', '.join(missing)}; not a complete document."
     return ""
 
 
@@ -329,7 +360,10 @@ def _inject_cjk(source: bytes, warnings: list[str]) -> bytes:
         preamble_end = document_index if document_index is not None else len(lines)
         _, class_end_index = _find_documentclass(lines, preamble_end)
     if class_end_index is None:
-        warnings.append("展开结果里找不到注释外的 \\documentclass，中文排版设置注入到文件开头")
+        warnings.append(
+            "no \\documentclass outside comments in the expansion; "
+            "the Chinese typesetting setup is injected at the top of the file"
+        )
         insert_at = 0
     else:
         insert_at = class_end_index + 1
@@ -402,10 +436,10 @@ def _strip_legacy_cjk(lines: list[bytes], preamble_end: int, warnings: list[str]
         stripped_envs += count
         rewritten.append(code + comment)
     if removed:
-        removed_names = "、".join(sorted(name.decode() for name in removed))
-        warnings.append(f"已移除 pdflatex 的中文机制宏包 {removed_names}，改用注入的 xeCJK 配置")
+        removed_names = ", ".join(sorted(name.decode() for name in removed))
+        warnings.append(f"removed the pdflatex-era CJK packages {removed_names} in favor of the injected xeCJK setup")
     if stripped_envs:
-        warnings.append(f"已剥除 {stripped_envs} 处 CJK 环境包裹与 \\CJKfamily 设置")
+        warnings.append(f"stripped {stripped_envs} CJK environment wrappers and \\CJKfamily settings")
     return rewritten
 
 
@@ -413,12 +447,16 @@ def _assemble_tree(paper_workdir: Workdir, tree: Path, flat: bytes, warnings: li
     shutil.copytree(paper_workdir.src, tree, dirs_exist_ok=True)
     tree_flat_path = tree / FLAT_FILENAME
     if tree_flat_path.exists():
-        warnings.append(f"src/ 里本来就有 {FLAT_FILENAME}，编译树里的这一份已被展开结果覆盖")
+        warnings.append(
+            f"src/ already contains {FLAT_FILENAME}; the copy in the compile tree is overwritten by the expansion"
+        )
     tree_flat_path.write_bytes(flat)
     if FONTS_DIR.is_dir():
         shutil.copytree(FONTS_DIR, tree / FONTS_DIRNAME, dirs_exist_ok=True)
     else:
-        warnings.append(f"仓库字体目录 {FONTS_DIR} 不存在，注入的 xeCJK 配置将找不到字体")
+        warnings.append(
+            f"repository font directory {FONTS_DIR} does not exist; the injected xeCJK setup will not find the fonts"
+        )
 
 
 def _attempt_compile(tree: Path) -> CompileAttempt:
@@ -439,11 +477,14 @@ def _clean_tree(tree: Path) -> list[str]:
     try:
         outcome = processes.run_in_process_group(list(LATEXMK_CLEAN_COMMAND), tree, CLEAN_TIMEOUT_SECONDS)
     except OSError as error:
-        return [f"校验前清理编译产物失败（{describe_error(error)}）"]
+        return [f"failed to clean compile outputs before the verify compile ({describe_error(error)})"]
     if outcome.timed_out:
-        return [f"校验前清理编译产物超过 {CLEAN_TIMEOUT_SECONDS} 秒超时上限，已按进程组终止"]
+        return [
+            f"cleaning compile outputs before the verify compile hit the {CLEAN_TIMEOUT_SECONDS}s timeout; "
+            "the process group was terminated"
+        ]
     if outcome.returncode != 0:
-        return [f"校验前清理编译产物的 latexmk 退出码 {outcome.returncode}"]
+        return [f"latexmk exited with code {outcome.returncode} while cleaning before the verify compile"]
     return []
 
 
@@ -463,13 +504,15 @@ def _fix(
     changed = _detect_changed_files(tree, snapshot)
     if changed:
         warnings.append(
-            f"修复会话改动了 {FLAT_FILENAME} 之外的 {len(changed)} 个文件：{'、'.join(changed)}；"
-            "这些改动不传播到下游，compile 阶段的编译树仍从 src/ 组装"
+            f"the fix session modified {len(changed)} files besides {FLAT_FILENAME}: {', '.join(changed)}; "
+            "these changes do not propagate downstream, the compile stage still assembles its tree from src/"
         )
     if outcome.stop_reason is StopReason.ERROR:
-        warnings.append(f"修复会话以 error 结束（{outcome.detail}），结论仍由脚本校验给出")
+        warnings.append(
+            f"the fix session ended with error ({outcome.detail}); the verdict still comes from the scripted checks"
+        )
     if outcome.stop_reason is StopReason.TIMEOUT:
-        warnings.append("修复会话以 timeout 结束，结论仍由脚本校验给出")
+        warnings.append("the fix session ended with timeout; the verdict still comes from the scripted checks")
     return session
 
 
@@ -511,28 +554,31 @@ def _file_sha256(path: Path) -> str:
 
 
 def _timeout_message(attempt: CompileAttempt) -> str:
-    return f"latexmk 执行超过 {COMPILE_TIMEOUT_SECONDS} 秒超时上限，已按进程组终止；log：{attempt.log_path}"
+    return (
+        f"latexmk hit the {COMPILE_TIMEOUT_SECONDS}s timeout and the process group was terminated; "
+        f"log: {attempt.log_path}"
+    )
 
 
 def _failure_message(attempt: CompileAttempt) -> str:
     reasons: list[str] = []
     if attempt.outcome.returncode != 0:
-        reasons.append(f"latexmk 退出码 {attempt.outcome.returncode}")
+        reasons.append(f"latexmk exited with code {attempt.outcome.returncode}")
     if attempt.pdf_bytes == 0:
-        reasons.append(f"{PDF_FILENAME} 不存在或为空")
+        reasons.append(f"{PDF_FILENAME} is missing or empty")
     if attempt.counts.pages <= 0:
-        reasons.append(f"{LOG_FILENAME} 里解析不出页数")
+        reasons.append(f"no page count can be parsed from {LOG_FILENAME}")
     if attempt.log_text is None:
         stderr = attempt.outcome.stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]
-        detail = f"读不到 {attempt.log_path}；latexmk 的 stderr：{stderr}"
+        detail = f"cannot read {attempt.log_path}; latexmk stderr: {stderr}"
     else:
         error_lines = texlog.error_lines(attempt.log_text, ERROR_LINE_LIMIT)
         if error_lines:
             excerpt = " | ".join(error_lines)
-            detail = f"log 的错误行（至多 {ERROR_LINE_LIMIT} 条）：{excerpt}；完整日志：{attempt.log_path}"
+            detail = f"error lines from the log (at most {ERROR_LINE_LIMIT}): {excerpt}; full log: {attempt.log_path}"
         else:
-            detail = f"log 里没有以 {texlog.ERROR_LINE_PREFIX} 开头的错误行；完整日志：{attempt.log_path}"
-    return f"{'；'.join(reasons)}。{detail}"
+            detail = f"no lines starting with {texlog.ERROR_LINE_PREFIX} in the log; full log: {attempt.log_path}"
+    return f"{'; '.join(reasons)}. {detail}"
 
 
 def _precompile_dir(paper_workdir: Workdir) -> Path:

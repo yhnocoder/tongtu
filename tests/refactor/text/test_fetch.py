@@ -118,7 +118,7 @@ def test_remote_empty_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     wire_download(monkeypatch, b"")
     manifest = fetch.run(fetch.PaperInput(arxiv_id="2002.05202"), make_workdir(tmp_path))
     assert manifest.status is FetchStatus.DOWNLOAD_FAILED
-    assert manifest.message == "下载成功但响应体为空。"
+    assert manifest.message == "download succeeded but the response body is empty."
 
 
 def test_remote_gz_single_tex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

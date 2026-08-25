@@ -75,39 +75,42 @@ def load_config() -> tuple[ModelsConfig | None, str]:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except OSError as error:
-        return None, f"读不到配置文件 {path} （{type(error).__name__}： {error}）。 先运行 tongtu setup 写出模板。"
+        return (
+            None,
+            f"cannot read config file {path} ({type(error).__name__}: {error}). Run tongtu setup to write the template first.",
+        )
     except tomllib.TOMLDecodeError as error:
-        return None, f"配置文件 {path} 不是合法的 TOML（{error}）。"
+        return None, f"config file {path} is not valid TOML ({error})."
     try:
         return ModelsConfig.model_validate(data), ""
     except ValidationError as error:
-        return None, f"配置文件 {path} 的字段不符合要求（{error}）。"
+        return None, f"config file {path} has invalid fields ({error})."
 
 
 def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
     written = (provider.api_key or "").strip()
     if written:
-        return written, "models.toml 的 api_key"
+        return written, "api_key in models.toml"
     variable = (provider.api_key_env or "").strip()
     if variable:
         value = (os.environ.get(variable) or "").strip()
         if value:
-            return value, f"环境变量 {variable}"
+            return value, f"environment variable {variable}"
     if variable:
         return None, (
-            f"服务商 {name} 的密钥取不到。 在 {models_path()} 的 [provider.{name}] 写 api_key，"
-            f"或设环境变量 {variable}。"
+            f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+            f"or set the environment variable {variable}."
         )
     return None, (
-        f"服务商 {name} 的密钥取不到。 在 {models_path()} 的 [provider.{name}] 写 api_key，"
-        f"或写 api_key_env 声明密钥的环境变量名。"
+        f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+        f"or write api_key_env naming the environment variable that holds the key."
     )
 
 
 def role_config(config: ModelsConfig, role: str) -> tuple[RoleConfig | None, str]:
     found = config.roles.get(role)
     if found is None:
-        return None, f"配置文件 {models_path()} 的 [roles] 里没有角色 {role}，补一条。"
+        return None, f"config file {models_path()} has no role {role} under [roles]; add one."
     return found, ""
 
 
@@ -127,14 +130,16 @@ def resolve_role(
     if model is not None:
         prefix, separator, tail = model.partition("/")
         if not separator or not prefix or not tail:
-            return None, (f"覆盖的模型要写成 {table}/模型名，{table} 是 [{table}.*] 里的名字，给的是 {model}。")
+            return None, (
+                f"a model override must be written as {table}/model, where {table} is a name under [{table}.*]; got {model}."
+            )
         name, chosen = prefix, tail
     if name is None:
-        return None, f"角色 {role} 没有 {table} 字段，在 {models_path()} 的 [roles] 里补上。"
+        return None, f"role {role} has no {table} field; add it under [roles] in {models_path()}."
     if name not in declared:
         return None, (
-            f"配置文件 {models_path()} 里没有声明 {table} {name}，在 [{table}.{name}] 下补上；"
-            f"覆盖的模型前缀也要是 [{table}.*] 里的名字。"
+            f"config file {models_path()} does not declare {table} {name}; add it under [{table}.{name}]. "
+            f"A model override prefix must also be a name under [{table}.*]."
         )
     resolved = ResolvedRole(
         provider=name if table is RoleTable.PROVIDER else None,
@@ -148,15 +153,21 @@ def resolve_role(
 def model_api(config: ModelsConfig, provider: str, model: str) -> tuple[Api | None, str]:
     entry = config.provider.get(provider)
     if entry is None:
-        return None, f"配置文件 {models_path()} 里没有声明服务商 {provider}，在 [provider.{provider}] 下补上。"
+        return (
+            None,
+            f"config file {models_path()} does not declare provider {provider}; add it under [provider.{provider}].",
+        )
     api = entry.models.get(model) or entry.api
     if api is None:
         return None, (
-            f"服务商 {provider} 的 models 表里没有模型 {model}，服务商也没有 api 字段，"
-            f"不知道它走哪种接口。 在 {models_path()} 里补 models 表的一条或整个服务商的 api。"
+            f"provider {provider} has no entry for model {model} in its models table and no api field, "
+            f"so its API kind is unknown. Add a models entry or a provider-wide api in {models_path()}."
         )
     if api not in tuple(Api):
-        return None, f"服务商 {provider} 给模型 {model} 的接口是 {api}，取值只能是 chat / responses / messages。"
+        return (
+            None,
+            f"provider {provider} gives model {model} the API {api}; only chat / responses / messages are accepted.",
+        )
     return Api(api), ""
 
 

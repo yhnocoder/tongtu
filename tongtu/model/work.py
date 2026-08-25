@@ -64,7 +64,7 @@ def work(
         return _error(detail)
     absent = [name for name in WORK_ROLE_FIELDS if getattr(entry, name) is None]
     if absent:
-        return _error(f"角色 {role} 缺字段 {'、'.join(absent)}，在 {models_path()} 的 [roles] 里补上。")
+        return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {models_path()}.")
     name = resolved.runtime or ""
     runtime = config.runtime[name]
 
@@ -74,8 +74,8 @@ def work(
         provider = config.provider.get(runtime.provider)
         if provider is None:
             return _error(
-                f"运行时 {name} 声明的服务商 {runtime.provider} 没有配置，"
-                f" 在 {models_path()} 的 [provider.{runtime.provider}] 下补上。"
+                f"runtime {name} declares provider {runtime.provider}, which is not configured;"
+                f" add it under [provider.{runtime.provider}] in {models_path()}."
             )
         api_key, detail = provider_key(runtime.provider, provider)
         if api_key is None:
@@ -89,11 +89,13 @@ def work(
         command, session_env = built
         executable = shutil.which(command[0])
         if executable is None:
-            return _error(f"运行时 {name} 不在 PATH 里， 它的命令是 {command[0]}。")
+            return _error(f"runtime {name} is not in PATH; its command is {command[0]}.")
 
         source = SKILL_ROOT / role
         if not source.is_dir():
-            return _error(f"skill 目录 {source} 不存在， 角色 {role} 没有可拷进现场的 skill。")
+            return _error(
+                f"skill directory {source} does not exist; role {role} has no skill to copy into the worksite."
+            )
         skill_path = runtime.skill_path.format(role=role)
         destination = workdir / skill_path
         shutil.rmtree(destination, ignore_errors=True)
@@ -111,13 +113,15 @@ def work(
                     env=_session_env(runtime.provider is not None) | session_env,
                 )
         except OSError as error:
-            return _error(f"拉起 {executable} 失败（{type(error).__name__}： {error}）。 确认工作目录 {workdir} 存在。")
+            return _error(
+                f"failed to launch {executable} ({type(error).__name__}: {error}). Check that the working directory {workdir} exists."
+            )
     if outcome.timed_out:
         return WorkOutcome(stop_reason=StopReason.TIMEOUT)
     if outcome.returncode == 0:
         return WorkOutcome(stop_reason=StopReason.FINISHED)
     stderr = outcome.stderr_text.strip()[:OUTPUT_EXCERPT_CHARS]
-    return _error(f"{executable} 退出码 {outcome.returncode}； stderr： {stderr or '（空）'}")
+    return _error(f"{executable} exited with code {outcome.returncode}; stderr: {stderr or '(empty)'}")
 
 
 def _error(detail: str) -> WorkOutcome:
@@ -153,13 +157,13 @@ def _build_invocation(
     templates = list(runtime.command) + list((runtime.env or {}).values())
     if runtime.settings is None and any("{settings}" in item for item in runtime.command):
         return None, (
-            f"运行时 {name} 的命令模板要填 settings， 但 [runtime.{name}] 没有 settings 表。"
-            f" 在 {models_path()} 里补上。"
+            f"the command template of runtime {name} needs settings, but [runtime.{name}] has no settings table."
+            f" Add it in {models_path()}."
         )
     if base_url is None and any("{base_url}" in item or "{api_key}" in item for item in templates):
         return None, (
-            f"运行时 {name} 的命令模板或 env 表要填 {{base_url}} 与 {{api_key}}，"
-            f" 但 [runtime.{name}] 没有 provider 字段。 在 {models_path()} 里补上。"
+            f"the command template or env table of runtime {name} needs {{base_url}} and {{api_key}},"
+            f" but [runtime.{name}] has no provider field. Add it in {models_path()}."
         )
     values = {
         "{model}": resolved.model,

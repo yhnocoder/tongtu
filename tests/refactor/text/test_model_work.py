@@ -240,7 +240,7 @@ def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatc
     )
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
-    assert "退出码 3" in outcome.detail
+    assert "exited with code 3" in outcome.detail
     assert "运行时报错" in outcome.detail
 
 
@@ -304,7 +304,7 @@ def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: p
 def test_model_override_without_slash_is_error(configured: Path) -> None:
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", model="m9")
     assert outcome.stop_reason == StopReason.ERROR
-    assert "runtime/模型名" in outcome.detail
+    assert "runtime/model" in outcome.detail
 
 
 def test_model_override_with_unknown_runtime_is_error(configured: Path) -> None:

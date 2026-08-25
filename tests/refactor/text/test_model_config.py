@@ -127,14 +127,14 @@ def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="written", api_key_env="DEMO_KEY")
-    assert provider_key("demo", provider) == ("written", "models.toml 的 api_key")
+    assert provider_key("demo", provider) == ("written", "api_key in models.toml")
 
 
 def test_provider_key_falls_back_to_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="", api_key_env="DEMO_KEY")
-    assert provider_key("demo", provider) == ("from-env", "环境变量 DEMO_KEY")
+    assert provider_key("demo", provider) == ("from-env", "environment variable DEMO_KEY")
 
 
 def test_provider_key_reports_both_sources_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -270,7 +270,7 @@ def test_resolve_role_rejects_model_without_slash(tmp_path: Path, monkeypatch: p
     config = loaded(tmp_path, monkeypatch)
     resolved, detail = resolve_role(config, "translate", RoleTable.PROVIDER, "chat-model")
     assert resolved is None
-    assert "provider/模型名" in detail
+    assert "provider/model" in detail
 
 
 def test_resolve_role_rejects_unknown_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
