@@ -108,7 +108,7 @@ def work(
                     entry.timeout_seconds or 0.0,
                     stdout=trace_file,
                     input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
-                    env=_session_env() | session_env,
+                    env=_session_env(runtime.provider is not None) | session_env,
                 )
         except OSError as error:
             return _error(f"拉起 {executable} 失败（{type(error).__name__}： {error}）。 确认工作目录 {workdir} 存在。")
@@ -124,10 +124,12 @@ def _error(detail: str) -> WorkOutcome:
     return WorkOutcome(stop_reason=StopReason.ERROR, detail=detail)
 
 
-def _session_env() -> dict[str, str]:
+def _session_env(provider_backed: bool) -> dict[str, str]:
     tex = shutil.which(TEX_EXECUTABLE)
     entries = ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
-    environment = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_REMOTE"}
+    environment = dict(os.environ)
+    if provider_backed:
+        environment.pop("CLAUDE_CODE_REMOTE", None)
     return environment | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}
 
 
