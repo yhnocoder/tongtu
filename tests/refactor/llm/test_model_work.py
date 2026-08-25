@@ -94,19 +94,22 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, skill: 
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
 
 
-def tool_result_for(trace_path: Path, needle: str) -> str:
+def bash_results(trace_path: Path, needle: str) -> list[dict]:
     events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    wanted = ""
+    uses: dict[str, dict] = {}
+    results: list[dict] = []
     for event in events:
         message = event.get("message")
         for block in (message.get("content") if isinstance(message, dict) else None) or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "tool_use" and needle in json.dumps(block.get("input", {})):
-                wanted = block.get("id", "")
-            if block.get("type") == "tool_result" and block.get("tool_use_id") == wanted:
-                return json.dumps(block.get("content"), ensure_ascii=False)
-    return ""
+            if block.get("type") == "tool_use":
+                uses[block.get("id", "")] = block
+            if block.get("type") == "tool_result":
+                use = uses.get(block.get("tool_use_id", ""), {})
+                if use.get("name") == "Bash" and needle in json.dumps(use.get("input", {})):
+                    results.append(block)
+    return results
 
 
 def codex_home_state() -> tuple[bool, list[tuple[str, float]]]:
@@ -143,9 +146,13 @@ def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: py
     outcome = work("sandbox_probe", workdir, trace_path=trace_path)
     print(f"trace： {trace_path} ")
     print(f"现场： {workdir} ")
-    print(f"越界写的 tool_result： {tool_result_for(trace_path, 'outside.txt')}")
+    print(f"越界写的 tool_result： {[block.get('content') for block in bash_results(trace_path, 'outside.txt')]}")
     assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
     assert (workdir / "inside.txt").exists()
+    inside_touches = bash_results(trace_path, "inside.txt")
+    assert any(not block.get("is_error") for block in inside_touches), (
+        "inside.txt 不是经一次成功的 Bash 调用建出的，说明沙箱没有起来"
+    )
     assert not (workdir.parent / "outside.txt").exists()
     assert not HOME_PROBE.exists()
 
@@ -173,9 +180,13 @@ def test_opencode_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkey
     outcome = work("sandbox_probe_opencode", workdir, trace_path=trace_path)
     print(f"trace： {trace_path} ")
     print(f"现场： {workdir} ")
-    print(f"越界写的 tool_result： {tool_result_for(trace_path, 'outside.txt')}")
+    print(f"越界写的 tool_result： {[block.get('content') for block in bash_results(trace_path, 'outside.txt')]}")
     assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
     assert (workdir / "inside.txt").exists()
+    inside_touches = bash_results(trace_path, "inside.txt")
+    assert any(not block.get("is_error") for block in inside_touches), (
+        "inside.txt 不是经一次成功的 Bash 调用建出的，说明沙箱没有起来"
+    )
     assert not (workdir.parent / "outside.txt").exists()
     assert not HOME_PROBE.exists()
 
