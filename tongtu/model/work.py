@@ -26,7 +26,7 @@ SKILL_ROOT = asset_path("skill")
 
 PROMPT = "读 {skill_path}/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
 
-WORK_ROLE_FIELDS = ("max_turns", "timeout_seconds", "bash")
+WORK_ROLE_FIELDS = ("max_turns", "timeout_seconds")
 
 SYSTEM_PATH_ENTRIES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
@@ -67,6 +67,7 @@ def work(
         return _error(f"角色 {role} 缺字段 {'、'.join(absent)}，在 {models_path()} 的 [roles] 里补上。")
     name = resolved.runtime or ""
     runtime = config.runtime[name]
+    skill_path = runtime.skill_path.format(role=role)
 
     base_url: str | None = None
     api_key: str | None = None
@@ -94,10 +95,7 @@ def work(
         source = SKILL_ROOT / role
         if not source.is_dir():
             return _error(f"skill 目录 {source} 不存在， 角色 {role} 没有可拷进现场的 skill。")
-        skill_path = runtime.skill_path.format(role=role)
-        destination = workdir / skill_path
-        shutil.rmtree(destination, ignore_errors=True)
-        shutil.copytree(source, destination)
+        shutil.copytree(source, workdir / skill_path, dirs_exist_ok=True)
 
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -149,7 +147,6 @@ def _build_invocation(
     api_key: str | None,
     tmp_dir: str,
 ) -> tuple[tuple[list[str], dict[str, str]] | None, str]:
-    bash_allow = ",".join(f"Bash({prefix}:*)" for prefix in entry.bash or [])
     templates = list(runtime.command) + list((runtime.env or {}).values())
     if runtime.settings is None and any("{settings}" in item for item in runtime.command):
         return None, (
@@ -165,7 +162,6 @@ def _build_invocation(
         "{model}": resolved.model,
         "{effort}": resolved.effort,
         "{max_turns}": str(entry.max_turns),
-        "{bash_allow}": bash_allow,
         "{settings}": _settings_json(runtime.settings),
         "{base_url}": base_url or "",
         "{api_key}": api_key or "",
@@ -177,9 +173,5 @@ def _build_invocation(
             text = text.replace(placeholder, value)
         return text
 
-    command = []
-    for item in runtime.command:
-        drop_empty = "{bash_allow}" in item and not bash_allow
-        filled = substituted(item)
-        command.append(",".join(piece for piece in filled.split(",") if piece) if drop_empty else filled)
+    command = [substituted(item) for item in runtime.command]
     return (command, {key: substituted(value) for key, value in (runtime.env or {}).items()}), ""

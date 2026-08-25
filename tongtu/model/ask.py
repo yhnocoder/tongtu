@@ -13,6 +13,14 @@ from .config import Api, RoleTable, load_config, model_api, provider_key, resolv
 
 SCHEMA_NAME = "ask_response"
 
+SCHEMA_INSTRUCTION = "\n\n只输出符合以下 JSON Schema 的 JSON：\n{schema}"
+
+RESPONSE_FORMAT_FIELD = "response_format"
+
+JSON_OBJECT_FORMAT: dict[str, object] = {"type": "json_object"}
+
+FALLBACK_FIELD = "json_object_fallback"
+
 DETAIL_EXCERPT_CHARS = 2000
 
 MESSAGES_MAX_TOKENS = 32768
@@ -130,12 +138,34 @@ def _chat(
     messages: list[tuple[str, str]],
     schema: dict | None,
 ) -> Reply:
-    request_kwargs: dict[str, object] = {}
-    if schema is not None:
-        request_kwargs["response_format"] = {
+    if schema is None:
+        return _completion(client, model, effort, system, messages, {})
+    strict: dict[str, object] = {
+        RESPONSE_FORMAT_FIELD: {
             "type": "json_schema",
             "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": schema},
         }
+    }
+    try:
+        return _completion(client, model, effort, system, messages, strict)
+    except openai.BadRequestError as error:
+        if RESPONSE_FORMAT_FIELD not in str(error):
+            raise
+    instructed = system + SCHEMA_INSTRUCTION.format(schema=json.dumps(schema, ensure_ascii=False))
+    outcome, extra = _completion(
+        client, model, effort, instructed, messages, {RESPONSE_FORMAT_FIELD: JSON_OBJECT_FORMAT}
+    )
+    return outcome, extra | {FALLBACK_FIELD: True}
+
+
+def _completion(
+    client: openai.OpenAI,
+    model: str,
+    effort: str,
+    system: str,
+    messages: list[tuple[str, str]],
+    request_kwargs: dict[str, object],
+) -> Reply:
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}] + [{"role": item[0], "content": item[1]} for item in messages],

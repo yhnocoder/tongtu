@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .. import masking, validation
+from .. import chunks, masking, validation
 from ..artifacts.survey import BriefFile, Part
 from ..artifacts.translate import (
     ChunkTranslateRecord,
@@ -43,8 +43,6 @@ MAX_RETRIES = 1
 
 MAX_ASK_CALLS = MAX_RETRIES + 3
 
-MAX_FALLBACK_RATIO = 0.2
-
 RETRY_EFFORT = "low"
 
 NEIGHBOR_PARAGRAPHS = 3
@@ -65,9 +63,8 @@ REFERENCE_HEADER = (
 @dataclass(frozen=True)
 class _Context:
     id: str
+    raw: str
     body: str
-    leading: str
-    trailing: str
     system: str
 
 
@@ -78,7 +75,6 @@ class _Outcome:
     body: str
     attempts: int = 0
     failures: list[str] = field(default_factory=list)
-    fenced: bool = False
 
 
 def run(
@@ -176,15 +172,7 @@ def _contexts(brief: BriefFile, bodies: Sequence[str], skill: str) -> list[_Cont
         neighbors = _neighbor_section(bodies, index)
         if neighbors:
             sections.append(neighbors)
-        contexts.append(
-            _Context(
-                id=record.id,
-                body=raw.strip(),
-                leading=raw[: len(raw) - len(raw.lstrip())],
-                trailing=raw[len(raw.rstrip()) :],
-                system="\n\n".join(sections),
-            )
-        )
+        contexts.append(_Context(id=record.id, raw=raw, body=raw.strip(), system="\n\n".join(sections)))
     return contexts
 
 
@@ -244,7 +232,6 @@ def _ask_until_valid(
     failures: list[str] = []
     attempts = 0
     judged = 0
-    fenced = False
     while attempts < MAX_ASK_CALLS:
         attempts += 1
         outcome = ask(
@@ -258,11 +245,10 @@ def _ask_until_valid(
         if outcome.status is AskStatus.ERROR:
             failures = [outcome.detail]
             continue
-        translated, stripped = _strip_code_fence(outcome.text)
+        translated = _strip_code_fence(outcome.text)
         if not translated:
             failures = [EMPTY_REPLY_DETAIL]
             continue
-        fenced = fenced or stripped
         result = validation.validate(context.body, translated)
         if result.ok:
             return _Outcome(
@@ -270,7 +256,6 @@ def _ask_until_valid(
                 status=ChunkTranslateStatus.TRANSLATED,
                 body=translated,
                 attempts=attempts,
-                fenced=fenced,
             )
         failures = [f"{failure.check}：{failure.message}" for failure in result.failures]
         judged += 1
@@ -287,7 +272,6 @@ def _ask_until_valid(
         body=context.body,
         attempts=attempts,
         failures=failures,
-        fenced=fenced,
     )
 
 
@@ -296,12 +280,12 @@ def _retry_message(failures: Sequence[str]) -> str:
     return f"上一次的译文未通过机械校验：\n\n{listed}\n\n请修正上述差异并重新输出完整译文，只输出译文本身。"
 
 
-def _strip_code_fence(text: str) -> tuple[str, bool]:
+def _strip_code_fence(text: str) -> str:
     stripped = text.strip()
     match = CODE_FENCE_RE.match(stripped)
     if match is None:
-        return stripped, False
-    return match.group(1).strip(), True
+        return stripped
+    return match.group(1).strip()
 
 
 def _finish(
@@ -321,35 +305,23 @@ def _finish(
         )
         for context in contexts
     }
-    warnings = [
-        f"{context.id} 的译文整段包在代码围栏里，已剥掉围栏；SKILL.md 要求只输出译文本身"
-        for context in contexts
-        if outcomes[context.id].fenced
-    ]
-    attempted = sum(1 for record in chunks.values() if record.status is not ChunkTranslateStatus.SKIPPED)
-    fallback = sum(1 for record in chunks.values() if record.status is ChunkTranslateStatus.FALLBACK)
-    ratio = fallback / attempted if attempted else 0.0
-    allowed = max(int(MAX_FALLBACK_RATIO * attempted), 1)
+    warnings: list[str] = []
+    for context in contexts:
+        outcome = outcomes[context.id]
+        if outcome.status is ChunkTranslateStatus.FALLBACK:
+            listed = "；".join(outcome.failures) or "没有留下失败说明"
+            warnings.append(f"{context.id} 回退成英文原文，最后一次未通过：{listed}")
     status = TranslateStatus.OK
     message = ""
-    if fallback > allowed:
+    _write_translated(paper_workdir, contexts, outcomes)
+    absent = _absent_translations(paper_workdir, contexts)
+    if absent:
+        shutil.rmtree(paper_workdir.build / TRANSLATED_DIRNAME, ignore_errors=True)
         status = TranslateStatus.TRANSLATE_FAILED
         message = (
-            f"{attempted} 个参与翻译的 chunk 里有 {fallback} 个回退原文，超过允许的 "
-            f"{allowed} 个（{MAX_FALLBACK_RATIO:.0%}，至少放行 1 个），不进 compile；"
-            f"逐 chunk 的失败现场在 manifest 的 chunks 里，"
-            f"已翻译的 chunk 在 logs/{STAGE_NAME}-*.json 里。"
+            f"自检不过：build/{TRANSLATED_DIRNAME}/ 下有 {len(absent)} 个译文文件缺失或为空"
+            f"（{'、'.join(absent[:5])}）。"
         )
-    else:
-        _write_translated(paper_workdir, contexts, outcomes)
-        absent = _absent_translations(paper_workdir, contexts)
-        if absent:
-            shutil.rmtree(paper_workdir.build / TRANSLATED_DIRNAME, ignore_errors=True)
-            status = TranslateStatus.TRANSLATE_FAILED
-            message = (
-                f"自检不过：build/{TRANSLATED_DIRNAME}/ 下有 {len(absent)} 个译文文件缺失或为空"
-                f"（{'、'.join(absent[:5])}）。"
-            )
     return TranslateManifest(
         status=status,
         model=model,
@@ -357,7 +329,6 @@ def _finish(
         prompt_version=prompt_version,
         jobs=jobs,
         chunks=chunks,
-        fallback_ratio=ratio,
         warnings=warnings,
         message=message,
     )
@@ -375,7 +346,7 @@ def _absent_translations(paper_workdir: Workdir, contexts: Sequence[_Context]) -
 def _write_translated(paper_workdir: Workdir, contexts: Sequence[_Context], outcomes: dict[str, _Outcome]) -> None:
     (paper_workdir.build / TRANSLATED_DIRNAME).mkdir(parents=True, exist_ok=True)
     for context in contexts:
-        content = context.leading + outcomes[context.id].body + context.trailing
+        content = chunks.restore_padding(context.raw, outcomes[context.id].body)
         _translated_path(paper_workdir, context.id).write_text(content, encoding=ENCODING)
 
 

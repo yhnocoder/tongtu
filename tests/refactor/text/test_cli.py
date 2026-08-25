@@ -57,9 +57,9 @@ command = ["runner", "-p"]
 [roles]
 translate = { provider = "demo", model = "m1", effort = "low" }
 survey_terms = { provider = "written", model = "m1", effort = "low" }
-review = { runtime = "demo_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
-precompile_fix = { runtime = "gateway_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
-compile_fix = { runtime = "behind_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
+review = { runtime = "demo_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
+precompile_fix = { runtime = "gateway_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
+compile_fix = { runtime = "behind_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
 """
 
 
@@ -123,7 +123,7 @@ def test_setup_does_not_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 def test_setup_interactive_fills_first_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup", "-i"], input="y\nzen-key\nn\n")
+    result = runner.invoke(app, ["setup", "-i"], input="y\nzen-key\nn\nn\n")
     assert result.exit_code == 0
     written = tomllib.loads(path.read_text(encoding="utf-8"))
     assert written["provider"]["opencode"]["api_key"] == "zen-key"
@@ -136,13 +136,13 @@ def test_setup_interactive_fills_first_provider(tmp_path: Path, monkeypatch: pyt
     }
     assert written["roles"]["survey_terms"]["provider"] == "opencode"
     assert written["roles"]["review"]["runtime"] == "claude_code"
-    assert written["roles"]["review"]["model"] == "claude-sonnet-5"
+    assert written["roles"]["review"]["model"] == "claude-opus-5"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_setup_interactive_points_ask_roles_at_second_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup", "-i"], input="n\ny\nsk-key\n")
+    result = runner.invoke(app, ["setup", "-i"], input="n\nn\ny\nsk-key\n")
     assert result.exit_code == 0
     written = tomllib.loads(path.read_text(encoding="utf-8"))
     assert written["provider"]["anthropic"]["api_key"] == "sk-key"
@@ -156,7 +156,7 @@ def test_setup_interactive_points_ask_roles_at_second_provider(tmp_path: Path, m
 
 def test_setup_interactive_without_any_provider_exits_two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup", "-i"], input="n\nn\n")
+    result = runner.invoke(app, ["setup", "-i"], input="n\nn\nn\n")
     assert result.exit_code == 2
     assert not path.exists()
 
@@ -388,6 +388,7 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
             "--jobs",
             "9",
             "--no-terms",
+            "--no-review",
         ],
     )
     assert result.exit_code == 0
@@ -401,6 +402,7 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
     assert options.glossary == (Path("a.json"), Path("b.json"))
     assert options.jobs == 9
     assert options.no_terms is True
+    assert options.no_review is True
     assert all(entry is options for entry in captured)
 
 

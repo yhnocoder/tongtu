@@ -78,6 +78,10 @@ TERMS_FIELD = "terms"
 
 DO_NOT_TRANSLATE_FIELD = "do_not_translate"
 
+PLURAL_SUFFIX_RE = re.compile(r"(?:es|s)$")
+
+CJK_ASCII_BOUNDARY_RE = re.compile(r"(?<=[\u4e00-\u9fff])(?=[0-9A-Za-z])|(?<=[0-9A-Za-z])(?=[\u4e00-\u9fff])")
+
 STYLE_FIELD = "style"
 
 KNOWN_FIELDS: tuple[str, ...] = (TERMS_FIELD, DO_NOT_TRANSLATE_FIELD, STYLE_FIELD)
@@ -177,7 +181,10 @@ def _execute(
     )
     warnings.extend(proposal_warnings)
 
-    merged, style = _merge([(proposed, None), *units])
+    merged, style, merge_warnings = _merge([(proposed, None), *units])
+    warnings.extend(merge_warnings)
+    merged, compound_warnings = _drop_broken_compounds(merged)
+    warnings.extend(compound_warnings)
     decisions = [(term, _hits(term.word, masked)) for term in merged]
     kept = [term for term, hit in decisions if hit]
     filtered = [term for term, hit in decisions if not hit]
@@ -389,15 +396,74 @@ def _describe_term(term: Term) -> str:
     return f"{TERMS_FIELD} 中的 {term.word!r} → {term.translation!r}"
 
 
-def _merge(units: Sequence[tuple[list[Term], str | None]]) -> tuple[list[Term], str | None]:
-    entries: dict[str, Term] = {}
+def _merge(units: Sequence[tuple[list[Term], str | None]]) -> tuple[list[Term], str | None, list[str]]:
+    entries: dict[str, list[Term]] = {}
+    warnings: list[str] = []
     style: str | None = None
     for terms, unit_style in units:
+        layer: dict[str, list[Term]] = {}
         for term in terms:
-            entries[term.word.casefold()] = term
+            key = _term_key(term.word)
+            bucket = layer.get(key)
+            if bucket is None:
+                layer[key] = [term]
+                continue
+            previous = bucket[-1]
+            same = f"术语 {previous.word!r} 与 {term.word!r} 归一化后是同一条"
+            if _from_user(term):
+                bucket.append(term)
+                warnings.append(
+                    f"{same}，都来自 {term.decided_by} 层："
+                    f"{_describe_term(previous)}、{_describe_term(term)}，两条都保留，请自行改术语表。"
+                )
+                continue
+            kept, dropped = (previous, term) if previous.translation is None else (term, previous)
+            bucket[-1] = kept
+            warnings.append(
+                f"{same}，都来自 {DecidedBy.SURVEY} 层，保留 {_describe_term(kept)}，丢弃 {_describe_term(dropped)}。"
+            )
+        entries.update(layer)
         if unit_style is not None:
             style = unit_style or None
-    return sorted(entries.values(), key=lambda term: (term.word.casefold(), term.word)), style
+    merged = [term for bucket in entries.values() for term in bucket]
+    return sorted(merged, key=lambda term: (term.word.casefold(), term.word)), style, warnings
+
+
+def _term_key(word: str) -> str:
+    collapsed = " ".join(word.replace("-", " ").split()).casefold()
+    return PLURAL_SUFFIX_RE.sub("", collapsed)
+
+
+def _from_user(term: Term) -> bool:
+    return term.decided_by is not DecidedBy.SURVEY
+
+
+def _drop_broken_compounds(terms: Sequence[Term]) -> tuple[list[Term], list[str]]:
+    protected = [(index, term) for index, term in enumerate(terms) if term.translation is None]
+    dropped: set[int] = set()
+    warnings: list[str] = []
+    for index, term in enumerate(terms):
+        if term.translation is None:
+            continue
+        for protected_index, word in protected:
+            if protected_index in dropped or not _hits(word.word, term.word) or word.word in term.translation:
+                continue
+            if _term_key(word.word) == _term_key(term.word):
+                continue
+            conflict = (
+                f"术语 {term.word!r}（{term.decided_by} 层）的译名 {term.translation!r} "
+                f"没有原样保留不译词 {word.word!r}（{word.decided_by} 层）"
+            )
+            if _from_user(term) and _from_user(word):
+                warnings.append(f"{conflict}，两条都来自用户术语表，都保留，请自行改术语表。")
+                continue
+            if _from_user(word) or not _from_user(term):
+                dropped.add(index)
+                warnings.append(f"{conflict}，丢弃这条术语，保留这个不译词。")
+                break
+            dropped.add(protected_index)
+            warnings.append(f"{conflict}，丢弃这个不译词，保留这条术语。")
+    return [term for index, term in enumerate(terms) if index not in dropped], warnings
 
 
 def _hits(word: str, text: str) -> bool:
@@ -457,7 +523,11 @@ def _propose(
 def _proposed_terms(text: str) -> list[Term]:
     data = json.loads(text)
     proposed = [
-        Term(word=item["word"].strip(), translation=item["translation"].strip(), decided_by=DecidedBy.SURVEY)
+        Term(
+            word=item["word"].strip(),
+            translation=CJK_ASCII_BOUNDARY_RE.sub(" ", item["translation"].strip()),
+            decided_by=DecidedBy.SURVEY,
+        )
         for item in data["terms"]
     ]
     proposed += [

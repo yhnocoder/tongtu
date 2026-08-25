@@ -24,7 +24,7 @@ from .manifests import describe_error, load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
-from .stages import fetch, mask, precompile, survey, translate
+from .stages import fetch, mask, precompile, review, survey, translate
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .workdir import Workdir, WorkdirError, resolve
 
@@ -79,6 +79,7 @@ class RunOptions:
     glossary: tuple[Path, ...]
     jobs: int
     no_terms: bool
+    no_review: bool
 
 
 def _pending_stage(name: str) -> Callable[[RunOptions], Manifest]:
@@ -120,12 +121,22 @@ def _translate_entry(options: RunOptions) -> Manifest:
     )
 
 
+def _review_entry(options: RunOptions) -> Manifest:
+    return review.run(
+        options.workdir,
+        skip=options.no_review,
+        model_override=options.work_model,
+        effort=options.work_effort,
+    )
+
+
 STAGE_ENTRIES: dict[str, Callable[[RunOptions], Manifest]] = {name: _pending_stage(name) for name in STAGES}
 STAGE_ENTRIES["fetch"] = _fetch_entry
 STAGE_ENTRIES["precompile"] = _precompile_entry
 STAGE_ENTRIES["mask"] = _mask_entry
 STAGE_ENTRIES["survey"] = _survey_entry
 STAGE_ENTRIES["translate"] = _translate_entry
+STAGE_ENTRIES["review"] = _review_entry
 
 
 PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv 编号 / arXiv 链接 / 本地源码目录")]
@@ -173,6 +184,7 @@ WorkdirOpt = Annotated[
 ]
 JobsOpt = Annotated[int, typer.Option("--jobs", min=1, metavar="N", help="translate 并发度")]
 NoTermsOpt = Annotated[bool, typer.Option("--no-terms", help="survey 不调模型提议术语表，只用你写的三层")]
+NoReviewOpt = Annotated[bool, typer.Option("--no-review", help="跳过审校会话，译文原样进 compile")]
 
 
 def _print_version(value: bool) -> None:
@@ -215,6 +227,7 @@ def _options(
     glossary: list[Path] | None,
     jobs: int,
     no_terms: bool,
+    no_review: bool = False,
 ) -> RunOptions:
     paper_input, paper_workdir = _paper_workdir(paper, workdir)
     return RunOptions(
@@ -227,6 +240,7 @@ def _options(
         glossary=tuple(glossary or ()),
         jobs=jobs,
         no_terms=no_terms,
+        no_review=no_review,
     )
 
 
@@ -269,8 +283,11 @@ def run(
     workdir: WorkdirOpt = None,
     jobs: JobsOpt = DEFAULT_JOBS,
     no_terms: NoTermsOpt = False,
+    no_review: NoReviewOpt = False,
 ) -> None:
-    options = _options(paper, workdir, ask_model, ask_effort, work_model, work_effort, glossary, jobs, no_terms)
+    options = _options(
+        paper, workdir, ask_model, ask_effort, work_model, work_effort, glossary, jobs, no_terms, no_review
+    )
     if from_stage is not None:
         clean_from(options.workdir, from_stage.value)
         start = from_stage.value
@@ -355,20 +372,7 @@ def validate(
     src: Annotated[Path, typer.Argument(help="原文 chunk 文件")],
     dst: Annotated[Path, typer.Argument(help="译文文件")],
 ) -> None:
-    try:
-        source = src.read_text(encoding="utf-8")
-        translation = dst.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        error_console.print(f"读不到文件：{error}")
-        raise typer.Exit(EXIT_FAILURE) from error
-    result = validation.validate(source.strip(), translation.strip())
-    failures = {failure.check: failure.message for failure in result.failures}
-    for layer in validation.CHECK_NAMES:
-        if layer in failures:
-            console.print(f"  [失败] {layer}：{failures[layer]}")
-        else:
-            console.print(f"  [通过] {layer}")
-    raise typer.Exit(0 if result.ok else EXIT_FAILURE)
+    raise typer.Exit(validation.main([str(src), str(dst)]))
 
 
 @app.command()

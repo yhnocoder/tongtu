@@ -5,6 +5,7 @@ import types
 from pathlib import Path
 
 import anthropic
+import httpx
 import openai
 import pytest
 
@@ -39,7 +40,7 @@ unknown_model_role = { provider = "demo", model = "other-model", effort = "low" 
 ghost_role = { provider = "ghost", model = "chat-model", effort = "low" }
 odd_role = { provider = "odd", model = "any-model", effort = "low" }
 inline_role = { provider = "inline", model = "chat-model", effort = "low" }
-work_role = { runtime = "claude_code", model = "m", effort = "low", max_turns = 4, timeout_seconds = 60, bash = [] }
+work_role = { runtime = "claude_code", model = "m", effort = "low", max_turns = 4, timeout_seconds = 60 }
 """
 
 MESSAGES = [("user", "把下面这句话译成中文：Hello, world.")]
@@ -364,3 +365,74 @@ def test_unwritable_log_is_error(configured: Path, monkeypatch: pytest.MonkeyPat
 
 def test_thinking_budget_table_matches_efforts() -> None:
     assert THINKING_BUDGET_TOKENS == {"low": 1024, "medium": 2048, "high": 4096}
+
+
+def openai_sequence(calls: list[dict], responses: list[object]) -> object:
+    def create(**kwargs: object) -> object:
+        calls.append(kwargs)
+        reply = responses[len(calls) - 1]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def factory(**kwargs: object) -> object:
+        return types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)),
+            responses=types.SimpleNamespace(create=create),
+        )
+
+    return factory
+
+
+def bad_request(message: str) -> openai.BadRequestError:
+    request = httpx.Request("POST", "https://demo.example/v1/chat/completions")
+    response = httpx.Response(400, request=request, json={"error": {"message": message}})
+    return openai.BadRequestError(message, response=response, body=None)
+
+
+def test_chat_falls_back_to_json_object_when_the_schema_format_is_refused(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict] = []
+    refusal = bad_request("This response_format type is unavailable now")
+    monkeypatch.setattr(openai, "OpenAI", openai_sequence(calls, [refusal, chat_response('{"a": 1}')]))
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}}
+    log_path = configured / "log.json"
+    outcome = ask("chat_role", "你是术语员", MESSAGES, schema=schema, log_path=log_path)
+    assert outcome.status == AskStatus.OK
+    assert outcome.text == '{"a": 1}'
+    assert len(calls) == 2
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    assert calls[0]["messages"][0]["content"] == "你是术语员"
+    instructed = calls[1]["messages"][0]["content"]
+    assert instructed.startswith("你是术语员")
+    assert json.dumps(schema, ensure_ascii=False) in instructed
+    assert calls[1]["messages"][1:] == calls[0]["messages"][1:]
+    record = read_log(log_path)
+    assert record["json_object_fallback"] is True
+    assert record["schema"] == schema
+    assert record["status"] == "ok"
+
+
+def test_chat_with_a_working_schema_sends_one_request(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(openai, "OpenAI", openai_sequence(calls, [chat_response('{"a": 1}')]))
+    log_path = configured / "log.json"
+    outcome = ask("chat_role", "", MESSAGES, schema={"type": "object"}, log_path=log_path)
+    assert outcome.status == AskStatus.OK
+    assert len(calls) == 1
+    assert "json_object_fallback" not in read_log(log_path)
+
+
+def test_chat_does_not_retry_a_bad_request_about_something_else(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(openai, "OpenAI", openai_sequence(calls, [bad_request("Model not found")]))
+    log_path = configured / "log.json"
+    outcome = ask("chat_role", "", MESSAGES, schema={"type": "object"}, log_path=log_path)
+    assert outcome.status == AskStatus.ERROR
+    assert "Model not found" in outcome.detail
+    assert len(calls) == 1
+    assert "json_object_fallback" not in read_log(log_path)

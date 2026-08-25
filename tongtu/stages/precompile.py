@@ -21,7 +21,9 @@ STAGE_NAME = "precompile"
 
 ROLE = "precompile_fix"
 
-PRECOMPILE_DIRNAME = "precompile"
+SANDBOX_DIRNAME = "sandbox"
+
+STAGE_DIRNAME = "precompile"
 
 PRECOMPILE_FILENAME = "precompile.tex"
 
@@ -536,7 +538,7 @@ def _failure_message(attempt: CompileAttempt) -> str:
 
 
 def _precompile_dir(paper_workdir: Workdir) -> Path:
-    return paper_workdir.build / PRECOMPILE_DIRNAME
+    return paper_workdir.build / SANDBOX_DIRNAME / STAGE_DIRNAME
 
 
 def _precompile_path(paper_workdir: Workdir) -> Path:

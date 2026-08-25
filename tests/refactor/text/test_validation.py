@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tongtu import validation
@@ -168,3 +170,34 @@ def test_a_heading_moved_off_the_prose_line_does_not_change_the_paragraph_count(
     source = "Prose ends here. \\section{Architecture}\n⟦BLK-0⟧ tail text.\n"
     translation = "正文到此结束。\n\n\\section{Architecture}\n⟦BLK-0⟧ 尾部文本。\n"
     assert validation.validate(source, translation).ok
+
+
+def test_main_prints_every_layer_and_exits_zero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = tmp_path / "c000.tex"
+    translation = tmp_path / "zh.tex"
+    source.write_text("We use $x$ here.\n", encoding="utf-8")
+    translation.write_text("我们这里用 $x$。\n\n", encoding="utf-8")
+    assert validation.main([str(source), str(translation)]) == 0
+    output = capsys.readouterr().out
+    assert all(f"[通过] {layer}" in output for layer in validation.CHECK_NAMES)
+
+
+def test_main_reports_the_failing_layer(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = tmp_path / "c000.tex"
+    translation = tmp_path / "zh.tex"
+    source.write_text("We use $x$ here.\n", encoding="utf-8")
+    translation.write_text("我们这里用 x。\n", encoding="utf-8")
+    assert validation.main([str(source), str(translation)]) == 1
+    output = capsys.readouterr().out
+    assert "[失败] braces_and_math" in output
+    assert "[通过] placeholders" in output
+
+
+def test_main_without_two_arguments_prints_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    assert validation.main([]) == 1
+    assert validation.USAGE in capsys.readouterr().out
+
+
+def test_main_reports_an_unreadable_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert validation.main([str(tmp_path / "absent.tex"), str(tmp_path / "zh.tex")]) == 1
+    assert "读不到文件" in capsys.readouterr().out

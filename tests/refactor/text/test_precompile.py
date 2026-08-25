@@ -176,7 +176,7 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert manifest.report.duration_seconds > 0
     assert calls == {"compile": 1, "clean": 0}
     assert outputs_present(workdir, "precompile")
-    tree = workdir.build / "precompile"
+    tree = workdir.build / "sandbox" / "precompile"
     assert (tree / "flat.tex").is_file()
     assert (tree / "fonts" / "LXGWWenKai-Light.ttf").is_file()
     written = json.loads(workdir.manifest_path("precompile").read_text(encoding="utf-8"))
@@ -267,7 +267,7 @@ def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.
     assert manifest.fix_session.duration_seconds >= 0
     assert calls == {"compile": 2, "clean": 1}
     assert work_calls[0]["role"] == "precompile_fix"
-    assert work_calls[0]["workdir"] == workdir.build / "precompile"
+    assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "precompile"
     assert work_calls[0]["trace_path"] == workdir.logs / "precompile-fix.jsonl"
     assert work_calls[0]["model"] == "claude_code/claude-sonnet-5"
     assert work_calls[0]["effort"] == "high"
@@ -366,12 +366,12 @@ def test_session_changes_outside_flat_tex_are_reported(tmp_path: Path, monkeypat
 
 def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"broken.tex": "no documentclass\n"})
-    (workdir.build / "precompile").mkdir(parents=True)
-    (workdir.build / "precompile" / "flat.pdf").write_bytes(b"stale")
+    (workdir.build / "sandbox" / "precompile").mkdir(parents=True)
+    (workdir.build / "sandbox" / "precompile" / "flat.pdf").write_bytes(b"stale")
     (workdir.build / "precompile.tex").write_text("stale", encoding="utf-8")
     (workdir.logs / "precompile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.MAIN_NOT_FOUND
-    assert not (workdir.build / "precompile").exists()
+    assert not (workdir.build / "sandbox" / "precompile").exists()
     assert not (workdir.build / "precompile.tex").exists()
     assert not (workdir.logs / "precompile-fix.jsonl").exists()

@@ -22,6 +22,6 @@ class CompileReport(BaseModel):
 
 
 class FixSession(BaseModel):
-    stop_reason: Literal["finished", "budget_exhausted", "timeout", "error"]
+    stop_reason: Literal["finished", "timeout", "error"]
     model: str
     duration_seconds: float
