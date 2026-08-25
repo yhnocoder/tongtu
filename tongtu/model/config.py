@@ -51,10 +51,10 @@ class RuntimeConfig(BaseModel):
 
 
 class FontsConfig(BaseModel):
-    main: str = "LXGWWenKai-Light.ttf"
+    main: str | list[str] = "LXGWWenKai-Light.ttf"
     bold: str | None = "LXGWWenKai-Medium.ttf"
-    sans: str | None = None
-    mono: str | None = None
+    sans: str | list[str] | None = None
+    mono: str | list[str] | None = None
 
 
 class RoleConfig(BaseModel):
@@ -256,7 +256,10 @@ env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 
 # 中文字体：main 正文、bold 粗体、sans 无衬线、mono 等宽；改这里即可切换译文 PDF 的字体
 # 取值两类：字体文件（.ttf / .otf / .ttc——仓库 fonts/ 里的文件名，或一个文件路径，可用 ~）、系统字体名（如 "Noto Serif CJK SC"）
-# bold 要与 main 同类（同为文件或同为字体名）才生效，默认的 bold 只与默认的 main 配对
+# main / sans / mono 还可写成列表按序回退（同 CSS 的 font-family）：系统字体存在就用，不存在试下一个；
+# 文件候选必然可用，它之后的候选不会被用到；候选全是系统字体名时，末尾自动补默认的霞鹜文楷兜底
+# 例：main = ["Source Han Serif SC", "Noto Serif CJK SC", "LXGWWenKai-Light.ttf"]
+# bold 要与候选同类（同为文件或同为字体名）才配对生效，默认的 bold 只与默认的 main 配对
 # sans 不写则按平台探测（Hiragino Sans GB → Noto Sans CJK SC → 霞鹜文楷）；mono 不写则用 main
 [fonts]
 main = "LXGWWenKai-Light.ttf"

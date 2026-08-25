@@ -354,21 +354,36 @@ def _fonts_config() -> FontsConfig:
 
 def _xecjk_block(fonts: FontsConfig, warnings: list[str], font_files: list[Path]) -> bytes:
     default = FontsConfig()
-    main = _resolve_font("main", fonts.main, warnings, font_files) or ResolvedFont(default.main, True)
-    bold_value = fonts.bold
-    if bold_value == default.bold and fonts.main != default.main:
-        bold_value = None
-    bold = _resolve_font("bold", bold_value, warnings, font_files) if bold_value else None
-    if bold is not None and bold.is_file != main.is_file:
-        warnings.append("models.toml 配置的 bold 字体与 main 字体一个是文件一个是字体名，无法配对，忽略 bold")
+    main = _resolve_chain("main", fonts.main, warnings, font_files) or [ResolvedFont(default.main, True)]
+    bold = _resolve_font("bold", fonts.bold, warnings, font_files) if fonts.bold else None
+    bold_is_default = fonts.bold == default.bold
+    if bold is not None and not bold_is_default and all(_pair_bold(bold, False, font) is None for font in main):
+        warnings.append("models.toml 配置的 bold 字体与 main 的候选都不同类（文件配文件、字体名配字体名），忽略 bold")
         bold = None
-    sans = _resolve_font("sans", fonts.sans, warnings, font_files) if fonts.sans else None
-    mono = _resolve_font("mono", fonts.mono, warnings, font_files) if fonts.mono else None
-    parts = [XECJK_HEAD, _font_command(rb"\setCJKmainfont", main, bold)]
-    parts.append(_font_command(rb"\setCJKsansfont", sans, None) if sans is not None else XECJK_SANS_DETECT)
-    parts.append(_font_command(rb"\setCJKmonofont", mono if mono is not None else main, None))
+    sans = _resolve_chain("sans", fonts.sans, warnings, font_files) if fonts.sans else []
+    mono = _resolve_chain("mono", fonts.mono, warnings, font_files) if fonts.mono else []
+    parts = [XECJK_HEAD, _chain_lines(rb"\setCJKmainfont", main, bold, bold_is_default)]
+    parts.append(_chain_lines(rb"\setCJKsansfont", sans, None, False) if sans else XECJK_SANS_DETECT)
+    parts.append(_chain_lines(rb"\setCJKmonofont", mono or main, None, False))
     parts.append(XECJK_TAIL)
     return b"".join(parts)
+
+
+def _resolve_chain(
+    slot: str, value: str | list[str], warnings: list[str], font_files: list[Path]
+) -> list[ResolvedFont]:
+    candidates = value if isinstance(value, list) else [value]
+    chain: list[ResolvedFont] = []
+    for index, candidate in enumerate(candidates):
+        resolved = _resolve_font(slot, candidate, warnings, font_files)
+        if resolved is None:
+            continue
+        chain.append(resolved)
+        if resolved.is_file:
+            if index < len(candidates) - 1:
+                warnings.append(f"models.toml 的 {slot} 候选 {candidate} 是字体文件、必然可用，它之后的候选不会被用到")
+            break
+    return chain
 
 
 def _resolve_font(slot: str, value: str, warnings: list[str], font_files: list[Path]) -> ResolvedFont | None:
@@ -379,12 +394,50 @@ def _resolve_font(slot: str, value: str, warnings: list[str], font_files: list[P
         if path.is_file():
             font_files.append(path)
             return ResolvedFont(path.name, True)
-        warnings.append(f"models.toml 配置的 {slot} 字体文件 {value} 不存在，改用默认字体")
+        warnings.append(f"models.toml 配置的 {slot} 字体文件 {value} 不存在，跳过")
         return None
     if (FONTS_DIR / value).is_file():
         return ResolvedFont(value, True)
-    warnings.append(f"models.toml 配置的 {slot} 字体文件 {value} 在 {FONTS_DIR} 下不存在，改用默认字体")
+    warnings.append(f"models.toml 配置的 {slot} 字体文件 {value} 在 {FONTS_DIR} 下不存在，跳过")
     return None
+
+
+def _pair_bold(bold: ResolvedFont | None, bold_is_default: bool, font: ResolvedFont) -> ResolvedFont | None:
+    if bold is None or bold.is_file != font.is_file:
+        return None
+    if bold_is_default and font.name != FontsConfig().main:
+        return None
+    return bold
+
+
+def _chain_lines(command: bytes, chain: list[ResolvedFont], bold: ResolvedFont | None, bold_is_default: bool) -> bytes:
+    if len(chain) > 1 and not chain[-1].is_file:
+        chain = [*chain, ResolvedFont(str(FontsConfig().main), True)]
+    return _fallback_chain(command, chain, bold, bold_is_default, 0) + b"\n"
+
+
+def _fallback_chain(
+    command: bytes, chain: list[ResolvedFont], bold: ResolvedFont | None, bold_is_default: bool, depth: int
+) -> bytes:
+    font = chain[0]
+    setter = _font_command(command, font, _pair_bold(bold, bold_is_default, font))
+    if len(chain) == 1:
+        return setter
+    indent = b"  " * (depth + 1)
+    rest = _fallback_chain(command, chain[1:], bold, bold_is_default, depth + 1)
+    return (
+        b"\\IfFontExistsTF{"
+        + font.name.encode("utf-8")
+        + b"}\n"
+        + indent
+        + b"{"
+        + setter
+        + b"}\n"
+        + indent
+        + b"{"
+        + rest
+        + b"}"
+    )
 
 
 def _font_command(command: bytes, font: ResolvedFont, bold: ResolvedFont | None) -> bytes:
@@ -394,8 +447,8 @@ def _font_command(command: bytes, font: ResolvedFont, bold: ResolvedFont | None)
     if bold is not None:
         options.append(b"BoldFont=" + bold.name.encode("utf-8"))
     if options:
-        return command + b"[" + b",".join(options) + b"]{" + font.name.encode("utf-8") + b"}\n"
-    return command + b"{" + font.name.encode("utf-8") + b"}\n"
+        return command + b"[" + b",".join(options) + b"]{" + font.name.encode("utf-8") + b"}"
+    return command + b"{" + font.name.encode("utf-8") + b"}"
 
 
 def _line_index_of(lines: list[bytes], marker: bytes) -> int | None:

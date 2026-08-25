@@ -91,6 +91,20 @@ def test_fonts_table_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert config.fonts.sans is None
 
 
+def test_fonts_table_accepts_fallback_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE + '\n[fonts]\nmain = ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]\nsans = ["Noto Sans CJK SC"]\n',
+    )
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.fonts.main == ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]
+    assert config.fonts.sans == ["Noto Sans CJK SC"]
+    assert config.fonts.mono is None
+
+
 def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config(tmp_path, monkeypatch, TABLE)
     config, _ = load_config()
