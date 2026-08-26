@@ -1,0 +1,45 @@
+# 发版：push tag v* 时校验 tag 与代码版本一致，然后建 GitHub Release。
+# 版本号的单一来源是 tongtu/__init__.py 的 __version__，pyproject.toml 由 hatchling 从
+# 该文件读版本。tag 去掉前缀 v 后必须与它相等，不相等就让作业失败，把打错的 tag 拦在
+# Release 之前（tag 本身已经推上去了，删掉重打即可）。
+# 镜像的构建与推送由 image.yml 在同一个 tag 上独立触发，本工作流不参与。
+# 发版的完整步骤见 README.md 的「发版」一节。
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Verify version and create release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches __version__
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(grep -E '^__version__' tongtu/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag: ${TAG}"
+          echo "__version__: ${version}"
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "tag ${TAG} 与 tongtu/__init__.py 的 __version__ ${version} 不一致，不建 Release" >&2
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes

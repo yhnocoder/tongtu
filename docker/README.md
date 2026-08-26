@@ -46,6 +46,8 @@ docker pull ghcr.io/yhnocoder/tongtu:latest     # 最新发布
 docker pull ghcr.io/yhnocoder/tongtu:0.1.0      # 某个 tag（git tag 即版本）
 ```
 
+镜像 tag 由仓库的 git tag 决定，打 tag 的步骤见仓库根 [`README.md`](../README.md) 的「发版」一节。
+
 ## 运行
 
 论文工作目录不在仓库里。镜像内 `TONGTU_HOME=/work`，把宿主的目录挂到 `/work`
