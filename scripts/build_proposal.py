@@ -5,8 +5,8 @@ PROPOSAL = Path(__file__).resolve().parent.parent / "docs" / "proposal"
 OUT = PROPOSAL / "proposal.html"
 PAGES = [
     ("pipeline-v0.html", "流水线"),
-    ("model.html", "模型调用层（未完成）"),
-    ("cli.html", "命令行（未完成）"),
+    ("model.html", "模型调用层"),
+    ("cli.html", "命令行"),
 ]
 
 TEMPLATE = """<!doctype html>
@@ -30,8 +30,8 @@ body{display:flex;flex-direction:column}
 .tab.active::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;background:var(--accent)}
 .scroll{flex:1;display:flex;gap:24px;overflow-x:auto;overflow-y:hidden;
   scroll-snap-type:x mandatory;overscroll-behavior-x:contain;
-  padding:18px 10vw 22px;scrollbar-width:thin}
-.panel{flex:0 0 80vw;min-width:0;height:100%;overflow-y:auto;
+  padding:18px calc((100vw - min(80vw,1160px)) / 2) 22px;scrollbar-width:thin}
+.panel{flex:0 0 min(80vw,1160px);min-width:0;height:100%;overflow-y:auto;scroll-behavior:smooth;
   scroll-snap-align:center;scroll-snap-stop:always;
   background:var(--card);border:1px solid var(--line);border-radius:12px;
   box-shadow:0 2px 12px rgba(0,0,0,.06);
@@ -69,6 +69,8 @@ panels.forEach(p => io.observe(p));
 
 def page_body(name: str) -> str:
     text = (PROPOSAL / name).read_text()
+    if "<style" in text:
+        raise SystemExit(f"{name}: page-level <style> is not allowed; put rules in style.css")
     body = re.search(r"<body>\s*(.*?)\s*</body>", text, re.S).group(1)
     for page, _ in PAGES:
         stem = page.removesuffix(".html")

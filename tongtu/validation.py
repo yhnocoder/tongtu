@@ -1,10 +1,41 @@
 from __future__ import annotations
 
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
-from . import masking
+SENTINEL_OPEN = "⟦"
+SENTINEL_CLOSE = "⟧"
+
+BLOCK_ID_PREFIX = "BLK"
+CAPTION_ID_PREFIX = "CAP"
+
+TOKEN_RE = re.compile(rf"{SENTINEL_OPEN}({BLOCK_ID_PREFIX}|{CAPTION_ID_PREFIX})-([0-9]+){SENTINEL_CLOSE}")
+
+BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
+
+ENVIRONMENT_NAME_RE = re.compile(r"[A-Za-z0-9@]+\*?")
+
+USAGE = "usage: validate.py SOURCE_FILE TRANSLATED_FILE"
+
+EXIT_OK = 0
+
+EXIT_FAILURE = 1
+
+
+def read_control_sequence(text: str, position: int) -> tuple[str, int]:
+    start = position + 1
+    if start >= len(text):
+        return "", start
+    if text[start].isascii() and text[start].isalpha():
+        end = start
+        while end < len(text) and text[end].isascii() and text[end].isalpha():
+            end += 1
+        return text[start:end], end
+    return text[start], start + 1
+
 
 CHECK_PLACEHOLDERS = "placeholders"
 CHECK_CONTROL_SEQUENCES = "control_sequences"
@@ -18,8 +49,8 @@ CHECK_NAMES: tuple[str, ...] = (
 )
 
 ENVIRONMENT_DELIMITER_RE = re.compile(
-    r"\\begin\s*\{" + masking.ENVIRONMENT_NAME_RE.pattern + r"\}(?:\[[^\]]*\])*(?:\{[^{}]*\})*"
-    r"|\\end\s*\{" + masking.ENVIRONMENT_NAME_RE.pattern + r"\}"
+    r"\\begin\s*\{" + ENVIRONMENT_NAME_RE.pattern + r"\}(?:\[[^\]]*\])*(?:\{[^{}]*\})*"
+    r"|\\end\s*\{" + ENVIRONMENT_NAME_RE.pattern + r"\}"
 )
 
 CONTROL_SEQUENCE_NAME_RE = re.compile(r"\\(?:[A-Za-z]+\*?|.)", re.DOTALL)
@@ -111,27 +142,27 @@ def validate(source: str, translation: str) -> ValidationResult:
 
 
 def _check_placeholders(source: str, translation: str) -> Failure | None:
-    expected = Counter(match.group(0) for match in masking.TOKEN_RE.finditer(source))
-    actual = Counter(match.group(0) for match in masking.TOKEN_RE.finditer(translation))
+    expected = Counter(match.group(0) for match in TOKEN_RE.finditer(source))
+    actual = Counter(match.group(0) for match in TOKEN_RE.finditer(translation))
     if expected != actual:
         missing = expected - actual
         extra = actual - expected
         parts = []
         if missing:
-            parts.append(f"译文缺少 {_describe_counter(missing)}")
+            parts.append(f"translation is missing {_describe_counter(missing)}")
         if extra:
-            parts.append(f"多出 {_describe_counter(extra)}")
-        return Failure(check=CHECK_PLACEHOLDERS, message="；".join(parts))
+            parts.append(f"translation has extra {_describe_counter(extra)}")
+        return Failure(check=CHECK_PLACEHOLDERS, message="; ".join(parts))
     complete = sum(actual.values())
-    opens = translation.count(masking.SENTINEL_OPEN)
-    closes = translation.count(masking.SENTINEL_CLOSE)
+    opens = translation.count(SENTINEL_OPEN)
+    closes = translation.count(SENTINEL_CLOSE)
     if opens != complete or closes != complete:
         return Failure(
             check=CHECK_PLACEHOLDERS,
             message=(
-                f"译文有 {complete} 个完整 placeholder，却出现 {opens} 个 {masking.SENTINEL_OPEN} 与 "
-                f"{closes} 个 {masking.SENTINEL_CLOSE}：有残缺的 placeholder 碎片，"
-                f"{masking.SENTINEL_OPEN} 与 {masking.SENTINEL_CLOSE} 只允许出现在完整 placeholder 里"
+                f"translation has {complete} complete placeholders but {opens} {SENTINEL_OPEN} and "
+                f"{closes} {SENTINEL_CLOSE}: broken placeholder fragments are present; "
+                f"{SENTINEL_OPEN} and {SENTINEL_CLOSE} may only appear inside complete placeholders"
             ),
         )
     return None
@@ -144,11 +175,12 @@ def _check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
         return None
     names = sorted(set(expected) | set(actual))
     differing = [name for name in names if expected[name] != actual[name]]
-    listed = "；".join(
-        f"\\{name} 原文 {expected[name]} 次、译文 {actual[name]} 次" for name in differing[:DIFFERENCE_ITEMS_MAX]
+    listed = "; ".join(
+        f"\\{name} appears {expected[name]} times in source, {actual[name]} in translation"
+        for name in differing[:DIFFERENCE_ITEMS_MAX]
     )
     if len(differing) > DIFFERENCE_ITEMS_MAX:
-        listed = f"{listed} 等 {len(differing)} 项"
+        listed = f"{listed} and more ({len(differing)} items in total)"
     return Failure(check=CHECK_CONTROL_SEQUENCES, message=listed)
 
 
@@ -156,23 +188,23 @@ def _check_braces_and_math(source: Scan, translation: Scan) -> Failure | None:
     problems: list[str] = []
     position = _unbalanced_position(translation)
     if position is not None and _unbalanced_position(source) is None:
-        problems.append(f"{OPEN_BRACE} {CLOSE_BRACE} 在第 {position} 字符处不平衡")
+        problems.append(f"{OPEN_BRACE} {CLOSE_BRACE} unbalanced at character {position}")
     dollars = translation.count(DOLLAR)
     expected_dollars = source.count(DOLLAR)
     if dollars % 2:
-        problems.append(f"{DOLLAR} 译文 {dollars} 个，是奇数，没有成对")
+        problems.append(f"{DOLLAR} count in translation is {dollars}, an odd number, so they cannot pair up")
     if dollars < expected_dollars:
-        problems.append(f"{DOLLAR} 原文 {expected_dollars} 个、译文 {dollars} 个")
+        problems.append(f"{DOLLAR} count differs: {expected_dollars} in source, {dollars} in translation")
     percents = translation.count(PERCENT)
     expected_percents = source.count(PERCENT)
     if percents > expected_percents:
         problems.append(
-            f"未转义的 {PERCENT} 原文 {expected_percents} 个、译文 {percents} 个；"
-            f"{PERCENT} 是注释符，要写百分号只能写 \\{PERCENT}"
+            f"unescaped {PERCENT} count differs: {expected_percents} in source, {percents} in translation; "
+            f"{PERCENT} starts a comment, a literal percent sign must be written \\{PERCENT}"
         )
     if not problems:
         return None
-    return Failure(check=CHECK_BRACES_AND_MATH, message="；".join(problems))
+    return Failure(check=CHECK_BRACES_AND_MATH, message="; ".join(problems))
 
 
 def _unbalanced_position(scanned: Scan) -> int | None:
@@ -195,7 +227,8 @@ def _check_paragraph_count(source: str, translation: str) -> Failure | None:
     return Failure(
         check=CHECK_PARAGRAPH_COUNT,
         message=(
-            f"含可译文本的段落数：原文 {expected} 段、译文 {actual} 段。空行是段落边界，不合并、不拆分、不跳过、不新增"
+            f"paragraphs with translatable text: {expected} in source, {actual} in translation. "
+            "Blank lines delimit paragraphs; do not merge, split, skip or add any"
         ),
     )
 
@@ -208,7 +241,7 @@ def scan(text: str) -> Scan:
     while position < length:
         character = text[position]
         if character == "\\":
-            name, after = masking.read_control_sequence(text, position)
+            name, after = read_control_sequence(text, position)
             if text[after : after + 1] == "*" and name.isalpha():
                 name, after = name + "*", after + 1
             sequences.append(name)
@@ -227,14 +260,12 @@ def _attach_headings(text: str) -> str:
 
 def translatable_paragraphs(text: str) -> int:
     return sum(
-        1
-        for paragraph in masking.BLANK_LINE_RE.split(text)
-        if paragraph.strip() and _has_translatable_text(paragraph.strip())
+        1 for paragraph in BLANK_LINE_RE.split(text) if paragraph.strip() and _has_translatable_text(paragraph.strip())
     )
 
 
 def _has_translatable_text(paragraph: str) -> bool:
-    stripped = masking.TOKEN_RE.sub("", paragraph)
+    stripped = TOKEN_RE.sub("", paragraph)
     stripped = ENVIRONMENT_DELIMITER_RE.sub("", stripped)
     stripped = NON_TEXT_COMMAND_RE.sub("", stripped)
     stripped = CONTROL_SEQUENCE_NAME_RE.sub("", stripped)
@@ -243,7 +274,31 @@ def _has_translatable_text(paragraph: str) -> bool:
 
 def _describe_counter(counter: Counter[str]) -> str:
     items = sorted(counter.items())
-    listed = "、".join(f"{item}" + (f"×{count}" if count > 1 else "") for item, count in items[:DIFFERENCE_ITEMS_MAX])
+    listed = ", ".join(f"{item}" + (f" x{count}" if count > 1 else "") for item, count in items[:DIFFERENCE_ITEMS_MAX])
     if len(items) > DIFFERENCE_ITEMS_MAX:
-        return f"{listed} 等 {len(items)} 项"
+        return f"{listed} and more ({len(items)} items in total)"
     return listed
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print(USAGE)
+        return EXIT_FAILURE
+    try:
+        source = Path(argv[0]).read_text(encoding="utf-8")
+        translation = Path(argv[1]).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        print(f"cannot read file: {error}")
+        return EXIT_FAILURE
+    result = validate(source.strip(), translation.strip())
+    failures = {failure.check: failure.message for failure in result.failures}
+    for layer in CHECK_NAMES:
+        if layer in failures:
+            print(f"  [fail] {layer}: {failures[layer]}")
+        else:
+            print(f"  [pass] {layer}")
+    return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

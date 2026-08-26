@@ -45,7 +45,7 @@ command = ["claude", "-p"]
 
 [roles]
 translate = { provider = "demo", model = "chat-model", effort = "low" }
-review = { runtime = "claude_code", model = "sonnet", effort = "high", max_turns = 8, timeout_seconds = 60, bash = [] }
+review = { runtime = "claude_code", model = "sonnet", effort = "high", max_turns = 8, timeout_seconds = 60 }
 """
 
 
@@ -59,12 +59,11 @@ def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> 
 
 def test_template_parses_and_validates() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
-    assert set(config.provider) == {"opencode", "anthropic"}
+    assert set(config.provider) == {"opencode", "deepseek", "anthropic"}
     assert set(config.runtime) == {"claude_code", "claude_code_opencode", "codex_opencode"}
     assert set(config.roles) == {"survey_terms", "translate", "review", "precompile_fix", "compile_fix"}
     assert config.provider["opencode"].models["deepseek-v4-flash"] == Api.CHAT
-    assert config.roles["precompile_fix"].bash == ["latexmk", "xelatex", "kpsewhich"]
-    assert config.roles["review"].bash == ["python3 -I validate.py"]
+    assert config.roles["review"].max_turns == 300
     assert config.provider["opencode"].base_url == "https://opencode.ai/zen/go"
     assert config.provider["anthropic"].base_url == "https://api.anthropic.com"
     assert config.provider["opencode"].api_key == ""
@@ -168,14 +167,14 @@ def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="written", api_key_env="DEMO_KEY")
-    assert provider_key("demo", provider) == ("written", "models.toml 的 api_key")
+    assert provider_key("demo", provider) == ("written", "api_key in models.toml")
 
 
 def test_provider_key_falls_back_to_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="", api_key_env="DEMO_KEY")
-    assert provider_key("demo", provider) == ("from-env", "环境变量 DEMO_KEY")
+    assert provider_key("demo", provider) == ("from-env", "environment variable DEMO_KEY")
 
 
 def test_provider_key_reports_both_sources_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,7 +310,7 @@ def test_resolve_role_rejects_model_without_slash(tmp_path: Path, monkeypatch: p
     config = loaded(tmp_path, monkeypatch)
     resolved, detail = resolve_role(config, "translate", RoleTable.PROVIDER, "chat-model")
     assert resolved is None
-    assert "provider/模型名" in detail
+    assert "provider/model" in detail
 
 
 def test_resolve_role_rejects_unknown_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

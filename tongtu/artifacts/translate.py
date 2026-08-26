@@ -29,6 +29,5 @@ class TranslateManifest(BaseModel):
     prompt_version: str = ""
     jobs: int = 0
     chunks: dict[str, ChunkTranslateRecord] = {}
-    fallback_ratio: float = 0.0
     warnings: list[str] = []
     message: str = ""

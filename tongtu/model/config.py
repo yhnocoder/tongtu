@@ -12,7 +12,7 @@ from ..config import config_dir
 
 MODELS_FILENAME = "models.toml"
 
-DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-pro", "anthropic": "claude-sonnet-5"}
+DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-pro", "deepseek": "deepseek-v4-pro", "anthropic": "claude-sonnet-5"}
 
 
 class Api(StrEnum):
@@ -64,7 +64,6 @@ class RoleConfig(BaseModel):
     runtime: str | None = None
     max_turns: int | None = None
     timeout_seconds: float | None = None
-    bash: list[str] | None = None
 
 
 class ModelsConfig(BaseModel):
@@ -83,39 +82,42 @@ def load_config() -> tuple[ModelsConfig | None, str]:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except OSError as error:
-        return None, f"读不到配置文件 {path} （{type(error).__name__}： {error}）。 先运行 tongtu setup 写出模板。"
+        return (
+            None,
+            f"cannot read config file {path} ({type(error).__name__}: {error}). Run tongtu setup to write the template first.",
+        )
     except tomllib.TOMLDecodeError as error:
-        return None, f"配置文件 {path} 不是合法的 TOML（{error}）。"
+        return None, f"config file {path} is not valid TOML ({error})."
     try:
         return ModelsConfig.model_validate(data), ""
     except ValidationError as error:
-        return None, f"配置文件 {path} 的字段不符合要求（{error}）。"
+        return None, f"config file {path} has invalid fields ({error})."
 
 
 def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
     written = (provider.api_key or "").strip()
     if written:
-        return written, "models.toml 的 api_key"
+        return written, "api_key in models.toml"
     variable = (provider.api_key_env or "").strip()
     if variable:
         value = (os.environ.get(variable) or "").strip()
         if value:
-            return value, f"环境变量 {variable}"
+            return value, f"environment variable {variable}"
     if variable:
         return None, (
-            f"服务商 {name} 的密钥取不到。 在 {models_path()} 的 [provider.{name}] 写 api_key，"
-            f"或设环境变量 {variable}。"
+            f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+            f"or set the environment variable {variable}."
         )
     return None, (
-        f"服务商 {name} 的密钥取不到。 在 {models_path()} 的 [provider.{name}] 写 api_key，"
-        f"或写 api_key_env 声明密钥的环境变量名。"
+        f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+        f"or write api_key_env naming the environment variable that holds the key."
     )
 
 
 def role_config(config: ModelsConfig, role: str) -> tuple[RoleConfig | None, str]:
     found = config.roles.get(role)
     if found is None:
-        return None, f"配置文件 {models_path()} 的 [roles] 里没有角色 {role}，补一条。"
+        return None, f"config file {models_path()} has no role {role} under [roles]; add one."
     return found, ""
 
 
@@ -135,14 +137,16 @@ def resolve_role(
     if model is not None:
         prefix, separator, tail = model.partition("/")
         if not separator or not prefix or not tail:
-            return None, (f"覆盖的模型要写成 {table}/模型名，{table} 是 [{table}.*] 里的名字，给的是 {model}。")
+            return None, (
+                f"a model override must be written as {table}/model, where {table} is a name under [{table}.*]; got {model}."
+            )
         name, chosen = prefix, tail
     if name is None:
-        return None, f"角色 {role} 没有 {table} 字段，在 {models_path()} 的 [roles] 里补上。"
+        return None, f"role {role} has no {table} field; add it under [roles] in {models_path()}."
     if name not in declared:
         return None, (
-            f"配置文件 {models_path()} 里没有声明 {table} {name}，在 [{table}.{name}] 下补上；"
-            f"覆盖的模型前缀也要是 [{table}.*] 里的名字。"
+            f"config file {models_path()} does not declare {table} {name}; add it under [{table}.{name}]. "
+            f"A model override prefix must also be a name under [{table}.*]."
         )
     resolved = ResolvedRole(
         provider=name if table is RoleTable.PROVIDER else None,
@@ -156,15 +160,21 @@ def resolve_role(
 def model_api(config: ModelsConfig, provider: str, model: str) -> tuple[Api | None, str]:
     entry = config.provider.get(provider)
     if entry is None:
-        return None, f"配置文件 {models_path()} 里没有声明服务商 {provider}，在 [provider.{provider}] 下补上。"
+        return (
+            None,
+            f"config file {models_path()} does not declare provider {provider}; add it under [provider.{provider}].",
+        )
     api = entry.models.get(model) or entry.api
     if api is None:
         return None, (
-            f"服务商 {provider} 的 models 表里没有模型 {model}，服务商也没有 api 字段，"
-            f"不知道它走哪种接口。 在 {models_path()} 里补 models 表的一条或整个服务商的 api。"
+            f"provider {provider} has no entry for model {model} in its models table and no api field, "
+            f"so its API kind is unknown. Add a models entry or a provider-wide api in {models_path()}."
         )
     if api not in tuple(Api):
-        return None, f"服务商 {provider} 给模型 {model} 的接口是 {api}，取值只能是 chat / responses / messages。"
+        return (
+            None,
+            f"provider {provider} gives model {model} the API {api}; only chat / responses / messages are accepted.",
+        )
     return Api(api), ""
 
 
@@ -198,6 +208,12 @@ api_key_env = "OPENCODE_API_KEY"
 "qwen3.7-plus" = "messages"
 "qwen3.6-plus" = "messages"
 
+[provider.deepseek]
+base_url    = "https://api.deepseek.com"
+api_key     = ""                  # 直接写密钥，或留空改用下面的环境变量
+api_key_env = "DEEPSEEK_API_KEY"
+api         = "chat"              # OpenAI 兼容；模型 deepseek-v4-flash / deepseek-v4-pro
+
 [provider.anthropic]
 base_url    = "https://api.anthropic.com"
 api_key     = ""                  # 直接写密钥，或留空改用下面的环境变量
@@ -210,14 +226,15 @@ skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
            "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
            "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   # 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录
 # 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网
 # 嵌套容器（如云端会话）里设环境变量 TONGTU_NESTED_SANDBOX=1，work 会在有 sandbox 表的运行时合入 enableWeakerNestedSandbox = true
-# {bash_allow} 由角色给出，形如 "Bash(python3 -I validate.py:*)"；work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单
+# Bash 在沙箱内自由使用：写范围 = 现场，断网；agent 做得对不对由驱动器在现场外重跑校验终判
+# work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单
 
 # 同一个 Claude Code，模型换成 opencode 上的：一个运行时条目 = 一个「工具 × 服务商」组合
 [runtime.claude_code_opencode]
@@ -226,7 +243,7 @@ skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,{bash_allow}", "--permission-mode", "acceptEdits",
+           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
            "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
            "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
@@ -250,7 +267,7 @@ command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-
 env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 # prompt 不作为位置参数：codex exec 没给 prompt 参数时从 stdin 读，work 正是经 stdin 喂 PROMPT；cwd 由 work 设为现场，不加 -C
 # CODEX_HOME 指向 work 为本次会话建的临时目录，会话结束整个删掉；~/.codex/ 不被读也不被写
-# 角色的 bash 放行清单与 max_turns 对 Codex 不生效：沙箱只靠 -s workspace-write 与 approval_policy="never"，写范围 = 现场 + 临时目录，默认断网
+# max_turns 对 Codex 不生效：沙箱只靠 -s workspace-write 与 approval_policy="never"，写范围 = 现场 + 临时目录，默认断网
 # wire_api 只接受 responses，所以这个条目只能跑 opencode 的 responses 端点支持的模型：gpt-5.6-luna、grok-4.5、muse-spark-1.2-contributor、deepseek-v4-flash
 # codex 须是原生二进制（brew cask 装的）：npm 装的是 node 启动脚本，work 把子进程 PATH 收成 TeX + 系统 bin 后找不到 node，退出码 127
 
@@ -269,7 +286,7 @@ bold = "LXGWWenKai-Medium.ttf"
 [roles]
 survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   # 可选；不配就不提议
 translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
-review         = { runtime = "claude_code", model = "claude-sonnet-5", effort = "high", max_turns = 80, timeout_seconds = 3600, bash = ["python3 -I validate.py"] }
-precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
-compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800, bash = ["latexmk", "xelatex", "kpsewhich"] }
+review         = { runtime = "claude_code", model = "claude-opus-5", effort = "medium", max_turns = 300, timeout_seconds = 3600 }
+precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
+compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
 """

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tongtu import validation
@@ -11,7 +13,7 @@ def checks(source: str, translation: str) -> tuple[str, ...]:
 
 def message(source: str, translation: str, check: str) -> str:
     found = [failure.message for failure in validation.validate(source, translation).failures if failure.check == check]
-    assert found, f"{check} 没有失败"
+    assert found, f"{check} did not fail"
     return found[0]
 
 
@@ -61,18 +63,18 @@ def test_structurally_identical_translation_passes_all_four_checks() -> None:
 def test_missing_placeholder_fails_only_the_placeholder_check() -> None:
     translation = TRANSLATION.replace("⟦BLK-0⟧\n", "")
     assert checks(SOURCE, translation) == (validation.CHECK_PLACEHOLDERS,)
-    assert message(SOURCE, translation, validation.CHECK_PLACEHOLDERS) == "译文缺少 ⟦BLK-0⟧"
+    assert message(SOURCE, translation, validation.CHECK_PLACEHOLDERS) == "translation is missing ⟦BLK-0⟧"
 
 
 def test_extra_placeholder_is_reported_as_multiplied_out() -> None:
     translation = TRANSLATION.replace("⟦CAP-0⟧", "⟦CAP-0⟧ ⟦BLK-9⟧")
-    assert message(SOURCE, translation, validation.CHECK_PLACEHOLDERS) == "多出 ⟦BLK-9⟧"
+    assert message(SOURCE, translation, validation.CHECK_PLACEHOLDERS) == "translation has extra ⟦BLK-9⟧"
 
 
 def test_broken_placeholder_fragment_is_caught_by_the_self_check() -> None:
     translation = TRANSLATION.replace("⟦BLK-0⟧", "⟦BLK-0⟧⟧")
     assert checks(SOURCE, translation) == (validation.CHECK_PLACEHOLDERS,)
-    assert "碎片" in message(SOURCE, translation, validation.CHECK_PLACEHOLDERS)
+    assert "fragments" in message(SOURCE, translation, validation.CHECK_PLACEHOLDERS)
 
 
 def test_identical_control_sequences_pass() -> None:
@@ -83,12 +85,14 @@ def test_star_variant_is_a_distinct_control_sequence() -> None:
     translation = TRANSLATION.replace("\\section{", "\\section*{")
     assert validation.CHECK_CONTROL_SEQUENCES in checks(SOURCE, translation)
     text = message(SOURCE, translation, validation.CHECK_CONTROL_SEQUENCES)
-    assert text == "\\section 原文 1 次、译文 0 次；\\section* 原文 0 次、译文 1 次"
+    assert text == (
+        "\\section appears 1 times in source, 0 in translation; \\section* appears 0 times in source, 1 in translation"
+    )
 
 
 def test_control_sequence_difference_reads_as_counts_on_both_sides() -> None:
     text = message("\\cite{a} \\cite{b} x", "\\cite{a} 甲", validation.CHECK_CONTROL_SEQUENCES)
-    assert text == "\\cite 原文 2 次、译文 1 次"
+    assert text == "\\cite appears 2 times in source, 1 in translation"
 
 
 def test_escaped_brace_is_a_control_sequence_not_a_brace() -> None:
@@ -102,11 +106,11 @@ def test_balanced_braces_with_a_different_count_pass() -> None:
 
 def test_a_closing_brace_before_any_opening_one_fails() -> None:
     assert checks("a", "{a}}{") == (validation.CHECK_BRACES_AND_MATH,)
-    assert message("a", "{a}}{", validation.CHECK_BRACES_AND_MATH) == "{ } 在第 3 字符处不平衡"
+    assert message("a", "{a}}{", validation.CHECK_BRACES_AND_MATH) == "{ } unbalanced at character 3"
 
 
 def test_an_unclosed_brace_at_the_end_fails() -> None:
-    assert message("a", "{a", validation.CHECK_BRACES_AND_MATH) == "{ } 在第 0 字符处不平衡"
+    assert message("a", "{a", validation.CHECK_BRACES_AND_MATH) == "{ } unbalanced at character 0"
 
 
 def test_an_unbalanced_source_does_not_force_a_failure() -> None:
@@ -114,11 +118,17 @@ def test_an_unbalanced_source_does_not_force_a_failure() -> None:
 
 
 def test_an_odd_number_of_dollars_fails() -> None:
-    assert message("a $x$ b", "甲 $x$ 乙 $", validation.CHECK_BRACES_AND_MATH) == "$ 译文 3 个，是奇数，没有成对"
+    assert (
+        message("a $x$ b", "甲 $x$ 乙 $", validation.CHECK_BRACES_AND_MATH)
+        == "$ count in translation is 3, an odd number, so they cannot pair up"
+    )
 
 
 def test_fewer_dollars_than_the_source_fails() -> None:
-    assert message("$x$ and $y$", "$x$ 与 y", validation.CHECK_BRACES_AND_MATH) == "$ 原文 4 个、译文 2 个"
+    assert (
+        message("$x$ and $y$", "$x$ 与 y", validation.CHECK_BRACES_AND_MATH)
+        == "$ count differs: 4 in source, 2 in translation"
+    )
 
 
 def test_more_dollars_than_the_source_pass_when_even() -> None:
@@ -139,7 +149,7 @@ def test_merged_paragraph_fails_the_paragraph_count_check() -> None:
     translation = TRANSLATION.replace("\n\n⟦BLK-0⟧", " ⟦BLK-0⟧")
     assert validation.CHECK_PARAGRAPH_COUNT in checks(SOURCE, translation)
     text = message(SOURCE, translation, validation.CHECK_PARAGRAPH_COUNT)
-    assert text.startswith("含可译文本的段落数：原文 4 段、译文 3 段")
+    assert text.startswith("paragraphs with translatable text: 4 in source, 3 in translation")
 
 
 def test_blank_line_around_a_command_only_paragraph_may_be_merged() -> None:
@@ -168,3 +178,34 @@ def test_a_heading_moved_off_the_prose_line_does_not_change_the_paragraph_count(
     source = "Prose ends here. \\section{Architecture}\n⟦BLK-0⟧ tail text.\n"
     translation = "正文到此结束。\n\n\\section{Architecture}\n⟦BLK-0⟧ 尾部文本。\n"
     assert validation.validate(source, translation).ok
+
+
+def test_main_prints_every_layer_and_exits_zero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = tmp_path / "c000.tex"
+    translation = tmp_path / "zh.tex"
+    source.write_text("We use $x$ here.\n", encoding="utf-8")
+    translation.write_text("我们这里用 $x$。\n\n", encoding="utf-8")
+    assert validation.main([str(source), str(translation)]) == 0
+    output = capsys.readouterr().out
+    assert all(f"[pass] {layer}" in output for layer in validation.CHECK_NAMES)
+
+
+def test_main_reports_the_failing_layer(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = tmp_path / "c000.tex"
+    translation = tmp_path / "zh.tex"
+    source.write_text("We use $x$ here.\n", encoding="utf-8")
+    translation.write_text("我们这里用 x。\n", encoding="utf-8")
+    assert validation.main([str(source), str(translation)]) == 1
+    output = capsys.readouterr().out
+    assert "[fail] braces_and_math" in output
+    assert "[pass] placeholders" in output
+
+
+def test_main_without_two_arguments_prints_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    assert validation.main([]) == 1
+    assert validation.USAGE in capsys.readouterr().out
+
+
+def test_main_reports_an_unreadable_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert validation.main([str(tmp_path / "absent.tex"), str(tmp_path / "zh.tex")]) == 1
+    assert "cannot read file" in capsys.readouterr().out

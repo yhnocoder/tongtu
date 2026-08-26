@@ -13,6 +13,14 @@ from .config import Api, RoleTable, load_config, model_api, provider_key, resolv
 
 SCHEMA_NAME = "ask_response"
 
+SCHEMA_INSTRUCTION = "\n\n只输出符合以下 JSON Schema 的 JSON：\n{schema}"
+
+RESPONSE_FORMAT_FIELD = "response_format"
+
+JSON_OBJECT_FORMAT: dict[str, object] = {"type": "json_object"}
+
+FALLBACK_FIELD = "json_object_fallback"
+
 DETAIL_EXCERPT_CHARS = 2000
 
 MESSAGES_MAX_TOKENS = 32768
@@ -74,7 +82,7 @@ def ask(
     except OSError as error:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"调用日志写不出（{type(error).__name__}： {error}）。 确认 {log_path.parent} 可写。",
+            detail=f"cannot write the call log ({type(error).__name__}: {error}). Check that {log_path.parent} is writable.",
         )
     return outcome
 
@@ -118,7 +126,7 @@ def _request(
             caller = _responses if api is Api.RESPONSES else _chat
             outcome, extra = caller(client, resolved.model, resolved.effort, system, messages, schema)
     except (openai.OpenAIError, anthropic.AnthropicError) as error:
-        return _error(f"请求失败（{type(error).__name__}： {error}）"[:DETAIL_EXCERPT_CHARS], fields)
+        return _error(f"request failed ({type(error).__name__}: {error})"[:DETAIL_EXCERPT_CHARS], fields)
     return outcome, fields | extra
 
 
@@ -130,12 +138,34 @@ def _chat(
     messages: list[tuple[str, str]],
     schema: dict | None,
 ) -> Reply:
-    request_kwargs: dict[str, object] = {}
-    if schema is not None:
-        request_kwargs["response_format"] = {
+    if schema is None:
+        return _completion(client, model, effort, system, messages, {})
+    strict: dict[str, object] = {
+        RESPONSE_FORMAT_FIELD: {
             "type": "json_schema",
             "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": schema},
         }
+    }
+    try:
+        return _completion(client, model, effort, system, messages, strict)
+    except openai.BadRequestError as error:
+        if RESPONSE_FORMAT_FIELD not in str(error):
+            raise
+    instructed = system + SCHEMA_INSTRUCTION.format(schema=json.dumps(schema, ensure_ascii=False))
+    outcome, extra = _completion(
+        client, model, effort, instructed, messages, {RESPONSE_FORMAT_FIELD: JSON_OBJECT_FORMAT}
+    )
+    return outcome, extra | {FALLBACK_FIELD: True}
+
+
+def _completion(
+    client: openai.OpenAI,
+    model: str,
+    effort: str,
+    system: str,
+    messages: list[tuple[str, str]],
+    request_kwargs: dict[str, object],
+) -> Reply:
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}] + [{"role": item[0], "content": item[1]} for item in messages],
@@ -150,7 +180,7 @@ def _chat(
     if not content:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"响应里没有正文（choices 为空或 content 为空）， finish_reason={finish_reason or '（无）'}。",
+            detail=f"response has no body (choices or content is empty), finish_reason={finish_reason or '(none)'}.",
         ), extra
     return AskOutcome(status=AskStatus.OK, text=content), extra
 
@@ -176,7 +206,7 @@ def _responses(
     if not response.output_text:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"响应里没有正文（output_text 为空）， status={response.status or '（无）'}。",
+            detail=f"response has no body (output_text is empty), status={response.status or '(none)'}.",
         ), extra
     return AskOutcome(status=AskStatus.OK, text=response.output_text), extra
 
@@ -195,8 +225,8 @@ def _messages(
     budget = THINKING_BUDGET_TOKENS.get(effort)
     if budget is None:
         return _error(
-            f"模型 {model} 走 messages 接口， 该接口按 token 预算给推理强度， "
-            f"档位只有 {'、'.join(THINKING_BUDGET_TOKENS)}， 配置里给的是 {effort}。"
+            f"model {model} uses the messages API, which maps reasoning effort to a token budget; "
+            f"the only levels are {', '.join(THINKING_BUDGET_TOKENS)}, but the config gives {effort}."
         )
     client = anthropic.Anthropic(base_url=base_url, api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1)
     response = client.messages.create(
@@ -212,10 +242,12 @@ def _messages(
     if not content:
         return AskOutcome(
             status=AskStatus.ERROR,
-            detail=f"响应里没有正文（content 里没有 text 块）， stop_reason={response.stop_reason or '（无）'}。",
+            detail=f"response has no body (no text block in content), stop_reason={response.stop_reason or '(none)'}.",
         ), extra
     return AskOutcome(status=AskStatus.OK, text=content), extra
 
 
 def _schema_unsupported(api: Api, model: str) -> Reply:
-    return _error(f"模型 {model} 走 {api} 接口， 该接口的输出约束形态未实测， 不接受 schema。")
+    return _error(
+        f"model {model} uses the {api} API, whose structured output support is untested; schema is not accepted."
+    )

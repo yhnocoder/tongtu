@@ -18,7 +18,7 @@ EXECUTABLES = {"runner": "/fake/bin/runner", "other-runner": "/fake/bin/other-ru
 TABLE = """
 [runtime.demo]
 skill_path = ".agent/skills/{role}"
-command = ["runner", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}", "--allowedTools", "Read,Edit,{bash_allow}", "--settings", "{settings}"]
+command = ["runner", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}", "--allowedTools", "Read,Edit,Bash", "--settings", "{settings}"]
 settings = { sandbox = { enabled = true, network = { allowedDomains = [] } } }
 
 [runtime.other]
@@ -55,14 +55,14 @@ skill_path = ".bare/{role}"
 command = ["runner", "--settings", "{settings}"]
 
 [roles]
-smoke = { runtime = "demo", model = "m1", effort = "high", max_turns = 4, timeout_seconds = 60, bash = ["latexmk", "xelatex"] }
-bare = { runtime = "demo", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
-lost = { runtime = "nowhere", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
-unsettled = { runtime = "bare_settings", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
-gated = { runtime = "demo_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
-homed = { runtime = "temp_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
-ghosted = { runtime = "ghost_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
-unbound = { runtime = "unbound_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30, bash = [] }
+smoke = { runtime = "demo", model = "m1", effort = "high", max_turns = 4, timeout_seconds = 60 }
+bare = { runtime = "demo", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
+lost = { runtime = "nowhere", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
+unsettled = { runtime = "bare_settings", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
+gated = { runtime = "demo_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
+homed = { runtime = "temp_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
+ghosted = { runtime = "ghost_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
+unbound = { runtime = "unbound_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
 asker = { provider = "demo", model = "m1", effort = "low" }
 halfway = { runtime = "demo", model = "m1", effort = "low" }
 """
@@ -126,7 +126,7 @@ def test_finished_session_copies_skill_and_fills_command(configured: Path, monke
         "--max-turns",
         "4",
         "--allowedTools",
-        "Read,Edit,Bash(latexmk:*),Bash(xelatex:*)",
+        "Read,Edit,Bash",
         "--settings",
         '{"sandbox":{"enabled":true,"network":{"allowedDomains":[]}}}',
     ]
@@ -137,13 +137,6 @@ def test_finished_session_copies_skill_and_fills_command(configured: Path, monke
         == "读 .agent/skills/smoke/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
     )
     assert trace_path.read_bytes() == b'{"type":"result"}\n'
-
-
-def test_empty_bash_list_leaves_no_trailing_comma(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded: dict = {}
-    record_run(monkeypatch, recorded, finished())
-    work("bare", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert recorded["command"][recorded["command"].index("--allowedTools") + 1] == "Read,Edit"
 
 
 def test_settings_are_filled_as_json(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,16 +201,16 @@ def test_runtime_without_settings_table_is_error(configured: Path) -> None:
     assert "settings" in outcome.detail
 
 
-def test_stale_skill_directory_is_replaced(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_skill_copy_keeps_files_already_in_the_destination(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
     workdir = configured / "paper"
-    stale = workdir / ".agent" / "skills" / "smoke"
-    stale.mkdir(parents=True)
-    (stale / "old.md").write_text("上一轮的文件", encoding="utf-8")
+    destination = workdir / ".agent" / "skills" / "smoke"
+    destination.mkdir(parents=True)
+    (destination / "validate.py").write_text("现场先放好的工具", encoding="utf-8")
     work("smoke", workdir, trace_path=configured / "trace.jsonl")
-    assert not (stale / "old.md").exists()
-    assert (stale / "SKILL.md").is_file()
+    assert (destination / "validate.py").read_text(encoding="utf-8") == "现场先放好的工具"
+    assert (destination / "SKILL.md").is_file()
 
 
 def test_timeout_is_reported(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,7 +233,7 @@ def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatc
     )
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
-    assert "退出码 3" in outcome.detail
+    assert "exited with code 3" in outcome.detail
     assert "运行时报错" in outcome.detail
 
 
@@ -304,7 +297,7 @@ def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: p
 def test_model_override_without_slash_is_error(configured: Path) -> None:
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", model="m9")
     assert outcome.stop_reason == StopReason.ERROR
-    assert "runtime/模型名" in outcome.detail
+    assert "runtime/model" in outcome.detail
 
 
 def test_model_override_with_unknown_runtime_is_error(configured: Path) -> None:
