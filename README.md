@@ -10,8 +10,8 @@
 
 ```
 uv sync              # 装依赖（含 dev 组）
-make install-hooks   # 装 git pre-commit hook（ruff check / ruff format / diction lint）
-make lint            # 检查：ruff check + ruff format --check + diction lint
+make install-hooks   # 装 git pre-commit hook（ruff check / ruff format / diction lint / comment lint）
+make lint            # 检查：ruff check + ruff format --check + diction lint + comment lint
 make format          # 自动修：ruff check --fix + ruff format
 ```
 
@@ -41,7 +41,18 @@ tag 推送后由两个工作流各自完成剩下的事：
   [`docker/README.md`](docker/README.md)。
 - `.github/workflows/release.yml` 先校验 tag 去掉前缀 `v` 后与 `__version__` 相等，
   再用 `gh release create --generate-notes` 建 GitHub Release，标题即 tag 名。
-  两者不一致时该作业失败、不建 Release；此时删掉打错的 tag（`git push origin :vX.Y.Z`），
-  改对版本号后重新走一遍上面的步骤。
+
+两个工作流的运行状态在仓库的 Actions 页查看，建好的 Release 在仓库的 Releases 页查看。
+
+版本校验失败时该作业失败、不建 Release。此时删掉打错的 tag，改对版本号后重新走一遍上面的步骤：
+
+```bash
+git push origin :vX.Y.Z   # 删远端 tag
+git tag -d vX.Y.Z         # 删本地 tag
+```
+
+`image.yml` 没有版本一致性校验，与 `release.yml` 在同一个 tag 上独立触发，因此校验失败时
+错误版本的镜像已经推上 GHCR。重打正确 tag 后 `:latest` 与 `:X.Y` 会被新构建覆盖，
+错误版本号的 `:X.Y.Z` 会留在 GHCR，需要到该仓库的 GHCR package 页面手动删除。
 
 尚未发布到 PyPI，相关决定与前置事项记在 issue #55。
