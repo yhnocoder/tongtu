@@ -453,6 +453,36 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
     message: <span class="t">str</span></pre></details>
 </div>
 
+<!-- ============ fonts ============ -->
+<h2>字体配置<small>models.toml 的 [fonts] 表，precompile 注入中文排版设置时读取</small></h2>
+<div class="card" id="fonts" style="margin-top:8px">
+<div class="card-head"><span class="name">fonts</span><span class="one">切换译文 PDF 的中文字体，改 models.toml 即生效，无命令行选项</span><span class="tag">已实现</span></div>
+<div class="cols">
+<div><span class="label">规则</span>
+<ol class="steps">
+<li>四个槽位：<code>main</code> 正文、<code>bold</code> 粗体（BoldFont）、<code>sans</code> 无衬线、<code>mono</code> 等宽。sans 不写则按平台探测（Hiragino Sans GB → Noto Sans CJK SC → 霞鹜文楷），mono 不写则用 main</li>
+<li>取值两类：<b>字体文件</b>——.ttf / .otf / .ttc，写仓库 fonts/ 里的文件名或一个文件路径（可用 <code>~</code>），precompile 把文件拷进编译树的 fonts/，以 <code>Path={fonts/}</code> 相对引用，编译树保持自包含；<b>系统字体名</b>——不带扩展名即视为字体名，由 fontspec 按名字查找</li>
+<li><code>main</code> / <code>sans</code> / <code>mono</code> 可写成列表按序回退（同 CSS 的 font-family）：每个字体名候选包一层 <code>\IfFontExistsTF</code>，存在就用，不存在试下一个；文件候选必然可用、终止链条，它之后的候选不会被用到（写 warning）；候选全是字体名时，末尾自动补默认霞鹜文楷作为最后一级回退。单个字体名不包检测，写错由编译失败暴露</li>
+<li><code>bold</code> 是单值，与候选同类（文件配文件、字体名配字体名）才配对；默认的 bold 只与默认的 main 配对，不跟随换掉的字体；与所有候选都配不上时写 warning 并忽略</li>
+<li>失败不抛异常：配置的字体文件不存在则跳过该候选并写进 manifest 的 warnings，候选全部不可用时用默认字体</li>
+</ol></div>
+<div class="io">
+<span class="label">读</span><dl><dt>models.toml</dt><dd>[fonts] 表；文件缺失或读不到时用默认值</dd><dt>仓库</dt><dd><span class="f in">fonts/</span>（霞鹜文楷，随仓库分发）</dd></dl>
+<span class="label" style="display:block;margin-top:12px">写</span><dl><dt>build/precompile/</dt><dd><span class="f">fonts/（仓库字体与拷入的外部字体文件）</span> <span class="f">flat.tex 前导区的注入块</span></dd></dl>
+</div></div>
+<details open><summary>FontsConfig 与示例</summary>
+<pre><span class="k">class</span> FontsConfig(BaseModel):
+    main: <span class="t">str | list[str]</span> = "LXGWWenKai-Light.ttf"
+    bold: <span class="t">str | None</span> = "LXGWWenKai-Medium.ttf"
+    sans: <span class="t">str | list[str] | None</span> = None
+    mono: <span class="t">str | list[str] | None</span> = None
+
+[fonts]
+main = ["Source Han Serif SC", "Noto Serif CJK SC", "LXGWWenKai-Light.ttf"]   <span class="c"># 按序回退，末位文件收尾</span>
+bold = "LXGWWenKai-Medium.ttf"
+sans = "Noto Sans CJK SC"
+mono = "~/Fonts/Sarasa-Mono-SC.ttf"      <span class="c"># 第三方字体文件，会被拷进编译树</span></pre></details>
+</div>
 </div>
 
 </body>

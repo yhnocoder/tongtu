@@ -9,6 +9,7 @@ from tongtu.model.config import (
     DEFAULT_ASK_MODEL,
     MODELS_TEMPLATE,
     Api,
+    FontsConfig,
     ModelsConfig,
     ProviderConfig,
     RoleTable,
@@ -68,6 +69,46 @@ def test_template_parses_and_validates() -> None:
     assert config.provider["opencode"].api_key == ""
     assert config.provider["opencode"].api_key_env == "OPENCODE_API_KEY"
     assert set(DEFAULT_ASK_MODEL) == set(config.provider)
+
+
+def test_template_fonts_match_defaults() -> None:
+    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    assert config.fonts == FontsConfig()
+    assert config.fonts.main == "LXGWWenKai-Light.ttf"
+    assert config.fonts.bold == "LXGWWenKai-Medium.ttf"
+    assert config.fonts.sans is None
+    assert config.fonts.mono is None
+
+
+def test_fonts_table_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "Noto Serif CJK SC"\nbold = ""\n')
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.fonts.main == "Noto Serif CJK SC"
+    assert config.fonts.bold == ""
+    assert config.fonts.sans is None
+
+
+def test_fonts_table_accepts_fallback_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE + '\n[fonts]\nmain = ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]\nsans = ["Noto Sans CJK SC"]\n',
+    )
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.fonts.main == ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]
+    assert config.fonts.sans == ["Noto Sans CJK SC"]
+    assert config.fonts.mono is None
+
+
+def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE)
+    config, _ = load_config()
+    assert config is not None
+    assert config.fonts == FontsConfig()
 
 
 def test_template_runtime_carries_sandbox_settings() -> None:
