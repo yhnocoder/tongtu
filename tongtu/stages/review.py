@@ -5,33 +5,19 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .. import chunks, validation
+from .. import chunks, pipeline, validation
 from ..artifacts.common import FixSession
 from ..artifacts.review import ReviewManifest, ReviewStatus
 from ..manifests import describe_error, timeout_warning, write_manifest
 from ..model.config import RoleTable, load_config, resolve_role
 from ..model.work import StopReason, work
-from ..workdir import Workdir
+from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "review"
 
 ROLE = "review"
 
-CHUNKS_DIRNAME = "chunks"
-
-TRANSLATED_DIRNAME = "translated"
-
-SANDBOX_DIRNAME = "sandbox"
-
-REVIEWED_DIRNAME = "reviewed"
-
-BRIEF_FILENAME = "brief.json"
-
 VALIDATE_FILENAME = "validate.py"
-
-TRACE_FILENAME = "review.jsonl"
-
-ENCODING = "utf-8"
 
 SKIPPED_MESSAGE = "--no-review: no review session was started; translated/ was copied to reviewed/ unchanged."
 
@@ -45,16 +31,10 @@ def run(
     report: Callable[[str, str], None] | None = None,
 ) -> ReviewManifest:
     paper_workdir.create()
-    _reset_outputs(paper_workdir)
+    pipeline.clean(paper_workdir, STAGE_NAME)
     manifest = _execute(paper_workdir, skip, model_override, effort, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
-
-
-def _reset_outputs(paper_workdir: Workdir) -> None:
-    shutil.rmtree(_site(paper_workdir), ignore_errors=True)
-    shutil.rmtree(paper_workdir.build / REVIEWED_DIRNAME, ignore_errors=True)
-    (paper_workdir.logs / TRACE_FILENAME).unlink(missing_ok=True)
 
 
 def _execute(
@@ -64,17 +44,17 @@ def _execute(
     effort: str | None,
     report: Callable[[str, str], None],
 ) -> ReviewManifest:
-    chunk_ids = sorted(path.stem for path in (paper_workdir.build / CHUNKS_DIRNAME).glob("*.tex"))
+    chunk_ids = sorted(path.stem for path in paper_workdir.chunks.glob("*.tex"))
     if not chunk_ids:
-        return _failed(f"build/{CHUNKS_DIRNAME}/ holds no chunk file; run survey first.")
+        return _failed(f"build/{paper_workdir.chunks.name}/ holds no chunk file; run survey first.")
     try:
-        sources = {chunk_id: _read(paper_workdir, CHUNKS_DIRNAME, chunk_id) for chunk_id in chunk_ids}
-        translated = {chunk_id: _read(paper_workdir, TRANSLATED_DIRNAME, chunk_id) for chunk_id in chunk_ids}
+        sources = {chunk_id: _read(paper_workdir.chunks, chunk_id) for chunk_id in chunk_ids}
+        translated = {chunk_id: _read(paper_workdir.translated, chunk_id) for chunk_id in chunk_ids}
     except (OSError, UnicodeDecodeError) as error:
         return _failed(describe_error(error))
 
     if skip:
-        report("--no-review", f"copying {TRANSLATED_DIRNAME}/ to {REVIEWED_DIRNAME}/")
+        report("--no-review", f"copying {paper_workdir.translated.name}/ to {paper_workdir.reviewed.name}/")
         _write_reviewed(paper_workdir, sources, translated)
         return ReviewManifest(status=ReviewStatus.OK, message=SKIPPED_MESSAGE)
 
@@ -93,7 +73,7 @@ def _execute(
     outcome = work(
         ROLE,
         _site(paper_workdir),
-        trace_path=paper_workdir.logs / TRACE_FILENAME,
+        trace_path=paper_workdir.review_log,
         model=model_override,
         effort=effort,
         report=lambda action: report("review session", action),
@@ -128,11 +108,11 @@ def _resolve(model_override: str | None, effort: str | None) -> tuple[tuple[str,
 
 def _stage_site(paper_workdir: Workdir, sources: dict[str, str], translated: dict[str, str], skill_path: str) -> None:
     site = _site(paper_workdir)
-    for dirname, contents in ((CHUNKS_DIRNAME, sources), (REVIEWED_DIRNAME, translated)):
+    for dirname, contents in ((paper_workdir.chunks.name, sources), (paper_workdir.reviewed.name, translated)):
         (site / dirname).mkdir(parents=True, exist_ok=True)
         for chunk_id, body in contents.items():
             (site / dirname / f"{chunk_id}.tex").write_text(body, encoding=ENCODING)
-    shutil.copyfile(paper_workdir.build / BRIEF_FILENAME, site / BRIEF_FILENAME)
+    shutil.copyfile(paper_workdir.brief, site / paper_workdir.brief.name)
     (site / skill_path).mkdir(parents=True, exist_ok=True)
     shutil.copyfile(Path(validation.__file__), site / skill_path / VALIDATE_FILENAME)
 
@@ -157,7 +137,7 @@ def _judge(
 
 
 def _reviewed_in_site(paper_workdir: Workdir, chunk_id: str) -> str | None:
-    path = _site(paper_workdir) / REVIEWED_DIRNAME / f"{chunk_id}.tex"
+    path = _site(paper_workdir) / paper_workdir.reviewed.name / f"{chunk_id}.tex"
     try:
         return path.read_text(encoding=ENCODING)
     except (OSError, UnicodeDecodeError):
@@ -165,16 +145,16 @@ def _reviewed_in_site(paper_workdir: Workdir, chunk_id: str) -> str | None:
 
 
 def _write_reviewed(paper_workdir: Workdir, sources: dict[str, str], bodies: dict[str, str]) -> None:
-    reviewed_dir = paper_workdir.build / REVIEWED_DIRNAME
+    reviewed_dir = paper_workdir.reviewed
     reviewed_dir.mkdir(parents=True, exist_ok=True)
     for chunk_id, body in bodies.items():
         content = chunks.restore_padding(sources[chunk_id], body)
         (reviewed_dir / f"{chunk_id}.tex").write_text(content, encoding=ENCODING)
 
 
-def _read(paper_workdir: Workdir, dirname: str, chunk_id: str) -> str:
-    return (paper_workdir.build / dirname / f"{chunk_id}.tex").read_text(encoding=ENCODING)
+def _read(directory: Path, chunk_id: str) -> str:
+    return (directory / f"{chunk_id}.tex").read_text(encoding=ENCODING)
 
 
 def _site(paper_workdir: Workdir) -> Path:
-    return paper_workdir.build / SANDBOX_DIRNAME / STAGE_NAME
+    return paper_workdir.sandbox(STAGE_NAME)

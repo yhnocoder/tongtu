@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import time
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Sequence
@@ -12,7 +11,7 @@ from pathlib import Path
 import tiktoken
 from pydantic import ValidationError
 
-from .. import masking
+from .. import masking, pipeline
 from ..artifacts.mask import BlocksFile
 from ..artifacts.survey import (
     BriefFile,
@@ -32,27 +31,15 @@ from ..console import console
 from ..manifests import describe_error, write_manifest
 from ..model.ask import ASK_TIMEOUT_SECONDS, AskStatus, ask
 from ..model.config import RoleTable, load_config, resolve_role
-from ..workdir import Workdir
+from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "survey"
 
-MASKED_FILENAME = "masked.tex"
-
-BLOCKS_FILENAME = "blocks.json"
-
-BRIEF_FILENAME = "brief.json"
-
-CHUNKS_DIRNAME = "chunks"
-
 GLOSSARY_FILENAME = "glossary.json"
-
-TERMS_LOG_FILENAME = "survey-terms.json"
 
 SKILL_FILENAME = "SKILL.md"
 
 ROLE = "survey_terms"
-
-ENCODING = "utf-8"
 
 TOKEN_ENCODING_NAME = "o200k_base"
 
@@ -129,7 +116,7 @@ def run(
     ask_effort: str | None = None,
 ) -> SurveyManifest:
     paper_workdir.create()
-    _reset_outputs(paper_workdir)
+    pipeline.clean(paper_workdir, STAGE_NAME)
     manifest = _execute(paper_workdir, glossary, no_terms, ask_model, ask_effort)
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
@@ -143,8 +130,8 @@ def _execute(
     ask_effort: str | None,
 ) -> SurveyManifest:
     try:
-        masked = (paper_workdir.build / MASKED_FILENAME).read_text(encoding=ENCODING)
-        blocks = BlocksFile.model_validate_json((paper_workdir.build / BLOCKS_FILENAME).read_text(encoding=ENCODING))
+        masked = paper_workdir.masked.read_text(encoding=ENCODING)
+        blocks = BlocksFile.model_validate_json(paper_workdir.blocks.read_text(encoding=ENCODING))
     except (OSError, UnicodeDecodeError, ValidationError) as error:
         return SurveyManifest(status=SurveyStatus.CHUNK_FAILED, message=describe_error(error))
     try:
@@ -229,17 +216,11 @@ def _execute(
 def _write_outputs(
     paper_workdir: Workdir, records: Sequence[ChunkRecord], contents: Sequence[str], brief: BriefFile
 ) -> None:
-    chunks_dir = paper_workdir.build / CHUNKS_DIRNAME
+    chunks_dir = paper_workdir.chunks
     chunks_dir.mkdir(parents=True, exist_ok=True)
     for record, body in zip(records, contents, strict=True):
         (chunks_dir / f"{record.id}.tex").write_text(body, encoding=ENCODING)
-    (paper_workdir.build / BRIEF_FILENAME).write_text(brief.model_dump_json(indent=2) + "\n", encoding=ENCODING)
-
-
-def _reset_outputs(paper_workdir: Workdir) -> None:
-    (paper_workdir.build / BRIEF_FILENAME).unlink(missing_ok=True)
-    shutil.rmtree(paper_workdir.build / CHUNKS_DIRNAME, ignore_errors=True)
-    (paper_workdir.logs / TERMS_LOG_FILENAME).unlink(missing_ok=True)
+    paper_workdir.brief.write_text(brief.model_dump_json(indent=2) + "\n", encoding=ENCODING)
 
 
 def _record(index: int, chunk: _Chunk, body: str, document: _Document) -> ChunkRecord:
@@ -519,7 +500,7 @@ def _propose(
         system=(asset_path("skill") / ROLE / SKILL_FILENAME).read_text(encoding=ENCODING),
         messages=[("user", payload)],
         schema=TERMS_SCHEMA,
-        log_path=paper_workdir.logs / TERMS_LOG_FILENAME,
+        log_path=paper_workdir.survey_terms_log,
         model=ask_model,
         effort=ask_effort,
     )

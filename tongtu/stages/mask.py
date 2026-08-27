@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .. import masking
+from .. import masking, pipeline
 from ..artifacts.mask import (
     BlockRecord,
     BlocksFile,
@@ -10,22 +10,14 @@ from ..artifacts.mask import (
     MaskStatus,
 )
 from ..manifests import describe_error, write_manifest
-from ..workdir import Workdir
+from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "mask"
-
-PRECOMPILE_FILENAME = "precompile.tex"
-
-MASKED_FILENAME = "masked.tex"
-
-BLOCKS_FILENAME = "blocks.json"
-
-ENCODING = "utf-8"
 
 
 def run(paper_workdir: Workdir) -> MaskManifest:
     paper_workdir.create()
-    _reset_outputs(paper_workdir)
+    pipeline.clean(paper_workdir, STAGE_NAME)
     manifest = _execute(paper_workdir)
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
@@ -34,15 +26,13 @@ def run(paper_workdir: Workdir) -> MaskManifest:
 def _execute(paper_workdir: Workdir) -> MaskManifest:
     try:
         table = masking.parse_environment_table(masking.ENVIRONMENTS_TABLE_PATH.read_text(encoding=ENCODING))
-        source = (paper_workdir.build / PRECOMPILE_FILENAME).read_text(encoding=ENCODING)
+        source = paper_workdir.precompile_tex.read_text(encoding=ENCODING)
         outcome = masking.mask_document(source, table)
         masking.verify_roundtrip(source, outcome)
     except (OSError, UnicodeDecodeError, masking.MaskError) as error:
         return MaskManifest(status=MaskStatus.MASK_FAILED, message=describe_error(error))
-    (paper_workdir.build / MASKED_FILENAME).write_text(outcome.masked, encoding=ENCODING)
-    (paper_workdir.build / BLOCKS_FILENAME).write_text(
-        _blocks_file(outcome).model_dump_json(indent=2) + "\n", encoding=ENCODING
-    )
+    paper_workdir.masked.write_text(outcome.masked, encoding=ENCODING)
+    paper_workdir.blocks.write_text(_blocks_file(outcome).model_dump_json(indent=2) + "\n", encoding=ENCODING)
     return MaskManifest(
         status=MaskStatus.OK,
         environments=_environment_records(outcome),
@@ -95,8 +85,3 @@ def _environment_records(outcome: masking.MaskOutcome) -> dict[str, EnvironmentD
         )
         for name, decision in sorted(outcome.environments.items())
     }
-
-
-def _reset_outputs(paper_workdir: Workdir) -> None:
-    (paper_workdir.build / MASKED_FILENAME).unlink(missing_ok=True)
-    (paper_workdir.build / BLOCKS_FILENAME).unlink(missing_ok=True)

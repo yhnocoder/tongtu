@@ -21,7 +21,7 @@ runner = CliRunner()
 
 def test_review_revtex_with_a_real_session() -> None:
     paper_workdir = Workdir(resolve(PAPER))
-    translated = paper_workdir.build / review.TRANSLATED_DIRNAME
+    translated = paper_workdir.translated
     if not translated.is_dir() or not any(translated.glob("*.tex")):
         pytest.skip(f"{translated} 里没有译文，先跑 tongtu run {paper_dir(PAPER)}")
     started = time.monotonic()
@@ -38,5 +38,5 @@ def test_review_revtex_with_a_real_session() -> None:
     assert manifest.status is ReviewStatus.OK
     assert manifest.session.stop_reason == "finished"
     assert set(manifest.reverted) <= set(manifest.changed)
-    for path in sorted((paper_workdir.build / review.CHUNKS_DIRNAME).glob("*.tex")):
-        assert (paper_workdir.build / review.REVIEWED_DIRNAME / path.name).read_text(encoding="utf-8").strip()
+    for path in sorted((paper_workdir.chunks).glob("*.tex")):
+        assert (paper_workdir.reviewed / path.name).read_text(encoding="utf-8").strip()

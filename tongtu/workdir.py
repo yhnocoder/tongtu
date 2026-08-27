@@ -13,6 +13,8 @@ AREAS: tuple[str, ...] = ("src", "build", "out", "logs")
 
 MANIFESTS_DIRNAME = "manifests"
 
+ENCODING = "utf-8"
+
 
 class WorkdirError(ValueError):
     pass
@@ -73,6 +75,65 @@ class Workdir:
 
     def manifest_path(self, stage: str) -> Path:
         return self.manifests / f"{stage}.json"
+
+    def sandbox(self, stage: str) -> Path:
+        return self.build / "sandbox" / stage
+
+    @property
+    def eprint(self) -> Path:
+        return self.build / "e-print.bin"
+
+    @property
+    def precompile_tex(self) -> Path:
+        return self.build / "precompile.tex"
+
+    @property
+    def precompile_fix_log(self) -> Path:
+        return self.logs / "precompile-fix.jsonl"
+
+    @property
+    def masked(self) -> Path:
+        return self.build / "masked.tex"
+
+    @property
+    def blocks(self) -> Path:
+        return self.build / "blocks.json"
+
+    @property
+    def brief(self) -> Path:
+        return self.build / "brief.json"
+
+    @property
+    def chunks(self) -> Path:
+        return self.build / "chunks"
+
+    @property
+    def survey_terms_log(self) -> Path:
+        return self.logs / "survey-terms.json"
+
+    @property
+    def translated(self) -> Path:
+        return self.build / "translated"
+
+    @property
+    def reviewed(self) -> Path:
+        return self.build / "reviewed"
+
+    @property
+    def review_log(self) -> Path:
+        return self.logs / "review.jsonl"
+
+    @property
+    def zh_tex(self) -> Path:
+        return self.build / "zh.tex"
+
+    @property
+    def zh_pdf(self) -> Path:
+        return self.out / "zh.pdf"
+
+    @property
+    def compile_fix_log(self) -> Path:
+        return self.logs / "compile-fix.jsonl"
 
     def create(self) -> None:
         for name in AREAS:

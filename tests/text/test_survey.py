@@ -50,8 +50,8 @@ def make_workdir(tmp_path: Path, masked: str | None = SAMPLE, blocks: BlocksFile
     workdir = Workdir(tmp_path / "paper")
     workdir.create()
     if masked is not None:
-        (workdir.build / survey.MASKED_FILENAME).write_text(masked, encoding="utf-8")
-    (workdir.build / survey.BLOCKS_FILENAME).write_text((blocks or BlocksFile()).model_dump_json(), encoding="utf-8")
+        (workdir.masked).write_text(masked, encoding="utf-8")
+    (workdir.blocks).write_text((blocks or BlocksFile()).model_dump_json(), encoding="utf-8")
     return workdir
 
 
@@ -60,7 +60,7 @@ def read_manifest(workdir: Workdir) -> SurveyManifest:
 
 
 def read_brief(workdir: Workdir) -> BriefFile:
-    return BriefFile.model_validate_json((workdir.build / survey.BRIEF_FILENAME).read_text(encoding="utf-8"))
+    return BriefFile.model_validate_json((workdir.brief).read_text(encoding="utf-8"))
 
 
 def write_glossary(path: Path, content: object) -> Path:
@@ -102,18 +102,13 @@ def test_chunk_files_concatenate_back_to_masked(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path)
     survey.run(workdir)
     brief = read_brief(workdir)
-    bodies = [
-        (workdir.build / survey.CHUNKS_DIRNAME / f"{record.id}.tex").read_text(encoding="utf-8")
-        for record in brief.chunks
-    ]
+    bodies = [(workdir.chunks / f"{record.id}.tex").read_text(encoding="utf-8") for record in brief.chunks]
     assert "".join(bodies) == SAMPLE
     for record, body in zip(brief.chunks, bodies, strict=True):
         assert body == SAMPLE[record.start : record.end]
         assert record.paragraphs >= 1
         assert record.tokens > 0
-    assert sorted(path.name for path in (workdir.build / survey.CHUNKS_DIRNAME).iterdir()) == [
-        f"{record.id}.tex" for record in brief.chunks
-    ]
+    assert sorted(path.name for path in (workdir.chunks).iterdir()) == [f"{record.id}.tex" for record in brief.chunks]
 
 
 def test_manifest_fields_match_card(tmp_path: Path) -> None:
@@ -134,7 +129,7 @@ def test_manifest_fields_match_card(tmp_path: Path) -> None:
 def test_brief_field_order_matches_card(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path)
     survey.run(workdir)
-    brief = json.loads((workdir.build / survey.BRIEF_FILENAME).read_text(encoding="utf-8"))
+    brief = json.loads((workdir.brief).read_text(encoding="utf-8"))
     assert list(brief) == ["abstract", "heading_tree", "terms", "do_not_translate", "style", "chunks"]
     assert list(brief["chunks"][0]) == [
         "id",
@@ -200,8 +195,7 @@ def test_units_over_split_above_are_subdivided(tmp_path: Path) -> None:
     assert manifest.chunks_total > 1
     assert (
         "".join(
-            (workdir.build / survey.CHUNKS_DIRNAME / f"{record.id}.tex").read_text(encoding="utf-8")
-            for record in read_brief(workdir).chunks
+            (workdir.chunks / f"{record.id}.tex").read_text(encoding="utf-8") for record in read_brief(workdir).chunks
         )
         == masked
     )
@@ -259,21 +253,21 @@ CHUNK_FAILURES = {
 @pytest.mark.parametrize("case", sorted(CHUNK_FAILURES))
 def test_chunk_failed_leaves_no_outputs(tmp_path: Path, case: str) -> None:
     workdir = make_workdir(tmp_path, CHUNK_FAILURES[case])
-    (workdir.build / survey.BRIEF_FILENAME).write_text("stale", encoding="utf-8")
-    (workdir.build / survey.CHUNKS_DIRNAME).mkdir()
-    (workdir.build / survey.CHUNKS_DIRNAME / "c000.tex").write_text("stale", encoding="utf-8")
+    (workdir.brief).write_text("stale", encoding="utf-8")
+    (workdir.chunks).mkdir()
+    (workdir.chunks / "c000.tex").write_text("stale", encoding="utf-8")
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.CHUNK_FAILED
     assert manifest.message
     assert manifest == read_manifest(workdir)
-    assert not (workdir.build / survey.BRIEF_FILENAME).exists()
-    assert not (workdir.build / survey.CHUNKS_DIRNAME).exists()
+    assert not (workdir.brief).exists()
+    assert not (workdir.chunks).exists()
     assert not outputs_present(workdir, "survey")
 
 
 def test_unreadable_blocks_file_is_chunk_failed(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path)
-    (workdir.build / survey.BLOCKS_FILENAME).write_text("{not json", encoding="utf-8")
+    (workdir.blocks).write_text("{not json", encoding="utf-8")
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.CHUNK_FAILED
     assert not outputs_present(workdir, "survey")
@@ -300,8 +294,8 @@ def test_glossary_invalid_leaves_no_outputs(tmp_path: Path, case: str) -> None:
     assert manifest.status is SurveyStatus.GLOSSARY_INVALID
     assert str(path) in manifest.message
     assert manifest == read_manifest(workdir)
-    assert not (workdir.build / survey.BRIEF_FILENAME).exists()
-    assert not (workdir.build / survey.CHUNKS_DIRNAME).exists()
+    assert not (workdir.brief).exists()
+    assert not (workdir.chunks).exists()
 
 
 def test_a_missing_command_line_glossary_is_a_user_error(tmp_path: Path) -> None:
@@ -442,7 +436,7 @@ def test_model_proposal_lands_in_brief_with_survey_layer(tmp_path: Path, monkeyp
     ]
     assert [(entry.word, entry.decided_by) for entry in brief.do_not_translate] == [("softmax", DecidedBy.SURVEY)]
     assert seen["role"] == survey.ROLE
-    assert seen["log_path"] == workdir.logs / survey.TERMS_LOG_FILENAME
+    assert seen["log_path"] == workdir.survey_terms_log
     assert seen["model"] == "p/m"
     assert seen["effort"] == "high"
     assert seen["schema"] == survey.TERMS_SCHEMA
@@ -481,11 +475,11 @@ def test_no_terms_skips_the_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(survey, "load_config", lambda: (role_config(), ""))
     workdir = make_workdir(tmp_path)
     workdir.logs.mkdir(parents=True, exist_ok=True)
-    (workdir.logs / survey.TERMS_LOG_FILENAME).write_text("stale", encoding="utf-8")
+    (workdir.survey_terms_log).write_text("stale", encoding="utf-8")
     manifest = survey.run(workdir, no_terms=True)
     assert manifest.status is SurveyStatus.OK
     assert manifest.warnings == []
-    assert not (workdir.logs / survey.TERMS_LOG_FILENAME).exists()
+    assert not (workdir.survey_terms_log).exists()
 
 
 def test_an_unconfigured_role_skips_the_model_without_a_warning(tmp_path: Path) -> None:
@@ -499,21 +493,15 @@ def test_an_unconfigured_role_skips_the_model_without_a_warning(tmp_path: Path) 
 def test_fixture_papers_survey_after_mask(tmp_path: Path, paper: str) -> None:
     workdir = Workdir(tmp_path / paper)
     workdir.create()
-    (workdir.build / mask.PRECOMPILE_FILENAME).write_text(
-        (paper_dir(paper) / "main.tex").read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    (workdir.precompile_tex).write_text((paper_dir(paper) / "main.tex").read_text(encoding="utf-8"), encoding="utf-8")
     assert mask.run(workdir).status.value == "ok"
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK, manifest.message
-    masked = (workdir.build / survey.MASKED_FILENAME).read_text(encoding="utf-8")
+    masked = (workdir.masked).read_text(encoding="utf-8")
     brief = read_brief(workdir)
     assert manifest.chunks_total == len(brief.chunks) >= 1
     assert (
-        "".join(
-            (workdir.build / survey.CHUNKS_DIRNAME / f"{record.id}.tex").read_text(encoding="utf-8")
-            for record in brief.chunks
-        )
-        == masked
+        "".join((workdir.chunks / f"{record.id}.tex").read_text(encoding="utf-8") for record in brief.chunks) == masked
     )
 
 

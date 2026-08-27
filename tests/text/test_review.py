@@ -86,13 +86,13 @@ def wire_work(
 def make_workdir(tmp_path: Path, pairs: Sequence[tuple[str, str]]) -> Workdir:
     workdir = Workdir(tmp_path / "paper")
     workdir.create()
-    (workdir.build / review.CHUNKS_DIRNAME).mkdir(parents=True, exist_ok=True)
-    (workdir.build / review.TRANSLATED_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (workdir.chunks).mkdir(parents=True, exist_ok=True)
+    (workdir.translated).mkdir(parents=True, exist_ok=True)
     for index, (source, translation) in enumerate(pairs):
         chunk_id = f"c{index:03d}"
-        (workdir.build / review.CHUNKS_DIRNAME / f"{chunk_id}.tex").write_text(source, encoding="utf-8")
-        (workdir.build / review.TRANSLATED_DIRNAME / f"{chunk_id}.tex").write_text(translation, encoding="utf-8")
-    (workdir.build / review.BRIEF_FILENAME).write_text(BRIEF, encoding="utf-8")
+        (workdir.chunks / f"{chunk_id}.tex").write_text(source, encoding="utf-8")
+        (workdir.translated / f"{chunk_id}.tex").write_text(translation, encoding="utf-8")
+    (workdir.brief).write_text(BRIEF, encoding="utf-8")
     return workdir
 
 
@@ -101,20 +101,20 @@ def read_manifest(workdir: Workdir) -> ReviewManifest:
 
 
 def reviewed(workdir: Workdir, chunk_id: str) -> Path:
-    return workdir.build / review.REVIEWED_DIRNAME / f"{chunk_id}.tex"
+    return workdir.reviewed / f"{chunk_id}.tex"
 
 
 def site_path(workdir: Workdir) -> Path:
-    return workdir.build / review.SANDBOX_DIRNAME / review.STAGE_NAME
+    return workdir.sandbox(review.STAGE_NAME)
 
 
 def in_site(workdir: Workdir, chunk_id: str) -> Path:
-    return site_path(workdir) / review.REVIEWED_DIRNAME / f"{chunk_id}.tex"
+    return site_path(workdir) / "reviewed" / f"{chunk_id}.tex"
 
 
 def write_site(chunk_id: str, body: str) -> Callable[[Path], None]:
     def edit(site: Path) -> None:
-        (site / review.REVIEWED_DIRNAME / f"{chunk_id}.tex").write_text(body, encoding="utf-8")
+        (site / "reviewed" / f"{chunk_id}.tex").write_text(body, encoding="utf-8")
 
     return edit
 
@@ -134,7 +134,7 @@ def test_a_session_that_changes_nothing_is_ok(tmp_path: Path, monkeypatch: pytes
     assert outputs_present(workdir, "review")
     assert calls[0]["role"] == review.ROLE
     assert calls[0]["workdir"] == site_path(workdir)
-    assert calls[0]["trace_path"] == workdir.logs / review.TRACE_FILENAME
+    assert calls[0]["trace_path"] == workdir.review_log
 
 
 def test_the_site_holds_only_the_isolated_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,9 +142,9 @@ def test_the_site_holds_only_the_isolated_inputs(tmp_path: Path, monkeypatch: py
     workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
     review.run(workdir)
     site = site_path(workdir)
-    assert (site / review.CHUNKS_DIRNAME / "c000.tex").read_text(encoding="utf-8") == SOURCE
+    assert (site / "chunks" / "c000.tex").read_text(encoding="utf-8") == SOURCE
     assert in_site(workdir, "c000").read_text(encoding="utf-8") == TRANSLATION
-    assert (site / review.BRIEF_FILENAME).read_text(encoding="utf-8") == BRIEF
+    assert (site / "brief.json").read_text(encoding="utf-8") == BRIEF
     assert sorted(path.name for path in site.iterdir()) == [".agent", "brief.json", "chunks", "reviewed"]
 
 
@@ -171,7 +171,7 @@ def test_a_revision_that_breaks_placeholders_is_reverted(tmp_path: Path, monkeyp
 
 def test_a_deleted_file_is_reverted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def remove(site: Path) -> None:
-        (site / review.REVIEWED_DIRNAME / "c000.tex").unlink()
+        (site / "reviewed" / "c000.tex").unlink()
 
     wire_work(monkeypatch, remove)
     workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
@@ -189,7 +189,7 @@ def test_an_added_file_is_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert manifest.status is ReviewStatus.OK
     assert manifest.changed == []
     assert manifest.reverted == []
-    assert sorted(path.name for path in (workdir.build / review.REVIEWED_DIRNAME).iterdir()) == ["c000.tex"]
+    assert sorted(path.name for path in (workdir.reviewed).iterdir()) == ["c000.tex"]
 
 
 def test_a_session_error_fails_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -201,7 +201,7 @@ def test_a_session_error_fails_the_stage(tmp_path: Path, monkeypatch: pytest.Mon
     assert manifest.message == "运行时不在 PATH 里"
     assert manifest.session.stop_reason == "error"
     assert manifest.changed == []
-    assert not (workdir.build / review.REVIEWED_DIRNAME).exists()
+    assert not (workdir.reviewed).exists()
     assert not outputs_present(workdir, "review")
 
 
@@ -232,13 +232,13 @@ def test_a_rerun_clears_the_previous_site_and_trace(tmp_path: Path, monkeypatch:
     site = site_path(workdir)
     site.mkdir(parents=True, exist_ok=True)
     (site / "leftover.txt").write_text("上一轮的文件", encoding="utf-8")
-    (workdir.build / review.REVIEWED_DIRNAME).mkdir(parents=True, exist_ok=True)
-    (workdir.build / review.REVIEWED_DIRNAME / "c009.tex").write_text("上一轮的译文", encoding="utf-8")
-    (workdir.logs / review.TRACE_FILENAME).write_text("上一轮的 trace", encoding="utf-8")
+    (workdir.reviewed).mkdir(parents=True, exist_ok=True)
+    (workdir.reviewed / "c009.tex").write_text("上一轮的译文", encoding="utf-8")
+    (workdir.review_log).write_text("上一轮的 trace", encoding="utf-8")
     review.run(workdir)
     assert not (site / "leftover.txt").exists()
     assert not reviewed(workdir, "c009").exists()
-    assert not (workdir.logs / review.TRACE_FILENAME).exists()
+    assert not (workdir.review_log).exists()
 
 
 def test_without_chunks_the_stage_fails(tmp_path: Path) -> None:
@@ -246,13 +246,13 @@ def test_without_chunks_the_stage_fails(tmp_path: Path) -> None:
     workdir.create()
     manifest = review.run(workdir)
     assert manifest.status is ReviewStatus.REVIEW_FAILED
-    assert review.CHUNKS_DIRNAME in manifest.message
+    assert "chunks" in manifest.message
     assert manifest.session is None
 
 
 def test_without_a_translation_the_stage_fails(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
-    (workdir.build / review.TRANSLATED_DIRNAME / "c000.tex").unlink()
+    (workdir.translated / "c000.tex").unlink()
     manifest = review.run(workdir)
     assert manifest.status is ReviewStatus.REVIEW_FAILED
     assert "FileNotFoundError" in manifest.message
@@ -301,7 +301,7 @@ def test_the_site_carries_a_validate_script_that_judges_as_the_library_does(
     review.run(workdir)
     site = site_path(workdir)
     assert (site / SKILL_PATH / review.VALIDATE_FILENAME).is_file()
-    source_path = site / review.CHUNKS_DIRNAME / "c000.tex"
+    source_path = site / "chunks" / "c000.tex"
     for body in (TRANSLATION, REVISED, BROKEN, SOURCE.replace("⟦BLK-0⟧", ""), "\\section{引言}\n"):
         translation_path = tmp_path / "candidate.tex"
         translation_path.write_text(body, encoding="utf-8")

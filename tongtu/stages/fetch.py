@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .. import __version__, workdir
+from .. import __version__, pipeline, workdir
 from ..artifacts.fetch import FetchKind, FetchManifest, FetchStatus
 from ..manifests import describe_error, write_manifest
 from ..workdir import Workdir
@@ -23,8 +23,6 @@ EPRINT_URL_TEMPLATE = "https://export.arxiv.org/e-print/{arxiv_id}"
 DOWNLOAD_TIMEOUT_SECONDS = 60.0
 
 DOWNLOAD_USER_AGENT = f"tongtu/{__version__} (+https://github.com/yhnocoder/tongtu)"
-
-EPRINT_PAYLOAD_FILENAME = "e-print.bin"
 
 PDF_MAGIC = b"%PDF"
 
@@ -99,9 +97,8 @@ def run(paper: PaperInput, paper_workdir: Workdir) -> FetchManifest:
 
 def _fetch_remote(arxiv_id: str, paper_workdir: Workdir) -> FetchManifest:
     url = EPRINT_URL_TEMPLATE.format(arxiv_id=arxiv_id)
-    _reset_src(paper_workdir)
-    payload_path = paper_workdir.build / EPRINT_PAYLOAD_FILENAME
-    payload_path.unlink(missing_ok=True)
+    _reset_outputs(paper_workdir)
+    payload_path = paper_workdir.eprint
     try:
         payload = _download_eprint(url)
     except Exception as error:
@@ -155,7 +152,7 @@ def _fetch_local(source_dir: Path, paper_workdir: Workdir) -> FetchManifest:
             kind="local",
             message="source directory overlaps the working directory; cannot copy it into src/ of this workdir.",
         )
-    _reset_src(paper_workdir)
+    _reset_outputs(paper_workdir)
     try:
         shutil.copytree(source, paper_workdir.src, ignore=_copy_ignore(workdir_real), dirs_exist_ok=True)
     except Exception as error:
@@ -302,6 +299,11 @@ def _src_is_clearable(paper: PaperInput, paper_workdir: Workdir) -> bool:
     source_real = Path(paper.source_dir).expanduser().absolute().resolve()
     workdir_real = paper_workdir.path.resolve()
     return source_real != workdir_real and not source_real.is_relative_to(paper_workdir.src.resolve())
+
+
+def _reset_outputs(paper_workdir: Workdir) -> None:
+    pipeline.clean(paper_workdir, STAGE_NAME)
+    paper_workdir.create()
 
 
 def _reset_src(paper_workdir: Workdir) -> None:

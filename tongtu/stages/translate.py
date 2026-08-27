@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -11,7 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .. import chunks, masking, validation
+from .. import chunks, masking, pipeline, validation
 from ..artifacts.survey import BriefFile, Part
 from ..artifacts.translate import (
     ChunkTranslateRecord,
@@ -24,21 +23,13 @@ from ..console import console
 from ..manifests import describe_error, write_manifest
 from ..model.ask import AskStatus, ask
 from ..model.config import RoleTable, load_config, resolve_role
-from ..workdir import Workdir
+from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "translate"
-
-BRIEF_FILENAME = "brief.json"
-
-CHUNKS_DIRNAME = "chunks"
-
-TRANSLATED_DIRNAME = "translated"
 
 SKILL_FILENAME = "SKILL.md"
 
 ROLE = "translate"
-
-ENCODING = "utf-8"
 
 MAX_RETRIES = 1
 
@@ -88,7 +79,7 @@ def run(
     report: Callable[[int, int, tuple[str, ...], int, int], None] | None = None,
 ) -> TranslateManifest:
     paper_workdir.create()
-    _reset_outputs(paper_workdir)
+    pipeline.clean(paper_workdir, STAGE_NAME)
     manifest = _execute(
         paper_workdir,
         jobs,
@@ -100,12 +91,6 @@ def run(
     return manifest
 
 
-def _reset_outputs(paper_workdir: Workdir) -> None:
-    shutil.rmtree(paper_workdir.build / TRANSLATED_DIRNAME, ignore_errors=True)
-    for path in paper_workdir.logs.glob(f"{STAGE_NAME}-*.json"):
-        path.unlink(missing_ok=True)
-
-
 def _execute(
     paper_workdir: Workdir,
     jobs: int,
@@ -114,7 +99,7 @@ def _execute(
     report: Callable[[int, int, tuple[str, ...], int, int], None],
 ) -> TranslateManifest:
     try:
-        brief = BriefFile.model_validate_json((paper_workdir.build / BRIEF_FILENAME).read_text(encoding=ENCODING))
+        brief = BriefFile.model_validate_json(paper_workdir.brief.read_text(encoding=ENCODING))
         bodies = [_chunk_path(paper_workdir, record.id).read_text(encoding=ENCODING) for record in brief.chunks]
     except (OSError, UnicodeDecodeError, ValidationError) as error:
         return TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, jobs=jobs, message=describe_error(error))
@@ -369,15 +354,15 @@ def _finish(
 
 
 def _write_translated(paper_workdir: Workdir, contexts: Sequence[_Context], outcomes: dict[str, _Outcome]) -> None:
-    (paper_workdir.build / TRANSLATED_DIRNAME).mkdir(parents=True, exist_ok=True)
+    paper_workdir.translated.mkdir(parents=True, exist_ok=True)
     for context in contexts:
         content = chunks.restore_padding(context.raw, outcomes[context.id].body)
         _translated_path(paper_workdir, context.id).write_text(content, encoding=ENCODING)
 
 
 def _chunk_path(paper_workdir: Workdir, chunk_id: str) -> Path:
-    return paper_workdir.build / CHUNKS_DIRNAME / f"{chunk_id}.tex"
+    return paper_workdir.chunks / f"{chunk_id}.tex"
 
 
 def _translated_path(paper_workdir: Workdir, chunk_id: str) -> Path:
-    return paper_workdir.build / TRANSLATED_DIRNAME / f"{chunk_id}.tex"
+    return paper_workdir.translated / f"{chunk_id}.tex"

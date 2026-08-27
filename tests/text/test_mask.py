@@ -230,7 +230,7 @@ def test_sentinel_in_source_is_rejected(character: str, environments_table) -> N
 def make_workdir(tmp_path: Path, source: str | bytes | None = SAMPLE_PAPER) -> Workdir:
     workdir = Workdir(tmp_path / "paper")
     workdir.create()
-    path = workdir.build / mask.PRECOMPILE_FILENAME
+    path = workdir.precompile_tex
     if isinstance(source, bytes):
         path.write_bytes(source)
     elif source is not None:
@@ -248,8 +248,8 @@ def test_run_ok_writes_outputs_and_manifest(tmp_path: Path) -> None:
     assert manifest.status is MaskStatus.OK
     assert manifest == read_manifest(workdir)
     assert outputs_present(workdir, "mask")
-    masked = (workdir.build / mask.MASKED_FILENAME).read_text(encoding="utf-8")
-    blocks = BlocksFile.model_validate_json((workdir.build / mask.BLOCKS_FILENAME).read_text(encoding="utf-8"))
+    masked = (workdir.masked).read_text(encoding="utf-8")
+    blocks = BlocksFile.model_validate_json((workdir.blocks).read_text(encoding="utf-8"))
     assert manifest.blocks_total == len(blocks.blocks) == masked.count(f"{masking.SENTINEL_OPEN}BLK-")
     assert manifest.captions_total == len(blocks.captions) == 2
     assert {caption.kind for caption in blocks.captions} == {masking.CaptionKind.ABSTRACT, masking.CaptionKind.CAPTION}
@@ -299,14 +299,14 @@ def test_manifest_fields_match_card(tmp_path: Path) -> None:
 )
 def test_run_failures_write_mask_failed_without_outputs(tmp_path: Path, source) -> None:
     workdir = make_workdir(tmp_path, source)
-    (workdir.build / mask.MASKED_FILENAME).write_text("stale", encoding="utf-8")
-    (workdir.build / mask.BLOCKS_FILENAME).write_text("{}", encoding="utf-8")
+    (workdir.masked).write_text("stale", encoding="utf-8")
+    (workdir.blocks).write_text("{}", encoding="utf-8")
     manifest = mask.run(workdir)
     assert manifest.status is MaskStatus.MASK_FAILED
     assert manifest.message
     assert manifest == read_manifest(workdir)
-    assert not (workdir.build / mask.MASKED_FILENAME).exists()
-    assert not (workdir.build / mask.BLOCKS_FILENAME).exists()
+    assert not (workdir.masked).exists()
+    assert not (workdir.blocks).exists()
     assert not outputs_present(workdir, "mask")
 
 

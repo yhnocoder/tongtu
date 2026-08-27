@@ -22,9 +22,7 @@ JOBS = 4
 def test_translate_revtex_with_a_real_model(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / PAPER)
     workdir.create()
-    (workdir.build / mask.PRECOMPILE_FILENAME).write_text(
-        (paper_dir(PAPER) / "main.tex").read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    (workdir.precompile_tex).write_text((paper_dir(PAPER) / "main.tex").read_text(encoding="utf-8"), encoding="utf-8")
     assert mask.run(workdir).status.value == "ok"
     assert survey.run(workdir).status is SurveyStatus.OK
     started = time.monotonic()
@@ -39,4 +37,4 @@ def test_translate_revtex_with_a_real_model(tmp_path: Path) -> None:
     assert manifest.chunks
     assert all(record.status is not ChunkTranslateStatus.FALLBACK for record in manifest.chunks.values())
     for chunk_id in manifest.chunks:
-        assert (workdir.build / translate.TRANSLATED_DIRNAME / f"{chunk_id}.tex").read_text(encoding="utf-8").strip()
+        assert (workdir.translated / f"{chunk_id}.tex").read_text(encoding="utf-8").strip()
