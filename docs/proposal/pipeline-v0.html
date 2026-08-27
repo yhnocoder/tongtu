@@ -419,7 +419,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <li>unmask：用 blocks.json 回填 <code>⟦BLK-n⟧</code>、<code>⟦CAP-n⟧</code> → <code>build/zh.tex</code>（中文排版设置 precompile 已注入，这里不再动前导区）</li>
 <li>在 <code>build/sandbox/compile/</code>（src/ 拷贝 + zh.tex + precompile 编译树的 fonts/）跑 <code>latexmk -xelatex</code>；首编通过即校验编译</li>
 <li class="branch">失败 → 拉一次 agent work 修复；<code>latexmk -C</code> 后做校验编译</li>
-<li>出口：编译通过；页数与 precompile 基线之比落在 <code>[0.7, 1.3]</code>（模块常量 <code>PAGE_RATIO_MIN</code> / <code>PAGE_RATIO_MAX</code>，安全阀不是质量指标）；校验编译那棵树里最终的 zh.tex 与 build/precompile.tex 的控制序列一致（validate 第 2 层，无论拉没拉会话都查）。不过 → compile_failed。其余四个计数相对基线的增量与 caption 回退只记 warning</li>
+<li>出口：编译通过；页数与 precompile 基线之比落在 <code>[0.7, 1.3]</code>（模块常量 <code>PAGE_RATIO_MIN</code> / <code>PAGE_RATIO_MAX</code>，安全阀不是质量指标）；校验编译那棵树里最终的 zh.tex 与 unmask 直接写出的 zh.tex（修复会话之前）的控制序列一致（validate 第 2 层；译文对原文的一致性 review 已逐 chunk 保证，这里拦的是修复会话删命令；不拿 precompile.tex 作参照，因为 mask 对 caption 的段落归一化会引入 \par）。不过 → compile_failed。其余四个计数相对基线的增量与 caption 回退只记 warning</li>
 <li>拷出 <code>out/zh.pdf</code></li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">compile_failed</span></div>

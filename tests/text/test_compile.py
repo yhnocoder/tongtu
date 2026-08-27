@@ -43,6 +43,7 @@ TRANSLATIONS: tuple[tuple[str, str], ...] = (
     ("Intro", "引言"),
     ("Hello $x$ world with \\emph{stress}.", "你好 $x$ 世界 \\emph{强调}。"),
     ("A figure caption.", "一个图题。"),
+    ("First line. \\par Second line.", "第一行。 \\par 第二行。"),
     ("Second paragraph here.", "第二段。"),
 )
 
@@ -81,12 +82,12 @@ def translate(text: str) -> str:
     return text
 
 
-def make_workdir(tmp_path: Path) -> Workdir:
+def make_workdir(tmp_path: Path, paper: str = PAPER) -> Workdir:
     workdir = Workdir(tmp_path / "paper")
     workdir.create()
-    (workdir.src / "main.tex").write_text(PAPER, encoding="utf-8")
+    (workdir.src / "main.tex").write_text(paper, encoding="utf-8")
     (workdir.src / "figure.pdf").write_bytes(b"%PDF")
-    (workdir.build / "precompile.tex").write_text(PAPER, encoding="utf-8")
+    (workdir.build / "precompile.tex").write_text(paper, encoding="utf-8")
     assert mask.run(workdir).status == "ok"
     masked = (workdir.build / "masked.tex").read_text(encoding="utf-8")
     split = masked.index(SPLIT_MARKER)
@@ -187,6 +188,18 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert not (workdir.logs / "compile-fix.jsonl").exists()
 
 
+def test_caption_paragraph_break_is_not_a_control_sequence_difference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paper = PAPER.replace("\\caption{A figure caption.}", "\\caption{First line.\n\nSecond line.}")
+    workdir = make_workdir(tmp_path, paper)
+    wire_latexmk(monkeypatch, [{}])
+    wire_work(monkeypatch)
+    manifest = compile.run(workdir)
+    assert manifest.status is CompileStatus.OK
+    assert "\\par 第二行" in (workdir.build / "zh.tex").read_text(encoding="utf-8")
+
+
 def test_manifest_field_order_matches_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{}])
@@ -232,7 +245,7 @@ def test_empty_reviewed_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "reviewed" in manifest.message
 
 
-@pytest.mark.parametrize("relative", ["brief.json", "blocks.json", "masked.tex", "precompile.tex", "chunks/c001.tex"])
+@pytest.mark.parametrize("relative", ["brief.json", "blocks.json", "masked.tex", "chunks/c001.tex"])
 def test_missing_input_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str) -> None:
     workdir = make_workdir(tmp_path)
     (workdir.build / relative).unlink()

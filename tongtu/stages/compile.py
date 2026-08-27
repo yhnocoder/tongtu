@@ -29,8 +29,6 @@ CHUNKS_DIRNAME = "chunks"
 
 REVIEWED_DIRNAME = "reviewed"
 
-PRECOMPILE_FILENAME = "precompile.tex"
-
 MASKED_FILENAME = "masked.tex"
 
 BLOCKS_FILENAME = "blocks.json"
@@ -98,7 +96,6 @@ def _execute(
     try:
         brief = BriefFile.model_validate_json(_read(paper_workdir, BRIEF_FILENAME))
         blocks_file = BlocksFile.model_validate_json(_read(paper_workdir, BLOCKS_FILENAME))
-        source = _read(paper_workdir, PRECOMPILE_FILENAME)
         masked = _read(paper_workdir, MASKED_FILENAME)
         chunk_ids = [chunk.id for chunk in brief.chunks]
         sources = [_read(paper_workdir, f"{CHUNKS_DIRNAME}/{chunk_id}.tex") for chunk_id in chunk_ids]
@@ -178,7 +175,7 @@ def _execute(
     compile_report = compiling.compile_report(final)
     warnings.extend(_count_increases(compile_report, baseline))
     zh_final = (tree / ZH_FILENAME).read_text(encoding=ENCODING)
-    problems = _exit_problems(source, zh_final, compile_report, baseline)
+    problems = _exit_problems(unmasked.text, zh_final, compile_report, baseline)
     if problems:
         return _failed("; ".join(problems), warnings, baseline, fix_session, compile_report)
 
@@ -194,11 +191,11 @@ def _execute(
     )
 
 
-def _exit_problems(source: str, zh_final: str, compile_report: CompileReport, baseline: CompileReport) -> list[str]:
+def _exit_problems(unmasked: str, zh_final: str, compile_report: CompileReport, baseline: CompileReport) -> list[str]:
     problems: list[str] = []
-    failure = validation.check_control_sequences(validation.scan(source), validation.scan(zh_final))
+    failure = validation.check_control_sequences(validation.scan(unmasked), validation.scan(zh_final))
     if failure is not None:
-        problems.append(f"control sequences in {ZH_FILENAME} differ from {PRECOMPILE_FILENAME}: {failure.message}")
+        problems.append(f"control sequences in {ZH_FILENAME} differ from the unmasked translation: {failure.message}")
     ratio = compile_report.pages / baseline.pages
     if not PAGE_RATIO_MIN <= ratio <= PAGE_RATIO_MAX:
         problems.append(
