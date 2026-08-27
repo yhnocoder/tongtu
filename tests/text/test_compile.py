@@ -107,7 +107,7 @@ def make_workdir(tmp_path: Path, paper: str = PAPER) -> Workdir:
         workdir.manifest_path("precompile"),
         PrecompileManifest(status=PrecompileStatus.OK, main_file="main.tex", report=BASELINE),
     )
-    fonts = workdir.build / "sandbox" / "precompile" / "fonts"
+    fonts = workdir.build / "fonts"
     fonts.mkdir(parents=True)
     (fonts / "LXGWWenKai-Light.ttf").write_bytes(b"font")
     return workdir
@@ -237,7 +237,7 @@ def test_precompile_manifest_without_report(tmp_path: Path, monkeypatch: pytest.
 
 def test_missing_precompile_fonts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
-    fonts = workdir.build / "sandbox" / "precompile" / "fonts"
+    fonts = workdir.build / "fonts"
     (fonts / "LXGWWenKai-Light.ttf").unlink()
     fonts.rmdir()
     manifest = compile.run(workdir)

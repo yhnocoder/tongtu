@@ -157,6 +157,8 @@ def _execute(
         return _compile_failed(main_file, warnings, failure, fix_session)
 
     paper_workdir.precompile_tex.write_bytes((tree / FLAT_FILENAME).read_bytes())
+    if (tree / FONTS_DIRNAME).is_dir():
+        shutil.copytree(tree / FONTS_DIRNAME, paper_workdir.fonts, dirs_exist_ok=True)
     return PrecompileManifest(
         status=PrecompileStatus.OK,
         main_file=main_file,

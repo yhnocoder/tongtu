@@ -196,6 +196,7 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     tree = workdir.build / "sandbox" / "precompile"
     assert (tree / "flat.tex").is_file()
     assert (tree / "fonts" / "LXGWWenKai-Light.ttf").is_file()
+    assert (workdir.fonts / "LXGWWenKai-Light.ttf").is_file()
     written = json.loads(workdir.manifest_path("precompile").read_text(encoding="utf-8"))
     assert written["status"] == "ok"
     assert written["report"]["pages"] == 7
@@ -259,6 +260,7 @@ def test_fonts_config_external_file_is_copied_into_tree(tmp_path: Path, monkeypa
     assert "\\setCJKmainfont[Path={fonts/}]{MyFont.otf}" in output
     copied = workdir.build / "sandbox" / "precompile" / "fonts" / "MyFont.otf"
     assert copied.read_bytes() == b"font-bytes"
+    assert (workdir.fonts / "MyFont.otf").read_bytes() == b"font-bytes"
 
 
 def test_fonts_config_missing_file_falls_back_to_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -516,11 +518,14 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     (workdir.build / "sandbox" / "precompile").mkdir(parents=True)
     (workdir.build / "sandbox" / "precompile" / "flat.pdf").write_bytes(b"stale")
     (workdir.build / "precompile.tex").write_text("stale", encoding="utf-8")
+    workdir.fonts.mkdir(parents=True)
+    (workdir.fonts / "Stale.ttf").write_bytes(b"stale")
     (workdir.logs / "precompile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.MAIN_NOT_FOUND
     assert not (workdir.build / "sandbox" / "precompile").exists()
     assert not (workdir.build / "precompile.tex").exists()
+    assert not workdir.fonts.exists()
     assert not (workdir.logs / "precompile-fix.jsonl").exists()
 
 

@@ -57,10 +57,10 @@ def _execute(
     if precompile_manifest is None or precompile_manifest.report is None:
         return _failed("build/manifests/precompile.json is missing or carries no report; run precompile first.")
     baseline = precompile_manifest.report
-    fonts_dir = paper_workdir.sandbox(PRECOMPILE_STAGE_NAME) / FONTS_DIRNAME
+    fonts_dir = paper_workdir.fonts
     if not fonts_dir.is_dir():
         return _failed(
-            f"{fonts_dir} does not exist; the compile tree takes its fonts from the precompile tree. "
+            f"{fonts_dir} does not exist; the compile tree takes its fonts from the precompile output build/fonts/. "
             f"Rerun with --from {PRECOMPILE_STAGE_NAME}.",
             baseline=baseline,
         )
