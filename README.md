@@ -10,7 +10,19 @@
 
 ```
 uv sync              # 装依赖（含 dev 组）
-make install-hooks   # 装 git pre-commit hook（ruff check / ruff format / diction lint）
-make lint            # 检查：ruff check + ruff format --check + diction lint
+make install-hooks   # 装 git pre-commit hook（ruff check / ruff format / diction lint / comment lint）
+make lint            # 检查：ruff check + ruff format --check + diction lint + comment lint
 make format          # 自动修：ruff check --fix + ruff format
 ```
+
+## 发版
+
+先开 PR 把 `tongtu/__init__.py` 的 `__version__` 升到新版本（SemVer，版本号只写这一处）并 merge，然后在 main 上打 tag：
+
+```bash
+git switch main && git pull
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+tag 推送后自动完成剩下的事：`image.yml` 构建参考镜像并推 GHCR（获取与运行见 [`docker/README.md`](docker/README.md)），`release.yml` 校验 tag 与 `__version__` 一致并建 GitHub Release，结果在仓库的 Actions 页与 Releases 页查看。版本校验失败时不建 Release，删掉打错的 tag（`git push origin :vX.Y.Z && git tag -d vX.Y.Z`）、改对版本号重来。尚未发布到 PyPI，见 issue #55。
