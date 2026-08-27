@@ -10,7 +10,7 @@ from tongtu.cli import app
 from tongtu.stages import review
 from tongtu.workdir import Workdir, resolve
 
-from ...conftest import paper_dir
+from ..conftest import paper_dir
 
 pytestmark = pytest.mark.llm
 

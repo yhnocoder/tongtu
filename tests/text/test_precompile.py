@@ -68,18 +68,19 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> dict[str
     calls = {"compile": 0, "clean": 0}
 
     def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
+        main = Path(command[-1])
         if "-C" in command:
             calls["clean"] += 1
-            (cwd / precompile.PDF_FILENAME).unlink(missing_ok=True)
-            (cwd / precompile.LOG_FILENAME).unlink(missing_ok=True)
+            (cwd / main.with_suffix(".pdf")).unlink(missing_ok=True)
+            (cwd / main.with_suffix(".log")).unlink(missing_ok=True)
             return ProcessOutcome(returncode=0, stderr=b"", timed_out=False, duration_seconds=0.1)
         spec = specs[min(calls["compile"], len(specs) - 1)]
         calls["compile"] += 1
         if spec.get("timeout"):
             return ProcessOutcome(returncode=-9, stderr=b"", timed_out=True, duration_seconds=600.0)
         if spec.get("pdf", True):
-            (cwd / precompile.PDF_FILENAME).write_bytes(b"%PDF-1.5 fake body")
-        (cwd / precompile.LOG_FILENAME).write_text(spec.get("log", LOG_OK), encoding="utf-8")
+            (cwd / main.with_suffix(".pdf")).write_bytes(b"%PDF-1.5 fake body")
+        (cwd / main.with_suffix(".log")).write_text(spec.get("log", LOG_OK), encoding="utf-8")
         return ProcessOutcome(returncode=spec.get("returncode", 0), stderr=b"", timed_out=False, duration_seconds=2.5)
 
     monkeypatch.setattr(processes, "run_in_process_group", run)

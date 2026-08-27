@@ -1,0 +1,38 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Verify version and create release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches __version__
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(grep -E '^__version__' tongtu/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag: ${TAG}"
+          echo "__version__: ${version}"
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "tag ${TAG} 与 tongtu/__init__.py 的 __version__ ${version} 不一致，不建 Release" >&2
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes

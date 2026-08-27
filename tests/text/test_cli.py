@@ -11,7 +11,8 @@ from rich.progress import Progress
 from typer.testing import CliRunner
 
 from tongtu import __version__, cli, validation
-from tongtu.artifacts.common import Manifest
+from tongtu.artifacts.common import CompileReport, FixSession, Manifest
+from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.cli import RunOptions, app, main
 from tongtu.model.config import MODELS_TEMPLATE
 from tongtu.pipeline import STAGES
@@ -558,3 +559,64 @@ def test_stage_display_action_pads_a_bare_status_to_the_same_width() -> None:
     description = progress.tasks[0].description
     assert description.rstrip() == f"{'precompile':<{cli.NAME_WIDTH}}fix session"
     assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
+
+
+def test_every_stage_has_an_entry() -> None:
+    assert list(cli.STAGE_ENTRIES) == list(STAGES)
+    assert cli.STAGE_ENTRIES["compile"] is cli._compile_entry
+
+
+def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
+    report = CompileReport(
+        pages=6,
+        pdf_bytes=1,
+        overfull_hboxes=0,
+        undefined_references=0,
+        undefined_citations=0,
+        missing_characters=0,
+        duration_seconds=1.0,
+    )
+    baseline = report.model_copy(update={"pages": 5})
+    session = FixSession(stop_reason="finished", model="rt/m", duration_seconds=1.0)
+    assert cli._stage_summary(CompileManifest(status=CompileStatus.OK)) == ""
+    assert cli._stage_summary(CompileManifest(status=CompileStatus.OK, report=report)) == "6 pages"
+    assert (
+        cli._stage_summary(CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline))
+        == "6 pages, baseline 5"
+    )
+    assert (
+        cli._stage_summary(
+            CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline, fix_session=session)
+        )
+        == "6 pages, baseline 5, 1 fix session"
+    )
+
+
+def test_compile_entry_passes_the_work_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    def fake_run(workdir, *, model_override, effort, report):
+        captured.update(workdir=workdir, model_override=model_override, effort=effort, report=report)
+        return CompileManifest(status=CompileStatus.OK)
+
+    monkeypatch.setattr(cli.compile, "run", fake_run)
+    workdir = write_outputs(tmp_path, *STAGES[:-1])
+    result = runner.invoke(
+        app,
+        [
+            "stage",
+            "compile",
+            "2002.05202",
+            "--workdir",
+            str(workdir.path),
+            "--work-model",
+            "rt/m",
+            "--work-effort",
+            "low",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["workdir"].path == workdir.path
+    assert captured["model_override"] == "rt/m"
+    assert captured["effort"] == "low"
+    assert callable(captured["report"])

@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import hashlib
 import re
 import shutil
 import subprocess
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .. import model, processes, texlog
-from ..artifacts.common import CompileReport, FixSession
+from .. import compiling, processes
+from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
 from ..manifests import describe_error, write_manifest
-from ..model.config import FontsConfig, RoleTable, load_config, resolve_role
-from ..model.work import StopReason
+from ..model.config import FontsConfig, load_config
 from ..workdir import Workdir
 
 STAGE_NAME = "precompile"
@@ -30,10 +27,6 @@ PRECOMPILE_FILENAME = "precompile.tex"
 
 FLAT_FILENAME = "flat.tex"
 
-PDF_FILENAME = "flat.pdf"
-
-LOG_FILENAME = "flat.log"
-
 TRACE_FILENAME = "precompile-fix.jsonl"
 
 FONTS_DIRNAME = "fonts"
@@ -41,16 +34,6 @@ FONTS_DIRNAME = "fonts"
 FONTS_DIR = asset_path(FONTS_DIRNAME)
 
 LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--keep-comments", "--fatal")
-
-LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-xelatex", "-interaction=nonstopmode", FLAT_FILENAME)
-
-LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-C", FLAT_FILENAME)
-
-COMPILE_TIMEOUT_SECONDS = 600
-
-CLEAN_TIMEOUT_SECONDS = 60
-
-ERROR_LINE_LIMIT = 5
 
 DOCUMENT_CLASS_MARKERS: tuple[bytes, ...] = (rb"\documentclass", rb"\documentstyle")
 
@@ -104,21 +87,6 @@ XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 class ResolvedFont:
     name: str
     is_file: bool
-
-
-@dataclass(frozen=True)
-class CompileAttempt:
-    outcome: processes.ProcessOutcome
-    log_path: Path
-    log_text: str | None
-    pdf_bytes: int
-    counts: texlog.LogCounts
-
-    @property
-    def passed(self) -> bool:
-        return (
-            not self.outcome.timed_out and self.outcome.returncode == 0 and self.pdf_bytes > 0 and self.counts.pages > 0
-        )
 
 
 def run(
@@ -182,7 +150,7 @@ def _execute(
 
     report("compiling", FLAT_FILENAME)
     try:
-        first = _attempt_compile(tree)
+        first = compiling.attempt_compile(tree, FLAT_FILENAME)
     except OSError as error:
         return _compile_failed(
             main_file,
@@ -191,17 +159,27 @@ def _execute(
             "distribution; check that it is installed and in PATH.",
         )
     if first.outcome.timed_out:
-        return _compile_failed(main_file, warnings, _timeout_message(first))
+        return _compile_failed(main_file, warnings, compiling.timeout_message(first))
 
     fix_session: FixSession | None = None
     final = first
     if not first.passed:
         report("fix session", "running")
-        fix_session = _fix(paper_workdir, tree, warnings, model_override, effort, report)
-        warnings.extend(_clean_tree(tree))
+        fix_session = compiling.fix(
+            ROLE,
+            paper_workdir.src,
+            tree,
+            paper_workdir.logs / TRACE_FILENAME,
+            FLAT_FILENAME,
+            warnings,
+            model_override,
+            effort,
+            report=lambda action: report("fix session", action),
+        )
+        warnings.extend(compiling.clean_tree(tree, FLAT_FILENAME))
         report("verifying", FLAT_FILENAME)
         try:
-            final = _attempt_compile(tree)
+            final = compiling.attempt_compile(tree, FLAT_FILENAME)
         except OSError as error:
             return _compile_failed(
                 main_file,
@@ -210,29 +188,20 @@ def _execute(
                 fix_session,
             )
         if final.outcome.timed_out:
-            return _compile_failed(main_file, warnings, _timeout_message(final), fix_session)
+            return _compile_failed(main_file, warnings, compiling.timeout_message(final), fix_session)
         if not final.passed:
             return _compile_failed(
                 main_file,
                 warnings,
-                f"after the fix session the verify compile still fails the exit checks: {_failure_message(final)}",
+                f"after the fix session the verify compile still fails the exit checks: {compiling.failure_message(final)}",
                 fix_session,
             )
 
     _precompile_path(paper_workdir).write_bytes((tree / FLAT_FILENAME).read_bytes())
-    compile_report = CompileReport(
-        pages=final.counts.pages,
-        pdf_bytes=final.pdf_bytes,
-        overfull_hboxes=final.counts.overfull_hboxes,
-        undefined_references=final.counts.undefined_references,
-        undefined_citations=final.counts.undefined_citations,
-        missing_characters=final.counts.missing_characters,
-        duration_seconds=final.outcome.duration_seconds,
-    )
     return PrecompileManifest(
         status=PrecompileStatus.OK,
         main_file=main_file,
-        report=compile_report,
+        report=compiling.compile_report(final),
         fix_session=fix_session,
         warnings=warnings,
     )
@@ -568,13 +537,8 @@ def _strip_legacy_cjk(lines: list[bytes], preamble_end: int, warnings: list[str]
 def _assemble_tree(
     paper_workdir: Workdir, tree: Path, flat: bytes, warnings: list[str], font_files: list[Path]
 ) -> None:
-    shutil.copytree(paper_workdir.src, tree, dirs_exist_ok=True)
-    tree_flat_path = tree / FLAT_FILENAME
-    if tree_flat_path.exists():
-        warnings.append(
-            f"src/ already contains {FLAT_FILENAME}; the copy in the compile tree is overwritten by the expansion"
-        )
-    tree_flat_path.write_bytes(flat)
+    warnings.extend(compiling.copy_src_tree(paper_workdir.src, tree, FLAT_FILENAME))
+    (tree / FLAT_FILENAME).write_bytes(flat)
     if FONTS_DIR.is_dir():
         shutil.copytree(FONTS_DIR, tree / FONTS_DIRNAME, dirs_exist_ok=True)
     else:
@@ -585,138 +549,6 @@ def _assemble_tree(
         (tree / FONTS_DIRNAME).mkdir(exist_ok=True)
         for path in font_files:
             shutil.copy2(path, tree / FONTS_DIRNAME / path.name)
-
-
-def _attempt_compile(tree: Path) -> CompileAttempt:
-    outcome = processes.run_in_process_group(list(LATEXMK_COMMAND), tree, COMPILE_TIMEOUT_SECONDS)
-    log_path = tree / LOG_FILENAME
-    log_text = texlog.read_log(log_path)
-    pdf_path = tree / PDF_FILENAME
-    return CompileAttempt(
-        outcome=outcome,
-        log_path=log_path,
-        log_text=log_text,
-        pdf_bytes=pdf_path.stat().st_size if pdf_path.is_file() else 0,
-        counts=texlog.parse_counts(log_text),
-    )
-
-
-def _clean_tree(tree: Path) -> list[str]:
-    try:
-        outcome = processes.run_in_process_group(list(LATEXMK_CLEAN_COMMAND), tree, CLEAN_TIMEOUT_SECONDS)
-    except OSError as error:
-        return [f"failed to clean compile outputs before the verify compile ({describe_error(error)})"]
-    if outcome.timed_out:
-        return [
-            f"cleaning compile outputs before the verify compile hit the {CLEAN_TIMEOUT_SECONDS}s timeout; "
-            "the process group was terminated"
-        ]
-    if outcome.returncode != 0:
-        return [f"latexmk exited with code {outcome.returncode} while cleaning before the verify compile"]
-    return []
-
-
-def _fix(
-    paper_workdir: Workdir,
-    tree: Path,
-    warnings: list[str],
-    model_override: str | None,
-    effort: str | None,
-    report: Callable[[str, str], None],
-) -> FixSession:
-    snapshot = _snapshot_tree_files(paper_workdir.src, tree)
-    started = time.monotonic()
-    outcome = model.work(
-        ROLE,
-        tree,
-        trace_path=paper_workdir.logs / TRACE_FILENAME,
-        model=model_override,
-        effort=effort,
-        report=lambda action: report("fix session", action),
-    )
-    session = FixSession(
-        stop_reason=str(outcome.stop_reason),
-        model=_session_model(model_override, effort),
-        duration_seconds=time.monotonic() - started,
-    )
-    changed = _detect_changed_files(tree, snapshot)
-    if changed:
-        warnings.append(
-            f"the fix session modified {len(changed)} files besides {FLAT_FILENAME}: {', '.join(changed)}; "
-            "these changes do not propagate downstream, the compile stage still assembles its tree from src/"
-        )
-    if outcome.stop_reason is StopReason.ERROR:
-        warnings.append(
-            f"the fix session ended with error ({outcome.detail}); the verdict still comes from the scripted checks"
-        )
-    if outcome.stop_reason is StopReason.TIMEOUT:
-        warnings.append("the fix session ended with timeout; the verdict still comes from the scripted checks")
-    return session
-
-
-def _session_model(model_override: str | None, effort: str | None) -> str:
-    config, _ = load_config()
-    if config is not None:
-        resolved, _ = resolve_role(config, ROLE, RoleTable.RUNTIME, model_override, effort)
-        if resolved is not None:
-            return f"{resolved.runtime}/{resolved.model}"
-    return model_override or ""
-
-
-def _snapshot_tree_files(src: Path, tree: Path) -> dict[str, str]:
-    snapshot: dict[str, str] = {}
-    for path in sorted(src.rglob("*")):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(src).as_posix()
-        if relative == FLAT_FILENAME:
-            continue
-        tree_path = tree / relative
-        if tree_path.is_file():
-            snapshot[relative] = _file_sha256(tree_path)
-    return snapshot
-
-
-def _detect_changed_files(tree: Path, snapshot: dict[str, str]) -> list[str]:
-    changed: list[str] = []
-    for relative, digest in snapshot.items():
-        tree_path = tree / relative
-        if not tree_path.is_file() or _file_sha256(tree_path) != digest:
-            changed.append(relative)
-    return changed
-
-
-def _file_sha256(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def _timeout_message(attempt: CompileAttempt) -> str:
-    return (
-        f"latexmk hit the {COMPILE_TIMEOUT_SECONDS}s timeout and the process group was terminated; "
-        f"log: {attempt.log_path}"
-    )
-
-
-def _failure_message(attempt: CompileAttempt) -> str:
-    reasons: list[str] = []
-    if attempt.outcome.returncode != 0:
-        reasons.append(f"latexmk exited with code {attempt.outcome.returncode}")
-    if attempt.pdf_bytes == 0:
-        reasons.append(f"{PDF_FILENAME} is missing or empty")
-    if attempt.counts.pages <= 0:
-        reasons.append(f"no page count can be parsed from {LOG_FILENAME}")
-    if attempt.log_text is None:
-        stderr = attempt.outcome.stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]
-        detail = f"cannot read {attempt.log_path}; latexmk stderr: {stderr}"
-    else:
-        error_lines = texlog.error_lines(attempt.log_text, ERROR_LINE_LIMIT)
-        if error_lines:
-            excerpt = " | ".join(error_lines)
-            detail = f"error lines from the log (at most {ERROR_LINE_LIMIT}): {excerpt}; full log: {attempt.log_path}"
-        else:
-            detail = f"no lines starting with {texlog.ERROR_LINE_PREFIX} in the log; full log: {attempt.log_path}"
-    return f"{'; '.join(reasons)}. {detail}"
 
 
 def _precompile_dir(paper_workdir: Workdir) -> Path:

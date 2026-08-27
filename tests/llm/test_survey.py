@@ -9,7 +9,7 @@ from tongtu.artifacts.survey import BriefFile, SurveyStatus
 from tongtu.stages import mask, survey
 from tongtu.workdir import Workdir
 
-from ...conftest import paper_dir
+from ..conftest import paper_dir
 
 pytestmark = pytest.mark.llm
 
