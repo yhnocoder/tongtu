@@ -97,8 +97,25 @@ def test_clean_tree_without_problems(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def wire_work(monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=None) -> list[dict]:
     calls: list[dict] = []
 
-    def fake_work(role: str, workdir: Path, *, trace_path: Path, model: str | None = None, effort: str | None = None):
-        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path, "model": model, "effort": effort})
+    def fake_work(
+        role: str,
+        workdir: Path,
+        *,
+        trace_path: Path,
+        model: str | None = None,
+        effort: str | None = None,
+        report=None,
+    ):
+        calls.append(
+            {
+                "role": role,
+                "workdir": workdir,
+                "trace_path": trace_path,
+                "model": model,
+                "effort": effort,
+                "report": report,
+            }
+        )
         if edit is not None:
             edit(workdir)
         return WorkOutcome(stop_reason=stop_reason, detail="runtime missing")
@@ -134,8 +151,21 @@ def test_fix_passes_the_role_and_tree(tmp_path: Path, monkeypatch: pytest.Monkey
             "trace_path": tmp_path / "trace.jsonl",
             "model": "rt/m",
             "effort": "high",
+            "report": None,
         }
     ]
+
+
+def test_fix_forwards_the_report_callback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src, tree = make_tree(tmp_path)
+    calls = wire_work(monkeypatch, StopReason.FINISHED)
+    warnings: list[str] = []
+
+    def report(action: str) -> None:
+        return None
+
+    compiling.fix("compile_fix", src, tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None, report=report)
+    assert calls[0]["report"] is report
 
 
 @pytest.mark.parametrize("stop_reason", [StopReason.ERROR, StopReason.TIMEOUT])

@@ -163,6 +163,47 @@ def test_template_codex_runtime_carries_provider_and_env() -> None:
     assert runtime.env == {"OPENCODE_API_KEY": "{api_key}", "CODEX_HOME": "{tmp_dir}"}
 
 
+def test_template_runtimes_declare_events() -> None:
+    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    assert config.runtime["claude_code"].events == "stream-json"
+    assert config.runtime["claude_code_opencode"].events == "stream-json"
+    assert config.runtime["codex_opencode"].events == "codex-json"
+
+
+def test_events_field_defaults_to_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE)
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.runtime["claude_code"].events is None
+
+
+def test_events_field_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE.replace('command = ["claude", "-p"]', 'command = ["claude", "-p"]\nevents = "stream-json"'),
+    )
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.runtime["claude_code"].events == "stream-json"
+
+
+def test_unknown_events_value_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE.replace('command = ["claude", "-p"]', 'command = ["claude", "-p"]\nevents = "verbose-text"'),
+    )
+    config, detail = load_config()
+    assert config is None
+    assert "claude_code" in detail
+    assert "verbose-text" in detail
+    assert "codex-json" in detail
+    assert "stream-json" in detail
+
+
 def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")

@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from ..config import config_dir
+from .events import SUMMARIZERS
 
 MODELS_FILENAME = "models.toml"
 
@@ -48,6 +49,7 @@ class RuntimeConfig(BaseModel):
     settings: dict | None = None
     provider: str | None = None
     env: dict[str, str] | None = None
+    events: str | None = None
 
 
 class FontsConfig(BaseModel):
@@ -89,9 +91,16 @@ def load_config() -> tuple[ModelsConfig | None, str]:
     except tomllib.TOMLDecodeError as error:
         return None, f"config file {path} is not valid TOML ({error})."
     try:
-        return ModelsConfig.model_validate(data), ""
+        config = ModelsConfig.model_validate(data)
     except ValidationError as error:
         return None, f"config file {path} has invalid fields ({error})."
+    for name, runtime in config.runtime.items():
+        if runtime.events is not None and runtime.events not in SUMMARIZERS:
+            return None, (
+                f"config file {path} gives runtime {name} the events value {runtime.events}; "
+                f"the known values are {', '.join(sorted(SUMMARIZERS))}."
+            )
+    return config, ""
 
 
 def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
@@ -223,6 +232,7 @@ api         = "messages"          # 整个服务商一种接口时不必逐模�
 # 会话运行时：一条命令模板，{model} {effort} {max_turns} {tmp_dir} 由 work 填入；{tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删
 [runtime.claude_code]
 skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
+events     = "stream-json"               # stdout 事件流的格式，live 行据此解析当前动作；不写则不解析
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
@@ -240,6 +250,7 @@ env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = 
 [runtime.claude_code_opencode]
 provider = "opencode"                    # {base_url} 与 {api_key} 由 work 从 [provider.opencode] 填入
 skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
+events     = "stream-json"
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
@@ -257,6 +268,7 @@ env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTH
 [runtime.codex_opencode]
 provider   = "opencode"
 skill_path = ".codex/skills/{role}"
+events     = "codex-json"
 command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
            "-s", "workspace-write", "-c", 'approval_policy="never"',
            "-m", "{model}", "-c", 'model_reasoning_effort="{effort}"',

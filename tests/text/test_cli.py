@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from rich.progress import Progress
 from typer.testing import CliRunner
 
 from tongtu import __version__, cli, validation
@@ -525,6 +526,39 @@ def test_link_and_id_resolve_to_the_same_workdir(tmp_path: Path, monkeypatch: py
         first_lines.append(result.stdout.splitlines()[0])
     assert first_lines[0] == first_lines[1]
     assert str(tmp_path / "2002.05202") in first_lines[0]
+
+
+def test_stage_display_action_aligns_status_and_summary() -> None:
+    progress = Progress(disable=True)
+    task = progress.add_task("precompile", total=None)
+    display = cli.StageDisplay(progress=progress, task=task, name="precompile")
+    display.action("fix session", "Read: flat.tex")
+    expected = f"{'precompile':<{cli.NAME_WIDTH}}{'fix session':<{cli.STATUS_WIDTH}}Read: flat.tex"
+    width = cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
+    assert progress.tasks[0].description == f"{expected:<{width}}"
+
+
+def test_stage_display_action_truncates_long_summaries() -> None:
+    progress = Progress(disable=True)
+    task = progress.add_task("precompile", total=None)
+    display = cli.StageDisplay(progress=progress, task=task, name="precompile")
+    display.action("fix session", "x" * 500)
+    description = progress.tasks[0].description
+    assert (
+        description == f"{'precompile':<{cli.NAME_WIDTH}}{'fix session':<{cli.STATUS_WIDTH}}{'x' * cli.SUMMARY_WIDTH}"
+    )
+    assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
+
+
+def test_stage_display_action_pads_a_bare_status_to_the_same_width() -> None:
+    progress = Progress(disable=True)
+    task = progress.add_task("precompile", total=None)
+    display = cli.StageDisplay(progress=progress, task=task, name="precompile")
+    display.action("compiling", "flat.tex")
+    display.action("fix session")
+    description = progress.tasks[0].description
+    assert description.rstrip() == f"{'precompile':<{cli.NAME_WIDTH}}fix session"
+    assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
 
 
 def test_every_stage_has_an_entry() -> None:

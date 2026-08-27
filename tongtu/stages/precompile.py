@@ -94,17 +94,17 @@ def run(
     *,
     model_override: str | None = None,
     effort: str | None = None,
-    report: Callable[[str], None] | None = None,
+    report: Callable[[str, str], None] | None = None,
 ) -> PrecompileManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, model_override, effort, report or (lambda action: None))
+    manifest = _execute(paper_workdir, model_override, effort, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
 def _execute(
-    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str], None]
+    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str, str], None]
 ) -> PrecompileManifest:
     src = paper_workdir.src
     warnings: list[str] = []
@@ -148,7 +148,7 @@ def _execute(
     tree = _precompile_dir(paper_workdir)
     _assemble_tree(paper_workdir, tree, injected, warnings, font_files)
 
-    report(f"compiling {FLAT_FILENAME}")
+    report("compiling", FLAT_FILENAME)
     try:
         first = compiling.attempt_compile(tree, FLAT_FILENAME)
     except OSError as error:
@@ -164,7 +164,7 @@ def _execute(
     fix_session: FixSession | None = None
     final = first
     if not first.passed:
-        report("fix session running")
+        report("fix session", "running")
         fix_session = compiling.fix(
             ROLE,
             paper_workdir.src,
@@ -174,9 +174,10 @@ def _execute(
             warnings,
             model_override,
             effort,
+            report=lambda action: report("fix session", action),
         )
         warnings.extend(compiling.clean_tree(tree, FLAT_FILENAME))
-        report("verifying compile")
+        report("verifying", FLAT_FILENAME)
         try:
             final = compiling.attempt_compile(tree, FLAT_FILENAME)
         except OSError as error:

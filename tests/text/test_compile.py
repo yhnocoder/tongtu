@@ -144,9 +144,19 @@ def wire_work(
 ) -> list[dict]:
     calls: list[dict] = []
 
-    def fake_work(role: str, workdir: Path, *, trace_path: Path, model: str | None = None, effort: str | None = None):
+    def fake_work(
+        role: str,
+        workdir: Path,
+        *,
+        trace_path: Path,
+        model: str | None = None,
+        effort: str | None = None,
+        report=None,
+    ):
         calls.append({"role": role, "workdir": workdir, "trace_path": trace_path, "model": model, "effort": effort})
         (trace_path).write_text("{}\n", encoding="utf-8")
+        if report is not None:
+            report("Bash: ls")
         if edit is not None:
             edit(workdir)
         return WorkOutcome(stop_reason=stop_reason, detail="runtime missing")
@@ -454,6 +464,11 @@ def test_report_traces_the_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     wire_work(monkeypatch)
-    actions: list[str] = []
-    compile.run(workdir, report=actions.append)
-    assert actions == ["compiling zh.tex", "fix session running", "verifying compile"]
+    actions: list[tuple[str, str]] = []
+    compile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
+    assert actions == [
+        ("compiling", "zh.tex"),
+        ("fix session", "running"),
+        ("fix session", "Bash: ls"),
+        ("verifying", "zh.tex"),
+    ]

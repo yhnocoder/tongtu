@@ -60,11 +60,11 @@ def run(
     *,
     model_override: str | None = None,
     effort: str | None = None,
-    report: Callable[[str], None] | None = None,
+    report: Callable[[str, str], None] | None = None,
 ) -> CompileManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, model_override, effort, report or (lambda action: None))
+    manifest = _execute(paper_workdir, model_override, effort, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -77,7 +77,7 @@ def _reset_outputs(paper_workdir: Workdir) -> None:
 
 
 def _execute(
-    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str], None]
+    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str, str], None]
 ) -> CompileManifest:
     warnings: list[str] = []
     precompile_manifest = load_manifest(paper_workdir.manifest_path(PRECOMPILE_STAGE_NAME), PrecompileManifest)
@@ -128,7 +128,7 @@ def _execute(
     (tree / ZH_FILENAME).write_text(unmasked.text, encoding=ENCODING)
     shutil.copytree(fonts_dir, tree / FONTS_DIRNAME, dirs_exist_ok=True)
 
-    report(f"compiling {ZH_FILENAME}")
+    report("compiling", ZH_FILENAME)
     try:
         first = compiling.attempt_compile(tree, ZH_FILENAME)
     except OSError as error:
@@ -139,7 +139,7 @@ def _execute(
     fix_session: FixSession | None = None
     final = first
     if not first.passed:
-        report("fix session running")
+        report("fix session", "running")
         fix_session = compiling.fix(
             ROLE,
             paper_workdir.src,
@@ -149,9 +149,10 @@ def _execute(
             warnings,
             model_override,
             effort,
+            report=lambda action: report("fix session", action),
         )
         warnings.extend(compiling.clean_tree(tree, ZH_FILENAME))
-        report("verifying compile")
+        report("verifying", ZH_FILENAME)
         try:
             final = compiling.attempt_compile(tree, ZH_FILENAME)
         except OSError as error:

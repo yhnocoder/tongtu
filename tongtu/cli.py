@@ -163,8 +163,10 @@ class StageDisplay:
             rate_start_tokens=self.rate_baseline[1],
         )
 
-    def action(self, text: str) -> None:
-        self.progress.update(self.task, description=f"{self.name}  {text}")
+    def action(self, status: str, summary: str = "") -> None:
+        width = STATUS_WIDTH + SUMMARY_WIDTH
+        text = f"{status:<{STATUS_WIDTH}}{summary[:SUMMARY_WIDTH]}" if summary else status
+        self.progress.update(self.task, description=f"{self.name:<{NAME_WIDTH}}{text[:width]:<{width}}")
 
 
 def _fetch_entry(options: RunOptions, display: StageDisplay) -> Manifest:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -99,10 +100,11 @@ def fix(
     warnings: list[str],
     model_override: str | None,
     effort: str | None,
+    report: Callable[[str], None] | None = None,
 ) -> FixSession:
     snapshot = _snapshot_tree_files(src, tree, main_filename)
     started = time.monotonic()
-    outcome = model.work(role, tree, trace_path=trace_path, model=model_override, effort=effort)
+    outcome = model.work(role, tree, trace_path=trace_path, model=model_override, effort=effort, report=report)
     session = FixSession(
         stop_reason=str(outcome.stop_reason),
         model=session_model(role, model_override, effort),
