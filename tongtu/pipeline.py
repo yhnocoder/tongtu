@@ -24,7 +24,7 @@ STAGE_REMOVES: dict[str, tuple[str, ...]] = {
     "survey": ("build/brief.json", "build/chunks", "logs/survey-terms.json"),
     "translate": ("build/translated", "logs/translate-*.json"),
     "review": ("build/sandbox/review", "build/reviewed", "logs/review.jsonl"),
-    "compile": ("build/zh.tex", "build/compile", "out/zh.pdf", "logs/compile-fix.jsonl"),
+    "compile": ("build/zh.tex", "build/sandbox/compile", "out/zh.pdf", "logs/compile-fix.jsonl"),
 }
 
 

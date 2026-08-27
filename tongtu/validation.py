@@ -132,7 +132,7 @@ def validate(source: str, translation: str) -> ValidationResult:
         failure
         for failure in (
             _check_placeholders(source, translation),
-            _check_control_sequences(scanned_source, scanned_translation),
+            check_control_sequences(scanned_source, scanned_translation),
             _check_braces_and_math(scanned_source, scanned_translation),
             _check_paragraph_count(source, translation),
         )
@@ -168,7 +168,7 @@ def _check_placeholders(source: str, translation: str) -> Failure | None:
     return None
 
 
-def _check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
+def check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
     expected = Counter(source.control_sequences)
     actual = Counter(translation.control_sequences)
     if expected == actual:
