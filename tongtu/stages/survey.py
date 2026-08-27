@@ -12,7 +12,7 @@ import tiktoken
 from pydantic import ValidationError
 
 from .. import masking, pipeline
-from ..artifacts.mask import BlocksFile
+from ..artifacts.mask import BlocksFile, CaptionKind
 from ..artifacts.survey import (
     BriefFile,
     ChunkRecord,
@@ -253,7 +253,7 @@ def _paragraph_count(text: str) -> int:
 
 def _abstract(blocks: BlocksFile, masked: str) -> str | None:
     for caption in blocks.captions:
-        if caption.kind is masking.CaptionKind.ABSTRACT:
+        if caption.kind is CaptionKind.ABSTRACT:
             text = caption.tex.strip()
             if text:
                 return text

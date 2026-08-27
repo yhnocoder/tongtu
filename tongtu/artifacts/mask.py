@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from ..masking import BlockCategory, CaptionKind, DecidedBy, EnvironmentClass
 from .common import Manifest
 
 
@@ -13,10 +12,43 @@ class MaskStatus(StrEnum):
     MASK_FAILED = "mask_failed"
 
 
+class EnvironmentClass(StrEnum):
+    TEXT = "text"
+    NON_TRANSLATABLE = "non_translatable"
+
+
+class BlockCategory(StrEnum):
+    MATH = "math"
+    TABLE = "table"
+    FIGURE = "figure"
+    TIKZ = "tikz"
+    CODE = "code"
+    ALGORITHM = "algorithm"
+    BIBLIOGRAPHY = "bibliography"
+    BOX = "box"
+    UNKNOWN = "unknown"
+    PREAMBLE = "preamble"
+    POSTAMBLE = "postamble"
+    COMMENT = "comment"
+    METADATA = "metadata"
+
+
+class DecisionSource(StrEnum):
+    NEWTHEOREM = "newtheorem"
+    NEWENVIRONMENT = "newenvironment"
+    TABLE = "table"
+    DEFAULT = "default"
+
+
+class CaptionKind(StrEnum):
+    CAPTION = "caption"
+    ABSTRACT = "abstract"
+
+
 class EnvironmentDecisionRecord(BaseModel):
     classification: EnvironmentClass
-    category: str = ""
-    decided_by: DecidedBy
+    category: BlockCategory | None = None
+    decided_by: DecisionSource
     occurrences: int = 0
     blocks: int = 0
 
@@ -32,10 +64,12 @@ class MaskManifest(Manifest):
 
 
 class BlockRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     id: str
     category: BlockCategory
     environment: str = ""
-    decided_by: str = ""
+    decided_by: DecisionSource | None = None
     labels: list[str] = []
     tex: str
     start: int
@@ -44,6 +78,8 @@ class BlockRecord(BaseModel):
 
 
 class CaptionRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     id: str
     block_id: str
     kind: CaptionKind

@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from tongtu.artifacts.mask import BlocksFile, CaptionRecord
+from tongtu.artifacts.mask import BlocksFile, CaptionKind, CaptionRecord
 from tongtu.artifacts.survey import BriefFile, DecidedBy, Part, SurveyManifest, SurveyStatus
-from tongtu.masking import CaptionKind
 from tongtu.model.ask import AskOutcome, AskStatus
 from tongtu.model.config import ModelsConfig, RoleConfig
 from tongtu.pipeline import outputs_present
