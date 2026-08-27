@@ -8,7 +8,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from tongtu import masking
-from tongtu.artifacts.mask import BlocksFile, MaskManifest, MaskStatus
+from tongtu.artifacts.mask import BlockCategory, BlocksFile, CaptionKind, EnvironmentClass, MaskManifest, MaskStatus
 from tongtu.pipeline import outputs_present
 from tongtu.stages import mask
 from tongtu.workdir import Workdir
@@ -252,20 +252,17 @@ def test_run_ok_writes_outputs_and_manifest(tmp_path: Path) -> None:
     blocks = BlocksFile.model_validate_json((workdir.blocks).read_text(encoding="utf-8"))
     assert manifest.blocks_total == len(blocks.blocks) == masked.count(f"{masking.SENTINEL_OPEN}BLK-")
     assert manifest.captions_total == len(blocks.captions) == 2
-    assert {caption.kind for caption in blocks.captions} == {masking.CaptionKind.ABSTRACT, masking.CaptionKind.CAPTION}
+    assert {caption.kind for caption in blocks.captions} == {CaptionKind.ABSTRACT, CaptionKind.CAPTION}
     assert manifest.precompile_chars == len(SAMPLE_PAPER)
     assert manifest.masked_chars == len(masked)
     assert manifest.masked_chars_ratio == round(len(masked) / len(SAMPLE_PAPER), 4)
-    assert manifest.environments["equation"].classification is masking.EnvironmentClass.NON_TRANSLATABLE
-    assert manifest.environments["equation"].category == "math"
+    assert manifest.environments["equation"].classification is EnvironmentClass.NON_TRANSLATABLE
+    assert manifest.environments["equation"].category is BlockCategory.MATH
     assert manifest.environments["equation"].blocks == 1
-    assert manifest.environments["abstract"].classification is masking.EnvironmentClass.TEXT
+    assert manifest.environments["abstract"].classification is EnvironmentClass.TEXT
+    assert manifest.environments["abstract"].category is None
     assert [block.labels for block in blocks.blocks if block.environment == "equation"] == [["eq:mass"]]
-    restored = masking.unmask(
-        masked,
-        [masking.Block(**block.model_dump()) for block in blocks.blocks],
-        [masking.Caption(**caption.model_dump()) for caption in blocks.captions],
-    )
+    restored = masking.unmask(masked, blocks.blocks, blocks.captions)
     assert restored.text == SAMPLE_PAPER
 
 

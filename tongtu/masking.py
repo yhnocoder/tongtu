@@ -5,9 +5,17 @@ import re
 from bisect import bisect_right
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
+from .artifacts.mask import (
+    BlockCategory,
+    BlockRecord,
+    CaptionKind,
+    CaptionRecord,
+    DecisionSource,
+    EnvironmentClass,
+    EnvironmentDecisionRecord,
+)
 from .validation import (
     BLANK_LINE_RE,
     BLOCK_ID_PREFIX,
@@ -55,82 +63,18 @@ class MaskError(Exception):
     pass
 
 
-class EnvironmentClass(StrEnum):
-    TEXT = "text"
-    NON_TRANSLATABLE = "non_translatable"
-
-
-class BlockCategory(StrEnum):
-    MATH = "math"
-    TABLE = "table"
-    FIGURE = "figure"
-    TIKZ = "tikz"
-    CODE = "code"
-    ALGORITHM = "algorithm"
-    BIBLIOGRAPHY = "bibliography"
-    BOX = "box"
-    UNKNOWN = "unknown"
-    PREAMBLE = "preamble"
-    POSTAMBLE = "postamble"
-    COMMENT = "comment"
-    METADATA = "metadata"
-
-
-class DecidedBy(StrEnum):
-    NEWTHEOREM = "newtheorem"
-    NEWENVIRONMENT = "newenvironment"
-    TABLE = "table"
-    DEFAULT = "default"
-
-
-class CaptionKind(StrEnum):
-    CAPTION = "caption"
-    ABSTRACT = "abstract"
-
-
 @dataclass(frozen=True)
 class TableEntry:
     classification: EnvironmentClass
     category: BlockCategory | None
 
 
-@dataclass
-class EnvironmentDecision:
-    classification: EnvironmentClass
-    category: BlockCategory | None
-    decided_by: DecidedBy
-    occurrences: int = 0
-    blocks: int = 0
-
-
-@dataclass(frozen=True)
-class Block:
-    id: str
-    category: BlockCategory
-    environment: str
-    decided_by: DecidedBy | None
-    labels: tuple[str, ...]
-    tex: str
-    start: int
-    end: int
-    line: int
-
-
-@dataclass(frozen=True)
-class Caption:
-    id: str
-    block_id: str
-    kind: CaptionKind
-    tex: str
-    masked_text: str
-
-
 @dataclass(frozen=True)
 class MaskOutcome:
     masked: str
-    blocks: tuple[Block, ...]
-    captions: tuple[Caption, ...]
-    environments: dict[str, EnvironmentDecision]
+    blocks: tuple[BlockRecord, ...]
+    captions: tuple[CaptionRecord, ...]
+    environments: dict[str, EnvironmentDecisionRecord]
     warnings: tuple[str, ...]
 
 
@@ -184,7 +128,7 @@ def mask_document(text: str, table: Mapping[str, TableEntry]) -> MaskOutcome:
     return _MaskRun(text, environments, declared, table).run()
 
 
-def unmask(masked: str, blocks: Sequence[Block], captions: Sequence[Caption]) -> UnmaskOutcome:
+def unmask(masked: str, blocks: Sequence[BlockRecord], captions: Sequence[CaptionRecord]) -> UnmaskOutcome:
     filled, fallbacks, stream = _restore_captions(masked, captions)
     text = _restore_blocks(stream, blocks, filled)
     residual = [ch for ch in (SENTINEL_OPEN, SENTINEL_CLOSE) if ch in text]
@@ -247,28 +191,27 @@ def _enumerate_environments(text: str, table: Mapping[str, TableEntry]) -> tuple
 
 def _decide(
     name: str, declared: Mapping[str, str], table: Mapping[str, TableEntry], occurrences: int
-) -> EnvironmentDecision:
+) -> EnvironmentDecisionRecord:
     for candidate in _lookup_names(name):
         source = declared.get(candidate)
         if source is not None:
-            return EnvironmentDecision(
+            return EnvironmentDecisionRecord(
                 classification=EnvironmentClass.TEXT,
-                category=None,
-                decided_by=DecidedBy(source),
+                decided_by=DecisionSource(source),
                 occurrences=occurrences,
             )
         entry = table.get(candidate)
         if entry is not None:
-            return EnvironmentDecision(
+            return EnvironmentDecisionRecord(
                 classification=entry.classification,
                 category=entry.category,
-                decided_by=DecidedBy.TABLE,
+                decided_by=DecisionSource.TABLE,
                 occurrences=occurrences,
             )
-    return EnvironmentDecision(
+    return EnvironmentDecisionRecord(
         classification=EnvironmentClass.NON_TRANSLATABLE,
         category=BlockCategory.UNKNOWN,
-        decided_by=DecidedBy.DEFAULT,
+        decided_by=DecisionSource.DEFAULT,
         occurrences=occurrences,
     )
 
@@ -298,7 +241,7 @@ class _MaskRun:
     def __init__(
         self,
         text: str,
-        environments: dict[str, EnvironmentDecision],
+        environments: dict[str, EnvironmentDecisionRecord],
         declared: Mapping[str, str],
         table: Mapping[str, TableEntry],
     ) -> None:
@@ -307,8 +250,8 @@ class _MaskRun:
         self.environments = environments
         self.declared = declared
         self.table = table
-        self.blocks: list[Block] = []
-        self.captions: list[Caption] = []
+        self.blocks: list[BlockRecord] = []
+        self.captions: list[CaptionRecord] = []
         self.warnings: list[str] = []
         self.output: list[str] = []
         self.cursor = 0
@@ -327,45 +270,17 @@ class _MaskRun:
         )
 
     def _mask_preamble(self) -> int:
-        end = self._find_begin_document()
-        if end is None:
-            raise MaskError("no \\begin{document} outside comments; cannot delimit the preamble")
-        slots = self._preamble_abstract_slots(end)
+        end, slots = self._scan_preamble()
         self._emit_block(0, end, BlockCategory.PREAMBLE, environment="", decided_by=None, slots=slots)
         return end
 
-    def _find_begin_document(self) -> int | None:
+    def _scan_preamble(self) -> tuple[int, list[_CaptionSlot]]:
+        slots: list[_CaptionSlot] = []
         position = 0
         while position < self.length:
             match = TOP_LEVEL_SPECIAL_RE.search(self.text, position)
             if match is None:
-                return None
-            position = match.start()
-            if self.text[position] == "%":
-                position = _skip_comment(self.text, position)
-                continue
-            if self.text[position] == "$":
-                position += 1
-                continue
-            name, after_name = read_control_sequence(self.text, position)
-            if name == "verb":
-                position = skip_verb(self.text, after_name)
-                continue
-            if name == "begin":
-                environment, after = read_environment_name(self.text, after_name)
-                if environment == DOCUMENT_ENVIRONMENT:
-                    return after
-                position = after_name if environment is None else after
-                continue
-            position = after_name
-        return None
-
-    def _preamble_abstract_slots(self, preamble_end: int) -> list[_CaptionSlot]:
-        position = 0
-        while position < preamble_end:
-            match = TOP_LEVEL_SPECIAL_RE.search(self.text, position)
-            if match is None or match.start() >= preamble_end:
-                return []
+                break
             position = match.start()
             if self.text[position] == "%":
                 position = _skip_comment(self.text, position)
@@ -384,13 +299,16 @@ class _MaskRun:
             if environment is None:
                 position = after_name
                 continue
-            if environment != ABSTRACT_ENVIRONMENT:
-                position = after
+            if environment == DOCUMENT_ENVIRONMENT:
+                return after, slots
+            if environment == ABSTRACT_ENVIRONMENT and not slots:
+                body_end, _ = self._scan_environment_body(after, environment, category=None, collect_captions=False)
+                close_start = self._environment_close_start(body_end, environment)
+                slots.append(_CaptionSlot(start=after, end=close_start, kind=CaptionKind.ABSTRACT))
+                position = body_end
                 continue
-            body_end, _ = self._scan_environment_body(after, environment, category=None, collect_captions=False)
-            close_start = self._environment_close_start(body_end, environment)
-            return [_CaptionSlot(start=after, end=close_start, kind=CaptionKind.ABSTRACT)]
-        return []
+            position = after
+        raise MaskError("no \\begin{document} outside comments; cannot delimit the preamble")
 
     def _environment_close_start(self, environment_end: int, name: str) -> int:
         close = self.text.rfind("\\end", 0, environment_end)
@@ -557,7 +475,7 @@ class _MaskRun:
             f"environment {name} (opened at line {self._line_of(body_start)}) has no matching \\end before end of file"
         )
 
-    def _decision_for(self, name: str) -> EnvironmentDecision:
+    def _decision_for(self, name: str) -> EnvironmentDecisionRecord:
         decision = self.environments.get(name)
         if decision is None:
             decision = _decide(name, self.declared, self.table, occurrences=0)
@@ -571,19 +489,19 @@ class _MaskRun:
         category: BlockCategory,
         *,
         environment: str,
-        decided_by: DecidedBy | None,
+        decided_by: DecisionSource | None,
         slots: list[_CaptionSlot],
     ) -> None:
         block_id = f"{BLOCK_ID_PREFIX}-{len(self.blocks)}"
         captions = [self._emit_caption(block_id, slot) for slot in slots]
         raw = self.text[start:end]
         self.blocks.append(
-            Block(
+            BlockRecord(
                 id=block_id,
                 category=category,
                 environment=environment,
                 decided_by=decided_by,
-                labels=tuple(LABEL_RE.findall(raw)),
+                labels=LABEL_RE.findall(raw),
                 tex=_apply_slots(self.text, start, end, slots, [caption.id for caption in captions]),
                 start=start,
                 end=end,
@@ -596,9 +514,9 @@ class _MaskRun:
             self.output.append(f"\n{block_token(caption.id)} {caption.masked_text}\n")
         self.cursor = end
 
-    def _emit_caption(self, block_id: str, slot: _CaptionSlot) -> Caption:
+    def _emit_caption(self, block_id: str, slot: _CaptionSlot) -> CaptionRecord:
         raw = self.text[slot.start : slot.end]
-        caption = Caption(
+        caption = CaptionRecord(
             id=f"{CAPTION_ID_PREFIX}-{len(self.captions)}",
             block_id=block_id,
             kind=slot.kind,
@@ -822,7 +740,7 @@ def _describe_difference(source: str, restored: str) -> str:
     )
 
 
-def _restore_captions(masked: str, captions: Sequence[Caption]) -> tuple[dict[str, str], list[str], str]:
+def _restore_captions(masked: str, captions: Sequence[CaptionRecord]) -> tuple[dict[str, str], list[str], str]:
     filled: dict[str, str] = {}
     fallbacks: list[str] = []
     stream = masked
@@ -853,7 +771,7 @@ def _restore_captions(masked: str, captions: Sequence[Caption]) -> tuple[dict[st
     return filled, fallbacks, stream
 
 
-def _restore_blocks(stream: str, blocks: Sequence[Block], filled: Mapping[str, str]) -> str:
+def _restore_blocks(stream: str, blocks: Sequence[BlockRecord], filled: Mapping[str, str]) -> str:
     block_by_id = {block.id: block for block in blocks}
     used: dict[str, int] = {}
 

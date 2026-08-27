@@ -85,11 +85,7 @@ def _execute(
         )
 
     try:
-        unmasked = masking.unmask(
-            "".join(reviewed),
-            [masking.Block(**block.model_dump()) for block in blocks_file.blocks],
-            [masking.Caption(**caption.model_dump()) for caption in blocks_file.captions],
-        )
+        unmasked = masking.unmask("".join(reviewed), blocks_file.blocks, blocks_file.captions)
     except masking.MaskError as error:
         return _failed(f"unmask failed: {error}", baseline=baseline)
     if unmasked.fallbacks:

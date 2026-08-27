@@ -176,7 +176,7 @@
 
 <span class="k">class</span> EnvironmentDecisionRecord(BaseModel):
     classification: <span class="t">"text"|"non_translatable"</span>
-    category: <span class="t">str</span>                    <span class="c"># non_translatable 时的 BlockCategory；text 为空</span>
+    category: <span class="t">BlockCategory | None</span>    <span class="c"># non_translatable 时的类别；text 为 None</span>
     decided_by: <span class="t">"newtheorem"|"newenvironment"|"table"|"default"</span>   <span class="c"># 判据来源：文内定义、environments.json 表、缺省</span>
     occurrences: <span class="t">int</span>
     blocks: <span class="t">int</span>
@@ -190,7 +190,7 @@
     id: <span class="t">str</span>                          <span class="c"># BLK-n</span>
     category: <span class="t">"math"|"table"|"figure"|"tikz"|"code"|"algorithm"|"bibliography"|"box"|"unknown"|"preamble"|"postamble"|"comment"|"metadata"</span>
     environment: <span class="t">str</span>                 <span class="c"># 环境名；前导区、注释等非环境 block 为空</span>
-    decided_by: <span class="t">str</span>
+    decided_by: <span class="t">"newtheorem"|"newenvironment"|"table"|"default" | None</span>   <span class="c"># 环境 block 的判定来源；其余为 None</span>
     labels: <span class="t">list[str]</span>               <span class="c"># block 内的 \label</span>
     tex: <span class="t">str</span>                         <span class="c"># 原文，回填用</span>
     start: <span class="t">int</span>; end: <span class="t">int</span>              <span class="c"># 在 precompile.tex 字符序列上的区间</span>
