@@ -120,6 +120,7 @@ def test_chat_request_shape_and_log(configured: Path, monkeypatch: pytest.Monkey
     outcome = ask("chat_role", "你是译者", MESSAGES, log_path=log_path)
     assert outcome.status == AskStatus.OK
     assert outcome.text == "你好，世界。"
+    assert outcome.model == "demo/chat-model"
     assert recorded["client"] == {
         "base_url": "https://demo.example/v1",
         "api_key": "demo-key",
@@ -222,6 +223,7 @@ def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: p
         effort="low",
     )
     assert outcome.status == AskStatus.OK
+    assert outcome.model == "demo/messages-model"
     assert recorded["model"] == "messages-model"
     assert recorded["thinking"] == {"type": "enabled", "budget_tokens": 1024}
     record = read_log(configured / "log.json")
@@ -247,6 +249,7 @@ def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     outcome = ask("chat_role", "", MESSAGES, log_path=tmp_path / "log.json")
     assert outcome.status == AskStatus.ERROR
     assert "tongtu setup" in outcome.detail
+    assert outcome.model == ""
     assert read_log(tmp_path / "log.json")["status"] == "error"
 
 
@@ -254,6 +257,7 @@ def test_unknown_role_is_error(configured: Path) -> None:
     outcome = ask("nobody", "", MESSAGES, log_path=configured / "log.json")
     assert outcome.status == AskStatus.ERROR
     assert "nobody" in outcome.detail
+    assert outcome.model == ""
 
 
 def test_role_without_provider_is_error(configured: Path) -> None:
@@ -298,6 +302,7 @@ def test_missing_api_key_is_error(configured: Path, monkeypatch: pytest.MonkeyPa
     outcome = ask("chat_role", "", MESSAGES, log_path=configured / "log.json")
     assert outcome.status == AskStatus.ERROR
     assert "DEMO_KEY" in outcome.detail
+    assert outcome.model == "demo/chat-model"
     record = read_log(configured / "log.json")
     assert record["provider"] == "demo"
     assert record["model"] == "chat-model"
@@ -343,6 +348,7 @@ def test_openai_error_is_reported(configured: Path, monkeypatch: pytest.MonkeyPa
     outcome = ask("chat_role", "", MESSAGES, log_path=configured / "log.json")
     assert outcome.status == AskStatus.ERROR
     assert "服务端拒绝" in outcome.detail
+    assert outcome.model == "demo/chat-model"
 
 
 def test_anthropic_error_is_reported(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:

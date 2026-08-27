@@ -30,7 +30,7 @@ from ..config import config_dir
 from ..console import console
 from ..manifests import describe_error, write_manifest
 from ..model.ask import ASK_TIMEOUT_SECONDS, AskStatus, ask
-from ..model.config import RoleTable, load_config, resolve_role
+from ..model.config import load_config
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "survey"
@@ -487,13 +487,8 @@ def _propose(
     if ROLE not in config.roles:
         return [], []
     payload = _payload(abstract, heading_tree, masked)
-    resolved, _detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
-    if resolved is not None:
-        thousands = len(encoder.encode(payload, disallowed_special=())) / 1000
-        console.print(
-            f"  {ROLE}: {resolved.provider}/{resolved.model}, "
-            f"~{thousands:.1f}k tokens in, timeout {ASK_TIMEOUT_SECONDS}s"
-        )
+    thousands = len(encoder.encode(payload, disallowed_special=())) / 1000
+    console.print(f"  {ROLE}: ~{thousands:.1f}k tokens in, timeout {ASK_TIMEOUT_SECONDS}s")
     started = time.monotonic()
     outcome = ask(
         role=ROLE,
@@ -504,7 +499,8 @@ def _propose(
         model=ask_model,
         effort=ask_effort,
     )
-    console.print(f"  {ROLE} returned {outcome.status} in {time.monotonic() - started:.1f}s")
+    label = f"{ROLE}: {outcome.model}" if outcome.model else ROLE
+    console.print(f"  {label} returned {outcome.status} in {time.monotonic() - started:.1f}s")
     if outcome.status is AskStatus.ERROR:
         return [], [f"the term proposal call failed; continuing as empty ({outcome.detail[:WARNING_DETAIL_CHARS]})"]
     try:

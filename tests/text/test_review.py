@@ -77,7 +77,7 @@ def wire_work(
             report("Bash: ls")
         if edit is not None:
             edit(workdir)
-        return WorkOutcome(stop_reason=stop_reason, detail=detail)
+        return WorkOutcome(stop_reason=stop_reason, detail=detail, model="demo/m1")
 
     monkeypatch.setattr(review, "work", fake_work)
     return calls
@@ -200,6 +200,7 @@ def test_a_session_error_fails_the_stage(tmp_path: Path, monkeypatch: pytest.Mon
     assert manifest == read_manifest(workdir)
     assert manifest.message == "运行时不在 PATH 里"
     assert manifest.session.stop_reason == "error"
+    assert manifest.session.model == "demo/m1"
     assert manifest.changed == []
     assert not (workdir.reviewed).exists()
     assert not outputs_present(workdir, "review")
@@ -316,7 +317,7 @@ def test_the_session_reports_progress_before_and_after(tmp_path: Path, monkeypat
     manifest = review.run(workdir, report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is ReviewStatus.OK
     assert actions == [
-        ("review session", "running on demo/m1"),
+        ("review session", "running"),
         ("review session", "Bash: ls"),
         ("session finished", "1 chunks changed, 0 reverted"),
     ]

@@ -10,7 +10,6 @@ from pathlib import Path
 from . import model, processes, texlog
 from .artifacts.common import CompileReport, FixSession
 from .manifests import describe_error, timeout_warning
-from .model.config import RoleTable, load_config, resolve_role
 from .model.work import StopReason
 
 COMPILE_TIMEOUT_SECONDS = 600
@@ -96,7 +95,7 @@ def fix(
     outcome = model.work(role, tree, trace_path=trace_path, model=model_override, effort=effort, report=report)
     session = FixSession(
         stop_reason=str(outcome.stop_reason),
-        model=session_model(role, model_override, effort),
+        model=outcome.model,
         duration_seconds=time.monotonic() - started,
     )
     changed = _detect_changed_files(tree, snapshot)
@@ -166,15 +165,6 @@ def compile_with_fix(
             f"after the fix session the verify compile still fails the exit checks: {failure_message(final)}",
         )
     return final, session, ""
-
-
-def session_model(role: str, model_override: str | None, effort: str | None) -> str:
-    config, _ = load_config()
-    if config is not None:
-        resolved, _ = resolve_role(config, role, RoleTable.RUNTIME, model_override, effort)
-        if resolved is not None:
-            return f"{resolved.runtime}/{resolved.model}"
-    return model_override or ""
 
 
 def _snapshot_tree_files(src: Path, tree: Path, main_filename: str) -> dict[str, str]:

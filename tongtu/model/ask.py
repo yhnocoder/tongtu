@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 import anthropic
 import openai
 
-from .config import Api, RoleTable, load_config, model_api, provider_key, resolve_role
+from .config import (
+    Api,
+    ModelsConfig,
+    ResolvedRole,
+    RoleTable,
+    load_config,
+    model_api,
+    provider_key,
+    resolve_role,
+)
 
 SCHEMA_NAME = "ask_response"
 
@@ -40,6 +49,7 @@ class AskOutcome:
     status: AskStatus
     text: str = ""
     detail: str = ""
+    model: str = ""
 
 
 Reply = tuple[AskOutcome, dict[str, object]]
@@ -83,6 +93,7 @@ def ask(
         return AskOutcome(
             status=AskStatus.ERROR,
             detail=f"cannot write the call log ({type(error).__name__}: {error}). Check that {log_path.parent} is writable.",
+            model=outcome.model,
         )
     return outcome
 
@@ -106,6 +117,18 @@ def _request(
     if resolved is None:
         return _error(detail)
     name = resolved.provider or ""
+    outcome, fields = _resolved_request(config, name, resolved, system, messages, schema)
+    return replace(outcome, model=f"{name}/{resolved.model}"), fields
+
+
+def _resolved_request(
+    config: ModelsConfig,
+    name: str,
+    resolved: ResolvedRole,
+    system: str,
+    messages: list[tuple[str, str]],
+    schema: dict | None,
+) -> Reply:
     api, detail = model_api(config, name, resolved.model)
     if api is None:
         return _error(detail)

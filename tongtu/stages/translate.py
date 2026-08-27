@@ -68,6 +68,7 @@ class _Outcome:
     body: str
     attempts: int = 0
     failures: list[str] = field(default_factory=list)
+    model: str = ""
 
 
 def run(
@@ -109,16 +110,16 @@ def _execute(
         return TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, jobs=jobs, message=detail)
 
     pending = [record for record in brief.chunks if record.translatable_chars]
-    model, effort = "", ""
+    effort = ""
     if pending:
         resolved, detail = _resolve(ask_model, ask_effort)
         if resolved is None:
             return TranslateManifest(
                 status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
             )
-        model, effort = resolved
+        display, effort = resolved
         console.print(
-            f"  {STAGE_NAME}: {model}, {len(brief.chunks)} chunks, "
+            f"  {STAGE_NAME}: {display}, {len(brief.chunks)} chunks, "
             f"{sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}"
         )
 
@@ -156,6 +157,7 @@ def _execute(
             for outcome in pool.map(worker, translatable):
                 outcomes[outcome.id] = outcome
 
+    model = next((outcome.model for outcome in outcomes.values() if outcome.model), "")
     return _finish(paper_workdir, contexts, outcomes, model, effort, prompt_version, jobs)
 
 
@@ -262,6 +264,7 @@ def _ask_until_valid(
     failures: list[str] = []
     attempts = 0
     judged = 0
+    model = ""
     while attempts < MAX_ASK_CALLS:
         attempts += 1
         outcome = ask(
@@ -272,6 +275,7 @@ def _ask_until_valid(
             model=ask_model,
             effort=RETRY_EFFORT if judged else ask_effort,
         )
+        model = outcome.model or model
         if outcome.status is AskStatus.ERROR:
             failures = [outcome.detail]
             continue
@@ -286,6 +290,7 @@ def _ask_until_valid(
                 status=ChunkTranslateStatus.TRANSLATED,
                 body=translated,
                 attempts=attempts,
+                model=model,
             )
         failures = [f"{failure.check}: {failure.message}" for failure in result.failures]
         judged += 1
@@ -302,6 +307,7 @@ def _ask_until_valid(
         body=context.body,
         attempts=attempts,
         failures=failures,
+        model=model,
     )
 
 

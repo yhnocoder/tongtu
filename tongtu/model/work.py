@@ -5,7 +5,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import IO
@@ -13,6 +13,7 @@ from typing import IO
 from ..assets import asset_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
 from .config import (
+    ModelsConfig,
     ResolvedRole,
     RoleConfig,
     RoleTable,
@@ -21,7 +22,6 @@ from .config import (
     models_path,
     provider_key,
     resolve_role,
-    role_config,
 )
 from .events import summarizer
 
@@ -46,6 +46,7 @@ class StopReason(StrEnum):
 class WorkOutcome:
     stop_reason: StopReason
     detail: str = ""
+    model: str = ""
 
 
 def work(
@@ -63,9 +64,19 @@ def work(
     resolved, detail = resolve_role(config, role, RoleTable.RUNTIME, model, effort)
     if resolved is None:
         return _error(detail)
-    entry, detail = role_config(config, role)
-    if entry is None:
-        return _error(detail)
+    outcome = _launch(config, resolved, role, workdir, trace_path, report)
+    return replace(outcome, model=f"{resolved.runtime}/{resolved.model}")
+
+
+def _launch(
+    config: ModelsConfig,
+    resolved: ResolvedRole,
+    role: str,
+    workdir: Path,
+    trace_path: Path,
+    report: Callable[[str], None] | None,
+) -> WorkOutcome:
+    entry = config.roles[role]
     absent = [name for name in WORK_ROLE_FIELDS if getattr(entry, name) is None]
     if absent:
         return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {models_path()}.")

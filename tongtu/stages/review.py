@@ -58,17 +58,16 @@ def _execute(
         _write_reviewed(paper_workdir, sources, translated)
         return ReviewManifest(status=ReviewStatus.OK, message=SKIPPED_MESSAGE)
 
-    resolved, detail = _resolve(model_override, effort)
-    if resolved is None:
+    skill_path, detail = _skill_path(model_override, effort)
+    if skill_path is None:
         return _failed(detail)
-    model, skill_path = resolved
 
     try:
         _stage_site(paper_workdir, sources, translated, skill_path)
     except OSError as error:
         return _failed(describe_error(error))
 
-    report("review session", f"running on {model}")
+    report("review session", "running")
     started = time.monotonic()
     outcome = work(
         ROLE,
@@ -78,7 +77,9 @@ def _execute(
         effort=effort,
         report=lambda action: report("review session", action),
     )
-    session = FixSession(stop_reason=str(outcome.stop_reason), model=model, duration_seconds=time.monotonic() - started)
+    session = FixSession(
+        stop_reason=str(outcome.stop_reason), model=outcome.model, duration_seconds=time.monotonic() - started
+    )
     if outcome.stop_reason is StopReason.ERROR:
         return ReviewManifest(status=ReviewStatus.REVIEW_FAILED, session=session, message=outcome.detail)
 
@@ -95,15 +96,14 @@ def _failed(message: str) -> ReviewManifest:
     return ReviewManifest(status=ReviewStatus.REVIEW_FAILED, message=message)
 
 
-def _resolve(model_override: str | None, effort: str | None) -> tuple[tuple[str, str] | None, str]:
+def _skill_path(model_override: str | None, effort: str | None) -> tuple[str | None, str]:
     config, detail = load_config()
     if config is None:
         return None, detail
     resolved, detail = resolve_role(config, ROLE, RoleTable.RUNTIME, model_override, effort)
     if resolved is None:
         return None, detail
-    runtime = config.runtime[resolved.runtime or ""]
-    return (f"{resolved.runtime}/{resolved.model}", runtime.skill_path.format(role=ROLE)), ""
+    return config.runtime[resolved.runtime or ""].skill_path.format(role=ROLE), ""
 
 
 def _stage_site(paper_workdir: Workdir, sources: dict[str, str], translated: dict[str, str], skill_path: str) -> None:

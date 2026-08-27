@@ -123,6 +123,7 @@ def test_finished_session_copies_skill_and_fills_command(configured: Path, monke
     outcome = work("smoke", workdir, trace_path=trace_path)
     assert outcome.stop_reason == StopReason.FINISHED
     assert outcome.detail == ""
+    assert outcome.model == "demo/m1"
     assert (workdir / ".agent" / "skills" / "smoke" / "SKILL.md").read_text(encoding="utf-8") == "smoke 的做法"
     assert recorded["command"] == [
         "/fake/bin/runner",
@@ -229,6 +230,7 @@ def test_timeout_is_reported(configured: Path, monkeypatch: pytest.MonkeyPatch) 
     )
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.TIMEOUT
+    assert outcome.model == "demo/m1"
 
 
 def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,6 +252,7 @@ def test_runtime_not_on_path_is_error(configured: Path, monkeypatch: pytest.Monk
     assert outcome.stop_reason == StopReason.ERROR
     assert "PATH" in outcome.detail
     assert "runner" in outcome.detail
+    assert outcome.model == "demo/m1"
 
 
 def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,12 +268,14 @@ def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     outcome = work("smoke", tmp_path, trace_path=tmp_path / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "tongtu setup" in outcome.detail
+    assert outcome.model == ""
 
 
 def test_unknown_role_is_error(configured: Path) -> None:
     outcome = work("nobody", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "nobody" in outcome.detail
+    assert outcome.model == ""
 
 
 def test_role_without_runtime_is_error(configured: Path) -> None:
@@ -297,6 +302,7 @@ def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: p
         effort="low",
     )
     assert outcome.stop_reason == StopReason.FINISHED
+    assert outcome.model == "other/m9"
     assert recorded["command"] == ["/fake/bin/other-runner", "--model", "m9", "--effort", "low"]
     assert (workdir / ".other" / "smoke" / "SKILL.md").is_file()
 
