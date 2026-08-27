@@ -126,17 +126,17 @@ def run(
     *,
     model_override: str | None = None,
     effort: str | None = None,
-    report: Callable[[str], None] | None = None,
+    report: Callable[[str, str], None] | None = None,
 ) -> PrecompileManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, model_override, effort, report or (lambda action: None))
+    manifest = _execute(paper_workdir, model_override, effort, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
 def _execute(
-    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str], None]
+    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str, str], None]
 ) -> PrecompileManifest:
     src = paper_workdir.src
     warnings: list[str] = []
@@ -180,7 +180,7 @@ def _execute(
     tree = _precompile_dir(paper_workdir)
     _assemble_tree(paper_workdir, tree, injected, warnings, font_files)
 
-    report(f"compiling {FLAT_FILENAME}")
+    report("compiling", FLAT_FILENAME)
     try:
         first = _attempt_compile(tree)
     except OSError as error:
@@ -196,10 +196,10 @@ def _execute(
     fix_session: FixSession | None = None
     final = first
     if not first.passed:
-        report("fix session running")
+        report("fix session", "running")
         fix_session = _fix(paper_workdir, tree, warnings, model_override, effort, report)
         warnings.extend(_clean_tree(tree))
-        report("verifying compile")
+        report("verifying", FLAT_FILENAME)
         try:
             final = _attempt_compile(tree)
         except OSError as error:
@@ -622,7 +622,7 @@ def _fix(
     warnings: list[str],
     model_override: str | None,
     effort: str | None,
-    report: Callable[[str], None],
+    report: Callable[[str, str], None],
 ) -> FixSession:
     snapshot = _snapshot_tree_files(paper_workdir.src, tree)
     started = time.monotonic()
@@ -632,7 +632,7 @@ def _fix(
         trace_path=paper_workdir.logs / TRACE_FILENAME,
         model=model_override,
         effort=effort,
-        report=lambda action: report(f"fix session {action}"),
+        report=lambda action: report("fix session", action),
     )
     session = FixSession(
         stop_reason=str(outcome.stop_reason),

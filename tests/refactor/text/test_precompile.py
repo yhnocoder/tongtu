@@ -525,10 +525,10 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_report_traces_the_compile_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    actions: list[str] = []
-    manifest = precompile.run(workdir, report=actions.append)
+    actions: list[tuple[str, str]] = []
+    manifest = precompile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is PrecompileStatus.OK
-    assert actions == ["compiling flat.tex"]
+    assert actions == [("compiling", "flat.tex")]
 
 
 def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -536,7 +536,12 @@ def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: p
     wire_expand(monkeypatch)
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     wire_work(monkeypatch)
-    actions: list[str] = []
-    manifest = precompile.run(workdir, report=actions.append)
+    actions: list[tuple[str, str]] = []
+    manifest = precompile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is PrecompileStatus.OK
-    assert actions == ["compiling flat.tex", "fix session running", "fix session Bash: ls", "verifying compile"]
+    assert actions == [
+        ("compiling", "flat.tex"),
+        ("fix session", "running"),
+        ("fix session", "Bash: ls"),
+        ("verifying", "flat.tex"),
+    ]

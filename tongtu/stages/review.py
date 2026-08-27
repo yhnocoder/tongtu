@@ -44,11 +44,11 @@ def run(
     skip: bool = False,
     model_override: str | None = None,
     effort: str | None = None,
-    report: Callable[[str], None] | None = None,
+    report: Callable[[str, str], None] | None = None,
 ) -> ReviewManifest:
     paper_workdir.create()
     _reset_outputs(paper_workdir)
-    manifest = _execute(paper_workdir, skip, model_override, effort, report or (lambda action: None))
+    manifest = _execute(paper_workdir, skip, model_override, effort, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -64,7 +64,7 @@ def _execute(
     skip: bool,
     model_override: str | None,
     effort: str | None,
-    report: Callable[[str], None],
+    report: Callable[[str, str], None],
 ) -> ReviewManifest:
     chunk_ids = sorted(path.stem for path in (paper_workdir.build / CHUNKS_DIRNAME).glob("*.tex"))
     if not chunk_ids:
@@ -76,7 +76,7 @@ def _execute(
         return _failed(describe_error(error))
 
     if skip:
-        report(f"--no-review, copying {TRANSLATED_DIRNAME}/ to {REVIEWED_DIRNAME}/")
+        report("--no-review", f"copying {TRANSLATED_DIRNAME}/ to {REVIEWED_DIRNAME}/")
         _write_reviewed(paper_workdir, sources, translated)
         return ReviewManifest(status=ReviewStatus.OK, message=SKIPPED_MESSAGE)
 
@@ -90,7 +90,7 @@ def _execute(
     except OSError as error:
         return _failed(describe_error(error))
 
-    report(f"review session running on {model}")
+    report("review session", f"running on {model}")
     started = time.monotonic()
     outcome = work(
         ROLE,
@@ -98,14 +98,14 @@ def _execute(
         trace_path=paper_workdir.logs / TRACE_FILENAME,
         model=model_override,
         effort=effort,
-        report=lambda action: report(f"review session {action}"),
+        report=lambda action: report("review session", action),
     )
     session = FixSession(stop_reason=str(outcome.stop_reason), model=model, duration_seconds=time.monotonic() - started)
     if outcome.stop_reason is StopReason.ERROR:
         return ReviewManifest(status=ReviewStatus.REVIEW_FAILED, session=session, message=outcome.detail)
 
     changed, reverted, bodies = _judge(paper_workdir, sources, translated)
-    report(f"session {outcome.stop_reason}, {len(changed)} chunks changed, {len(reverted)} reverted")
+    report(f"session {outcome.stop_reason}", f"{len(changed)} chunks changed, {len(reverted)} reverted")
     _write_reviewed(paper_workdir, sources, bodies)
     warnings = [TIMEOUT_WARNING] if outcome.stop_reason is StopReason.TIMEOUT else []
     return ReviewManifest(

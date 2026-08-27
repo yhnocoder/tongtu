@@ -311,18 +311,18 @@ def test_the_site_carries_a_validate_script_that_judges_as_the_library_does(
 def test_the_session_reports_progress_before_and_after(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire_work(monkeypatch, write_site("c000", REVISED))
     workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
-    actions: list[str] = []
-    manifest = review.run(workdir, report=actions.append)
+    actions: list[tuple[str, str]] = []
+    manifest = review.run(workdir, report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is ReviewStatus.OK
     assert actions == [
-        "review session running on demo/m1",
-        "review session Bash: ls",
-        "session finished, 1 chunks changed, 0 reverted",
+        ("review session", "running on demo/m1"),
+        ("review session", "Bash: ls"),
+        ("session finished", "1 chunks changed, 0 reverted"),
     ]
 
 
 def test_skip_reports_one_line(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
-    actions: list[str] = []
-    review.run(workdir, skip=True, report=actions.append)
-    assert actions == ["--no-review, copying translated/ to reviewed/"]
+    actions: list[tuple[str, str]] = []
+    review.run(workdir, skip=True, report=lambda status, summary: actions.append((status, summary)))
+    assert actions == [("--no-review", "copying translated/ to reviewed/")]
