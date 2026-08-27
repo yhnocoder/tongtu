@@ -29,6 +29,7 @@ from rich.text import Text
 
 from . import __version__, validation
 from .artifacts.common import Manifest
+from .artifacts.compile import CompileManifest
 from .artifacts.fetch import FetchManifest
 from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
@@ -40,7 +41,7 @@ from .manifests import describe_error, load_manifest
 from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
-from .stages import fetch, mask, precompile, review, survey, translate
+from .stages import compile, fetch, mask, precompile, review, survey, translate
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .workdir import Workdir, WorkdirError, resolve
 
@@ -120,10 +121,6 @@ class RunOptions:
     no_review: bool
 
 
-class PendingStageError(Exception):
-    pass
-
-
 def _kilo(tokens: int) -> str:
     return f"{tokens / 1000:.1f}k"
 
@@ -170,13 +167,6 @@ class StageDisplay:
         self.progress.update(self.task, description=f"{self.name}  {text}")
 
 
-def _pending_stage(name: str) -> Callable[[RunOptions, StageDisplay], Manifest]:
-    def entry(options: RunOptions, display: StageDisplay) -> Manifest:
-        raise PendingStageError(name)
-
-    return entry
-
-
 def _fetch_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return fetch.run(options.paper, options.workdir)
 
@@ -221,15 +211,21 @@ def _review_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     )
 
 
+def _compile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
+    return compile.run(
+        options.workdir, model_override=options.work_model, effort=options.work_effort, report=display.action
+    )
+
+
 STAGE_ENTRIES: dict[str, Callable[[RunOptions, StageDisplay], Manifest]] = {
-    name: _pending_stage(name) for name in STAGES
+    "fetch": _fetch_entry,
+    "precompile": _precompile_entry,
+    "mask": _mask_entry,
+    "survey": _survey_entry,
+    "translate": _translate_entry,
+    "review": _review_entry,
+    "compile": _compile_entry,
 }
-STAGE_ENTRIES["fetch"] = _fetch_entry
-STAGE_ENTRIES["precompile"] = _precompile_entry
-STAGE_ENTRIES["mask"] = _mask_entry
-STAGE_ENTRIES["survey"] = _survey_entry
-STAGE_ENTRIES["translate"] = _translate_entry
-STAGE_ENTRIES["review"] = _review_entry
 
 
 PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv id / arXiv URL / local source directory")]
@@ -371,6 +367,13 @@ def _stage_summary(manifest: Manifest) -> str:
         fallback = sum(1 for record in manifest.chunks.values() if record.status is ChunkTranslateStatus.FALLBACK)
         chunks = f"{len(manifest.chunks)} chunks"
         return f"{chunks}, {fallback} fallback" if fallback else chunks
+    if isinstance(manifest, CompileManifest):
+        parts = [f"{manifest.report.pages} pages"] if manifest.report else []
+        if manifest.baseline is not None:
+            parts.append(f"baseline {manifest.baseline.pages}")
+        if manifest.fix_session is not None:
+            parts.append("1 fix session")
+        return ", ".join(parts)
     return ""
 
 
@@ -411,18 +414,12 @@ def _progress_columns(name: str) -> tuple:
 
 def _run_stage(name: str, options: RunOptions) -> Manifest:
     started = time.monotonic()
-    try:
-        with Progress(
-            *_progress_columns(name), console=console, transient=True, disable=not console.is_terminal
-        ) as progress:
-            task = progress.add_task(name, total=None, chunks="", tokens="", inflight="")
-            display = StageDisplay(progress=progress, task=task, name=name)
-            manifest = STAGE_ENTRIES[name](options, display)
-    except PendingStageError:
-        error_console.print(
-            f"stage {name} is not rebuilt yet; the pipeline stops here (refactor steps 3-8 wire the stages in)."
-        )
-        raise typer.Exit(EXIT_FAILURE) from None
+    with Progress(
+        *_progress_columns(name), console=console, transient=True, disable=not console.is_terminal
+    ) as progress:
+        task = progress.add_task(name, total=None, chunks="", tokens="", inflight="")
+        display = StageDisplay(progress=progress, task=task, name=name)
+        manifest = STAGE_ENTRIES[name](options, display)
     _print_stage_result(name, manifest, options.workdir, time.monotonic() - started)
     return manifest
 

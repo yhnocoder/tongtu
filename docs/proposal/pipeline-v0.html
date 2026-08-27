@@ -411,15 +411,15 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </div>
 
 <!-- ============ compile ============ -->
-<div class="card" id="compile" style="border-style:dashed">
-<div class="card-head"><span class="name">compile</span><span class="one">译文回填、编译出 PDF</span><span class="tag todo">提案，未建</span><span class="tag agent">work（失败时）</span></div>
+<div class="card" id="compile">
+<div class="card-head"><span class="name">compile</span><span class="one">译文回填、编译出 PDF</span><span class="tag">已实现</span><span class="tag agent">work（失败时）</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
 <li>按 chunk 序拼接 <code>reviewed/</code> 得到译后掩码文本</li>
 <li>unmask：用 blocks.json 回填 <code>⟦BLK-n⟧</code>、<code>⟦CAP-n⟧</code> → <code>build/zh.tex</code>（中文排版设置 precompile 已注入，这里不再动前导区）</li>
-<li>在 <code>build/compile/</code>（src/ 拷贝 + zh.tex）跑 <code>latexmk -xelatex</code></li>
+<li>在 <code>build/sandbox/compile/</code>（src/ 拷贝 + zh.tex + precompile 编译树的 fonts/）跑 <code>latexmk -xelatex</code>；首编通过即校验编译</li>
 <li class="branch">失败 → 拉一次 agent work 修复；<code>latexmk -C</code> 后做校验编译</li>
-<li>出口：编译通过、页数与 precompile 基线相差在容差内、正文控制序列与原文一致（validate 第 2 层）</li>
+<li>出口：编译通过；页数与 precompile 基线之比落在 <code>[0.7, 1.3]</code>（模块常量 <code>PAGE_RATIO_MIN</code> / <code>PAGE_RATIO_MAX</code>，安全阀不是质量指标）；校验编译那棵树里最终的 zh.tex 与 unmask 直接写出的 zh.tex（修复会话之前）的控制序列一致（validate 第 2 层；译文对原文的一致性 review 已逐 chunk 保证，这里拦的是修复会话删命令；不拿 precompile.tex 作参照，因为 mask 对 caption 的段落归一化会引入 \par）。不过 → compile_failed。其余四个计数相对基线的增量与 caption 回退只记 warning</li>
 <li>拷出 <code>out/zh.pdf</code></li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">compile_failed</span></div>
@@ -429,7 +429,8 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <tr><td>build/reviewed/*.tex</td><td class="src"><a href="#review">review</a></td><td><span class="ty">LaTeX</span></td><td>按 chunk 序拼接成译后掩码全文</td></tr>
 <tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>chunk 顺序</td></tr>
 <tr><td>build/blocks.json</td><td class="src"><a href="#mask">mask</a></td><td><a href="#def-mask">BlocksFile</a></td><td>回填 ⟦BLK-n⟧ ⟦CAP-n⟧</td></tr>
-<tr><td>build/manifests/precompile.json</td><td class="src"><a href="#precompile">precompile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>report 转录为 baseline；页数容差以它为准</td></tr>
+<tr><td>build/manifests/precompile.json</td><td class="src"><a href="#precompile">precompile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>report 转录为 baseline；页数判据以它为准</td></tr>
+<tr><td>build/sandbox/precompile/fonts/</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">目录</span></td><td>整目录拷进编译树：zh.tex 导言区写定时的字体集合，不重新按 models.toml 解析</td></tr>
 <tr><td>src/</td><td class="src"><a href="#fetch">fetch</a></td><td><span class="ty">目录</span></td><td>拷成编译树，提供图、bib、cls</td></tr>
 <tr><td>skill/compile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>编译失败时拷进编译树</td></tr>
 <tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>编译失败时拉一次 work，角色 compile_fix 用哪个运行时与模型</td></tr>
@@ -437,16 +438,16 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
 <tr><td>build/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>回填后的中文全文；前导区即 precompile 注入过的</td></tr>
-<tr><td>build/compile/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>编译树：src/ 拷贝 + zh.tex；修复会话的现场</td></tr>
+<tr><td>build/sandbox/compile/</td><td class="src">—</td><td><span class="ty">目录</span></td><td>编译树：src/ 拷贝 + zh.tex + fonts/；修复会话的现场</td></tr>
 <tr><td>out/zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物</td></tr>
 <tr><td>logs/compile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过才有</td></tr>
 <tr><td>build/manifests/compile.json</td><td class="src">—</td><td><a href="#def-compile">CompileManifest</a></td><td>译文的 CompileReport 与 precompile 基线并排、修复会话结局</td></tr>
 </tbody></table>
 </div>
-<details open id="def-compile"><summary>CompileManifest（推测）</summary>
+<details open id="def-compile"><summary>CompileManifest</summary>
 <pre><span class="k">class</span> CompileManifest(BaseModel):
-    status: <span class="t">CompileStatus</span>
-    report: <span class="t">CompileReport | None</span>         <span class="c"># 译文的校验结果，与 precompile 的 report 同类</span>
+    status: <span class="t">"ok" | "compile_failed"</span>
+    report: <span class="t">CompileReport | None</span>         <span class="c"># 译文校验编译的结果；判据不过也保留，与 precompile 的 report 同类</span>
     baseline: <span class="t">CompileReport | None</span>       <span class="c"># 从 precompile manifest 转录，并排一眼比</span>
     fix_session: <span class="t">FixSession | None</span>
     warnings: <span class="t">list[str]</span>

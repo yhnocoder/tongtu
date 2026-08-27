@@ -10,7 +10,7 @@ from tongtu.artifacts.translate import ChunkTranslateStatus, TranslateStatus
 from tongtu.stages import mask, survey, translate
 from tongtu.workdir import Workdir
 
-from ...conftest import paper_dir
+from ..conftest import paper_dir
 
 pytestmark = pytest.mark.llm
 

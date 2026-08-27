@@ -14,7 +14,7 @@ from tongtu.pipeline import outputs_present
 from tongtu.stages import mask, survey
 from tongtu.workdir import Workdir
 
-from ...conftest import FIXTURE_PAPERS, paper_dir
+from ..conftest import FIXTURE_PAPERS, paper_dir
 
 SAMPLE = """\
 \\begin{abstract}

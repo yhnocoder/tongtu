@@ -22,7 +22,7 @@ SIDE_FILES: dict[str, tuple[str, ...]] = {
     "survey": ("logs/survey-terms.json",),
     "translate": ("logs/translate-c000-1.json", "logs/translate-c001-1.json"),
     "review": ("build/sandbox/review/chunks/c000.tex", "logs/review.jsonl"),
-    "compile": ("build/compile/zh.tex", "logs/compile-fix.jsonl"),
+    "compile": ("build/sandbox/compile/zh.tex", "logs/compile-fix.jsonl"),
 }
 
 

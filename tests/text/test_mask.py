@@ -13,7 +13,7 @@ from tongtu.pipeline import outputs_present
 from tongtu.stages import mask
 from tongtu.workdir import Workdir
 
-from ...conftest import FIXTURE_PAPERS, tex_sources
+from ..conftest import FIXTURE_PAPERS, tex_sources
 
 PLAIN_FRAGMENTS = [
     "This is a sentence.",
