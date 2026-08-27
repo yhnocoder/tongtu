@@ -19,3 +19,7 @@ def write_manifest(path: Path, manifest: BaseModel) -> None:
 
 def describe_error(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"
+
+
+def timeout_warning(session: str) -> str:
+    return f"the {session} session ended with timeout; the verdict still comes from the scripted checks"

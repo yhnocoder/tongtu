@@ -9,6 +9,7 @@ import pytest
 
 from tongtu import validation
 from tongtu.artifacts.review import ReviewManifest, ReviewStatus
+from tongtu.manifests import timeout_warning
 from tongtu.model.config import ModelsConfig, RoleConfig, RuntimeConfig
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.pipeline import outputs_present
@@ -210,7 +211,7 @@ def test_a_session_timeout_keeps_the_revisions_and_warns(tmp_path: Path, monkeyp
     manifest = review.run(workdir)
     assert manifest.status is ReviewStatus.OK
     assert manifest.session.stop_reason == "timeout"
-    assert manifest.warnings == [review.TIMEOUT_WARNING]
+    assert manifest.warnings == [timeout_warning("review")]
     assert manifest.changed == ["c000"]
     assert reviewed(workdir, "c000").read_text(encoding="utf-8") == REVISED
 

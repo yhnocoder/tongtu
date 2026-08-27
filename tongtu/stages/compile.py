@@ -128,52 +128,21 @@ def _execute(
     (tree / ZH_FILENAME).write_text(unmasked.text, encoding=ENCODING)
     shutil.copytree(fonts_dir, tree / FONTS_DIRNAME, dirs_exist_ok=True)
 
-    report("compiling", ZH_FILENAME)
-    try:
-        first = compiling.attempt_compile(tree, ZH_FILENAME)
-    except OSError as error:
-        return _failed(f"failed to run latexmk ({describe_error(error)}).", warnings, baseline)
-    if first.outcome.timed_out:
-        return _failed(compiling.timeout_message(first), warnings, baseline)
+    final, fix_session, failure = compiling.compile_with_fix(
+        ROLE,
+        paper_workdir.src,
+        tree,
+        ZH_FILENAME,
+        paper_workdir.logs / TRACE_FILENAME,
+        warnings,
+        model_override,
+        effort,
+        report,
+    )
+    if final is None or failure:
+        return _failed(failure, warnings, baseline, fix_session)
 
-    fix_session: FixSession | None = None
-    final = first
-    if not first.passed:
-        report("fix session", "running")
-        fix_session = compiling.fix(
-            ROLE,
-            paper_workdir.src,
-            tree,
-            paper_workdir.logs / TRACE_FILENAME,
-            ZH_FILENAME,
-            warnings,
-            model_override,
-            effort,
-            report=lambda action: report("fix session", action),
-        )
-        warnings.extend(compiling.clean_tree(tree, ZH_FILENAME))
-        report("verifying", ZH_FILENAME)
-        try:
-            final = compiling.attempt_compile(tree, ZH_FILENAME)
-        except OSError as error:
-            return _failed(
-                f"failed to run latexmk for the verify compile ({describe_error(error)}).",
-                warnings,
-                baseline,
-                fix_session,
-            )
-        if final.outcome.timed_out:
-            return _failed(compiling.timeout_message(final), warnings, baseline, fix_session)
-        if not final.passed:
-            return _failed(
-                f"after the fix session the verify compile still fails the exit checks: "
-                f"{compiling.failure_message(final)}",
-                warnings,
-                baseline,
-                fix_session,
-            )
-
-    compile_report = compiling.compile_report(final)
+    compile_report = final.report
     warnings.extend(_count_increases(compile_report, baseline))
     zh_final = (tree / ZH_FILENAME).read_text(encoding=ENCODING)
     problems = _exit_problems(unmasked.text, zh_final, compile_report, baseline)
