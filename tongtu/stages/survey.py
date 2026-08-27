@@ -190,8 +190,6 @@ def _execute(
     decisions = [(term, _hits(term.word, masked)) for term in merged]
     kept = [term for term, hit in decisions if hit]
     filtered = [term for term, hit in decisions if not hit]
-    if len(kept) + len(filtered) != len(merged):
-        raise RuntimeError("the hit and miss lists do not exactly partition the merged terms; implementation bug")
 
     records = [
         _record(index, chunk, body, document) for index, (chunk, body) in enumerate(zip(chunks, contents, strict=True))

@@ -13,7 +13,7 @@
 * **入库**：这三篇论文——标题、正文、公式、表格数字、参考文献条目、图片**全部现造**，
   与任何真实工作无关；技术名词一律泛化（"placeholder"、"synthetic"、"toy"）。
 * **不入库**：任何真实 e-print 的源码或图。真实论文由 CI 的定时作业与开发者本机按需
-  从 arXiv 拉取，跑完即弃，不落仓库（分层与作业见 [docs/ci/README.md](../docs/ci/README.md)）。
+  从 arXiv 拉取，跑完即弃，不落仓库。
 
 三篇的内容有意写得空洞而自洽：它们是**版式与语法的样本**，不是可读的论文。
 
@@ -115,7 +115,7 @@
 | `two_column` | | ✓ | ✓ |
 | `verbatim_env` | ✓ | | |
 
-三条与 mask 分类来源一一对应的覆盖点值得单独点名（[docs/stages/mask.md](../docs/stages/mask.md) 环境分类节的四级下沉）：
+三条与 mask 分类来源一一对应的覆盖点值得单独点名：
 
 * `theorem_env_usage` / `custom_env_declared` —— 文档**自带声明**（`\newtheorem` /
   `\newenvironment`）判出的散文环境，`decided_by` 为 `newtheorem` / `newenvironment`；
@@ -137,12 +137,3 @@ uv run python examples/gen_assets.py --check   # 只比对，不写盘
 比对口径：**PDF 逐字节**，**PNG 比结构**（IHDR + 解压后的像素流）——PNG 的 IDAT 是 zlib
 压缩结果，理论上随 zlib 版本可变，比结构才是稳的。改图请改 `gen_assets.py` 的 `ASSETS`
 清单再复跑，不要手工替换二进制。
-
-## 已知问题（等后续重建处理）
-
-1. **`\appendices` 的识别是 chunk 阶段重建时的注意项。** conference 篇用的是 IEEEtran
-   的 `\appendices` 命令；此前实现的附录正则 `\\appendix(?:es)?` 匹配 `\appendix` 与
-   （并不存在的）`\appendixes`，**不匹配**真实命令 `\appendices`，导致该篇附录段落被
-   当作正文聚合。论文源码保留 `\appendices` 原样（IEEEtran 的惯用写法，example 应当
-   照实反映真实论文），识别要覆盖 `\appendices`、`\begin{appendices}`（appendix 宏包）
-   与 `\appendix`（article / revtex）三条路径。

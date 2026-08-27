@@ -138,7 +138,6 @@ class MaskOutcome:
 class UnmaskOutcome:
     text: str
     fallbacks: tuple[str, ...]
-    translated: dict[str, str]
 
 
 def block_token(block_id: str) -> str:
@@ -186,14 +185,14 @@ def mask_document(text: str, table: Mapping[str, TableEntry]) -> MaskOutcome:
 
 
 def unmask(masked: str, blocks: Sequence[Block], captions: Sequence[Caption]) -> UnmaskOutcome:
-    filled, fallbacks, translated, stream = _restore_captions(masked, captions)
+    filled, fallbacks, stream = _restore_captions(masked, captions)
     text = _restore_blocks(stream, blocks, filled)
     residual = [ch for ch in (SENTINEL_OPEN, SENTINEL_CLOSE) if ch in text]
     if residual:
         raise MaskError(
             f"unmask output still contains sentinel characters {', '.join(residual)}; the masked text has broken placeholders"
         )
-    return UnmaskOutcome(text=text, fallbacks=tuple(fallbacks), translated=translated)
+    return UnmaskOutcome(text=text, fallbacks=tuple(fallbacks))
 
 
 def verify_roundtrip(source: str, outcome: MaskOutcome) -> None:
@@ -823,12 +822,9 @@ def _describe_difference(source: str, restored: str) -> str:
     )
 
 
-def _restore_captions(
-    masked: str, captions: Sequence[Caption]
-) -> tuple[dict[str, str], list[str], dict[str, str], str]:
+def _restore_captions(masked: str, captions: Sequence[Caption]) -> tuple[dict[str, str], list[str], str]:
     filled: dict[str, str] = {}
     fallbacks: list[str] = []
-    translated: dict[str, str] = {}
     stream = masked
     for caption in captions:
         token = block_token(caption.id)
@@ -852,13 +848,9 @@ def _restore_captions(
         text = line[line.index(token) + len(token) :]
         if text.startswith(" "):
             text = text[1:]
-        if text == caption.masked_text:
-            filled[caption.id] = caption.tex
-        else:
-            filled[caption.id] = text
-            translated[caption.id] = text
+        filled[caption.id] = caption.tex if text == caption.masked_text else text
         stream = stream[:segment_start] + stream[segment_stop:]
-    return filled, fallbacks, translated, stream
+    return filled, fallbacks, stream
 
 
 def _restore_blocks(stream: str, blocks: Sequence[Block], filled: Mapping[str, str]) -> str:

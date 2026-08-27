@@ -36,10 +36,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # fontconfig  —— `tongtu doctor` 的字体探测（fc-list）与 xelatex 按字体名取字体都靠它
 # fonts-noto-cjk —— 探测链第二档（Hiragino 只有 macOS 有；第三档霞鹜文楷在代码层注册）
-# poppler-utils —— figures 阶段的 pdftocairo（PDF/EPS → PNG 预渲染的主力）
 # ghostscript  —— epstopdf 的后端，EPS/PS 链缺它就断
-# imagemagick  —— figures 的位图分支（JPEG/GIF → PNG、超上限 PNG 只缩不放）
-# git          —— 关节 ②/⑥ 的修复会话在 workdir 里干活时常要它
+# poppler-utils / imagemagick —— 图片格式转换，供修复会话与将来的图处理使用
+# git          —— 修复会话在编译树里干活时常要它
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
