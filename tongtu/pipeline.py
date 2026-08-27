@@ -10,7 +10,7 @@ STAGES: tuple[str, ...] = ("fetch", "precompile", "mask", "survey", "translate",
 
 STAGE_OUTPUTS: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
     "fetch": (lambda w: w.src,),
-    "precompile": (lambda w: w.precompile_tex, lambda w: w.sandbox("precompile") / "flat.pdf"),
+    "precompile": (lambda w: w.precompile_tex, lambda w: w.fonts),
     "mask": (lambda w: w.masked, lambda w: w.blocks),
     "survey": (lambda w: w.brief, lambda w: w.chunks),
     "translate": (lambda w: w.translated,),
@@ -20,7 +20,12 @@ STAGE_OUTPUTS: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
 
 STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path] | str, ...]] = {
     "fetch": (lambda w: w.src, lambda w: w.eprint),
-    "precompile": (lambda w: w.sandbox("precompile"), lambda w: w.precompile_tex, lambda w: w.precompile_fix_log),
+    "precompile": (
+        lambda w: w.sandbox("precompile"),
+        lambda w: w.precompile_tex,
+        lambda w: w.fonts,
+        lambda w: w.precompile_fix_log,
+    ),
     "mask": (lambda w: w.masked, lambda w: w.blocks),
     "survey": (lambda w: w.brief, lambda w: w.chunks, lambda w: w.survey_terms_log),
     "translate": (lambda w: w.translated, "logs/translate-*.json"),
