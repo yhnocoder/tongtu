@@ -2,7 +2,7 @@ name: image
 
 # 参考镜像的构建与发布。一份 Dockerfile，两个 target，同一个作业里依次出：
 #   env      环境层：TeX Live full + Python 依赖 + 字体，不含仓库代码。
-#            CI 的编译层作业（ci.yml 的 compile、papers.yml）以它为 container 直接跑测试。
+#            CI 的编译层作业以它为 container 直接跑测试。
 #   runtime  完整镜像：env 加仓库代码、项目安装与构建期自检。
 #            wenshu 按 git tag 引用。
 #

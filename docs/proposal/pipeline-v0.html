@@ -59,7 +59,13 @@
 </tbody></table>
 </div>
 <details open id="def-fetch"><summary>FetchManifest</summary>
-<pre><span class="k">class</span> FetchManifest(BaseModel):
+<pre><span class="c"># 各阶段 manifest 的共用基类（tongtu/artifacts/common.py）：status 在 JSON 里排第一，warnings / message 紧随其后，阶段自己的字段在后面。子类把 status 收窄成自己的状态枚举。</span>
+<span class="k">class</span> Manifest(BaseModel):
+    status: <span class="t">str</span>
+    warnings: <span class="t">list[str]</span>
+    message: <span class="t">str</span>
+
+<span class="k">class</span> FetchManifest(Manifest):
     status: <span class="t">FetchStatus</span>
     source: <span class="t">str</span>                 <span class="c"># arXiv 编号，或本地目录绝对路径</span>
     kind: <span class="t">"tar.gz"|"tar"|"gz"|"tex"|"pdf"|"local"|None</span>
@@ -68,8 +74,7 @@
     tex_files: <span class="t">list[str]</span>
     tex_chars: <span class="t">int</span>
     rejected: <span class="t">list[str]</span>        <span class="c"># 解包时被拒绝的 tar 成员</span>
-    warnings: <span class="t">list[str]</span>
-    message: <span class="t">str</span></pre></details>
+</pre></details>
 </div>
 
 <!-- ============ precompile ============ -->
@@ -117,13 +122,12 @@
     model: <span class="t">str</span>
     duration_seconds: <span class="t">float</span>
 
-<span class="k">class</span> PrecompileManifest(BaseModel):
+<span class="k">class</span> PrecompileManifest(Manifest):
     status: <span class="t">PrecompileStatus</span>
     main_file: <span class="t">str</span>                      <span class="c"># 判定出的主文件</span>
     report: <span class="t">CompileReport | None</span>         <span class="c"># 校验编译通过才有</span>
     fix_session: <span class="t">FixSession | None</span>       <span class="c"># 拉起过才有</span>
-    warnings: <span class="t">list[str]</span>                 <span class="c"># 含：bbl 内联与否、残留 \input、会话改动了 flat.tex 之外的文件</span>
-    message: <span class="t">str</span>                        <span class="c"># 失败原因；main_ambiguous 时列出全部候选</span></pre></details>
+    <span class="c"># warnings 含：bbl 内联与否、残留 \input、会话改动了 flat.tex 之外的文件；message：失败原因，main_ambiguous 时列出全部候选</span></pre></details>
 </div>
 
 <!-- ============ mask ============ -->
@@ -161,7 +165,7 @@
 </tbody></table>
 </div>
 <details open id="def-mask"><summary>MaskManifest / BlocksFile</summary>
-<pre><span class="k">class</span> MaskManifest(BaseModel):
+<pre><span class="k">class</span> MaskManifest(Manifest):
     status: <span class="t">MaskStatus</span>
     environments: <span class="t">dict[str, EnvironmentDecisionRecord]</span>   <span class="c"># 按环境名，本篇出现过的每个环境怎么判的</span>
     blocks_total: <span class="t">int</span>
@@ -169,8 +173,6 @@
     precompile_chars: <span class="t">int</span>
     masked_chars: <span class="t">int</span>
     masked_chars_ratio: <span class="t">float</span>
-    warnings: <span class="t">list[str]</span>
-    message: <span class="t">str</span>
 
 <span class="k">class</span> EnvironmentDecisionRecord(BaseModel):
     classification: <span class="t">"text"|"non_translatable"</span>
@@ -271,15 +273,13 @@
     translatable_chars: <span class="t">int</span>       <span class="c"># 剥除 placeholder 后的非空白字符数；0 即纯 placeholder，不调模型</span>
 
 <span class="c"># ===== build/manifests/survey.json =====</span>
-<span class="k">class</span> SurveyManifest(BaseModel):
+<span class="k">class</span> SurveyManifest(Manifest):
     status: <span class="t">SurveyStatus</span>
     chunks_total: <span class="t">int</span>
     transparent_environments: <span class="t">list[str]</span>   <span class="c"># 切 chunk 时当作可穿透的环境名</span>
     terms_total: <span class="t">int</span>
     do_not_translate_total: <span class="t">int</span>
     filtered: <span class="t">list[FilteredTerm]</span>       <span class="c"># 全文未命中、被过滤掉的术语</span>
-    warnings: <span class="t">list[str]</span>
-    message: <span class="t">str</span>
 
 <span class="k">class</span> FilteredTerm(BaseModel):
     word: <span class="t">str</span>
@@ -353,15 +353,13 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </tbody></table>
 </div>
 <details open id="def-translate"><summary>TranslateManifest</summary>
-<pre><span class="k">class</span> TranslateManifest(BaseModel):
+<pre><span class="k">class</span> TranslateManifest(Manifest):
     status: <span class="t">"ok" | "translate_failed"</span>
     model: <span class="t">str</span>                          <span class="c"># 实际用的 provider/model，观察值</span>
     effort: <span class="t">str</span>
     prompt_version: <span class="t">str</span>
     jobs: <span class="t">int</span>
     chunks: <span class="t">dict[str, ChunkTranslateRecord]</span>   <span class="c"># 按 chunk id 索引，按文档序写出</span>
-    warnings: <span class="t">list[str]</span>
-    message: <span class="t">str</span>
 
 <span class="k">class</span> ChunkTranslateRecord(BaseModel):
     status: <span class="t">"translated" | "fallback" | "skipped"</span>
@@ -401,13 +399,12 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </tbody></table>
 </div>
 <details open id="def-review"><summary>ReviewManifest</summary>
-<pre><span class="k">class</span> ReviewManifest(BaseModel):
+<pre><span class="k">class</span> ReviewManifest(Manifest):
     status: <span class="t">"ok" | "review_failed"</span>      <span class="c"># 会话拉不起来才是 failed；改了 0 个 chunk 也是 ok</span>
     session: <span class="t">FixSession | None</span>       <span class="c"># 没拉起会话时为 None：--no-review 直通，或会话之前就失败</span>
     changed: <span class="t">list[str]</span>                  <span class="c"># agent 改过的 chunk id</span>
     reverted: <span class="t">list[str]</span>                 <span class="c"># 改完没过 validate、被回退的 chunk id</span>
-    warnings: <span class="t">list[str]</span>
-    message: <span class="t">str</span></pre></details>
+</pre></details>
 </div>
 
 <!-- ============ compile ============ -->
@@ -445,13 +442,12 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </tbody></table>
 </div>
 <details open id="def-compile"><summary>CompileManifest</summary>
-<pre><span class="k">class</span> CompileManifest(BaseModel):
+<pre><span class="k">class</span> CompileManifest(Manifest):
     status: <span class="t">"ok" | "compile_failed"</span>
     report: <span class="t">CompileReport | None</span>         <span class="c"># 译文校验编译的结果；判据不过也保留，与 precompile 的 report 同类</span>
     baseline: <span class="t">CompileReport | None</span>       <span class="c"># 从 precompile manifest 转录，并排一眼比</span>
     fix_session: <span class="t">FixSession | None</span>
-    warnings: <span class="t">list[str]</span>
-    message: <span class="t">str</span></pre></details>
+</pre></details>
 </div>
 
 <!-- ============ fonts ============ -->

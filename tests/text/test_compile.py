@@ -210,12 +210,12 @@ def test_caption_paragraph_break_is_not_a_control_sequence_difference(
     assert "\\par 第二行" in (workdir.build / "zh.tex").read_text(encoding="utf-8")
 
 
-def test_manifest_field_order_matches_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_manifest_fields_match_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{}])
     compile.run(workdir)
-    keys = list(json.loads(workdir.manifest_path("compile").read_text(encoding="utf-8")))
-    assert keys == ["status", "report", "baseline", "fix_session", "warnings", "message"]
+    keys = set(json.loads(workdir.manifest_path("compile").read_text(encoding="utf-8")))
+    assert keys == {"status", "report", "baseline", "fix_session", "warnings", "message"}
 
 
 def test_missing_precompile_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

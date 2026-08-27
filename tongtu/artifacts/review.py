@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel
-
-from .common import FixSession
+from .common import FixSession, Manifest
 
 
 class ReviewStatus(StrEnum):
@@ -12,10 +10,8 @@ class ReviewStatus(StrEnum):
     REVIEW_FAILED = "review_failed"
 
 
-class ReviewManifest(BaseModel):
+class ReviewManifest(Manifest):
     status: ReviewStatus
     session: FixSession | None = None
     changed: list[str] = []
     reverted: list[str] = []
-    warnings: list[str] = []
-    message: str = ""

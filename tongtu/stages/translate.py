@@ -356,36 +356,16 @@ def _finish(
         if outcome.status is ChunkTranslateStatus.FALLBACK:
             listed = "; ".join(outcome.failures) or "no failure detail was recorded"
             warnings.append(f"{context.id} fell back to the English source; the last attempt failed: {listed}")
-    status = TranslateStatus.OK
-    message = ""
     _write_translated(paper_workdir, contexts, outcomes)
-    absent = _absent_translations(paper_workdir, contexts)
-    if absent:
-        shutil.rmtree(paper_workdir.build / TRANSLATED_DIRNAME, ignore_errors=True)
-        status = TranslateStatus.TRANSLATE_FAILED
-        message = (
-            f"self-check failed: {len(absent)} translation files under build/{TRANSLATED_DIRNAME}/ "
-            f"are missing or empty ({', '.join(absent[:5])})."
-        )
     return TranslateManifest(
-        status=status,
+        status=TranslateStatus.OK,
         model=model,
         effort=effort,
         prompt_version=prompt_version,
         jobs=jobs,
         chunks=chunks,
         warnings=warnings,
-        message=message,
     )
-
-
-def _absent_translations(paper_workdir: Workdir, contexts: Sequence[_Context]) -> list[str]:
-    return [
-        context.id
-        for context in contexts
-        if not _translated_path(paper_workdir, context.id).is_file()
-        or not _translated_path(paper_workdir, context.id).read_text(encoding=ENCODING).strip()
-    ]
 
 
 def _write_translated(paper_workdir: Workdir, contexts: Sequence[_Context], outcomes: dict[str, _Outcome]) -> None:

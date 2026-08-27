@@ -10,6 +10,10 @@ class Manifest(BaseModel):
     warnings: list[str] = []
     message: str = ""
 
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
 
 class CompileReport(BaseModel):
     pages: int

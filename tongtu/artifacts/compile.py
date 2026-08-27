@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel
-
-from .common import CompileReport, FixSession
+from .common import CompileReport, FixSession, Manifest
 
 
 class CompileStatus(StrEnum):
@@ -12,10 +10,8 @@ class CompileStatus(StrEnum):
     COMPILE_FAILED = "compile_failed"
 
 
-class CompileManifest(BaseModel):
+class CompileManifest(Manifest):
     status: CompileStatus
     report: CompileReport | None = None
     baseline: CompileReport | None = None
     fix_session: FixSession | None = None
-    warnings: list[str] = []
-    message: str = ""

@@ -46,7 +46,7 @@
 - 过渡期：步骤 1、2 只建新模块（`tongtu/model/`、新的命令行与工作目录代码），旧的 `tongtu/agent/`、`tongtu/stages/`、`tongtu/artifacts/` 与旧测试在各自阶段的步骤里整体删除；重构期间 main 上的流水线不保证可跑，以各步的测试与验证为准。
 - 提案图是实现依据，但不是不能改：觉得它设计不合理、写不通、与代码冲突，停下来向用户说明并给替代方案，由用户拍板；不许隐瞒、不许绕过、不许自己决定偏离。提案图的改动只放进步骤 PR、随代码一起由用户 merge 认可；主 agent 不单独向 main 提交提案图改动。
 - 进度与问题用 GitHub Issues 管理，不写文件。每个步骤一个 issue（标签 `step`），PR 描述里写 `Closes #N`，合并即关闭；发现的问题一个 issue（标签 `question`），结论写进 issue 再关，不删。新会话先 `gh issue list --state open`。步骤 issue 的状态：open 且无 PR = 待做或进行中，有 PR 关联 = 待验证，closed = 完成。
-- 重构期间新写的测试统一放 `tests/refactor/`（内部仍按 `text/` `compile/` `llm/` 分层），旧测试留在原处不动；ci.yml 的 `test` 作业跑整个 `tests/refactor/text/`。重构完成后删光旧测试，把 `tests/refactor/` 下的内容上移一级、删掉这一级目录，本条与本节一起删。papers.yml（定时跑真实论文）在步骤 0 删掉，重构完成后按新流水线重写。
+- papers.yml（定时跑真实论文）已在步骤 0 删掉，重构完成后按新流水线重写。
 
 ### 步骤顺序
 
@@ -79,7 +79,7 @@
 - 文件布局沿用现状：阶段代码 `tongtu/stages/<stage>.py`，产物 model `tongtu/artifacts/<stage>.py`，跨阶段共用的 model（CompileReport、FixSession）放 `tongtu/artifacts/common.py`，模型调用层 `tongtu/model/`。状态值用 `StrEnum`。函数签名全部带类型标注；产物只经 pydantic model 读写，不手写 dict。
 - 不新增依赖。确有必要，在任务书里先写理由，由用户拍板。
 - 预期中的失败（编译失败、校验不过、模型超时）进 manifest 的 status 与 message，不抛异常；只有程序错误才抛。
-- 测试：每个模块一个测试文件，按外部依赖分目录：`text/`（无外部依赖）、`compile/`（需要 TeX）、`llm/`（需要接模型）；重构期间这三个目录在 `tests/refactor/` 下。断言产物文件与 manifest 字段，不断言日志文本。论文目录建在 `tmp_path`，不在仓库内。替身只用 monkeypatch（`tongtu.model.ask` / `work`、`subprocess.run`），不建 Fake 类。ci.yml 只挂 `text/`；`compile/` 与 `llm/` 本机用 `pytest -m` 手动跑，结果贴进交付报告。
+- 测试：每个模块一个测试文件，按外部依赖分目录：`text/`（无外部依赖）、`compile/`（需要 TeX）、`llm/`（需要接模型）。断言产物文件与 manifest 字段，不断言日志文本。论文目录建在 `tmp_path`，不在仓库内。替身只用 monkeypatch（`tongtu.model.ask` / `work`、`subprocess.run`），不建 Fake 类。ci.yml 只挂 `text/`；`compile/` 与 `llm/` 本机用 `pytest -m` 手动跑，结果贴进交付报告。
 - 写法取最短能用的那条路，按顺序问：这段要不要存在（卡片没要求就不建）→ 仓库里已有的函数、model、写法先复用，旧代码里能用的部分保留 → 标准库能做的不自写 → 已装的依赖能做的不自写 → 最后才写新代码。不写只有一个实现的抽象、只产一种产品的工厂、为将来准备的脚手架、只有一处会变的配置项。与 ponytail 工作方式同义，开着它即可。
 
 ### 架构与开发策略
