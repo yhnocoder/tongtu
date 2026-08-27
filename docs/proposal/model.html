@@ -22,7 +22,7 @@
   messages: [(role, content), …]               <span class="c"># 第一次只有一条 user；重试续上 assistant + user</span>
   schema:   JSON Schema，要结构化输出时给            <span class="c"># 只有 chat 接口支持；另两个接口给了 schema 以 error 返回</span>
   model:    "服务商/模型"，None 用角色配置          <span class="c"># --ask-model 的原字符串；effort 同理，None 用角色配置</span>
-  → AskOutcome(status: "ok"|"error", text, detail)</pre>
+  → AskOutcome(status: "ok"|"error", text, detail, model)   <span class="c"># model = 实际解析的「服务商/模型」；解析失败时为空串</span></pre>
 <span class="label" style="display:block;margin-top:14px">三种接口，各用官方 SDK</span>
 <dl class="io" style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13.5px;margin:6px 0 0">
 <dt><code>chat</code></dt><dd>OpenAI chat/completions：<code>openai</code> SDK；system → system message；强度 → <code>reasoning_effort</code>；schema → <code>response_format</code></dd>
@@ -38,7 +38,7 @@
   workdir:  会话的 cwd，也是它能读写的全部范围
   model:    "运行时/模型"，None 用角色配置          <span class="c"># --work-model 的原字符串；effort 同理</span>
   report:   每解析出一条动作调一次，参数是一行文本    <span class="c"># None 不回报；见下「运行时 = 一条命令模板」</span>
-  → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail)</pre>
+  → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail, model)   <span class="c"># model = 实际解析的「运行时/模型」；解析失败时为空串</span></pre>
 <p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>，它就是 <code>tongtu/validation.py</code> 本身（只依赖标准库，带 <code>main</code>），由 review 阶段拷进现场，agent 跑的是它，不是 <code>tongtu</code>。work 拷 skill 时用 <code>dirs_exist_ok</code> 叠加，不清空目的地。</p>
 
 <span class="label" style="display:block;margin-top:14px">运行时 = 一条命令模板</span>

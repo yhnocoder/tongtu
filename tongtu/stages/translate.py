@@ -22,7 +22,6 @@ from ..assets import asset_path
 from ..console import console
 from ..manifests import describe_error, write_manifest
 from ..model.ask import AskStatus, ask
-from ..model.config import RoleTable, load_config, resolve_role
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "translate"
@@ -68,6 +67,7 @@ class _Outcome:
     body: str
     attempts: int = 0
     failures: list[str] = field(default_factory=list)
+    model: str = ""
 
 
 def run(
@@ -109,16 +109,9 @@ def _execute(
         return TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, jobs=jobs, message=detail)
 
     pending = [record for record in brief.chunks if record.translatable_chars]
-    model, effort = "", ""
     if pending:
-        resolved, detail = _resolve(ask_model, ask_effort)
-        if resolved is None:
-            return TranslateManifest(
-                status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
-            )
-        model, effort = resolved
         console.print(
-            f"  {STAGE_NAME}: {model}, {len(brief.chunks)} chunks, "
+            f"  {STAGE_NAME}: {len(brief.chunks)} chunks, "
             f"{sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}"
         )
 
@@ -156,17 +149,9 @@ def _execute(
             for outcome in pool.map(worker, translatable):
                 outcomes[outcome.id] = outcome
 
+    model = next((outcome.model for outcome in outcomes.values() if outcome.model), "")
+    effort = (ask_effort or "") if pending else ""
     return _finish(paper_workdir, contexts, outcomes, model, effort, prompt_version, jobs)
-
-
-def _resolve(ask_model: str | None, ask_effort: str | None) -> tuple[tuple[str, str] | None, str]:
-    config, detail = load_config()
-    if config is None:
-        return None, detail
-    resolved, detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
-    if resolved is None:
-        return None, detail
-    return (f"{resolved.provider}/{resolved.model}", resolved.effort), ""
 
 
 def _prompt_asset() -> tuple[str, str, str]:
@@ -262,6 +247,7 @@ def _ask_until_valid(
     failures: list[str] = []
     attempts = 0
     judged = 0
+    model = ""
     while attempts < MAX_ASK_CALLS:
         attempts += 1
         outcome = ask(
@@ -272,6 +258,7 @@ def _ask_until_valid(
             model=ask_model,
             effort=RETRY_EFFORT if judged else ask_effort,
         )
+        model = outcome.model or model
         if outcome.status is AskStatus.ERROR:
             failures = [outcome.detail]
             continue
@@ -286,6 +273,7 @@ def _ask_until_valid(
                 status=ChunkTranslateStatus.TRANSLATED,
                 body=translated,
                 attempts=attempts,
+                model=model,
             )
         failures = [f"{failure.check}: {failure.message}" for failure in result.failures]
         judged += 1
@@ -302,6 +290,7 @@ def _ask_until_valid(
         body=context.body,
         attempts=attempts,
         failures=failures,
+        model=model,
     )
 
 

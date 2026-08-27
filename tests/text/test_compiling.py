@@ -125,7 +125,7 @@ def wire_work(monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=Non
         )
         if edit is not None:
             edit(workdir)
-        return WorkOutcome(stop_reason=stop_reason, detail="runtime missing")
+        return WorkOutcome(stop_reason=stop_reason, detail="runtime missing", model="rt/m1")
 
     monkeypatch.setattr(tongtu.model, "work", fake_work)
     return calls
@@ -149,6 +149,7 @@ def test_fix_passes_the_role_and_tree(tmp_path: Path, monkeypatch: pytest.Monkey
     warnings: list[str] = []
     session = compiling.fix("compile_fix", src, tree, tmp_path / "trace.jsonl", "zh.tex", warnings, "rt/m", "high")
     assert session.stop_reason == "finished"
+    assert session.model == "rt/m1"
     assert session.duration_seconds >= 0
     assert warnings == []
     assert calls == [
@@ -184,6 +185,7 @@ def test_fix_warns_on_error_and_timeout(
     warnings: list[str] = []
     session = compiling.fix("compile_fix", src, tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None)
     assert session.stop_reason == str(stop_reason)
+    assert session.model == "rt/m1"
     assert len(warnings) == 1
     assert str(stop_reason) in warnings[0]
 

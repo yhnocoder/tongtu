@@ -109,7 +109,7 @@ def wire_work(
             report("Bash: ls")
         if edit is not None:
             edit(workdir)
-        return WorkOutcome(stop_reason=stop_reason, detail=detail)
+        return WorkOutcome(stop_reason=stop_reason, detail=detail, model="claude_code/claude-sonnet-5")
 
     monkeypatch.setattr(tongtu.model, "work", fake_work)
     return calls

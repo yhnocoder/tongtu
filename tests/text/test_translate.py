@@ -19,19 +19,13 @@ from tongtu.artifacts.survey import (
 )
 from tongtu.artifacts.translate import ChunkTranslateStatus, TranslateManifest, TranslateStatus
 from tongtu.model.ask import AskOutcome, AskStatus
-from tongtu.model.config import ModelsConfig, ProviderConfig, RoleConfig
 from tongtu.pipeline import outputs_present
 from tongtu.stages import translate
 from tongtu.workdir import Workdir
 
 Reply = Callable[[Mapping[str, object], int], AskOutcome]
 
-
-def role_config() -> ModelsConfig:
-    return ModelsConfig(
-        provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
-        roles={translate.ROLE: RoleConfig(model="m", effort="low", provider="p")},
-    )
+MODEL = "p/m"
 
 
 def forbidden_ask(**kwargs: object) -> AskOutcome:
@@ -40,12 +34,11 @@ def forbidden_ask(**kwargs: object) -> AskOutcome:
 
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (role_config(), ""))
     monkeypatch.setattr(translate, "ask", forbidden_ask)
 
 
 def echo(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-    return AskOutcome(status=AskStatus.OK, text=unwrapped(str(kwargs["messages"][0][1])))
+    return AskOutcome(status=AskStatus.OK, text=unwrapped(str(kwargs["messages"][0][1])), model=MODEL)
 
 
 def wire_ask(monkeypatch: pytest.MonkeyPatch, reply: Reply = echo) -> list[dict]:
@@ -114,7 +107,7 @@ def test_a_chunk_without_translatable_text_is_skipped(tmp_path: Path) -> None:
 
 
 def test_a_chunk_translated_on_the_first_try(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
+    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
@@ -127,7 +120,7 @@ def test_a_chunk_translated_on_the_first_try(tmp_path: Path, monkeypatch: pytest
     assert calls[0]["role"] == translate.ROLE
     assert calls[0]["messages"] == [("user", wrapped("Hello world."))]
     assert calls[0]["log_path"] == workdir.logs / "translate-c000-1.json"
-    assert (manifest.model, manifest.effort) == ("p/m", "low")
+    assert (manifest.model, manifest.effort) == (MODEL, "")
     assert manifest.prompt_version
     assert manifest.jobs == 1
     assert manifest.warnings == []
@@ -136,14 +129,15 @@ def test_a_chunk_translated_on_the_first_try(tmp_path: Path, monkeypatch: pytest
 def test_the_command_line_overrides_reach_ask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = wire_ask(monkeypatch)
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    translate.run(workdir, jobs=1, ask_model="p/other", ask_effort="high")
+    manifest = translate.run(workdir, jobs=1, ask_model="p/other", ask_effort="high")
     assert calls[0]["model"] == "p/other"
     assert calls[0]["effort"] == "high"
+    assert (manifest.model, manifest.effort) == (MODEL, "high")
 
 
 def test_a_failed_check_is_retried_in_the_same_conversation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def reply(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-        return AskOutcome(status=AskStatus.OK, text="你好 x 世界。" if index == 1 else "你好 $x$ 世界。")
+        return AskOutcome(status=AskStatus.OK, text="你好 x 世界。" if index == 1 else "你好 $x$ 世界。", model=MODEL)
 
     calls = wire_ask(monkeypatch, reply)
     workdir = make_workdir(tmp_path, ["Hello $x$ world.\n"])
@@ -182,8 +176,8 @@ def failing_after(first_bad: int) -> Reply:
         body = unwrapped(str(kwargs["messages"][0][1]))
         number = int(body.split()[1])
         if number >= first_bad:
-            return AskOutcome(status=AskStatus.OK, text=f"句子 {number}。")
-        return AskOutcome(status=AskStatus.OK, text=body.replace("Sentence", "句子"))
+            return AskOutcome(status=AskStatus.OK, text=f"句子 {number}。", model=MODEL)
+        return AskOutcome(status=AskStatus.OK, text=body.replace("Sentence", "句子"), model=MODEL)
 
     return reply
 
@@ -222,7 +216,9 @@ def test_every_fallback_chunk_is_reported_as_a_warning(tmp_path: Path, monkeypat
 
 
 def test_an_ask_error_does_not_spend_the_retry_and_is_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="服务商拒绝了请求"))
+    calls = wire_ask(
+        monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="服务商拒绝了请求", model=MODEL)
+    )
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
@@ -230,12 +226,25 @@ def test_an_ask_error_does_not_spend_the_retry_and_is_capped(tmp_path: Path, mon
     assert record.status is ChunkTranslateStatus.FALLBACK
     assert record.attempts == translate.MAX_ASK_CALLS == 4
     assert record.failures == ["服务商拒绝了请求"]
+    assert manifest.model == MODEL
     assert [call["log_path"].name for call in calls] == [f"translate-c000-{n}.json" for n in (1, 2, 3, 4)]
     assert all(call["messages"] == [("user", wrapped("Hello world."))] for call in calls)
 
 
+def test_a_resolution_error_falls_back_with_an_empty_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="读不到 models.toml"))
+    workdir = make_workdir(tmp_path, ["Hello world.\n"])
+    manifest = translate.run(workdir, jobs=1)
+    assert manifest.status is TranslateStatus.OK
+    record = manifest.chunks["c000"]
+    assert record.status is ChunkTranslateStatus.FALLBACK
+    assert record.failures == ["读不到 models.toml"]
+    assert manifest.model == ""
+    assert manifest.warnings
+
+
 def test_an_empty_reply_is_handled_like_an_ask_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="   \n"))
+    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="   \n", model=MODEL))
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     record = manifest.chunks["c000"]
@@ -246,7 +255,10 @@ def test_an_empty_reply_is_handled_like_an_ask_error(tmp_path: Path, monkeypatch
 
 
 def test_a_fenced_translation_is_unwrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="```latex\n你好世界。\n```"))
+    wire_ask(
+        monkeypatch,
+        lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="```latex\n你好世界。\n```", model=MODEL),
+    )
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
@@ -314,36 +326,6 @@ def test_neighbours_take_three_paragraphs_from_each_side(tmp_path: Path, monkeyp
     assert "### 后一块的开头\n\n```\n[END]\n```" in systems["c002"]
 
 
-def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 models.toml"))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=2)
-    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert manifest.message == "读不到 models.toml"
-    assert (manifest.model, manifest.effort) == ("", "")
-    assert manifest.chunks == {}
-    assert manifest.jobs == 2
-    assert manifest.prompt_version
-    assert not (workdir.translated).exists()
-
-
-def test_an_unresolvable_role_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (ModelsConfig(), ""))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert translate.ROLE in manifest.message
-    assert manifest.chunks == {}
-
-
-def test_a_model_config_is_not_needed_when_every_chunk_is_skipped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 models.toml"))
-    workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n"])
-    assert translate.run(workdir, jobs=1).status is TranslateStatus.OK
-
-
 def test_an_unreadable_brief_fails_the_stage(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     (workdir.brief).write_text("{not json", encoding="utf-8")
@@ -382,7 +364,7 @@ def test_manifest_fields_match_card(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_leading_and_trailing_whitespace_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
+    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
     workdir = make_workdir(tmp_path, ["\n\n  Hello world.  \n\n"])
     translate.run(workdir, jobs=1)
     assert calls[0]["messages"] == [("user", wrapped("Hello world."))]
@@ -403,7 +385,7 @@ def test_a_rerun_clears_the_previous_translations_and_logs(tmp_path: Path, monke
 
 
 def test_report_counts_skipped_into_the_initial_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
+    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
     workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n", "Hello one.\n", "Hello two.\n"])
     reports: list[tuple[int, int, tuple[str, ...], int, int]] = []
 
@@ -423,7 +405,7 @@ def test_report_counts_skipped_into_the_initial_done(tmp_path: Path, monkeypatch
 
 
 def test_report_absent_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。"))
+    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
