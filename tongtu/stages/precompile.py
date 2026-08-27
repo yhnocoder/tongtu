@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .. import compiling, processes
+from .. import compiling, pipeline, processes
 from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
@@ -19,15 +19,7 @@ STAGE_NAME = "precompile"
 
 ROLE = "precompile_fix"
 
-SANDBOX_DIRNAME = "sandbox"
-
-STAGE_DIRNAME = "precompile"
-
-PRECOMPILE_FILENAME = "precompile.tex"
-
 FLAT_FILENAME = "flat.tex"
-
-TRACE_FILENAME = "precompile-fix.jsonl"
 
 FONTS_DIRNAME = "fonts"
 
@@ -69,12 +61,14 @@ XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 \usepackage{xeCJK}
 """
 
+DEFAULT_FONTS = FontsConfig()
+
 XECJK_SANS_DETECT = rb"""\IfFontExistsTF{Hiragino Sans GB}
   {\setCJKsansfont{Hiragino Sans GB}}
   {\IfFontExistsTF{Noto Sans CJK SC}
     {\setCJKsansfont{Noto Sans CJK SC}}
-    {\setCJKsansfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}}}
-"""
+    {\setCJKsansfont[Path={fonts/},BoldFont=%s]{%s}}}
+""" % (str(DEFAULT_FONTS.bold).encode("utf-8"), str(DEFAULT_FONTS.main).encode("utf-8"))
 
 XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 \XeTeXlinebreakskip = 0pt plus 1pt
@@ -97,7 +91,7 @@ def run(
     report: Callable[[str, str], None] | None = None,
 ) -> PrecompileManifest:
     paper_workdir.create()
-    _reset_outputs(paper_workdir)
+    pipeline.clean(paper_workdir, STAGE_NAME)
     manifest = _execute(paper_workdir, model_override, effort, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
@@ -145,7 +139,7 @@ def _execute(
         )
 
     injected, font_files = _inject_cjk(expanded, warnings, _fonts_config())
-    tree = _precompile_dir(paper_workdir)
+    tree = paper_workdir.sandbox(STAGE_NAME)
     _assemble_tree(paper_workdir, tree, injected, warnings, font_files)
 
     final, fix_session, failure = compiling.compile_with_fix(
@@ -153,7 +147,7 @@ def _execute(
         paper_workdir.src,
         tree,
         FLAT_FILENAME,
-        paper_workdir.logs / TRACE_FILENAME,
+        paper_workdir.precompile_fix_log,
         warnings,
         model_override,
         effort,
@@ -162,7 +156,7 @@ def _execute(
     if final is None or failure:
         return _compile_failed(main_file, warnings, failure, fix_session)
 
-    _precompile_path(paper_workdir).write_bytes((tree / FLAT_FILENAME).read_bytes())
+    paper_workdir.precompile_tex.write_bytes((tree / FLAT_FILENAME).read_bytes())
     return PrecompileManifest(
         status=PrecompileStatus.OK,
         main_file=main_file,
@@ -323,10 +317,9 @@ def _fonts_config() -> FontsConfig:
 
 
 def _xecjk_block(fonts: FontsConfig, warnings: list[str], font_files: list[Path]) -> bytes:
-    default = FontsConfig()
-    main = _resolve_chain("main", fonts.main, warnings, font_files) or [ResolvedFont(default.main, True)]
+    main = _resolve_chain("main", fonts.main, warnings, font_files) or [ResolvedFont(str(DEFAULT_FONTS.main), True)]
     bold = _resolve_font("bold", fonts.bold, warnings, font_files) if fonts.bold else None
-    bold_is_default = fonts.bold == default.bold
+    bold_is_default = fonts.bold == DEFAULT_FONTS.bold
     if bold is not None and not bold_is_default and all(_pair_bold(bold, False, font) is None for font in main):
         warnings.append(
             "the bold font in models.toml matches no main candidate in kind "
@@ -381,14 +374,14 @@ def _resolve_font(slot: str, value: str, warnings: list[str], font_files: list[P
 def _pair_bold(bold: ResolvedFont | None, bold_is_default: bool, font: ResolvedFont) -> ResolvedFont | None:
     if bold is None or bold.is_file != font.is_file:
         return None
-    if bold_is_default and font.name != FontsConfig().main:
+    if bold_is_default and font.name != DEFAULT_FONTS.main:
         return None
     return bold
 
 
 def _chain_lines(command: bytes, chain: list[ResolvedFont], bold: ResolvedFont | None, bold_is_default: bool) -> bytes:
     if len(chain) > 1 and not chain[-1].is_file:
-        chain = [*chain, ResolvedFont(str(FontsConfig().main), True)]
+        chain = [*chain, ResolvedFont(str(DEFAULT_FONTS.main), True)]
     return _fallback_chain(command, chain, bold, bold_is_default, 0) + b"\n"
 
 
@@ -514,17 +507,3 @@ def _assemble_tree(
         (tree / FONTS_DIRNAME).mkdir(exist_ok=True)
         for path in font_files:
             shutil.copy2(path, tree / FONTS_DIRNAME / path.name)
-
-
-def _precompile_dir(paper_workdir: Workdir) -> Path:
-    return paper_workdir.build / SANDBOX_DIRNAME / STAGE_DIRNAME
-
-
-def _precompile_path(paper_workdir: Workdir) -> Path:
-    return paper_workdir.build / PRECOMPILE_FILENAME
-
-
-def _reset_outputs(paper_workdir: Workdir) -> None:
-    shutil.rmtree(_precompile_dir(paper_workdir), ignore_errors=True)
-    _precompile_path(paper_workdir).unlink(missing_ok=True)
-    (paper_workdir.logs / TRACE_FILENAME).unlink(missing_ok=True)

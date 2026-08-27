@@ -68,7 +68,7 @@ def make_workdir(
 ) -> Workdir:
     workdir = Workdir(tmp_path / "paper")
     workdir.create()
-    chunks_dir = workdir.build / translate.CHUNKS_DIRNAME
+    chunks_dir = workdir.chunks
     chunks_dir.mkdir(parents=True, exist_ok=True)
     records = []
     for index, body in enumerate(bodies):
@@ -86,7 +86,7 @@ def make_workdir(
             )
         )
     content = (brief or BriefFile()).model_copy(update={"chunks": records})
-    (workdir.build / translate.BRIEF_FILENAME).write_text(content.model_dump_json(indent=2), encoding="utf-8")
+    (workdir.brief).write_text(content.model_dump_json(indent=2), encoding="utf-8")
     return workdir
 
 
@@ -96,7 +96,7 @@ def read_manifest(workdir: Workdir) -> TranslateManifest:
 
 
 def translated(workdir: Workdir, chunk_id: str) -> str:
-    return (workdir.build / translate.TRANSLATED_DIRNAME / f"{chunk_id}.tex").read_text(encoding="utf-8")
+    return (workdir.translated / f"{chunk_id}.tex").read_text(encoding="utf-8")
 
 
 def test_a_chunk_without_translatable_text_is_skipped(tmp_path: Path) -> None:
@@ -324,7 +324,7 @@ def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: 
     assert manifest.chunks == {}
     assert manifest.jobs == 2
     assert manifest.prompt_version
-    assert not (workdir.build / translate.TRANSLATED_DIRNAME).exists()
+    assert not (workdir.translated).exists()
 
 
 def test_an_unresolvable_role_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -346,7 +346,7 @@ def test_a_model_config_is_not_needed_when_every_chunk_is_skipped(
 
 def test_an_unreadable_brief_fails_the_stage(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    (workdir.build / translate.BRIEF_FILENAME).write_text("{not json", encoding="utf-8")
+    (workdir.brief).write_text("{not json", encoding="utf-8")
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
     assert manifest.message
@@ -356,7 +356,7 @@ def test_an_unreadable_brief_fails_the_stage(tmp_path: Path) -> None:
 
 def test_an_absent_chunk_file_fails_the_stage(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    (workdir.build / translate.CHUNKS_DIRNAME / "c000.tex").unlink()
+    (workdir.chunks / "c000.tex").unlink()
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
     assert "c000.tex" in manifest.message
@@ -392,7 +392,7 @@ def test_leading_and_trailing_whitespace_is_kept(tmp_path: Path, monkeypatch: py
 def test_a_rerun_clears_the_previous_translations_and_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire_ask(monkeypatch)
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    stale_dir = workdir.build / translate.TRANSLATED_DIRNAME
+    stale_dir = workdir.translated
     stale_dir.mkdir(parents=True)
     (stale_dir / "c999.tex").write_text("stale", encoding="utf-8")
     (workdir.logs / "translate-c999-1.json").write_text("stale", encoding="utf-8")

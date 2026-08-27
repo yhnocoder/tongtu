@@ -38,7 +38,15 @@ from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
 from .assets import asset_path
 from .console import console, error_console
 from .manifests import describe_error, load_manifest
-from .model.config import DEFAULT_ASK_MODEL, MODELS_TEMPLATE, ModelsConfig, load_config, models_path, provider_key
+from .model.config import (
+    DEFAULT_ASK_MODEL,
+    MODELS_TEMPLATE,
+    FontsConfig,
+    ModelsConfig,
+    load_config,
+    models_path,
+    provider_key,
+)
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
@@ -94,7 +102,7 @@ CONFIG_CHECK_NAME = "models.toml"
 
 FONTS_DIR = asset_path("fonts")
 
-REQUIRED_FONT_FILENAMES: tuple[str, ...] = ("LXGWWenKai-Light.ttf", "LXGWWenKai-Medium.ttf")
+REQUIRED_FONT_FILENAMES: tuple[str, ...] = (str(FontsConfig().main), str(FontsConfig().bold))
 
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
 
@@ -461,7 +469,6 @@ def run(
         start = pending
         if start != STAGES[0]:
             console.print(f"resuming from {start} (upstream outputs present)")
-    options.workdir.create()
     console.print("")
     _print_stage_header()
     raise _run_stages(start, options)
