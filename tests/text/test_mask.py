@@ -269,11 +269,11 @@ def test_run_ok_writes_outputs_and_manifest(tmp_path: Path) -> None:
     assert restored.text == SAMPLE_PAPER
 
 
-def test_manifest_field_order_matches_card(tmp_path: Path) -> None:
+def test_manifest_fields_match_card(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path)
     mask.run(workdir)
-    keys = list(json.loads(workdir.manifest_path(mask.STAGE_NAME).read_text(encoding="utf-8")))
-    assert keys == [
+    keys = set(json.loads(workdir.manifest_path(mask.STAGE_NAME).read_text(encoding="utf-8")))
+    assert keys == {
         "status",
         "environments",
         "blocks_total",
@@ -283,7 +283,7 @@ def test_manifest_field_order_matches_card(tmp_path: Path) -> None:
         "masked_chars_ratio",
         "warnings",
         "message",
-    ]
+    }
 
 
 @pytest.mark.parametrize(

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel
-
-from .common import CompileReport, FixSession
+from .common import CompileReport, FixSession, Manifest
 
 
 class PrecompileStatus(StrEnum):
@@ -15,10 +13,8 @@ class PrecompileStatus(StrEnum):
     COMPILE_FAILED = "compile_failed"
 
 
-class PrecompileManifest(BaseModel):
+class PrecompileManifest(Manifest):
     status: PrecompileStatus
     main_file: str = ""
     report: CompileReport | None = None
     fix_session: FixSession | None = None
-    warnings: list[str] = []
-    message: str = ""

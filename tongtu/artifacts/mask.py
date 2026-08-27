@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from ..masking import BlockCategory, CaptionKind, DecidedBy, EnvironmentClass
+from .common import Manifest
 
 
 class MaskStatus(StrEnum):
@@ -20,7 +21,7 @@ class EnvironmentDecisionRecord(BaseModel):
     blocks: int = 0
 
 
-class MaskManifest(BaseModel):
+class MaskManifest(Manifest):
     status: MaskStatus
     environments: dict[str, EnvironmentDecisionRecord] = {}
     blocks_total: int = 0
@@ -28,8 +29,6 @@ class MaskManifest(BaseModel):
     precompile_chars: int = 0
     masked_chars: int = 0
     masked_chars_ratio: float = 0.0
-    warnings: list[str] = []
-    message: str = ""
 
 
 class BlockRecord(BaseModel):

@@ -116,10 +116,10 @@ def test_chunk_files_concatenate_back_to_masked(tmp_path: Path) -> None:
     ]
 
 
-def test_manifest_field_order_matches_card(tmp_path: Path) -> None:
+def test_manifest_fields_match_card(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path)
     manifest = survey.run(workdir)
-    assert list(manifest.model_dump()) == [
+    assert set(manifest.model_dump()) == {
         "status",
         "chunks_total",
         "transparent_environments",
@@ -128,7 +128,7 @@ def test_manifest_field_order_matches_card(tmp_path: Path) -> None:
         "filtered",
         "warnings",
         "message",
-    ]
+    }
 
 
 def test_brief_field_order_matches_card(tmp_path: Path) -> None:

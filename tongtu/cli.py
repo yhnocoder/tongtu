@@ -49,8 +49,6 @@ EXIT_FAILURE = 1
 
 EXIT_USAGE = 2
 
-STATUS_OK = "ok"
-
 DEFAULT_JOBS = 4
 
 CHUNKED_STAGES = frozenset({"translate", "review"})
@@ -386,7 +384,7 @@ def _print_stage_header() -> None:
 
 
 def _print_stage_result(name: str, manifest: Manifest, workdir: Workdir, seconds: float) -> None:
-    ok = manifest.status == STATUS_OK
+    ok = manifest.ok
     mark = MARK_OK if ok else MARK_FAILED
     summary = _stage_summary(manifest) if ok else ""
     line = f"{mark} {name:<{NAME_WIDTH}}{manifest.status:<{STATUS_WIDTH}}{summary:<{SUMMARY_WIDTH}}"
@@ -428,7 +426,7 @@ def _run_stage(name: str, options: RunOptions) -> Manifest:
 
 def _run_stages(start: str, options: RunOptions) -> typer.Exit:
     for name in downstream(start):
-        if _run_stage(name, options).status != STATUS_OK:
+        if not _run_stage(name, options).ok:
             return typer.Exit(EXIT_FAILURE)
     return typer.Exit(0)
 
@@ -503,7 +501,7 @@ def stage(
         raise typer.Exit(EXIT_USAGE)
     _print_stage_header()
     manifest = _run_stage(name.value, options)
-    raise typer.Exit(0 if manifest.status == STATUS_OK else EXIT_FAILURE)
+    raise typer.Exit(0 if manifest.ok else EXIT_FAILURE)
 
 
 @app.command()

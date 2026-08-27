@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from .common import Manifest
 
 FetchKind = Literal["tar.gz", "tar", "gz", "tex", "pdf", "local"]
 
@@ -17,7 +17,7 @@ class FetchStatus(StrEnum):
     SOURCE_MISSING = "source_missing"
 
 
-class FetchManifest(BaseModel):
+class FetchManifest(Manifest):
     status: FetchStatus
     source: str
     kind: FetchKind | None = None
@@ -26,5 +26,3 @@ class FetchManifest(BaseModel):
     tex_files: list[str] = []
     tex_chars: int = 0
     rejected: list[str] = []
-    warnings: list[str] = []
-    message: str = ""

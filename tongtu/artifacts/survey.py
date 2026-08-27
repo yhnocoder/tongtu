@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from .common import Manifest
+
 
 class SurveyStatus(StrEnum):
     OK = "ok"
@@ -66,12 +68,10 @@ class BriefFile(BaseModel):
     chunks: list[ChunkRecord] = []
 
 
-class SurveyManifest(BaseModel):
+class SurveyManifest(Manifest):
     status: SurveyStatus
     chunks_total: int = 0
     transparent_environments: list[str] = []
     terms_total: int = 0
     do_not_translate_total: int = 0
     filtered: list[FilteredTerm] = []
-    warnings: list[str] = []
-    message: str = ""

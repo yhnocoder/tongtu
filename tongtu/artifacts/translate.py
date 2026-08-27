@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from .common import Manifest
+
 
 class TranslateStatus(StrEnum):
     OK = "ok"
@@ -22,12 +24,10 @@ class ChunkTranslateRecord(BaseModel):
     failures: list[str] = []
 
 
-class TranslateManifest(BaseModel):
+class TranslateManifest(Manifest):
     status: TranslateStatus
     model: str = ""
     effort: str = ""
     prompt_version: str = ""
     jobs: int = 0
     chunks: dict[str, ChunkTranslateRecord] = {}
-    warnings: list[str] = []
-    message: str = ""
