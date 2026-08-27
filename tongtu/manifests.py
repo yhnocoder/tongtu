@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Iterable
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
@@ -21,7 +19,3 @@ def write_manifest(path: Path, manifest: BaseModel) -> None:
 
 def describe_error(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"
-
-
-def records_sha256(hashes: Iterable[str]) -> str:
-    return hashlib.sha256("".join(hashes).encode("ascii")).hexdigest()
