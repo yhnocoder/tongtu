@@ -197,7 +197,7 @@ def _execute(
     final = first
     if not first.passed:
         report("fix session running")
-        fix_session = _fix(paper_workdir, tree, warnings, model_override, effort)
+        fix_session = _fix(paper_workdir, tree, warnings, model_override, effort, report)
         warnings.extend(_clean_tree(tree))
         report("verifying compile")
         try:
@@ -617,12 +617,22 @@ def _clean_tree(tree: Path) -> list[str]:
 
 
 def _fix(
-    paper_workdir: Workdir, tree: Path, warnings: list[str], model_override: str | None, effort: str | None
+    paper_workdir: Workdir,
+    tree: Path,
+    warnings: list[str],
+    model_override: str | None,
+    effort: str | None,
+    report: Callable[[str], None],
 ) -> FixSession:
     snapshot = _snapshot_tree_files(paper_workdir.src, tree)
     started = time.monotonic()
     outcome = model.work(
-        ROLE, tree, trace_path=paper_workdir.logs / TRACE_FILENAME, model=model_override, effort=effort
+        ROLE,
+        tree,
+        trace_path=paper_workdir.logs / TRACE_FILENAME,
+        model=model_override,
+        effort=effort,
+        report=lambda action: report(f"fix session {action}"),
     )
     session = FixSession(
         stop_reason=str(outcome.stop_reason),

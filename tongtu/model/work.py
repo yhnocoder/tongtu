@@ -4,9 +4,11 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import IO
 
 from ..assets import asset_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
@@ -21,6 +23,7 @@ from .config import (
     resolve_role,
     role_config,
 )
+from .events import summarizer
 
 SKILL_ROOT = asset_path("skill")
 
@@ -52,6 +55,7 @@ def work(
     trace_path: Path,
     model: str | None = None,
     effort: str | None = None,
+    report: Callable[[str], None] | None = None,
 ) -> WorkOutcome:
     config, detail = load_config()
     if config is None:
@@ -106,9 +110,9 @@ def work(
                     [executable, *command[1:]],
                     workdir,
                     entry.timeout_seconds or 0.0,
-                    stdout=trace_file,
                     input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
                     env=_session_env(runtime.provider is not None) | session_env,
+                    on_stdout_line=_trace_line(trace_file, summarizer(runtime.events), report),
                 )
         except OSError as error:
             return _error(
@@ -124,6 +128,23 @@ def work(
 
 def _error(detail: str) -> WorkOutcome:
     return WorkOutcome(stop_reason=StopReason.ERROR, detail=detail)
+
+
+def _trace_line(
+    trace_file: IO[bytes],
+    summarize: Callable[[bytes], str | None] | None,
+    report: Callable[[str], None] | None,
+) -> Callable[[bytes], None]:
+    def handle(line: bytes) -> None:
+        trace_file.write(line)
+        trace_file.flush()
+        if summarize is None or report is None:
+            return
+        summary = summarize(line)
+        if summary is not None:
+            report(summary)
+
+    return handle
 
 
 def _session_env(provider_backed: bool) -> dict[str, str]:

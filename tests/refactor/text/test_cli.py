@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from rich.progress import Progress
 from typer.testing import CliRunner
 
 from tongtu import __version__, cli, validation
@@ -524,3 +525,11 @@ def test_link_and_id_resolve_to_the_same_workdir(tmp_path: Path, monkeypatch: py
         first_lines.append(result.stdout.splitlines()[0])
     assert first_lines[0] == first_lines[1]
     assert str(tmp_path / "2002.05202") in first_lines[0]
+
+
+def test_stage_display_action_truncates_long_text() -> None:
+    progress = Progress(disable=True)
+    task = progress.add_task("precompile", total=None)
+    display = cli.StageDisplay(progress=progress, task=task, name="precompile")
+    display.action("x" * 500)
+    assert progress.tasks[0].description == f"precompile  {'x' * cli.ACTION_EXCERPT_CHARS}"

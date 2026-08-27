@@ -33,15 +33,17 @@
 </div>
 <div>
 <span class="label">work —— 在一棵目录树里拉起一次多轮会话</span>
-<pre style="margin-top:6px">work(role, workdir, *, trace_path, model=None, effort=None) -> WorkOutcome
+<pre style="margin-top:6px">work(role, workdir, *, trace_path, model=None, effort=None, report=None) -> WorkOutcome
   role:     "precompile_fix" | "compile_fix" | "review"
   workdir:  会话的 cwd，也是它能读写的全部范围
   model:    "运行时/模型"，None 用角色配置          <span class="c"># --work-model 的原字符串；effort 同理</span>
+  report:   每解析出一条动作调一次，参数是一行文本    <span class="c"># None 不回报；见下「运行时 = 一条命令模板」</span>
   → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail)</pre>
 <p style="font-size:13.5px;margin:8px 0 0"><b>skill 是文件，不是 prompt</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进现场（Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>，路径模板在 runtime 配置里），再用一句固定的 prompt 拉起会话：「读 skill，按它做；现场是这棵树」。skill 目录里除了 SKILL.md 还放它要用的工具——review 的目录里带一个单文件 <code>validate.py</code>，它就是 <code>tongtu/validation.py</code> 本身（只依赖标准库，带 <code>main</code>），由 review 阶段拷进现场，agent 跑的是它，不是 <code>tongtu</code>。work 拷 skill 时用 <code>dirs_exist_ok</code> 叠加，不清空目的地。</p>
 
 <span class="label" style="display:block;margin-top:14px">运行时 = 一条命令模板</span>
-<p style="font-size:13.5px;margin:6px 0 0">Claude Code、Codex、opencode 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放哪。所以运行时不写代码，写在配置里（见下）；<code>work</code> 本身只做：拷 skill → 拼命令 → 新进程组跑 → 超时杀组 → stdout 落 trace → 按退出码与超时给 stop_reason。</p>
+<p style="font-size:13.5px;margin:6px 0 0">Claude Code、Codex、opencode 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放哪。所以运行时不写代码，写在配置里（见下）；<code>work</code> 本身只做：拷 skill → 拼命令 → 新进程组跑 → 超时杀组 → stdout 逐行落 trace → 按退出码与超时给 stop_reason。</p>
+<p style="font-size:13.5px;margin:8px 0 0"><b>live 行显示当前动作</b><small style="text-transform:none;letter-spacing:0"> （<a href="https://github.com/yhnocoder/tongtu/issues/56">issue #56</a>，2026-08-27）</small>：运行时条目可写 <code>events</code> 声明 stdout 事件流的格式（<code>stream-json</code> / <code>codex-json</code>，取值即解析器名），work 在落 trace 的同时按它逐行解析出当前动作——工具名 + 首要参数，如 <code>Bash: latexmk -xelatex flat.tex</code>——经 <code>report</code> 回调交给调用方，阶段透传给命令行，live 行滚动显示最近一条（截断由显示层做）。不写 <code>events</code> 或某行解析不出就不回报，live 行保持阶段的静态文案；<code>events</code> 取了未知值在配置加载时报错。解析永不影响会话本身。</p>
 <p style="font-size:13.5px;margin:8px 0 0">一个运行时条目 = 一个「工具 × 服务商」组合<small style="text-transform:none;letter-spacing:0"> （<a href="https://github.com/yhnocoder/tongtu/issues/26">issue #26</a>，2026-08-22）</small>：条目可选写 <code>provider</code> 指向 <code>[provider.*]</code>，<code>work</code> 据此把 <code>{base_url}</code> 与 <code>{api_key}</code> 填进命令模板与 <code>env</code> 表，密钥经 <code>env</code> 表进子进程环境，不出现在命令行参数里。角色表、<code>resolve_role</code>、<code>--work-model 运行时/模型</code> 的语义都不变。</p>
 <p style="font-size:13.5px;margin:8px 0 0"><b><code>stop_reason</code> 不含 <code>budget_exhausted</code></b>：它要解析各运行时的 transcript 才能判，而调用方反正不信 stop_reason、会自己复验，轮数耗尽与其他错误在调用方眼里没有区别。<code>max_turns</code> 仍作为参数传给运行时，只是不再从结果里读回。</p>
 <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">自建 agent 循环（用 <code>ask</code> + 工具调用自己写）是第三条路，CLI 运行时不够用再说。</p>
@@ -70,6 +72,7 @@ api         = "messages"          <span class="c"># 整个服务商一种接口�
 <span class="c"># 会话运行时：一条命令模板，{model} {effort} {max_turns} {tmp_dir} 由 work 填入；{tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删</span>
 [runtime.claude_code]
 skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现场的哪里</span>
+events     = "stream-json"               <span class="c"># stdout 事件流的格式，live 行据此解析当前动作；不写则不解析</span>
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
            "--output-format", "stream-json", "--verbose",
            "--setting-sources", "", "--strict-mcp-config",                       <span class="c"># 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）</span>
@@ -87,6 +90,7 @@ env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = 
 [runtime.claude_code_opencode]
 provider = "opencode"                    <span class="c"># {base_url} 与 {api_key} 由 work 从 [provider.opencode] 填入</span>
 skill_path = ".claude/skills/{role}"     <span class="c"># skill 目录拷到现场的哪里</span>
+events     = "stream-json"
 command = [同 runtime.claude_code 一字不差]
 settings = { sandbox = { … 同 runtime.claude_code … } }
 env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
@@ -99,6 +103,7 @@ env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTH
 [runtime.codex_opencode]
 provider   = "opencode"
 skill_path = ".codex/skills/{role}"
+events     = "codex-json"
 command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
            "-s", "workspace-write", "-c", 'approval_policy="never"',
            "-m", "{model}", "-c", 'model_reasoning_effort="{effort}"',

@@ -3,8 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import IO
 
 import pytest
 
@@ -18,6 +18,7 @@ EXECUTABLES = {"runner": "/fake/bin/runner", "other-runner": "/fake/bin/other-ru
 TABLE = """
 [runtime.demo]
 skill_path = ".agent/skills/{role}"
+events = "stream-json"
 command = ["runner", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}", "--allowedTools", "Read,Edit,Bash", "--settings", "{settings}"]
 settings = { sandbox = { enabled = true, network = { allowedDomains = [] } } }
 
@@ -85,20 +86,26 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def record_run(monkeypatch: pytest.MonkeyPatch, recorded: dict, outcome: ProcessOutcome | Exception) -> None:
+def record_run(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded: dict,
+    outcome: ProcessOutcome | Exception,
+    lines: tuple[bytes, ...] = (b'{"type":"result"}\n',),
+) -> None:
     def fake_run(
         command: list[str],
         cwd: Path,
         timeout_seconds: float,
         *,
-        stdout: IO[bytes],
         input_bytes: bytes,
         env: dict[str, str],
+        on_stdout_line: Callable[[bytes], None],
     ) -> ProcessOutcome:
         recorded.update(command=command, cwd=cwd, timeout_seconds=timeout_seconds, input_bytes=input_bytes, env=env)
         if isinstance(outcome, Exception):
             raise outcome
-        stdout.write(b'{"type":"result"}\n')
+        for line in lines:
+            on_stdout_line(line)
         return outcome
 
     monkeypatch.setattr(work_module, "run_in_process_group", fake_run)
@@ -369,9 +376,9 @@ def test_temporary_directory_is_filled_and_removed(configured: Path, monkeypatch
         cwd: Path,
         timeout_seconds: float,
         *,
-        stdout: IO[bytes],
         input_bytes: bytes,
         env: dict[str, str],
+        on_stdout_line: Callable[[bytes], None],
     ) -> ProcessOutcome:
         seen.update(command=command, env=env, existed=Path(env["CODEX_HOME"]).is_dir())
         return finished()
@@ -384,3 +391,39 @@ def test_temporary_directory_is_filled_and_removed(configured: Path, monkeypatch
     assert seen["command"] == ["/fake/bin/runner", "--home", tmp_dir]
     assert seen["existed"]
     assert not Path(tmp_dir).exists()
+
+
+ACTION_LINE = (
+    b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}\n'
+)
+
+
+def test_report_receives_parsed_actions(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished(), lines=(ACTION_LINE, b'{"type":"result"}\n'))
+    trace_path = configured / "trace.jsonl"
+    actions: list[str] = []
+    outcome = work("smoke", configured / "paper", trace_path=trace_path, report=actions.append)
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert actions == ["Bash: ls"]
+    assert trace_path.read_bytes() == ACTION_LINE + b'{"type":"result"}\n'
+
+
+def test_report_without_events_field_stays_silent(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished(), lines=(ACTION_LINE,))
+    actions: list[str] = []
+    outcome = work(
+        "smoke", configured / "paper", trace_path=configured / "trace.jsonl", model="other/m9", report=actions.append
+    )
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert actions == []
+
+
+def test_without_report_the_trace_is_still_written(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished(), lines=(ACTION_LINE,))
+    trace_path = configured / "trace.jsonl"
+    outcome = work("smoke", configured / "paper", trace_path=trace_path)
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert trace_path.read_bytes() == ACTION_LINE

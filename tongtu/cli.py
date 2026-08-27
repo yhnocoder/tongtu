@@ -56,6 +56,8 @@ CHUNKED_STAGES = frozenset({"translate", "review"})
 
 INFLIGHT_SHOWN = 4
 
+ACTION_EXCERPT_CHARS = 80
+
 BAR_WIDTH = 16
 
 HEADER_STYLE = "bold"
@@ -167,7 +169,7 @@ class StageDisplay:
         )
 
     def action(self, text: str) -> None:
-        self.progress.update(self.task, description=f"{self.name}  {text}")
+        self.progress.update(self.task, description=f"{self.name}  {text[:ACTION_EXCERPT_CHARS]}")
 
 
 def _pending_stage(name: str) -> Callable[[RunOptions, StageDisplay], Manifest]:

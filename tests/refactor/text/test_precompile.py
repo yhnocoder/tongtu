@@ -94,8 +94,18 @@ def wire_work(
 ) -> list[dict]:
     calls: list[dict] = []
 
-    def fake_work(role: str, workdir: Path, *, trace_path: Path, model: str | None = None, effort: str | None = None):
+    def fake_work(
+        role: str,
+        workdir: Path,
+        *,
+        trace_path: Path,
+        model: str | None = None,
+        effort: str | None = None,
+        report=None,
+    ):
         calls.append({"role": role, "workdir": workdir, "trace_path": trace_path, "model": model, "effort": effort})
+        if report is not None:
+            report("Bash: ls")
         if edit is not None:
             edit(workdir)
         return WorkOutcome(stop_reason=stop_reason, detail=detail)
@@ -529,4 +539,4 @@ def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: p
     actions: list[str] = []
     manifest = precompile.run(workdir, report=actions.append)
     assert manifest.status is PrecompileStatus.OK
-    assert actions == ["compiling flat.tex", "fix session running", "verifying compile"]
+    assert actions == ["compiling flat.tex", "fix session running", "fix session Bash: ls", "verifying compile"]

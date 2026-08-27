@@ -98,6 +98,7 @@ def _execute(
         trace_path=paper_workdir.logs / TRACE_FILENAME,
         model=model_override,
         effort=effort,
+        report=lambda action: report(f"review session {action}"),
     )
     session = FixSession(stop_reason=str(outcome.stop_reason), model=model, duration_seconds=time.monotonic() - started)
     if outcome.stop_reason is StopReason.ERROR:
