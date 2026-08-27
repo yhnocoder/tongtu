@@ -22,6 +22,7 @@ from ..assets import asset_path
 from ..console import console
 from ..manifests import describe_error, write_manifest
 from ..model.ask import AskStatus, ask
+from ..model.config import RoleTable, load_config, resolve_role
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "translate"
@@ -109,9 +110,16 @@ def _execute(
         return TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, jobs=jobs, message=detail)
 
     pending = [record for record in brief.chunks if record.translatable_chars]
+    effort = ""
     if pending:
+        resolved, detail = _resolve(ask_model, ask_effort)
+        if resolved is None:
+            return TranslateManifest(
+                status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
+            )
+        display, effort = resolved
         console.print(
-            f"  {STAGE_NAME}: {len(brief.chunks)} chunks, "
+            f"  {STAGE_NAME}: {display}, {len(brief.chunks)} chunks, "
             f"{sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}"
         )
 
@@ -150,8 +158,17 @@ def _execute(
                 outcomes[outcome.id] = outcome
 
     model = next((outcome.model for outcome in outcomes.values() if outcome.model), "")
-    effort = (ask_effort or "") if pending else ""
     return _finish(paper_workdir, contexts, outcomes, model, effort, prompt_version, jobs)
+
+
+def _resolve(ask_model: str | None, ask_effort: str | None) -> tuple[tuple[str, str] | None, str]:
+    config, detail = load_config()
+    if config is None:
+        return None, detail
+    resolved, detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
+    if resolved is None:
+        return None, detail
+    return (f"{resolved.provider}/{resolved.model}", resolved.effort), ""
 
 
 def _prompt_asset() -> tuple[str, str, str]:

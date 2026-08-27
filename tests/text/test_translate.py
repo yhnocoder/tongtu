@@ -19,6 +19,7 @@ from tongtu.artifacts.survey import (
 )
 from tongtu.artifacts.translate import ChunkTranslateStatus, TranslateManifest, TranslateStatus
 from tongtu.model.ask import AskOutcome, AskStatus
+from tongtu.model.config import ModelsConfig, ProviderConfig, RoleConfig
 from tongtu.pipeline import outputs_present
 from tongtu.stages import translate
 from tongtu.workdir import Workdir
@@ -28,12 +29,20 @@ Reply = Callable[[Mapping[str, object], int], AskOutcome]
 MODEL = "p/m"
 
 
+def role_config() -> ModelsConfig:
+    return ModelsConfig(
+        provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
+        roles={translate.ROLE: RoleConfig(model="m", effort="low", provider="p")},
+    )
+
+
 def forbidden_ask(**kwargs: object) -> AskOutcome:
     raise AssertionError("本用例不应调用模型")
 
 
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(translate, "load_config", lambda: (role_config(), ""))
     monkeypatch.setattr(translate, "ask", forbidden_ask)
 
 
@@ -120,7 +129,7 @@ def test_a_chunk_translated_on_the_first_try(tmp_path: Path, monkeypatch: pytest
     assert calls[0]["role"] == translate.ROLE
     assert calls[0]["messages"] == [("user", wrapped("Hello world."))]
     assert calls[0]["log_path"] == workdir.logs / "translate-c000-1.json"
-    assert (manifest.model, manifest.effort) == (MODEL, "")
+    assert (manifest.model, manifest.effort) == (MODEL, "low")
     assert manifest.prompt_version
     assert manifest.jobs == 1
     assert manifest.warnings == []
@@ -324,6 +333,36 @@ def test_neighbours_take_three_paragraphs_from_each_side(tmp_path: Path, monkeyp
     assert "### 后一块的开头\n\n```\ntail alpha.\n\ntail beta.\n\ntail gamma.\n```" in systems["c001"]
     assert "### 前一块的结尾\n\n```\nmiddle one.\n```" in systems["c002"]
     assert "### 后一块的开头\n\n```\n[END]\n```" in systems["c002"]
+
+
+def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 models.toml"))
+    workdir = make_workdir(tmp_path, ["Hello world.\n"])
+    manifest = translate.run(workdir, jobs=2)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert manifest.message == "读不到 models.toml"
+    assert (manifest.model, manifest.effort) == ("", "")
+    assert manifest.chunks == {}
+    assert manifest.jobs == 2
+    assert manifest.prompt_version
+    assert not (workdir.translated).exists()
+
+
+def test_an_unresolvable_role_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(translate, "load_config", lambda: (ModelsConfig(), ""))
+    workdir = make_workdir(tmp_path, ["Hello world.\n"])
+    manifest = translate.run(workdir, jobs=1)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert translate.ROLE in manifest.message
+    assert manifest.chunks == {}
+
+
+def test_a_model_config_is_not_needed_when_every_chunk_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 models.toml"))
+    workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n"])
+    assert translate.run(workdir, jobs=1).status is TranslateStatus.OK
 
 
 def test_an_unreadable_brief_fails_the_stage(tmp_path: Path) -> None:
