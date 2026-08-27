@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import model, processes, texlog
 from .artifacts.common import CompileReport, FixSession
-from .manifests import describe_error
+from .manifests import describe_error, timeout_warning
 from .model.config import RoleTable, load_config, resolve_role
 from .model.work import StopReason
 
@@ -29,13 +29,15 @@ class CompileAttempt:
     outcome: processes.ProcessOutcome
     log_path: Path
     log_text: str | None
-    pdf_bytes: int
-    counts: texlog.LogCounts
+    report: CompileReport
 
     @property
     def passed(self) -> bool:
         return (
-            not self.outcome.timed_out and self.outcome.returncode == 0 and self.pdf_bytes > 0 and self.counts.pages > 0
+            not self.outcome.timed_out
+            and self.outcome.returncode == 0
+            and self.report.pdf_bytes > 0
+            and self.report.pages > 0
         )
 
     @property
@@ -55,25 +57,12 @@ def attempt_compile(tree: Path, main_filename: str) -> CompileAttempt:
     log_path = tree / Path(main_filename).with_suffix(".log").name
     log_text = texlog.read_log(log_path)
     pdf_path = log_path.with_suffix(".pdf")
-    return CompileAttempt(
-        outcome=outcome,
-        log_path=log_path,
-        log_text=log_text,
+    report = CompileReport(
         pdf_bytes=pdf_path.stat().st_size if pdf_path.is_file() else 0,
-        counts=texlog.parse_counts(log_text),
+        duration_seconds=outcome.duration_seconds,
+        **texlog.parse_counts(log_text),
     )
-
-
-def compile_report(attempt: CompileAttempt) -> CompileReport:
-    return CompileReport(
-        pages=attempt.counts.pages,
-        pdf_bytes=attempt.pdf_bytes,
-        overfull_hboxes=attempt.counts.overfull_hboxes,
-        undefined_references=attempt.counts.undefined_references,
-        undefined_citations=attempt.counts.undefined_citations,
-        missing_characters=attempt.counts.missing_characters,
-        duration_seconds=attempt.outcome.duration_seconds,
-    )
+    return CompileAttempt(outcome=outcome, log_path=log_path, log_text=log_text, report=report)
 
 
 def clean_tree(tree: Path, main_filename: str) -> list[str]:
@@ -121,8 +110,62 @@ def fix(
             f"the fix session ended with error ({outcome.detail}); the verdict still comes from the scripted checks"
         )
     if outcome.stop_reason is StopReason.TIMEOUT:
-        warnings.append("the fix session ended with timeout; the verdict still comes from the scripted checks")
+        warnings.append(timeout_warning("fix"))
     return session
+
+
+def compile_with_fix(
+    role: str,
+    src: Path,
+    tree: Path,
+    main_filename: str,
+    trace_path: Path,
+    warnings: list[str],
+    model_override: str | None,
+    effort: str | None,
+    report: Callable[[str, str], None],
+) -> tuple[CompileAttempt | None, FixSession | None, str]:
+    report("compiling", main_filename)
+    try:
+        first = attempt_compile(tree, main_filename)
+    except OSError as error:
+        return (
+            None,
+            None,
+            f"failed to run latexmk ({describe_error(error)}). latexmk ships with the TeX "
+            "distribution; check that it is installed and in PATH.",
+        )
+    if first.outcome.timed_out:
+        return first, None, timeout_message(first)
+    if first.passed:
+        return first, None, ""
+    report("fix session", "running")
+    session = fix(
+        role,
+        src,
+        tree,
+        trace_path,
+        main_filename,
+        warnings,
+        model_override,
+        effort,
+        report=lambda action: report("fix session", action),
+    )
+    warnings.extend(clean_tree(tree, main_filename))
+    report("verifying", main_filename)
+    try:
+        final = attempt_compile(tree, main_filename)
+    except OSError as error:
+        return None, session, f"failed to run latexmk for the verify compile ({describe_error(error)})."
+    if final.outcome.timed_out:
+        return final, session, timeout_message(final)
+    if not final.passed:
+        return (
+            final,
+            session,
+            f"after the fix session the verify compile still fails the exit checks: {failure_message(final)}",
+        )
+    return final, session, ""
 
 
 def session_model(role: str, model_override: str | None, effort: str | None) -> str:
@@ -173,9 +216,9 @@ def failure_message(attempt: CompileAttempt) -> str:
     reasons: list[str] = []
     if attempt.outcome.returncode != 0:
         reasons.append(f"latexmk exited with code {attempt.outcome.returncode}")
-    if attempt.pdf_bytes == 0:
+    if attempt.report.pdf_bytes == 0:
         reasons.append(f"{attempt.pdf_name} is missing or empty")
-    if attempt.counts.pages <= 0:
+    if attempt.report.pages <= 0:
         reasons.append(f"no page count can be parsed from {attempt.log_path.name}")
     if attempt.log_text is None:
         stderr = attempt.outcome.stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]

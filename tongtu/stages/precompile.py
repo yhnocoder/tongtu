@@ -148,60 +148,25 @@ def _execute(
     tree = _precompile_dir(paper_workdir)
     _assemble_tree(paper_workdir, tree, injected, warnings, font_files)
 
-    report("compiling", FLAT_FILENAME)
-    try:
-        first = compiling.attempt_compile(tree, FLAT_FILENAME)
-    except OSError as error:
-        return _compile_failed(
-            main_file,
-            warnings,
-            f"failed to run latexmk ({describe_error(error)}). latexmk ships with the TeX "
-            "distribution; check that it is installed and in PATH.",
-        )
-    if first.outcome.timed_out:
-        return _compile_failed(main_file, warnings, compiling.timeout_message(first))
-
-    fix_session: FixSession | None = None
-    final = first
-    if not first.passed:
-        report("fix session", "running")
-        fix_session = compiling.fix(
-            ROLE,
-            paper_workdir.src,
-            tree,
-            paper_workdir.logs / TRACE_FILENAME,
-            FLAT_FILENAME,
-            warnings,
-            model_override,
-            effort,
-            report=lambda action: report("fix session", action),
-        )
-        warnings.extend(compiling.clean_tree(tree, FLAT_FILENAME))
-        report("verifying", FLAT_FILENAME)
-        try:
-            final = compiling.attempt_compile(tree, FLAT_FILENAME)
-        except OSError as error:
-            return _compile_failed(
-                main_file,
-                warnings,
-                f"failed to run latexmk for the verify compile ({describe_error(error)}).",
-                fix_session,
-            )
-        if final.outcome.timed_out:
-            return _compile_failed(main_file, warnings, compiling.timeout_message(final), fix_session)
-        if not final.passed:
-            return _compile_failed(
-                main_file,
-                warnings,
-                f"after the fix session the verify compile still fails the exit checks: {compiling.failure_message(final)}",
-                fix_session,
-            )
+    final, fix_session, failure = compiling.compile_with_fix(
+        ROLE,
+        paper_workdir.src,
+        tree,
+        FLAT_FILENAME,
+        paper_workdir.logs / TRACE_FILENAME,
+        warnings,
+        model_override,
+        effort,
+        report,
+    )
+    if final is None or failure:
+        return _compile_failed(main_file, warnings, failure, fix_session)
 
     _precompile_path(paper_workdir).write_bytes((tree / FLAT_FILENAME).read_bytes())
     return PrecompileManifest(
         status=PrecompileStatus.OK,
         main_file=main_file,
-        report=compiling.compile_report(final),
+        report=final.report,
         fix_session=fix_session,
         warnings=warnings,
     )

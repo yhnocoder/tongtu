@@ -8,7 +8,7 @@ from pathlib import Path
 from .. import chunks, validation
 from ..artifacts.common import FixSession
 from ..artifacts.review import ReviewManifest, ReviewStatus
-from ..manifests import describe_error, write_manifest
+from ..manifests import describe_error, timeout_warning, write_manifest
 from ..model.config import RoleTable, load_config, resolve_role
 from ..model.work import StopReason, work
 from ..workdir import Workdir
@@ -32,8 +32,6 @@ VALIDATE_FILENAME = "validate.py"
 TRACE_FILENAME = "review.jsonl"
 
 ENCODING = "utf-8"
-
-TIMEOUT_WARNING = "the review session ended in timeout; the revisions it did make are validated and copied out as usual"
 
 SKIPPED_MESSAGE = "--no-review: no review session was started; translated/ was copied to reviewed/ unchanged."
 
@@ -107,7 +105,7 @@ def _execute(
     changed, reverted, bodies = _judge(paper_workdir, sources, translated)
     report(f"session {outcome.stop_reason}", f"{len(changed)} chunks changed, {len(reverted)} reverted")
     _write_reviewed(paper_workdir, sources, bodies)
-    warnings = [TIMEOUT_WARNING] if outcome.stop_reason is StopReason.TIMEOUT else []
+    warnings = [timeout_warning(ROLE)] if outcome.stop_reason is StopReason.TIMEOUT else []
     return ReviewManifest(
         status=ReviewStatus.OK, session=session, changed=changed, reverted=reverted, warnings=warnings
     )
