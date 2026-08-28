@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -64,12 +65,9 @@ XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 
 DEFAULT_FONTS = FontsConfig()
 
-XECJK_SANS_DETECT = rb"""\IfFontExistsTF{Hiragino Sans GB}
-  {\setCJKsansfont{Hiragino Sans GB}}
-  {\IfFontExistsTF{Noto Sans CJK SC}
-    {\setCJKsansfont{Noto Sans CJK SC}}
-    {\setCJKsansfont[Path={fonts/},BoldFont=%s]{%s}}}
-""" % (str(DEFAULT_FONTS.bold).encode("utf-8"), str(DEFAULT_FONTS.main).encode("utf-8"))
+DEFAULT_SANS_CHAIN = ["Hiragino Sans GB", "Noto Sans CJK SC"]
+
+FC_LIST_TIMEOUT_SECONDS = 5
 
 XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 \XeTeXlinebreakskip = 0pt plus 1pt
@@ -334,10 +332,11 @@ def _xecjk_block(fonts: FontsConfig, warnings: list[str], font_files: list[Path]
             "(file pairs with file, font name with font name); bold is ignored"
         )
         bold = None
-    sans = _resolve_chain("sans", fonts.sans, warnings, font_files) if fonts.sans else []
+    default_file = ResolvedFont(str(DEFAULT_FONTS.main), True)
+    sans = _resolve_chain("sans", fonts.sans or DEFAULT_SANS_CHAIN, warnings, font_files) or [default_file]
     mono = _resolve_chain("mono", fonts.mono, warnings, font_files) if fonts.mono else []
     parts = [XECJK_HEAD, _chain_lines(rb"\setCJKmainfont", main, bold, bold_is_default)]
-    parts.append(_chain_lines(rb"\setCJKsansfont", sans, None, False) if sans else XECJK_SANS_DETECT)
+    parts.append(_chain_lines(rb"\setCJKsansfont", sans, ResolvedFont(str(DEFAULT_FONTS.bold), True), True))
     parts.append(_chain_lines(rb"\setCJKmonofont", mono or main, None, False))
     parts.append(XECJK_TAIL)
     return b"".join(parts)
@@ -352,6 +351,9 @@ def _resolve_chain(
         resolved = _resolve_font(slot, candidate, warnings, font_files)
         if resolved is None:
             continue
+        installed = None if resolved.is_file else _font_installed(resolved.name)
+        if installed is False:
+            continue
         chain.append(resolved)
         if resolved.is_file:
             if index < len(candidates) - 1:
@@ -360,7 +362,22 @@ def _resolve_chain(
                     "available; candidates after it are never used"
                 )
             break
+        if installed:
+            break
     return chain
+
+
+def _font_installed(name: str) -> bool | None:
+    try:
+        outcome = subprocess.run(
+            ["fc-list", f":family={name}", "family"],
+            capture_output=True,
+            timeout=FC_LIST_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return bool(outcome.stdout.strip())
 
 
 def _resolve_font(slot: str, value: str, warnings: list[str], font_files: list[Path]) -> ResolvedFont | None:

@@ -1,7 +1,8 @@
 # 通途参考镜像
 #
 # 三层构建，各层的变化频率差着数量级：
-#   base    基底层：TeX Live full + 图渲染工具 + uv 与受管 Python。几乎不变，层缓存常年命中。
+#   base    基底层：debian + TeX Live scheme-full（钉日期快照）+ 图渲染工具 + uv 与受管 Python。
+#           几乎不变，层缓存常年命中。
 #   env     环境层：Python 依赖 + 字体注册。随 uv.lock 与 fonts/ 变，不含仓库代码。
 #   runtime 代码层：仓库本体 + 项目安装 + 构建期自检。每次改代码只重跑这一层。
 # 各层之间不 COPY 产物（TeX 树 6GB 级，多阶段裁剪没意义），分层的目的就是缓存边界。
@@ -17,15 +18,14 @@
 # 刻意不用 BuildKit 专属语法（heredoc / COPY --link / RUN --mount）：本机没有 docker，
 # 首次构建验证在 CI 上做，保守写法优先——任何 builder 都能吃下这份 Dockerfile。
 
-ARG TEXLIVE_TAG=latest
+# TeX Live 钉在 tlnet 日期快照上。texlive/texlive 官方镜像没有日期 tag，tlmgr 也不能降级，
+# 所以基底改为 debian + 从快照用 install-tl 装 scheme-full（不含 doc/src，做法与
+# .github/workflows/texlive-release.yml 一致）。快照日期与本机对齐（latex 包 revision 76924，
+# LaTeX2e 2025-11-01 内核）；本机对齐命令见 docker/README.md。换日期只改这一个 ARG。
+ARG TEXLIVE_SNAPSHOT=2026/05/25
 
 # =========================================================== 基底层（几乎不变）
-# 起点选官方 texlive/texlive：已含 TeX Live **full**、
-# latexmk、latexpand、epstopdf 与 perl，一次 pull 就是一个稳定的基础层。
-# 曾考虑 debian + `apt install texlive-full`：装的是 Debian 冻结的 TL 版本（比 arXiv 论文
-# 常用的宏包旧一年以上，凭空多出一类编译失败），且 apt 装 full 比拉现成镜像层慢得多。
-# 要锁死 TeX 版本时把 TEXLIVE_TAG 换成 TL 快照 tag（如 TL2025-historic），不必改别处。
-FROM texlive/texlive:${TEXLIVE_TAG} AS base
+FROM debian:bookworm-slim AS base
 
 # 全程 bash + pipefail：管道左半边失败不能被右半边的退出码盖住（下面的自检都靠退出码
 # 说话，静默失败比构建失败危险得多）。代价是 `xxx | head` 这类提前关管道的写法会被
@@ -34,6 +34,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# perl         —— install-tl / tlmgr / latexmk / latexpand / epstopdf 都是 perl 脚本
 # fontconfig  —— `tongtu doctor` 的字体探测（fc-list）与 xelatex 按字体名取字体都靠它
 # fonts-noto-cjk —— 探测链第二档（Hiragino 只有 macOS 有；第三档霞鹜文楷在代码层注册）
 # ghostscript  —— epstopdf 的后端，EPS/PS 链缺它就断
@@ -49,8 +50,32 @@ RUN apt-get update \
         ghostscript \
         git \
         imagemagick \
+        perl \
         poppler-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# 装完把 tlmgr 的仓库也指到同一快照，之后任何 `tlmgr update` 都拿不到比快照新的包。
+# TEXDIR 不带年份：镜像内只有这一份 TeX，PATH 与年份解耦。
+ARG TEXLIVE_SNAPSHOT
+ENV TEXLIVE_REPOSITORY=https://texlive.info/tlnet-archive/${TEXLIVE_SNAPSHOT}/tlnet/
+RUN cd /tmp \
+    && curl -fsSL --retry 3 -o install-tl-unx.tar.gz "${TEXLIVE_REPOSITORY}install-tl-unx.tar.gz" \
+    && mkdir install-tl \
+    && tar -xzf install-tl-unx.tar.gz -C install-tl --strip-components=1 \
+    && printf '%s\n' \
+         'selected_scheme scheme-full' \
+         'TEXDIR /usr/local/texlive' \
+         'TEXMFLOCAL /usr/local/texlive/texmf-local' \
+         'TEXMFSYSCONFIG /usr/local/texlive/texmf-config' \
+         'TEXMFSYSVAR /usr/local/texlive/texmf-var' \
+         'tlpdbopt_install_docfiles 0' \
+         'tlpdbopt_install_srcfiles 0' \
+         'tlpdbopt_autobackup 0' > tongtu.profile \
+    && perl install-tl/install-tl -repository "${TEXLIVE_REPOSITORY}" -profile tongtu.profile \
+    && /usr/local/texlive/bin/x86_64-linux/tlmgr option repository "${TEXLIVE_REPOSITORY}" \
+    && rm -rf /tmp/install-tl /tmp/install-tl-unx.tar.gz /tmp/tongtu.profile
+
+ENV PATH="/usr/local/texlive/bin/x86_64-linux:${PATH}"
 
 # Python 与依赖管理走 uv。解释器也交给 uv 装：镜像内不依赖发行版的 python3
 # 版本（texlive 基底跟着 Debian 走，python3 是 3.11 还是 3.13 不该影响我们），

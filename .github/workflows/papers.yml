@@ -12,9 +12,7 @@ name: papers
 # 隔离边界是容器 + 一次性 runner。Actions 的非特权容器不允许创建用户命名空间，bwrap 起不来
 # （enableWeakerNestedSandbox 也不行，#88 实测每次 Bash 都报 "No permissions to create a new
 # namespace"），所以内层 Bash 沙箱关掉：sandbox = { enabled = false }。
-#
-# [fonts] 配 sans：不配时 precompile 注入的探测链第一档 Hiragino 在 Linux 上不存在，XeTeX 按名
-# 找不到会逐个打开 fontconfig 里的 1.1 万个字体，每次编译多花约 50 秒（#88 实测）。
+
 
 on:
   workflow_dispatch:
@@ -172,9 +170,6 @@ jobs:
                      "--settings", "{settings}"]
           settings = { sandbox = { enabled = false } }
           env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
-
-          [fonts]
-          sans = "Noto Sans CJK SC"
 
           # CI 专用的超时：作业上限 10 分钟，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
           [roles]

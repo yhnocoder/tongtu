@@ -31,12 +31,12 @@
 # 仓库根执行
 docker build -f docker/Dockerfile -t tongtu:dev .
 
-# 锁 TeX 版本 / 换 Python 或 uv 版本（三个 ARG 都可覆盖）
-docker build -f docker/Dockerfile -t tongtu:tl2025 \
-  --build-arg TEXLIVE_TAG=TL2025-historic .
+# 换 TeX Live 快照日期 / Python 或 uv 版本（三个 ARG 都可覆盖）
+docker build -f docker/Dockerfile -t tongtu:tl-20260525 \
+  --build-arg TEXLIVE_SNAPSHOT=2026/05/25 .
 ```
 
-首次构建要拉 TeX Live full，**约 6GB、十几分钟起步**，磁盘留够 20GB。之后改代码只重跑
+首次构建要从快照装 TeX Live scheme-full，**约 6GB、几十分钟**，磁盘留够 20GB。之后改代码只重跑
 代码层（依赖也只在 `pyproject.toml` / `uv.lock` 变了才重装）。
 
 ## 获取已构建好的版本
@@ -85,4 +85,10 @@ docker run --rm -it -v "$HOME/.local/share/tongtu:/work" \
 ## 已知取舍
 
 - **使用 Tex 全量包：~6GB**：arXiv 论文的宏包不可预测，为省磁盘引入一类新的编译失败不划算。
-- **`latest` 基底**：`TEXLIVE_TAG` 默认 `latest`，图的是宏包新；要可复现到某年某月就锁 TL 快照 tag 重新发一版。
+- **TeX Live 钉日期快照**：`Dockerfile` 顶部的 `ARG TEXLIVE_SNAPSHOT=2026/05/25` 指向
+  `https://texlive.info/tlnet-archive/<日期>/tlnet/`，`tlmgr option repository` 也指到它，镜像内不会悄悄更新。
+  本机与镜像对齐：
+  ```bash
+  tlmgr option repository https://texlive.info/tlnet-archive/2026/05/25/tlnet/ && tlmgr update --self --all
+  ```
+  换日期只改那一个 ARG，并同步这里与本机的命令。
