@@ -516,21 +516,6 @@ def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "page count" in manifest.message
 
 
-def test_session_changes_outside_flat_tex_are_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    files = {"main.tex": PLAIN_PAPER, "macros.sty": "\\newcommand{\\x}{1}\n"}
-    workdir = make_workdir(tmp_path, files)
-    wire_expand(monkeypatch)
-    wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
-
-    def edit(tree: Path) -> None:
-        (tree / "macros.sty").write_text("\\newcommand{\\x}{2}\n", encoding="utf-8")
-
-    wire_work(monkeypatch, edit=edit)
-    manifest = precompile.run(workdir)
-    assert manifest.status is PrecompileStatus.OK
-    assert any("macros.sty" in line for line in manifest.warnings)
-
-
 def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"broken.tex": "no documentclass\n"})
     (workdir.build / "sandbox" / "precompile").mkdir(parents=True)

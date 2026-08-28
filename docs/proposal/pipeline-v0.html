@@ -87,7 +87,7 @@
 <li><b>注入中文排版设置</b>：在 <code>\documentclass</code> 之后插入 xeCJK 设置（仓库自带的霞鹜文楷作主字体，Path 指向编译树里的 <code>fonts/</code>；行长断行按中文规则）。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包则先剥掉再注入。放在这一步而不是 compile，是让宏包冲突在翻译之前、在本阶段的修复会话里暴露并修掉：之后 compile 与 precompile 的差别只剩正文文字，再出错只可能是译文引起</li>
 <li><b>搭编译树</b> <code>build/sandbox/precompile/</code>：src/ 整体拷贝，写入 <code>flat.tex</code>，拷入仓库的 <code>fonts/</code></li>
 <li><b>首次编译</b>：<code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒。通过的判据：退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0。latexmk 跑不起来或超时 → <code>compile_failed</code>。校验编译通过后，编译树的 fonts/ 整目录拷出为正式产物 <code>build/fonts/</code></li>
-<li class="branch"><b>不通过 → 修复会话</b>：拉一次 agent work（角色 <code>precompile_fix</code>），现场就是编译树，agent 自己读 skill 与 flat.log、改 flat.tex；会话结束 <code>latexmk -C</code> 清掉中间产物，再<b>校验编译</b>一次，结论只认这一次，仍不通过 → <code>compile_failed</code>。会话改了 flat.tex 之外的文件记 warning（这些改动不会传到 compile，compile 的编译树仍从 src/ 搭）；会话以 error / timeout 结束也记 warning，判定仍由校验编译给出</li>
+<li class="branch"><b>不通过 → 修复会话</b>：拉一次 agent work（角色 <code>precompile_fix</code>），现场就是编译树，agent 自己读 skill 与 flat.log、改 flat.tex；会话结束 <code>latexmk -C</code> 清掉中间产物，再<b>校验编译</b>一次，结论只认这一次，仍不通过 → <code>compile_failed</code>。会话的改动只留在编译树里，不传到 compile（compile 的编译树仍从 src/ 搭）；会话以 error / timeout 结束记 warning，判定仍由校验编译给出</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
 <div class="io">

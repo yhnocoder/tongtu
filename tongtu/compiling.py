@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import shutil
 import time
 from collections.abc import Callable
@@ -81,7 +80,6 @@ def clean_tree(tree: Path, main_filename: str) -> list[str]:
 
 def fix(
     role: str,
-    src: Path,
     tree: Path,
     trace_path: Path,
     main_filename: str,
@@ -90,7 +88,6 @@ def fix(
     effort: str | None,
     report: Callable[[str], None] | None = None,
 ) -> FixSession:
-    snapshot = _snapshot_tree_files(src, tree, main_filename)
     started = time.monotonic()
     outcome = model.work(role, tree, trace_path=trace_path, model=model_override, effort=effort, report=report)
     session = FixSession(
@@ -98,12 +95,6 @@ def fix(
         model=outcome.model,
         duration_seconds=time.monotonic() - started,
     )
-    changed = _detect_changed_files(tree, snapshot)
-    if changed:
-        warnings.append(
-            f"the fix session modified {len(changed)} files besides {main_filename}: {', '.join(changed)}; "
-            "these changes stay in the compile tree and do not propagate to src/"
-        )
     if outcome.stop_reason is StopReason.ERROR:
         warnings.append(
             f"the fix session ended with error ({outcome.detail}); the verdict still comes from the scripted checks"
@@ -115,7 +106,6 @@ def fix(
 
 def compile_with_fix(
     role: str,
-    src: Path,
     tree: Path,
     main_filename: str,
     trace_path: Path,
@@ -141,7 +131,6 @@ def compile_with_fix(
     report("fix session", "running")
     session = fix(
         role,
-        src,
         tree,
         trace_path,
         main_filename,
@@ -165,34 +154,6 @@ def compile_with_fix(
             f"after the fix session the verify compile still fails the exit checks: {failure_message(final)}",
         )
     return final, session, ""
-
-
-def _snapshot_tree_files(src: Path, tree: Path, main_filename: str) -> dict[str, str]:
-    snapshot: dict[str, str] = {}
-    for path in sorted(src.rglob("*")):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(src).as_posix()
-        if relative == main_filename:
-            continue
-        tree_path = tree / relative
-        if tree_path.is_file():
-            snapshot[relative] = _file_sha256(tree_path)
-    return snapshot
-
-
-def _detect_changed_files(tree: Path, snapshot: dict[str, str]) -> list[str]:
-    changed: list[str] = []
-    for relative, digest in snapshot.items():
-        tree_path = tree / relative
-        if not tree_path.is_file() or _file_sha256(tree_path) != digest:
-            changed.append(relative)
-    return changed
-
-
-def _file_sha256(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def timeout_message(attempt: CompileAttempt) -> str:

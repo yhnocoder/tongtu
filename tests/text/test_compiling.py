@@ -150,7 +150,7 @@ def test_fix_passes_the_role_and_tree(tmp_path: Path, monkeypatch: pytest.Monkey
     src, tree = make_tree(tmp_path)
     calls = wire_work(monkeypatch, StopReason.FINISHED)
     warnings: list[str] = []
-    session = compiling.fix("compile_fix", src, tree, tmp_path / "trace.jsonl", "zh.tex", warnings, "rt/m", "high")
+    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, "rt/m", "high")
     assert session.stop_reason == "finished"
     assert session.model == "rt/m1"
     assert session.duration_seconds >= 0
@@ -175,7 +175,7 @@ def test_fix_forwards_the_report_callback(tmp_path: Path, monkeypatch: pytest.Mo
     def report(action: str) -> None:
         return None
 
-    compiling.fix("compile_fix", src, tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None, report=report)
+    compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None, report=report)
     assert calls[0]["report"] is report
 
 
@@ -186,26 +186,11 @@ def test_fix_warns_on_error_and_timeout(
     src, tree = make_tree(tmp_path)
     wire_work(monkeypatch, stop_reason)
     warnings: list[str] = []
-    session = compiling.fix("compile_fix", src, tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None)
+    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None)
     assert session.stop_reason == str(stop_reason)
     assert session.model == "rt/m1"
     assert len(warnings) == 1
     assert str(stop_reason) in warnings[0]
-
-
-def test_fix_reports_changes_outside_the_main_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    src, tree = make_tree(tmp_path)
-
-    def edit(workdir: Path) -> None:
-        (workdir / "macros.sty").write_text("\\newcommand{\\x}{2}\n", encoding="utf-8")
-        (workdir / "zh.tex").write_text("\\documentclass{article}\n% fixed\n", encoding="utf-8")
-
-    wire_work(monkeypatch, StopReason.FINISHED, edit)
-    warnings: list[str] = []
-    compiling.fix("compile_fix", src, tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None)
-    assert len(warnings) == 1
-    assert "macros.sty" in warnings[0]
-    assert "zh.tex" not in warnings[0].split(":", 1)[1]
 
 
 def test_copy_src_tree_without_collision(tmp_path: Path) -> None:
@@ -222,7 +207,6 @@ def call_compile_with_fix(
     src, tree = make_tree(tmp_path)
     return compiling.compile_with_fix(
         "compile_fix",
-        src,
         tree,
         "zh.tex",
         tmp_path / "trace.jsonl",
