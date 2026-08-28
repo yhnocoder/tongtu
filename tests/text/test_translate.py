@@ -224,7 +224,7 @@ def test_every_fallback_chunk_is_reported_as_a_warning(tmp_path: Path, monkeypat
     assert manifest == read_manifest(workdir)
 
 
-def test_an_ask_error_does_not_spend_the_retry_and_is_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_ask_error_is_retried_once_without_a_retry_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = wire_ask(
         monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="服务商拒绝了请求", model=MODEL)
     )
@@ -233,11 +233,31 @@ def test_an_ask_error_does_not_spend_the_retry_and_is_capped(tmp_path: Path, mon
     assert manifest.status is TranslateStatus.OK
     record = manifest.chunks["c000"]
     assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.attempts == translate.MAX_ASK_CALLS == 4
+    assert record.attempts == 2
     assert record.failures == ["服务商拒绝了请求"]
     assert manifest.model == MODEL
-    assert [call["log_path"].name for call in calls] == [f"translate-c000-{n}.json" for n in (1, 2, 3, 4)]
+    assert [call["log_path"].name for call in calls] == [f"translate-c000-{n}.json" for n in (1, 2)]
     assert all(call["messages"] == [("user", wrapped("Hello world."))] for call in calls)
+
+
+def test_an_ask_error_then_a_failed_check_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def reply(kwargs: Mapping[str, object], index: int) -> AskOutcome:
+        if index == 1:
+            return AskOutcome(status=AskStatus.ERROR, detail="服务商拒绝了请求", model=MODEL)
+        return AskOutcome(status=AskStatus.OK, text="你好 x 世界。", model=MODEL)
+
+    calls = wire_ask(monkeypatch, reply)
+    workdir = make_workdir(tmp_path, ["Hello $x$ world.\n"])
+    manifest = translate.run(workdir, jobs=1)
+    assert manifest.status is TranslateStatus.OK
+    record = manifest.chunks["c000"]
+    assert record.status is ChunkTranslateStatus.FALLBACK
+    assert record.attempts == 2
+    assert record.failures == ["braces_and_math: $ count differs: 2 in source, 0 in translation"]
+    assert len(calls) == 2
+    assert calls[1]["messages"] == [("user", wrapped("Hello $x$ world."))]
+    assert calls[1]["effort"] is None
+    assert translated(workdir, "c000") == "Hello $x$ world.\n"
 
 
 def test_a_resolution_error_falls_back_with_an_empty_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,9 +278,9 @@ def test_an_empty_reply_is_handled_like_an_ask_error(tmp_path: Path, monkeypatch
     manifest = translate.run(workdir, jobs=1)
     record = manifest.chunks["c000"]
     assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.attempts == translate.MAX_ASK_CALLS
+    assert record.attempts == 2
     assert record.failures == [translate.EMPTY_REPLY_DETAIL]
-    assert len(calls) == translate.MAX_ASK_CALLS
+    assert len(calls) == 2
 
 
 def test_a_fenced_translation_is_unwrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -304,7 +304,7 @@
 <li>组装 <b>system</b>（稳定部分在前、本 chunk 特有部分在后，见右）与 <b>user</b>（只有待译正文）</li>
 <li><b>ask</b>，拿回译文；整段包在代码围栏里时剥掉围栏</li>
 <li><b>四层 validate</b>（见下），全过 → <b>translated</b></li>
-<li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次（<code>MAX_RETRIES</code> = 1）；ask 报错或返回空不消耗这一次，调用总数由 <code>MAX_ASK_CALLS</code> = <code>MAX_RETRIES</code> + 3 封顶</li>
+<li class="branch">不过 → 在同一段对话后续两轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）再 ask 一次；ask 报错或返回空则直接再 ask 一次（不带差异说明）。无论原因，每 chunk 至多 2 次 ask，第二次之后必定得出 translated 或 fallback</li>
 <li class="branch">仍不过 → <b>fallback</b>，译文文件写原文，记最后一次未通过的层</li>
 <li>全部跑完后一次写出 <code>build/translated/</code>（中途被杀不留半套产物）；<b>回退多少都照常写出</b>——回退件是原样的合法 LaTeX，编译得过，有 review 时由它补翻；每个回退的 chunk 在 <code>warnings</code> 记一条（chunk id + 最后一次未通过的层）。<code>translate_failed</code> 只留给配置错、读不到输入、写出后自检不过这类失败（2026-08-25 拍板，原先的 0.2 比例门与 <code>fallback_ratio</code> 一并去掉）；不提前中断（中断只会丢掉已翻译的 chunk）</li>
 </ol>
@@ -344,7 +344,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>摘要、标题树、术语表、style 进 system；chunks 清单定顺序、每 chunk 的标题与 translatable_chars</td></tr>
 <tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>待译正文，每个 chunk 一次 ask</td></tr>
 <tr><td>skill/translate/SKILL.md</td><td class="src">仓库</td><td><span class="ty">Markdown</span></td><td>翻译规则，system 的首段；改了它 --from translate</td></tr>
-<tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 translate 用哪个服务商与模型；每 chunk 至多 MAX_ASK_CALLS 次调用</td></tr>
+<tr><td>~/.config/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 translate 用哪个服务商与模型；每 chunk 至多 2 次调用</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
