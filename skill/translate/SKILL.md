@@ -1,7 +1,7 @@
 ---
 name: translate
 description: 把一段已掩码的英文 LaTeX 正文译成简体中文。
-version: 2
+version: 3
 ---
 
 # 逐块翻译
@@ -75,9 +75,9 @@ LaTeX**——符号词改写成命令，或者给裸变量名补上 `$`：
 同一句里 `$v$` 是行内公式而 `k` 是裸字母，看着不一致也照旧——那是作者的排版选择，不是等你
 修的错。裸变量名保持裸的：`the kth component` 里的 `k` 译完仍是不带 `$` 的 `k`。
 
-你翻译的是全文切出的一块，不是完整文档。相邻上下文里的 `[START]` / `[END]` 表示全文在这一块
-开始 / 结束；看到 `[END]` 也不要替论文「收尾」——`\bibliography`、`\bibliographystyle`、
-`\end{document}`、新的 `\section` 这类原文没有的结构命令，一个都不许补。
+你翻译的是全文切出的一块，不是完整文档。这一块是全文最后一块时也不要替论文「收尾」——
+`\bibliography`、`\bibliographystyle`、`\end{document}`、新的 `\section` 这类原文没有的结构
+命令，一个都不许补。
 
 ## 三、命令参数
 

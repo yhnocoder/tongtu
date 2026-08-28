@@ -358,12 +358,12 @@ def test_neighbours_take_three_paragraphs_from_each_side(tmp_path: Path, monkeyp
     workdir = make_workdir(tmp_path, [FRONT_BODY, "middle one.\n", TAIL_BODY], parts={0: Part.FRONT}, brief=RICH_BRIEF)
     translate.run(workdir, jobs=1)
     systems = {call["log_path"].name.split("-")[1]: str(call["system"]) for call in calls}
-    assert "### 前一块的结尾\n\n```\n[START]\n```" in systems["c000"]
+    assert "### 前一块的结尾\n\n```\n（这是全文的第一块，前面没有内容）\n```" in systems["c000"]
     assert "### 后一块的开头\n\n```\nmiddle one.\n```" in systems["c000"]
     assert "### 前一块的结尾\n\n```\nfront beta.\n\nfront gamma.\n\nfront delta.\n```" in systems["c001"]
     assert "### 后一块的开头\n\n```\ntail alpha.\n\ntail beta.\n\ntail gamma.\n```" in systems["c001"]
     assert "### 前一块的结尾\n\n```\nmiddle one.\n```" in systems["c002"]
-    assert "### 后一块的开头\n\n```\n[END]\n```" in systems["c002"]
+    assert "### 后一块的开头\n\n```\n（这是全文的最后一块，后面没有内容）\n```" in systems["c002"]
 
 
 def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
