@@ -109,6 +109,7 @@ pre .tag{display:inline-block;padding:0 7px;border-radius:10px;background:var(--
 .term .ok{color:var(--accent)}
 .term .bad{color:#a33b2a}
 .term .warn{color:#b8860b}
+.term .run{color:#2a8a9a}
 .term .dim{color:var(--muted)}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .term .bad{color:#e08a7a}}
 :root[data-theme="dark"] .term .bad{color:#e08a7a}
