@@ -430,7 +430,7 @@ def _elapsed_text(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds)))
 
 
-def _stage_summary(manifest: Manifest) -> str:
+def stage_summary(manifest: Manifest) -> str:
     if isinstance(manifest, FetchManifest):
         files = f"{len(manifest.tex_files)} tex files"
         return f"{manifest.kind}, {files}" if manifest.kind else files
@@ -466,7 +466,7 @@ def _print_stage_header() -> None:
 def _print_stage_result(name: str, manifest: Manifest, workdir: Workdir, seconds: float) -> None:
     ok = manifest.ok
     mark = MARK_OK if ok else MARK_FAILED
-    summary = _stage_summary(manifest) if ok else ""
+    summary = stage_summary(manifest) if ok else ""
     line = f"{mark} {name:<{NAME_WIDTH}}{manifest.status:<{STATUS_WIDTH}}{summary:<{SUMMARY_WIDTH}}"
     console.print(f"{line}{_elapsed_text(seconds)}")
     if manifest.message:

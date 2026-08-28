@@ -31,12 +31,12 @@
 # 仓库根执行
 docker build -f docker/Dockerfile -t tongtu:dev .
 
-# 换 TeX Live 快照日期 / Python 或 uv 版本（三个 ARG 都可覆盖）
-docker build -f docker/Dockerfile -t tongtu:tl-20260525 \
-  --build-arg TEXLIVE_SNAPSHOT=2026/05/25 .
+# 换 TeX Live release / Python 或 uv 版本（三个 ARG 都可覆盖）
+docker build -f docker/Dockerfile -t tongtu:tl2026 \
+  --build-arg TEXLIVE_RELEASE=texlive-2026 .
 ```
 
-首次构建要从快照装 TeX Live scheme-full，**约 6GB、几十分钟**，磁盘留够 20GB。之后改代码只重跑
+首次构建要下载并解开 release 里的 TeX Live 分片（近 2GB 下载、解开约 6GB），磁盘留够 20GB。之后改代码只重跑
 代码层（依赖也只在 `pyproject.toml` / `uv.lock` 变了才重装）。
 
 ## 获取已构建好的版本
@@ -85,10 +85,11 @@ docker run --rm -it -v "$HOME/.local/share/tongtu:/work" \
 ## 已知取舍
 
 - **使用 Tex 全量包：~6GB**：arXiv 论文的宏包不可预测，为省磁盘引入一类新的编译失败不划算。
-- **TeX Live 钉日期快照**：`Dockerfile` 顶部的 `ARG TEXLIVE_SNAPSHOT=2026/05/25` 指向
-  `https://texlive.info/tlnet-archive/<日期>/tlnet/`，`tlmgr option repository` 也指到它，镜像内不会悄悄更新。
-  本机与镜像对齐：
+- **TeX Live 来自 release `texlive-2026`**：`.github/workflows/texlive-release.yml` 从 CTAN 的 `texlive2026.iso`
+  （发行冻结版）装 scheme-full 后打包，Claude cloud 环境与镜像用同一份；`Dockerfile` 顶部的
+  `ARG TEXLIVE_RELEASE=texlive-2026` 指定 release tag。镜像内 `tlmgr option repository` 指到
+  `https://texlive.info/tlnet-archive/2026/05/25/tlnet/`（与 ISO 同版本的日期快照），之后 `tlmgr update` 也不会漂移。
+  本机装的是同一个 ISO，不需要对齐；若曾 `tlmgr update` 过：
   ```bash
-  tlmgr option repository https://texlive.info/tlnet-archive/2026/05/25/tlnet/ && tlmgr update --self --all
+  tlmgr option repository https://texlive.info/tlnet-archive/2026/05/25/tlnet/ && tlmgr update --all
   ```
-  换日期只改那一个 ARG，并同步这里与本机的命令。

@@ -95,12 +95,9 @@ jobs:
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
           echo "TONGTU_HOME=$RUNNER_TEMP/tongtu" >> "$GITHUB_ENV"
 
-      # 镜像只管 TeX + Python 依赖 + 字体；agent 运行时与内层沙箱要的 bubblewrap / socat 在这里装。
-      - name: Install Claude Code and sandbox tools
+      # 镜像只管 TeX + Python 依赖 + 字体；agent 运行时在这里装。
+      - name: Install Claude Code
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends bubblewrap socat
-          rm -rf /var/lib/apt/lists/*
           curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CODE_VERSION"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
@@ -119,25 +116,6 @@ jobs:
           [provider.opencode.models]
           "deepseek-v4-pro" = "chat"
           "deepseek-v4-flash" = "chat"
-          "glm-5.3" = "chat"
-          "glm-5.2" = "chat"
-          "glm-5.1" = "chat"
-          "kimi-k3" = "chat"
-          "kimi-k2.7-code" = "chat"
-          "kimi-k2.6" = "chat"
-          "mimo-v2.5" = "chat"
-          "mimo-v2.5-pro" = "chat"
-          "hy3" = "chat"
-          "grok-4.5" = "responses"
-          "gpt-5.6-luna" = "responses"
-          "muse-spark-1.2-contributor" = "responses"
-          "minimax-m3" = "messages"
-          "minimax-m2.7" = "messages"
-          "minimax-m2.5" = "messages"
-          "qwen3.8-max" = "messages"
-          "qwen3.7-max" = "messages"
-          "qwen3.7-plus" = "messages"
-          "qwen3.6-plus" = "messages"
 
           [provider.deepseek_anthropic]
           base_url    = "https://api.deepseek.com/anthropic"

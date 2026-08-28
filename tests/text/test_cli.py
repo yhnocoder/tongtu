@@ -665,14 +665,14 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
     )
     baseline = report.model_copy(update={"pages": 5})
     session = FixSession(stop_reason="finished", model="rt/m", duration_seconds=1.0)
-    assert cli._stage_summary(CompileManifest(status=CompileStatus.OK)) == ""
-    assert cli._stage_summary(CompileManifest(status=CompileStatus.OK, report=report)) == "6 pages"
+    assert cli.stage_summary(CompileManifest(status=CompileStatus.OK)) == ""
+    assert cli.stage_summary(CompileManifest(status=CompileStatus.OK, report=report)) == "6 pages"
     assert (
-        cli._stage_summary(CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline))
+        cli.stage_summary(CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline))
         == "6 pages, baseline 5"
     )
     assert (
-        cli._stage_summary(
+        cli.stage_summary(
             CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline, fix_session=session)
         )
         == "6 pages, baseline 5, 1 fix session"

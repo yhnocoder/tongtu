@@ -1,8 +1,8 @@
 # 通途参考镜像
 #
 # 三层构建，各层的变化频率差着数量级：
-#   base    基底层：debian + TeX Live scheme-full（钉日期快照）+ 图渲染工具 + uv 与受管 Python。
-#           几乎不变，层缓存常年命中。
+#   base    基底层：debian + TeX Live scheme-full（release texlive-2026 的 ISO 打包产物）+ 图渲染
+#           工具 + uv 与受管 Python。几乎不变，层缓存常年命中。
 #   env     环境层：Python 依赖 + 字体注册。随 uv.lock 与 fonts/ 变，不含仓库代码。
 #   runtime 代码层：仓库本体 + 项目安装 + 构建期自检。每次改代码只重跑这一层。
 # 各层之间不 COPY 产物（TeX 树 6GB 级，多阶段裁剪没意义），分层的目的就是缓存边界。
@@ -18,23 +18,24 @@
 # 刻意不用 BuildKit 专属语法（heredoc / COPY --link / RUN --mount）：本机没有 docker，
 # 首次构建验证在 CI 上做，保守写法优先——任何 builder 都能吃下这份 Dockerfile。
 
-# TeX Live 钉在 tlnet 日期快照上。texlive/texlive 官方镜像没有日期 tag，tlmgr 也不能降级，
-# 所以基底改为 debian + 从快照用 install-tl 装 scheme-full（不含 doc/src，做法与
-# .github/workflows/texlive-release.yml 一致）。快照日期与本机对齐（latex 包 revision 76924，
-# LaTeX2e 2025-11-01 内核）；本机对齐命令见 docker/README.md。换日期只改这一个 ARG。
-ARG TEXLIVE_SNAPSHOT=2026/05/25
+# TeX Live 来自本仓库 release `texlive-2026`：.github/workflows/texlive-release.yml 从 CTAN 的
+# texlive2026.iso（发行冻结版，与 MacTeX / 本机同源，latex revision 76924）装 scheme-full（不含
+# doc/src）后打成 zstd 分片，Claude cloud 环境用的也是这一份。不用 texlive/texlive 官方镜像：
+# 它跟着 tlnet 滚动，没有日期 tag，宏包版本与本机对不上（#88：同一源码只在容器里编译失败）。
+ARG TEXLIVE_RELEASE=texlive-2026
 
 # =========================================================== 基底层（几乎不变）
 FROM debian:bookworm-slim AS base
 
 # 全程 bash + pipefail：管道左半边失败不能被右半边的退出码盖住（下面的自检都靠退出码
 # 说话，静默失败比构建失败危险得多）。代价是 `xxx | head` 这类提前关管道的写法会被
-# SIGPIPE 判成失败——本文件因此一处管道也不留，改用临时文件。
+# SIGPIPE 判成失败——本文件因此只在解压那一处用管道（cat 分片 | tar），两端都会因失败退非零。
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# perl         —— install-tl / tlmgr / latexmk / latexpand / epstopdf 都是 perl 脚本
+# perl         —— tlmgr / latexmk / latexpand / epstopdf 都是 perl 脚本
+# zstd         —— 解 release 里的 TeX Live 分片
 # fontconfig  —— `tongtu doctor` 的字体探测（fc-list）与 xelatex 按字体名取字体都靠它
 # fonts-noto-cjk —— 探测链第二档（Hiragino 只有 macOS 有；第三档霞鹜文楷在代码层注册）
 # ghostscript  —— epstopdf 的后端，EPS/PS 链缺它就断
@@ -52,30 +53,27 @@ RUN apt-get update \
         imagemagick \
         perl \
         poppler-utils \
+        zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# 装完把 tlmgr 的仓库也指到同一快照，之后任何 `tlmgr update` 都拿不到比快照新的包。
-# TEXDIR 不带年份：镜像内只有这一份 TeX，PATH 与年份解耦。
-ARG TEXLIVE_SNAPSHOT
-ENV TEXLIVE_REPOSITORY=https://texlive.info/tlnet-archive/${TEXLIVE_SNAPSHOT}/tlnet/
-RUN cd /tmp \
-    && curl -fsSL --retry 3 -o install-tl-unx.tar.gz "${TEXLIVE_REPOSITORY}install-tl-unx.tar.gz" \
-    && mkdir install-tl \
-    && tar -xzf install-tl-unx.tar.gz -C install-tl --strip-components=1 \
-    && printf '%s\n' \
-         'selected_scheme scheme-full' \
-         'TEXDIR /usr/local/texlive' \
-         'TEXMFLOCAL /usr/local/texlive/texmf-local' \
-         'TEXMFSYSCONFIG /usr/local/texlive/texmf-config' \
-         'TEXMFSYSVAR /usr/local/texlive/texmf-var' \
-         'tlpdbopt_install_docfiles 0' \
-         'tlpdbopt_install_srcfiles 0' \
-         'tlpdbopt_autobackup 0' > tongtu.profile \
-    && perl install-tl/install-tl -repository "${TEXLIVE_REPOSITORY}" -profile tongtu.profile \
-    && /usr/local/texlive/bin/x86_64-linux/tlmgr option repository "${TEXLIVE_REPOSITORY}" \
-    && rm -rf /tmp/install-tl /tmp/install-tl-unx.tar.gz /tmp/tongtu.profile
+# 分片清单就是 SHA256SUMS（texlive-release.yml 这样约定）：先取它，按行下载、校验、拼接解压，
+# 得到 /usr/local/texlive/2026。分片单个近 2GB，下载与删除放在同一层，层里只留解压结果。
+# 装完把 tlmgr 的仓库指到与 ISO 同版本的 tlnet 日期快照（latex 也是 76924），之后有人
+# `tlmgr update` 也拿不到更新的包。
+ARG TEXLIVE_RELEASE
+ARG TEXLIVE_RELEASE_URL=https://github.com/yhnocoder/tongtu/releases/download/${TEXLIVE_RELEASE}
+ARG TEXLIVE_TLNET=https://texlive.info/tlnet-archive/2026/05/25/tlnet/
+RUN mkdir -p /tmp/texlive \
+    && cd /tmp/texlive \
+    && curl -fL --retry 3 -o SHA256SUMS "${TEXLIVE_RELEASE_URL}/SHA256SUMS" \
+    && while read -r _ part; do curl -fL --retry 3 -o "${part}" "${TEXLIVE_RELEASE_URL}/${part}"; done < SHA256SUMS \
+    && sha256sum -c SHA256SUMS \
+    && cat ./*.part* | tar -C /usr/local -I zstd -xf - \
+    && cd / \
+    && rm -rf /tmp/texlive \
+    && /usr/local/texlive/2026/bin/x86_64-linux/tlmgr option repository "${TEXLIVE_TLNET}"
 
-ENV PATH="/usr/local/texlive/bin/x86_64-linux:${PATH}"
+ENV PATH="/usr/local/texlive/2026/bin/x86_64-linux:${PATH}"
 
 # Python 与依赖管理走 uv。解释器也交给 uv 装：镜像内不依赖发行版的 python3
 # 版本（texlive 基底跟着 Debian 走，python3 是 3.11 还是 3.13 不该影响我们），

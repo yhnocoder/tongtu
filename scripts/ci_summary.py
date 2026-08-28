@@ -15,7 +15,7 @@ from tongtu.artifacts.precompile import PrecompileManifest
 from tongtu.artifacts.review import ReviewManifest
 from tongtu.artifacts.survey import SurveyManifest
 from tongtu.artifacts.translate import TranslateManifest
-from tongtu.cli import _stage_summary
+from tongtu.cli import stage_summary
 from tongtu.manifests import load_manifest
 from tongtu.pipeline import STAGES
 from tongtu.workdir import Workdir
@@ -83,7 +83,7 @@ def render(rows: list[PaperRow], artifacts: dict[str, int], repo: str, run_id: s
             if manifest is None:
                 continue
             if manifest.ok:
-                summaries.append(_stage_summary(manifest))
+                summaries.append(stage_summary(manifest))
             else:
                 notes.append(f"- **{row.paper} / {stage}**: {manifest.message}")
         cells.append("; ".join(summary for summary in summaries if summary))
