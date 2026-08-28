@@ -8,8 +8,12 @@ name: papers
 # （Claude Code 二进制 + opencode 的 messages 端点），唯一的 secret 是 environment `llm` 里的
 # OPENCODE_API_KEY。models.toml 由作业写：load_config 没有内置回退，tongtu setup 也没有非交互路径。
 #
-# 隔离边界是容器 + 一次性 runner。非特权容器里 bwrap 挂不了新 /proc，所以内层 Bash 沙箱按官方
-# 容器方案设 enableWeakerNestedSandbox = true：共用容器的 /proc，断网与写范围限制保留。
+# 隔离边界是容器 + 一次性 runner。Actions 的非特权容器不允许创建用户命名空间，bwrap 起不来
+# （enableWeakerNestedSandbox 也不行，#88 实测每次 Bash 都报 "No permissions to create a new
+# namespace"），所以内层 Bash 沙箱关掉：sandbox = { enabled = false }。
+#
+# [fonts] 配 sans：不配时 precompile 注入的探测链第一档 Hiragino 在 Linux 上不存在，XeTeX 按名
+# 找不到会逐个打开 fontconfig 里的 1.1 万个字体，每次编译多花约 50 秒（#88 实测）。
 
 on:
   workflow_dispatch:
@@ -69,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/yhnocoder/tongtu:env
     environment: llm
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -145,8 +149,11 @@ jobs:
                      "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
                      "--disallowedTools", "Edit(.claude/skills/**)",
                      "--settings", "{settings}"]
-          settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, enableWeakerNestedSandbox = true, network = { allowedDomains = [] } } }
+          settings = { sandbox = { enabled = false } }
           env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
+
+          [fonts]
+          sans = "Noto Sans CJK SC"
 
           # CI 专用的超时：作业上限 10 分钟，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
           [roles]
