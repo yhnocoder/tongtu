@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.progress import (
-    BarColumn,
     Progress,
     ProgressColumn,
     SpinnerColumn,
@@ -25,6 +25,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.table import Column
 from rich.text import Text
 
 from . import __version__, validation
@@ -51,6 +52,7 @@ from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_pre
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
+from .stages.translate import ChunkProgress, ChunkProgressState
 from .workdir import Workdir, WorkdirError, resolve
 
 EXIT_FAILURE = 1
@@ -59,11 +61,23 @@ EXIT_USAGE = 2
 
 DEFAULT_JOBS = 4
 
-CHUNKED_STAGES = frozenset({"translate", "review"})
+CHUNKED_STAGES = frozenset({"translate"})
 
-INFLIGHT_SHOWN = 4
+MIN_CHUNK_LINE_WIDTH = 20
 
-BAR_WIDTH = 16
+CHUNK_GLYPHS: dict[ChunkProgressState, tuple[str, str, str]] = {
+    ChunkProgressState.PENDING: ("─", "-", "dim"),
+    ChunkProgressState.RUNNING: ("┅", "~", "cyan"),
+    ChunkProgressState.DONE: ("━", "=", "green"),
+    ChunkProgressState.WARNING: ("━", "!", "yellow"),
+}
+
+CHUNK_SEVERITY: tuple[ChunkProgressState, ...] = (
+    ChunkProgressState.DONE,
+    ChunkProgressState.PENDING,
+    ChunkProgressState.RUNNING,
+    ChunkProgressState.WARNING,
+)
 
 HEADER_STYLE = "bold"
 
@@ -132,6 +146,9 @@ def _kilo(tokens: int) -> str:
 
 
 class TokenEtaColumn(ProgressColumn):
+    def get_table_column(self) -> Column:
+        return Column(no_wrap=True)
+
     def render(self, task: Task) -> Text:
         start = task.fields.get("rate_start")
         start_tokens = task.fields.get("rate_start_tokens")
@@ -145,6 +162,50 @@ class TokenEtaColumn(ProgressColumn):
         return Text(f"eta {timedelta(seconds=int(remaining * elapsed / advanced))}")
 
 
+def _cells(chunks: Sequence[ChunkProgress], width: int) -> list[tuple[int, ChunkProgressState]]:
+    if len(chunks) > width:
+        groups: list[ChunkProgressState] = [ChunkProgressState.DONE] * width
+        for index, chunk in enumerate(chunks):
+            cell = index * width // len(chunks)
+            groups[cell] = max(groups[cell], chunk.state, key=CHUNK_SEVERITY.index)
+        return [(1, state) for state in groups]
+    total = sum(chunk.tokens for chunk in chunks) or len(chunks)
+    shares = [chunk.tokens * width / total for chunk in chunks]
+    counts = [max(1, int(share)) for share in shares]
+    by_remainder = sorted(range(len(chunks)), key=lambda index: shares[index] - int(shares[index]), reverse=True)
+    for index in by_remainder[: max(0, width - sum(counts))]:
+        counts[index] += 1
+    for index in sorted(range(len(chunks)), key=counts.__getitem__, reverse=True)[: max(0, sum(counts) - width)]:
+        counts[index] -= 1
+    return [(count, chunk.state) for count, chunk in zip(counts, chunks, strict=True)]
+
+
+def _chunk_line(chunks: Sequence[ChunkProgress], width: int, ascii_only: bool) -> Text:
+    text = Text()
+    if not chunks or width < MIN_CHUNK_LINE_WIDTH:
+        return text
+    for count, state in _cells(chunks, width):
+        wide, narrow, style = CHUNK_GLYPHS[state]
+        text.append((narrow if ascii_only else wide) * count, style=style)
+    return text
+
+
+@dataclass
+class _ChunkLine:
+    chunks: tuple[ChunkProgress, ...]
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield _chunk_line(self.chunks, options.max_width, options.ascii_only or options.legacy_windows)
+
+
+class ChunkLineColumn(ProgressColumn):
+    def get_table_column(self) -> Column:
+        return Column(ratio=1, no_wrap=True)
+
+    def render(self, task: Task) -> _ChunkLine:
+        return _ChunkLine(task.fields.get("chunk_progress", ()))
+
+
 @dataclass
 class StageDisplay:
     progress: Progress
@@ -152,22 +213,25 @@ class StageDisplay:
     name: str
     rate_baseline: tuple[float, int] | None = None
 
-    def chunks(self, done: int, total: int, inflight: tuple[str, ...], done_tokens: int, total_tokens: int) -> None:
+    def chunks(self, chunks: tuple[ChunkProgress, ...]) -> None:
+        finished = [chunk for chunk in chunks if chunk.state in (ChunkProgressState.DONE, ChunkProgressState.WARNING)]
+        done_tokens = sum(chunk.tokens for chunk in finished)
+        total_tokens = sum(chunk.tokens for chunk in chunks)
         if self.rate_baseline is None:
             self.rate_baseline = (time.monotonic(), done_tokens)
-        listed = " ".join(inflight[:INFLIGHT_SHOWN])
-        if len(inflight) > INFLIGHT_SHOWN:
-            listed = f"{listed} +{len(inflight) - INFLIGHT_SHOWN} more"
         self.progress.update(
             self.task,
             completed=done_tokens,
             total=total_tokens,
-            chunks=f"{done}/{total}",
+            chunks=f"{len(finished)}/{len(chunks)}",
             tokens=f"{_kilo(done_tokens)}/{_kilo(total_tokens)} tok",
-            inflight=f"inflight {listed}" if listed else "",
+            chunk_progress=chunks,
             rate_start=self.rate_baseline[0],
             rate_start_tokens=self.rate_baseline[1],
         )
+
+    def line(self, status: str, summary: str) -> None:
+        console.print(f"    {status}: {summary}")
 
     def action(self, status: str, summary: str = "") -> None:
         width = STATUS_WIDTH + SUMMARY_WIDTH
@@ -196,6 +260,7 @@ def _survey_entry(options: RunOptions, display: StageDisplay) -> Manifest:
         no_terms=options.no_terms,
         ask_model=options.ask_model,
         ask_effort=options.ask_effort,
+        report=display.action,
     )
 
 
@@ -205,7 +270,8 @@ def _translate_entry(options: RunOptions, display: StageDisplay) -> Manifest:
         jobs=options.jobs,
         ask_model=options.ask_model,
         ask_effort=options.ask_effort,
-        report=display.chunks,
+        report=display.line,
+        progress=display.chunks,
     )
 
 
@@ -405,16 +471,15 @@ def _print_stage_result(name: str, manifest: Manifest, workdir: Workdir, seconds
         console.print(f"    manifest  {workdir.manifest_path(name)}")
 
 
+def _text_column(template: str) -> TextColumn:
+    return TextColumn(template, table_column=Column(no_wrap=True))
+
+
 def _progress_columns(name: str) -> tuple:
-    columns = [SpinnerColumn(), TextColumn("{task.description}")]
+    columns = [SpinnerColumn(), _text_column("{task.description}")]
     if name in CHUNKED_STAGES:
-        columns += [
-            BarColumn(bar_width=BAR_WIDTH),
-            TextColumn("{task.fields[chunks]}"),
-            TextColumn("{task.fields[tokens]}"),
-            TextColumn("{task.fields[inflight]}"),
-        ]
-    columns.append(TimeElapsedColumn())
+        columns += [ChunkLineColumn(), _text_column("{task.fields[chunks]}"), _text_column("{task.fields[tokens]}")]
+    columns.append(TimeElapsedColumn(table_column=Column(no_wrap=True)))
     if name in CHUNKED_STAGES:
         columns.append(TokenEtaColumn())
     return tuple(columns)
@@ -423,9 +488,13 @@ def _progress_columns(name: str) -> tuple:
 def _run_stage(name: str, options: RunOptions) -> Manifest:
     started = time.monotonic()
     with Progress(
-        *_progress_columns(name), console=console, transient=True, disable=not console.is_terminal
+        *_progress_columns(name),
+        console=console,
+        transient=True,
+        disable=not console.is_terminal,
+        expand=name in CHUNKED_STAGES,
     ) as progress:
-        task = progress.add_task(name, total=None, chunks="", tokens="", inflight="")
+        task = progress.add_task(name, total=None, chunks="", tokens="", chunk_progress=())
         display = StageDisplay(progress=progress, task=task, name=name)
         manifest = STAGE_ENTRIES[name](options, display)
     _print_stage_result(name, manifest, options.workdir, time.monotonic() - started)

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import re
 import threading
-import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -19,7 +19,6 @@ from ..artifacts.translate import (
     TranslateStatus,
 )
 from ..assets import asset_path
-from ..console import console
 from ..manifests import describe_error, write_manifest
 from ..model.ask import AskStatus, ask
 from ..model.config import RoleTable, load_config, resolve_role
@@ -52,6 +51,25 @@ REFERENCE_HEADER = (
 )
 
 
+class ChunkProgressState(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    WARNING = "warning"
+
+
+@dataclass(frozen=True)
+class ChunkProgress:
+    id: str
+    tokens: int
+    state: ChunkProgressState
+
+
+Report = Callable[[str, str], None]
+
+ProgressCallback = Callable[[tuple[ChunkProgress, ...]], None]
+
+
 @dataclass(frozen=True)
 class _Context:
     id: str
@@ -77,7 +95,8 @@ def run(
     jobs: int,
     ask_model: str | None = None,
     ask_effort: str | None = None,
-    report: Callable[[int, int, tuple[str, ...], int, int], None] | None = None,
+    report: Report | None = None,
+    progress: ProgressCallback | None = None,
 ) -> TranslateManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
@@ -86,7 +105,8 @@ def run(
         jobs,
         ask_model,
         ask_effort,
-        report or (lambda done, total, inflight, done_tokens, total_tokens: None),
+        report or (lambda status, summary: None),
+        progress or (lambda chunks: None),
     )
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
@@ -97,7 +117,8 @@ def _execute(
     jobs: int,
     ask_model: str | None,
     ask_effort: str | None,
-    report: Callable[[int, int, tuple[str, ...], int, int], None],
+    report: Report,
+    progress: ProgressCallback,
 ) -> TranslateManifest:
     try:
         brief = BriefFile.model_validate_json(paper_workdir.brief.read_text(encoding=ENCODING))
@@ -118,9 +139,9 @@ def _execute(
                 status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
             )
         display, effort = resolved
-        console.print(
-            f"  {STAGE_NAME}: {display}, {len(brief.chunks)} chunks, "
-            f"{sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}"
+        report(
+            STAGE_NAME,
+            f"{display}, {len(brief.chunks)} chunks, {sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}",
         )
 
     contexts = _contexts(brief, bodies, skill)
@@ -131,26 +152,29 @@ def _execute(
     }
     if pending:
         translatable = [context for context in contexts if context.id not in outcomes]
-        total = len(brief.chunks)
-        tokens_by_id = {record.id: record.tokens for record in brief.chunks}
-        total_tokens = sum(tokens_by_id.values())
+        states = {
+            record.id: ChunkProgressState.DONE if record.id in outcomes else ChunkProgressState.PENDING
+            for record in brief.chunks
+        }
         lock = threading.Lock()
-        done = len(outcomes)
-        done_tokens = sum(tokens_by_id[chunk_id] for chunk_id in outcomes)
-        inflight: set[str] = set()
-        report(done, total, (), done_tokens, total_tokens)
+
+        def publish() -> None:
+            progress(tuple(ChunkProgress(record.id, record.tokens, states[record.id]) for record in brief.chunks))
+
+        publish()
 
         def worker(context: _Context) -> _Outcome:
-            nonlocal done, done_tokens
             with lock:
-                inflight.add(context.id)
-                report(done, total, tuple(sorted(inflight)), done_tokens, total_tokens)
-            outcome = _translate_chunk(context, paper_workdir, ask_model, ask_effort)
+                states[context.id] = ChunkProgressState.RUNNING
+                publish()
+            outcome = _ask_until_valid(context, paper_workdir, ask_model, ask_effort)
             with lock:
-                inflight.discard(context.id)
-                done += 1
-                done_tokens += tokens_by_id[context.id]
-                report(done, total, tuple(sorted(inflight)), done_tokens, total_tokens)
+                if outcome.status is ChunkTranslateStatus.FALLBACK:
+                    states[context.id] = ChunkProgressState.WARNING
+                    report("warning", f"{context.id} fell back to the English source after {outcome.attempts} attempts")
+                else:
+                    states[context.id] = ChunkProgressState.DONE
+                publish()
             return outcome
 
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -243,18 +267,6 @@ def _task_message(body: str) -> str:
 def _paragraphs(text: str, *, tail: bool) -> str:
     found = [part.strip() for part in masking.BLANK_LINE_RE.split(text) if part.strip()]
     return "\n\n".join(found[-NEIGHBOR_PARAGRAPHS:] if tail else found[:NEIGHBOR_PARAGRAPHS])
-
-
-def _translate_chunk(
-    context: _Context, paper_workdir: Workdir, ask_model: str | None, ask_effort: str | None
-) -> _Outcome:
-    started = time.monotonic()
-    outcome = _ask_until_valid(context, paper_workdir, ask_model, ask_effort)
-    console.print(
-        f"  {context.id} {outcome.status}  ask x{outcome.attempts}  {context.tokens} tok  "
-        f"{time.monotonic() - started:.1f}s"
-    )
-    return outcome
 
 
 def _ask_until_valid(

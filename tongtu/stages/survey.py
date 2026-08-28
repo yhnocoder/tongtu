@@ -4,7 +4,7 @@ import json
 import re
 import time
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,10 +27,9 @@ from ..artifacts.survey import (
 )
 from ..assets import asset_path
 from ..config import config_dir
-from ..console import console
 from ..manifests import describe_error, write_manifest
 from ..model.ask import ASK_TIMEOUT_SECONDS, AskStatus, ask
-from ..model.config import load_config
+from ..model.config import RoleTable, load_config, resolve_role
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "survey"
@@ -114,10 +113,13 @@ def run(
     no_terms: bool = False,
     ask_model: str | None = None,
     ask_effort: str | None = None,
+    report: Callable[[str, str], None] | None = None,
 ) -> SurveyManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(paper_workdir, glossary, no_terms, ask_model, ask_effort)
+    manifest = _execute(
+        paper_workdir, glossary, no_terms, ask_model, ask_effort, report or (lambda status, summary: None)
+    )
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -128,6 +130,7 @@ def _execute(
     no_terms: bool,
     ask_model: str | None,
     ask_effort: str | None,
+    report: Callable[[str, str], None],
 ) -> SurveyManifest:
     try:
         masked = paper_workdir.masked.read_text(encoding=ENCODING)
@@ -166,7 +169,7 @@ def _execute(
             "in masked.tex; the brief carries abstract = null."
         )
     proposed, proposal_warnings = _propose(
-        paper_workdir, abstract, heading_tree, masked, document.encoder, no_terms, ask_model, ask_effort
+        paper_workdir, abstract, heading_tree, masked, document.encoder, no_terms, ask_model, ask_effort, report
     )
     warnings.extend(proposal_warnings)
 
@@ -478,6 +481,7 @@ def _propose(
     no_terms: bool,
     ask_model: str | None,
     ask_effort: str | None,
+    report: Callable[[str, str], None],
 ) -> tuple[list[Term], list[str]]:
     if no_terms:
         return [], []
@@ -488,7 +492,9 @@ def _propose(
         return [], []
     payload = _payload(abstract, heading_tree, masked)
     thousands = len(encoder.encode(payload, disallowed_special=())) / 1000
-    console.print(f"  {ROLE}: ~{thousands:.1f}k tokens in, timeout {ASK_TIMEOUT_SECONDS}s")
+    resolved, _detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
+    label = f"{resolved.provider}/{resolved.model}" if resolved is not None else ROLE
+    report("terms", f"{label}, ~{thousands:.1f}k tokens in, timeout {ASK_TIMEOUT_SECONDS}s")
     started = time.monotonic()
     outcome = ask(
         role=ROLE,
@@ -499,8 +505,7 @@ def _propose(
         model=ask_model,
         effort=ask_effort,
     )
-    label = f"{ROLE}: {outcome.model}" if outcome.model else ROLE
-    console.print(f"  {label} returned {outcome.status} in {time.monotonic() - started:.1f}s")
+    report(f"terms {outcome.status}", f"{time.monotonic() - started:.1f}s")
     if outcome.status is AskStatus.ERROR:
         return [], [f"the term proposal call failed; continuing as empty ({outcome.detail[:WARNING_DETAIL_CHARS]})"]
     try:
