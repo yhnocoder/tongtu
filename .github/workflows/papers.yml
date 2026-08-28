@@ -77,12 +77,16 @@ jobs:
     env:
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
       DISABLE_AUTOUPDATER: "1"
-      XDG_CONFIG_HOME: ${{ runner.temp }}/config
-      TONGTU_HOME: ${{ runner.temp }}/tongtu
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      # runner 上下文在作业级 env 里不可用，配置目录与工作目录根改在这里导出。
+      - name: Point config and work directories at the runner temp
+        run: |
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
+          echo "TONGTU_HOME=$RUNNER_TEMP/tongtu" >> "$GITHUB_ENV"
 
       # 镜像只管 TeX + Python 依赖 + 字体；agent 运行时与内层沙箱要的 bubblewrap / socat 在这里装。
       - name: Install Claude Code and sandbox tools
