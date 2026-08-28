@@ -32,9 +32,7 @@ MANIFEST_CLASSES: dict[str, type[Manifest]] = {
 
 PAPER_PREFIX = "paper-"
 
-RELEASE_TAG = "papers-ci"
-
-PDF_PATH = Path("out/zh.pdf")
+PDF_PREFIX = "pdf-"
 
 CI_FILENAME = "ci.json"
 
@@ -46,7 +44,6 @@ class PaperRow:
     paper: str
     manifests: dict[str, Manifest | None]
     seconds: int | None
-    has_pdf: bool
 
 
 def read_rows(papers_dir: Path) -> list[PaperRow]:
@@ -56,14 +53,7 @@ def read_rows(papers_dir: Path) -> list[PaperRow]:
             continue
         workdir = Workdir(entry)
         manifests = {stage: load_manifest(workdir.manifest_path(stage), MANIFEST_CLASSES[stage]) for stage in STAGES}
-        rows.append(
-            PaperRow(
-                entry.name.removeprefix(PAPER_PREFIX),
-                manifests,
-                _read_seconds(entry / CI_FILENAME),
-                (entry / PDF_PATH).is_file(),
-            )
-        )
+        rows.append(PaperRow(entry.name.removeprefix(PAPER_PREFIX), manifests, _read_seconds(entry / CI_FILENAME)))
     return rows
 
 
@@ -85,8 +75,7 @@ def render(rows: list[PaperRow], artifacts: dict[str, int], repo: str, run_id: s
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     notes = []
     for row in rows:
-        pdf_url = f"https://github.com/{repo}/releases/download/{RELEASE_TAG}/{run_id}-{row.paper}.pdf"
-        cells = [f"[{row.paper}]({pdf_url})" if row.has_pdf else row.paper]
+        cells = [link(row.paper, PDF_PREFIX + row.paper)]
         summaries = []
         for stage in STAGES:
             manifest = row.manifests[stage]

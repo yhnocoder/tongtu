@@ -1,9 +1,8 @@
 name: papers
 
 # 手动触发的多篇全流程翻译：每篇一个 matrix 作业，在参考镜像 :env 里从 fetch 跑到 compile，
-# 整个论文目录上传为 artifact paper-<paper>；report 作业把各篇 PDF 传到滚动的 prerelease
-# papers-ci（artifact 只能下 zip，release asset 才有单文件直链），再读各篇 manifest 把一张表
-# 写进 run 页面的 step summary，每行链接到 PDF 直链与 artifact。
+# 整个论文目录上传为 artifact paper-<paper>，PDF 另传一份 pdf-<paper>；最后 report 作业读各篇
+# manifest，把一张表写进 run 页面的 step summary，每行链接到该篇的两个 artifact。
 #
 # 模型调用全走 opencode：ask 角色用 [provider.opencode]，work 角色用 [runtime.claude_code_opencode]
 # （Claude Code 二进制 + opencode 的 messages 端点），唯一的 secret 是 environment `llm` 里的
@@ -194,15 +193,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pdf-${{ matrix.paper }}
+          path: ${{ runner.temp }}/tongtu/${{ matrix.paper }}/out/zh.pdf
+          if-no-files-found: ignore
+          retention-days: 14
+
   report:
     name: Report
     needs: run
     if: always() && needs.run.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
-      actions: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -215,28 +219,11 @@ jobs:
         with:
           pattern: paper-*
           path: ${{ runner.temp }}/papers
-      # 镜像里没有 gh，PDF 在这里统一传；asset 名带 run_id，旧 asset 不自动清理。
-      - name: Upload PDFs to the papers-ci prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "${{ runner.temp }}/papers"
-          cd "${{ runner.temp }}/papers"
-          pdfs=$(ls paper-*/out/zh.pdf 2>/dev/null || true)
-          if [ -z "$pdfs" ]; then echo "没有 PDF，跳过上传"; exit 0; fi
-          gh release view papers-ci -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
-            || gh release create papers-ci -R "$GITHUB_REPOSITORY" --prerelease --title "papers.yml 产物" \
-                 --notes "papers.yml 每次运行的中文 PDF，asset 名为 <run_id>-<paper>.pdf。"
-          for pdf in $pdfs; do
-            paper=${pdf#paper-}; paper=${paper%%/*}
-            cp "$pdf" "$GITHUB_RUN_ID-$paper.pdf"
-            gh release upload papers-ci -R "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID-$paper.pdf" --clobber
-          done
-
       - name: Write step summary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mkdir -p "${{ runner.temp }}/papers"
           gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
             --paginate --jq '.artifacts[] | {name, id}' | jq -s . > "${{ runner.temp }}/artifacts.json"
           uv run python scripts/ci_summary.py "${{ runner.temp }}/papers" "${{ runner.temp }}/artifacts.json" \
