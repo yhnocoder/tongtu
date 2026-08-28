@@ -31,10 +31,6 @@ SKILL_FILENAME = "SKILL.md"
 
 ROLE = "translate"
 
-MAX_RETRIES = 1
-
-MAX_ASK_CALLS = MAX_RETRIES + 3
-
 RETRY_EFFORT = "low"
 
 NEIGHBOR_PARAGRAPHS = 3
@@ -262,18 +258,16 @@ def _ask_until_valid(
 ) -> _Outcome:
     messages: list[tuple[str, str]] = [("user", _task_message(context.body))]
     failures: list[str] = []
-    attempts = 0
-    judged = 0
+    effort = ask_effort
     model = ""
-    while attempts < MAX_ASK_CALLS:
-        attempts += 1
+    for attempts in (1, 2):
         outcome = ask(
             role=ROLE,
             system=context.system,
             messages=messages,
             log_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempts}.json",
             model=ask_model,
-            effort=RETRY_EFFORT if judged else ask_effort,
+            effort=effort,
         )
         model = outcome.model or model
         if outcome.status is AskStatus.ERROR:
@@ -293,19 +287,17 @@ def _ask_until_valid(
                 model=model,
             )
         failures = [f"{failure.check}: {failure.message}" for failure in result.failures]
-        judged += 1
-        if judged > MAX_RETRIES:
-            break
         messages = [
             ("user", _task_message(context.body)),
             ("assistant", translated),
             ("user", _retry_message(failures)),
         ]
+        effort = RETRY_EFFORT
     return _Outcome(
         id=context.id,
         status=ChunkTranslateStatus.FALLBACK,
         body=context.body,
-        attempts=attempts,
+        attempts=2,
         failures=failures,
         model=model,
     )
