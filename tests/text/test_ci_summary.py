@@ -10,7 +10,7 @@ from tongtu.artifacts.translate import ChunkTranslateRecord, ChunkTranslateStatu
 from tongtu.manifests import write_manifest
 from tongtu.workdir import Workdir
 
-ARTIFACTS = {"pdf-article": 11, "paper-article": 12, "paper-2002.05202": 13}
+ARTIFACTS = {"paper-article": 12, "paper-2002.05202": 13}
 
 
 def write_paper(papers_dir: Path, paper: str, seconds: int | None) -> Workdir:
@@ -18,6 +18,7 @@ def write_paper(papers_dir: Path, paper: str, seconds: int | None) -> Workdir:
     workdir.create()
     if seconds is not None:
         (workdir.path / "ci.json").write_text(json.dumps({"paper": paper, "seconds": seconds, "exit_code": 0}))
+        workdir.zh_pdf.write_bytes(b"%PDF")
     return workdir
 
 
@@ -51,7 +52,8 @@ def test_rows_and_render(tmp_path: Path) -> None:
 
     text = ci_summary.render(rows, ARTIFACTS, "yhnocoder/tongtu", "99")
 
-    assert "[article](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/11)" in text
+    assert "[article](https://github.com/yhnocoder/tongtu/releases/download/papers-ci/99-article.pdf)" in text
+    assert rows[0].has_pdf is False
     assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/12)" in text
     assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/13)" in text
     assert "| 2002.05202 |" in text
