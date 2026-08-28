@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,6 +82,8 @@ NON_TEXT_COMMAND_RE = re.compile(
 
 DIFFERENCE_ITEMS_MAX = 8
 
+PARAGRAPH_PREVIEW_LENGTH = 60
+
 HEADING_COMMAND = (
     r"\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?"
     r"(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}"
@@ -128,12 +131,13 @@ class ValidationResult:
 def validate(source: str, translation: str) -> ValidationResult:
     scanned_source = scan(source)
     scanned_translation = scan(translation)
+    paragraphs = _paired_paragraphs(source, translation)
     failures = [
         failure
         for failure in (
             _check_placeholders(source, translation),
-            check_control_sequences(scanned_source, scanned_translation),
-            _check_braces_and_math(scanned_source, scanned_translation),
+            check_control_sequences(scanned_source, scanned_translation, paragraphs),
+            _check_braces_and_math(scanned_source, scanned_translation, paragraphs),
             _check_paragraph_count(source, translation),
         )
         if failure is not None
@@ -168,7 +172,9 @@ def _check_placeholders(source: str, translation: str) -> Failure | None:
     return None
 
 
-def check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
+def check_control_sequences(
+    source: Scan, translation: Scan, paragraphs: tuple[tuple[str, str], ...] = ()
+) -> Failure | None:
     expected = Counter(source.control_sequences)
     actual = Counter(translation.control_sequences)
     if expected == actual:
@@ -177,6 +183,7 @@ def check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
     differing = [name for name in names if expected[name] != actual[name]]
     listed = "; ".join(
         f"\\{name} appears {expected[name]} times in source, {actual[name]} in translation"
+        + _locate(paragraphs, lambda scanned, name=name: scanned.control_sequences.count(name))
         for name in differing[:DIFFERENCE_ITEMS_MAX]
     )
     if len(differing) > DIFFERENCE_ITEMS_MAX:
@@ -184,7 +191,9 @@ def check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
     return Failure(check=CHECK_CONTROL_SEQUENCES, message=listed)
 
 
-def _check_braces_and_math(source: Scan, translation: Scan) -> Failure | None:
+def _check_braces_and_math(
+    source: Scan, translation: Scan, paragraphs: tuple[tuple[str, str], ...] = ()
+) -> Failure | None:
     problems: list[str] = []
     position = _unbalanced_position(translation)
     if position is not None and _unbalanced_position(source) is None:
@@ -194,7 +203,10 @@ def _check_braces_and_math(source: Scan, translation: Scan) -> Failure | None:
     if dollars % 2:
         problems.append(f"{DOLLAR} count in translation is {dollars}, an odd number, so they cannot pair up")
     if dollars < expected_dollars:
-        problems.append(f"{DOLLAR} count differs: {expected_dollars} in source, {dollars} in translation")
+        problems.append(
+            f"{DOLLAR} count differs: {expected_dollars} in source, {dollars} in translation"
+            + _locate(paragraphs, lambda scanned: scanned.count(DOLLAR))
+        )
     percents = translation.count(PERCENT)
     expected_percents = source.count(PERCENT)
     if percents > expected_percents:
@@ -205,6 +217,38 @@ def _check_braces_and_math(source: Scan, translation: Scan) -> Failure | None:
     if not problems:
         return None
     return Failure(check=CHECK_BRACES_AND_MATH, message="; ".join(problems))
+
+
+def _paired_paragraphs(source: str, translation: str) -> tuple[tuple[str, str], ...]:
+    source_paragraphs = [part.strip() for part in BLANK_LINE_RE.split(source) if part.strip()]
+    translation_paragraphs = [part.strip() for part in BLANK_LINE_RE.split(translation) if part.strip()]
+    if len(source_paragraphs) != len(translation_paragraphs):
+        return ()
+    return tuple(zip(source_paragraphs, translation_paragraphs, strict=True))
+
+
+def _locate(paragraphs: tuple[tuple[str, str], ...], measure: Callable[[Scan], int]) -> str:
+    located = []
+    for number, (source, translation) in enumerate(paragraphs, start=1):
+        expected = measure(scan(source))
+        actual = measure(scan(translation))
+        if expected != actual:
+            located.append(
+                f'paragraph {number} beginning "{_preview(source)}" has {expected} in source, {actual} in translation'
+            )
+    if not located:
+        return ""
+    listed = "; ".join(located[:DIFFERENCE_ITEMS_MAX])
+    if len(located) > DIFFERENCE_ITEMS_MAX:
+        listed = f"{listed} and more ({len(located)} paragraphs in total)"
+    return f" ({listed})"
+
+
+def _preview(paragraph: str) -> str:
+    flattened = " ".join(paragraph.split())
+    if len(flattened) <= PARAGRAPH_PREVIEW_LENGTH:
+        return flattened
+    return flattened[:PARAGRAPH_PREVIEW_LENGTH] + "…"
 
 
 def _unbalanced_position(scanned: Scan) -> int | None:
