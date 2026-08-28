@@ -120,7 +120,7 @@ def _launch(
                 outcome = run_in_process_group(
                     [executable, *command[1:]],
                     workdir,
-                    entry.timeout_seconds or 0.0,
+                    entry.timeout_seconds,
                     input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
                     env=_session_env(runtime.provider is not None) | session_env,
                     on_stdout_line=_trace_line(trace_file, summarizer(runtime.events), report),

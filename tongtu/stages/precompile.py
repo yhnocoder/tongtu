@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -26,6 +25,8 @@ FONTS_DIRNAME = "fonts"
 FONTS_DIR = asset_path(FONTS_DIRNAME)
 
 LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--keep-comments", "--fatal")
+
+LATEXPAND_TIMEOUT_SECONDS = 10.0
 
 DOCUMENT_CLASS_MARKERS: tuple[bytes, ...] = (rb"\documentclass", rb"\documentstyle")
 
@@ -222,20 +223,26 @@ def _select_main_file(candidates: list[tuple[str, bool]]) -> str | None:
 def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | None, str]:
     command = [*LATEXPAND_COMMAND, main_file]
     try:
-        completed = subprocess.run(command, cwd=src, capture_output=True, check=False)
+        outcome = processes.run_in_process_group(command, src, LATEXPAND_TIMEOUT_SECONDS)
     except OSError as error:
         return None, (
             f"failed to run latexpand ({describe_error(error)}). latexpand ships with TeX Live; "
             "check that it is installed and in PATH."
         )
-    stderr_text = completed.stderr.decode("utf-8", errors="replace")
+    stderr_text = outcome.stderr_text
     warnings.extend(line for line in stderr_text.splitlines() if line.strip())
-    if completed.returncode != 0:
+    if outcome.timed_out:
         return None, (
-            f"latexpand exited with code {completed.returncode}; "
+            f"latexpand did not finish within {LATEXPAND_TIMEOUT_SECONDS}s and its process group was terminated; "
+            "the common cause is a self-reference in the source, "
+            "for example main.tex containing \\input{main}."
+        )
+    if outcome.returncode != 0:
+        return None, (
+            f"latexpand exited with code {outcome.returncode}; "
             f"stderr: {stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]}"
         )
-    return completed.stdout, ""
+    return outcome.stdout, ""
 
 
 def _inline_bbl(output: bytes, src: Path, main_file: str, warnings: list[str]) -> bytes:

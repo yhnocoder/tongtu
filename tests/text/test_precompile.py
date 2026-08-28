@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -56,32 +55,41 @@ def make_workdir(tmp_path: Path, files: dict[str, str]) -> Workdir:
     return workdir
 
 
-def wire_expand(monkeypatch: pytest.MonkeyPatch, returncode: int = 0, stderr: bytes = b"") -> None:
-    def run(command: list[str], cwd: Path, capture_output: bool, check: bool) -> subprocess.CompletedProcess[bytes]:
-        stdout = (Path(cwd) / command[-1]).read_bytes() if returncode == 0 else b""
-        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+def wire_expand(
+    monkeypatch: pytest.MonkeyPatch, returncode: int = 0, stderr: bytes = b"", timed_out: bool = False
+) -> None:
+    def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
+        stdout = (Path(cwd) / command[-1]).read_bytes() if returncode == 0 and not timed_out else b""
+        return ProcessOutcome(
+            returncode=returncode, stdout=stdout, stderr=stderr, timed_out=timed_out, duration_seconds=0.1
+        )
 
-    monkeypatch.setattr(precompile.subprocess, "run", run)
+    monkeypatch.setattr(processes, "run_in_process_group", run)
 
 
 def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> dict[str, int]:
     calls = {"compile": 0, "clean": 0}
+    other = processes.run_in_process_group
 
     def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
+        if command[0] != "latexmk":
+            return other(command, cwd, timeout, **kwargs)
         main = Path(command[-1])
         if "-C" in command:
             calls["clean"] += 1
             (cwd / main.with_suffix(".pdf")).unlink(missing_ok=True)
             (cwd / main.with_suffix(".log")).unlink(missing_ok=True)
-            return ProcessOutcome(returncode=0, stderr=b"", timed_out=False, duration_seconds=0.1)
+            return ProcessOutcome(returncode=0, stdout=b"", stderr=b"", timed_out=False, duration_seconds=0.1)
         spec = specs[min(calls["compile"], len(specs) - 1)]
         calls["compile"] += 1
         if spec.get("timeout"):
-            return ProcessOutcome(returncode=-9, stderr=b"", timed_out=True, duration_seconds=600.0)
+            return ProcessOutcome(returncode=-9, stdout=b"", stderr=b"", timed_out=True, duration_seconds=600.0)
         if spec.get("pdf", True):
             (cwd / main.with_suffix(".pdf")).write_bytes(b"%PDF-1.5 fake body")
         (cwd / main.with_suffix(".log")).write_text(spec.get("log", LOG_OK), encoding="utf-8")
-        return ProcessOutcome(returncode=spec.get("returncode", 0), stderr=b"", timed_out=False, duration_seconds=2.5)
+        return ProcessOutcome(
+            returncode=spec.get("returncode", 0), stdout=b"", stderr=b"", timed_out=False, duration_seconds=2.5
+        )
 
     monkeypatch.setattr(processes, "run_in_process_group", run)
     return calls
@@ -166,6 +174,16 @@ def test_expand_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert manifest.main_file == "main.tex"
     assert "exited with code 1" in manifest.message
     assert any("body.tex" in line for line in manifest.warnings)
+
+
+def test_expand_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
+    wire_expand(monkeypatch, returncode=-9, timed_out=True)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.EXPAND_FAILED
+    assert manifest.main_file == "main.tex"
+    assert str(precompile.LATEXPAND_TIMEOUT_SECONDS) in manifest.message
+    assert "\\input{main}" in manifest.message
 
 
 def test_expand_result_must_be_a_complete_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
