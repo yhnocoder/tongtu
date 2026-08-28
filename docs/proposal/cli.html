@@ -45,7 +45,15 @@ workdir /Users/zach/.local/share/tongtu/2412.19437
 <span class="ok">✓</span> review      ok                1 changed, 0 reverted                       0:11:40
 <span class="ok">✓</span> compile     ok                12 pages                                    0:00:47
 <span class="p">$ echo $?</span>
-0</pre></div></dd>
+0</pre></div>
+<p><b>进度显示。</b>每个阶段运行时占一行 live 行（单行刷新，不是 tty 时不画），结束后被结果行替换。precompile、review、compile 显示当前动作（状态 + 摘要，如 <code>fix session  running</code>）；survey 显示术语提议调用的模型与结果；translate 是并行翻译，显示一条 chunk 线：每个 chunk 按 token 数占一段，长度与 token 成比例，最少一格，线宽取终端剩余宽度。四种状态：未开始 <code>─</code>（暗），正在翻 <code>┅</code>，完成 <code>━</code>，有 warning（回退或重试过）<code>━</code> 黄色。线后跟 <code>已完成/总数</code>、token 计数、耗时、eta。chunk 比格数多时相邻 chunk 共享一格，取最差状态（warning &gt; 正在翻 &gt; 未开始 &gt; 完成）；剩余宽度不足 20 格时不画线，只保留计数。终端不支持这些字符（rich 判定 ascii_only 或 legacy_windows）时换成 <code>- ~ = !</code>。
+阶段模块不直接向终端打印，通过 <code>report</code> 回调把状态交给命令行层渲染；成功的 chunk 不单独打行，回退或重试过的 chunk 各打一行持久 warning，留在 live 行上方。</p>
+<div class="ex"><p class="cap">translate 进行中的 live 行，与它结束后留下的结果行。</p>
+<pre class="term">translate   ━━<span class="warn">━━</span>┅┅<span class="dim">──</span>┅<span class="dim">────────────────────────────────</span>  4/17    9.2k/80.4k tok   0:01:12  eta 0:04:30
+    warning: c003 fell back to source after 3 attempts
+translate   ━━<span class="warn">━━</span>━━━━┅┅━━━┅━━━━━━━━━━━━━━━━━━━━━━━━━━  13/17  61.0k/80.4k tok   0:04:50  eta 0:01:20
+<span class="ok">✓</span> translate   ok                17 chunks, 1 fallback                       0:06:12
+    warning: c003 fell back to source after 3 attempts</pre></div></dd>
 
 <dt>stage STAGE PAPER</dt>
 <dd>只跑一个阶段，用来反复调某一步——比如改了 translate 的 SKILL.md，想只看译文变没变，不想把 review、compile 也跑一遍。它不会动其他阶段的产物，跑完后想继续往下就 <code>run</code>。上游产物还不在时拒绝执行（退出 2）。选项与 run 相同，只是没有 <code>--from</code>（本来就只跑这一个阶段）。不确定阶段名怎么拼，运行不带参数的 <code>tongtu stage</code>，它按顺序列出七个阶段名。
