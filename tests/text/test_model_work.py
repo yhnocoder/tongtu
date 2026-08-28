@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tongtu.model.work import StopReason, work
-from tongtu.processes import ProcessOutcome
+from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
 work_module = importlib.import_module("tongtu.model.work")
 
@@ -238,12 +238,18 @@ def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatc
     record_run(
         monkeypatch,
         recorded,
-        ProcessOutcome(returncode=3, stdout=b"", stderr="运行时报错".encode(), timed_out=False, duration_seconds=2.0),
+        ProcessOutcome(
+            returncode=3,
+            stdout=b"",
+            stderr=("[unrecognized_model] " * OUTPUT_EXCERPT_CHARS + "运行时报错").encode(),
+            timed_out=False,
+            duration_seconds=2.0,
+        ),
     )
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "exited with code 3" in outcome.detail
-    assert "运行时报错" in outcome.detail
+    assert outcome.detail.endswith("运行时报错")
 
 
 def test_runtime_not_on_path_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:

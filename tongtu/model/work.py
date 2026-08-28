@@ -133,7 +133,7 @@ def _launch(
         return WorkOutcome(stop_reason=StopReason.TIMEOUT)
     if outcome.returncode == 0:
         return WorkOutcome(stop_reason=StopReason.FINISHED)
-    stderr = outcome.stderr_text.strip()[:OUTPUT_EXCERPT_CHARS]
+    stderr = outcome.stderr_text.strip()[-OUTPUT_EXCERPT_CHARS:]
     return _error(f"{executable} exited with code {outcome.returncode}; stderr: {stderr or '(empty)'}")
 
 
