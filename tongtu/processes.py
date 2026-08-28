@@ -16,6 +16,7 @@ OUTPUT_EXCERPT_CHARS = 500
 @dataclass(frozen=True)
 class ProcessOutcome:
     returncode: int
+    stdout: bytes
     stderr: bytes
     timed_out: bool
     duration_seconds: float
@@ -44,32 +45,12 @@ def run_in_process_group(
         start_new_session=True,
         env=env,
     )
-    if on_stdout_line is None:
-        timed_out = False
-        try:
-            _, stderr = process.communicate(input=input_bytes, timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _terminate_process_group(process)
-            _, stderr = process.communicate()
-        return ProcessOutcome(
-            returncode=process.returncode,
-            stderr=stderr,
-            timed_out=timed_out,
-            duration_seconds=time.monotonic() - started,
-        )
-    return _run_with_line_relay(process, input_bytes, timeout_seconds, on_stdout_line, started)
-
-
-def _run_with_line_relay(
-    process: subprocess.Popen[bytes],
-    input_bytes: bytes | None,
-    timeout_seconds: float,
-    on_stdout_line: Callable[[bytes], None],
-    started: float,
-) -> ProcessOutcome:
+    stdout_parts: list[bytes] = []
     stderr_parts: list[bytes] = []
-    stdout_thread = threading.Thread(target=_relay_lines, args=(process.stdout, on_stdout_line))
+    if on_stdout_line is None:
+        stdout_thread = threading.Thread(target=_collect_stream, args=(process.stdout, stdout_parts))
+    else:
+        stdout_thread = threading.Thread(target=_relay_lines, args=(process.stdout, on_stdout_line))
     stderr_thread = threading.Thread(target=_collect_stream, args=(process.stderr, stderr_parts))
     stdout_thread.start()
     stderr_thread.start()
@@ -86,6 +67,7 @@ def _run_with_line_relay(
     stderr_thread.join()
     return ProcessOutcome(
         returncode=process.returncode,
+        stdout=b"".join(stdout_parts),
         stderr=b"".join(stderr_parts),
         timed_out=timed_out,
         duration_seconds=time.monotonic() - started,

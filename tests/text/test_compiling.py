@@ -34,6 +34,7 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> list[lis
                 raise OSError("latexmk vanished")
             return ProcessOutcome(
                 returncode=spec.get("clean_returncode", 0),
+                stdout=b"",
                 stderr=b"",
                 timed_out=spec.get("clean_timeout", False),
                 duration_seconds=0.1,
@@ -42,11 +43,13 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> list[lis
         if spec.get("error"):
             raise OSError("latexmk missing")
         if spec.get("timeout"):
-            return ProcessOutcome(returncode=-9, stderr=b"", timed_out=True, duration_seconds=600.0)
+            return ProcessOutcome(returncode=-9, stdout=b"", stderr=b"", timed_out=True, duration_seconds=600.0)
         if spec.get("pdf", True):
             (cwd / main.with_suffix(".pdf")).write_bytes(b"%PDF-1.5 fake body")
         (cwd / main.with_suffix(".log")).write_text(spec.get("log", LOG_OK), encoding="utf-8")
-        return ProcessOutcome(returncode=spec.get("returncode", 0), stderr=b"", timed_out=False, duration_seconds=2.5)
+        return ProcessOutcome(
+            returncode=spec.get("returncode", 0), stdout=b"", stderr=b"", timed_out=False, duration_seconds=2.5
+        )
 
     monkeypatch.setattr(processes, "run_in_process_group", run)
     return commands

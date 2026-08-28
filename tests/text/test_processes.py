@@ -35,6 +35,7 @@ def test_lines_are_relayed_in_order_and_stderr_is_kept(tmp_path: Path) -> None:
     outcome = run_python(EMIT_SCRIPT, tmp_path, on_stdout_line=lines.append)
     assert lines == [b"first line\n", b"second line\n"]
     assert outcome.returncode == 3
+    assert outcome.stdout == b""
     assert outcome.stderr == b"boom\n"
     assert not outcome.timed_out
 
@@ -53,9 +54,10 @@ def test_timeout_kills_the_group_and_keeps_lines_already_relayed(tmp_path: Path)
     assert lines == [b"before the hang\n"]
 
 
-def test_without_a_line_handler_the_outcome_is_unchanged(tmp_path: Path) -> None:
+def test_without_a_line_handler_stdout_is_collected(tmp_path: Path) -> None:
     outcome = run_python(EMIT_SCRIPT, tmp_path)
     assert outcome.returncode == 3
+    assert outcome.stdout == b"first line\nsecond line\n"
     assert outcome.stderr == b"boom\n"
     assert not outcome.timed_out
     assert outcome.duration_seconds > 0

@@ -112,7 +112,7 @@ def record_run(
 
 
 def finished() -> ProcessOutcome:
-    return ProcessOutcome(returncode=0, stderr=b"", timed_out=False, duration_seconds=1.0)
+    return ProcessOutcome(returncode=0, stdout=b"", stderr=b"", timed_out=False, duration_seconds=1.0)
 
 
 def test_finished_session_copies_skill_and_fills_command(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,7 +226,7 @@ def test_timeout_is_reported(configured: Path, monkeypatch: pytest.MonkeyPatch) 
     record_run(
         monkeypatch,
         recorded,
-        ProcessOutcome(returncode=-9, stderr=b"", timed_out=True, duration_seconds=60.0),
+        ProcessOutcome(returncode=-9, stdout=b"", stderr=b"", timed_out=True, duration_seconds=60.0),
     )
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.TIMEOUT
@@ -238,7 +238,7 @@ def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatc
     record_run(
         monkeypatch,
         recorded,
-        ProcessOutcome(returncode=3, stderr="运行时报错".encode(), timed_out=False, duration_seconds=2.0),
+        ProcessOutcome(returncode=3, stdout=b"", stderr="运行时报错".encode(), timed_out=False, duration_seconds=2.0),
     )
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
