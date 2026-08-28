@@ -40,7 +40,7 @@
 ### 总则
 
 - 一次完成一个中等大小的 feature，每步一个 PR 进 main。
-- 主 agent 大部分情况下只做编排与 review。提案图的改动只随步骤 PR 进 main、由用户 merge 认可，核心开发、测试、验证各交给 subagent 完成，subagent 一律用 Opus；任务书里要求 subagent 先读本文件。
+- 主 agent 大部分情况下只做编排与 review。提案图的改动只随步骤 PR 进 main、由用户 merge 认可，核心开发、测试、验证各交给 subagent 完成，开发任务 subagent 使用 fable，其他任务一律用 Opus；任务书里要求 subagent 先读本文件。
 - Git：主 agent 从 main 切分支 `step-<N>-<名字>`，subagent 在工作树里直接改（同一时刻只有一个 subagent 在改代码），主 agent review 通过后提交，用 `gh pr create` 开 PR 并关联步骤 issue，合并由用户做，squash merge，PR 标题即 commit 第一行。commit message 格式 `<type>(<scope>): <中文一句话>`：type 取 `feat` / `fix` / `refactor` / `test` / `ci` / `docs` / `chore`，scope 是阶段名或横切面名（`model`、`cli`、`fetch`…），一句话动词开头、不带句号、不超过 50 字；正文可选，写为什么与关键取舍，三行以内；末尾 `Closes #N`。不加 `Co-Authored-By` 一类署名行。交付报告写进 PR 描述，回复里贴同一份。
 - subagent 的边界：可以联网（拉 arXiv、调模型、拉起 agent 运行时）、可以读写 `~/.local/share/tongtu/`；不装系统工具、不改 `~/` 下的配置，需要就停下来问。验证用本机 TeX；`work` 在步骤 1 用本机的 Claude Code（`claude`）验通，opencode / codex 也已安装、作为可选运行时；可用服务商、各角色默认模型与密钥环境变量名由用户在步骤 1 开工时给出，写进 `models.toml`，不写进本文件。docker 镜像（image.yml）在重构完成后再接回。
 - 过渡期：步骤 1、2 只建新模块（`tongtu/model/`、新的命令行与工作目录代码），旧的 `tongtu/agent/`、`tongtu/stages/`、`tongtu/artifacts/` 与旧测试在各自阶段的步骤里整体删除；重构期间 main 上的流水线不保证可跑，以各步的测试与验证为准。

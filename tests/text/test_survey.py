@@ -8,7 +8,7 @@ import pytest
 from tongtu.artifacts.mask import BlocksFile, CaptionKind, CaptionRecord
 from tongtu.artifacts.survey import BriefFile, DecidedBy, Part, SurveyManifest, SurveyStatus
 from tongtu.model.ask import AskOutcome, AskStatus
-from tongtu.model.config import ModelsConfig, RoleConfig
+from tongtu.model.config import ModelsConfig, ProviderConfig, RoleConfig
 from tongtu.pipeline import outputs_present
 from tongtu.stages import mask, survey
 from tongtu.workdir import Workdir
@@ -69,7 +69,10 @@ def write_glossary(path: Path, content: object) -> Path:
 
 
 def role_config() -> ModelsConfig:
-    return ModelsConfig(roles={survey.ROLE: RoleConfig(model="m", effort="low", provider="p")})
+    return ModelsConfig(
+        provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
+        roles={survey.ROLE: RoleConfig(model="m", effort="low", provider="p")},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -440,6 +443,21 @@ def test_model_proposal_lands_in_brief_with_survey_layer(tmp_path: Path, monkeyp
     assert seen["effort"] == "high"
     assert seen["schema"] == survey.TERMS_SCHEMA
     assert SAMPLE in seen["messages"][0][1]
+
+
+def test_the_term_proposal_call_is_reported_before_and_after(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(survey, "load_config", lambda: (role_config(), ""))
+    monkeypatch.setattr(
+        survey,
+        "ask",
+        lambda **kwargs: AskOutcome(status=AskStatus.OK, text=json.dumps({"terms": [], "do_not_translate": []})),
+    )
+    lines: list[tuple[str, str]] = []
+    manifest = survey.run(make_workdir(tmp_path), report=lambda status, summary: lines.append((status, summary)))
+    assert manifest.status is SurveyStatus.OK
+    assert [status for status, _summary in lines] == ["terms", "terms ok"]
+    assert lines[0][1].startswith("p/m, ~")
+    assert lines[1][1].endswith("s")
 
 
 def test_model_error_degrades_to_an_empty_proposal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

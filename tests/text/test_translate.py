@@ -22,6 +22,7 @@ from tongtu.model.ask import AskOutcome, AskStatus
 from tongtu.model.config import ModelsConfig, ProviderConfig, RoleConfig
 from tongtu.pipeline import outputs_present
 from tongtu.stages import translate
+from tongtu.stages.translate import ChunkProgress, ChunkProgressState
 from tongtu.workdir import Workdir
 
 Reply = Callable[[Mapping[str, object], int], AskOutcome]
@@ -443,24 +444,43 @@ def test_a_rerun_clears_the_previous_translations_and_logs(tmp_path: Path, monke
     assert sorted(path.name for path in stale_dir.iterdir()) == ["c000.tex"]
 
 
-def test_report_counts_skipped_into_the_initial_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_progress_reports_every_chunk_in_document_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
     workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n", "Hello one.\n", "Hello two.\n"])
-    reports: list[tuple[int, int, tuple[str, ...], int, int]] = []
+    snapshots: list[tuple[ChunkProgress, ...]] = []
+    lines: list[tuple[str, str]] = []
 
-    def report(done: int, total: int, inflight: tuple[str, ...], done_tokens: int, total_tokens: int) -> None:
-        reports.append((done, total, inflight, done_tokens, total_tokens))
-
-    manifest = translate.run(workdir, jobs=2, report=report)
+    manifest = translate.run(workdir, jobs=2, report=lambda s, m: lines.append((s, m)), progress=snapshots.append)
     assert manifest.status is TranslateStatus.OK
-    assert all(total == 3 and total_tokens == 3 for _d, total, _i, _dt, total_tokens in reports)
-    assert reports[0] == (1, 3, (), 1, 3)
-    done_values = [done for done, _t, _i, _dt, _tt in reports]
-    assert done_values == sorted(done_values)
-    token_values = [done_tokens for _d, _t, _i, done_tokens, _tt in reports]
-    assert token_values == sorted(token_values)
-    assert reports[-1] == (3, 3, (), 3, 3)
-    assert {chunk_id for _d, _t, inflight, _dt, _tt in reports for chunk_id in inflight} == {"c001", "c002"}
+    assert all([chunk.id for chunk in snapshot] == ["c000", "c001", "c002"] for snapshot in snapshots)
+    assert all([chunk.tokens for chunk in snapshot] == [1, 1, 1] for snapshot in snapshots)
+    assert [chunk.state for chunk in snapshots[0]] == [
+        ChunkProgressState.DONE,
+        ChunkProgressState.PENDING,
+        ChunkProgressState.PENDING,
+    ]
+    assert any(ChunkProgressState.RUNNING in {chunk.state for chunk in snapshot} for snapshot in snapshots)
+    assert [chunk.state for chunk in snapshots[-1]] == [ChunkProgressState.DONE] * 3
+    assert lines == [("translate", f"{MODEL}, 3 chunks, 3 tok, jobs 2")]
+
+
+def test_a_fallback_chunk_reports_one_warning_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_ask(monkeypatch, failing_after(3))
+    workdir = make_workdir(tmp_path, sentences(5))
+    snapshots: list[tuple[ChunkProgress, ...]] = []
+    lines: list[tuple[str, str]] = []
+    manifest = translate.run(workdir, jobs=2, report=lambda s, m: lines.append((s, m)), progress=snapshots.append)
+    assert manifest.chunks["c003"].status is ChunkTranslateStatus.FALLBACK
+    assert [chunk.state for chunk in snapshots[-1]] == [
+        ChunkProgressState.DONE,
+        ChunkProgressState.DONE,
+        ChunkProgressState.DONE,
+        ChunkProgressState.WARNING,
+        ChunkProgressState.WARNING,
+    ]
+    assert sorted(line for line in lines if line[0] == "warning") == [
+        ("warning", f"c00{number} fell back to the English source after 2 attempts") for number in (3, 4)
+    ]
 
 
 def test_report_absent_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

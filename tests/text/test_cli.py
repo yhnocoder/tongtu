@@ -16,6 +16,7 @@ from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.cli import RunOptions, app, main
 from tongtu.model.config import MODELS_TEMPLATE
 from tongtu.pipeline import STAGES
+from tongtu.stages.translate import ChunkProgress, ChunkProgressState
 
 from .test_pipeline import write_outputs
 
@@ -559,6 +560,61 @@ def test_stage_display_action_pads_a_bare_status_to_the_same_width() -> None:
     description = progress.tasks[0].description
     assert description.rstrip() == f"{'precompile':<{cli.NAME_WIDTH}}fix session"
     assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
+
+
+CHUNKS = (
+    ChunkProgress("c000", 10, ChunkProgressState.DONE),
+    ChunkProgress("c001", 1, ChunkProgressState.WARNING),
+    ChunkProgress("c002", 30, ChunkProgressState.RUNNING),
+    ChunkProgress("c003", 20, ChunkProgressState.PENDING),
+)
+
+
+def spans(text) -> list[tuple[str, str]]:
+    return [(text.plain[span.start : span.end], str(span.style)) for span in text.spans]
+
+
+@pytest.mark.parametrize("width", [20, 45, 85])
+def test_chunk_line_splits_the_width_by_tokens(width: int) -> None:
+    text = cli._chunk_line(CHUNKS, width, False)
+    assert len(text.plain) == width
+    parts = spans(text)
+    assert [style for _run, style in parts] == ["green", "yellow", "cyan", "dim"]
+    assert [run[0] for run, _style in parts] == ["━", "━", "─", "─"]
+    lengths = [len(run) for run, _style in parts]
+    assert lengths[1] == 1
+    assert lengths[2] > lengths[3] > lengths[0] > lengths[1]
+    assert sum(lengths) == width
+
+
+def test_chunk_line_shares_cells_taking_the_worst_state() -> None:
+    many = tuple(
+        ChunkProgress(f"c{index:03d}", 1, ChunkProgressState.WARNING if index == 5 else ChunkProgressState.DONE)
+        for index in range(50)
+    )
+    text = cli._chunk_line(many, 20, False)
+    assert text.plain == "━" * 20
+    assert [style for _run, style in spans(text)] == ["green"] * 2 + ["yellow"] + ["green"] * 17
+
+
+def test_chunk_line_ascii_fallback() -> None:
+    assert cli._chunk_line(CHUNKS, 20, True).plain == "===!~~~~~~~~~~------"
+
+
+def test_chunk_line_is_empty_below_the_minimum_width() -> None:
+    assert cli._chunk_line(CHUNKS, cli.MIN_CHUNK_LINE_WIDTH - 1, False).plain == ""
+
+
+def test_stage_display_chunks_counts_finished_tokens() -> None:
+    progress = Progress(disable=True)
+    task = progress.add_task("translate", total=None, chunks="", tokens="", chunk_progress=())
+    cli.StageDisplay(progress=progress, task=task, name="translate").chunks(CHUNKS)
+    fields = progress.tasks[0].fields
+    assert progress.tasks[0].completed == 11
+    assert progress.tasks[0].total == 61
+    assert fields["chunks"] == "2/4"
+    assert fields["tokens"] == "0.0k/0.1k tok"
+    assert fields["chunk_progress"] == CHUNKS
 
 
 def test_every_stage_has_an_entry() -> None:
