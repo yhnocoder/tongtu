@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/yhnocoder/tongtu:env
     environment: llm
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -171,13 +171,13 @@ jobs:
           settings = { sandbox = { enabled = false } }
           env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
 
-          # CI 专用的超时：作业上限 10 分钟，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
+          # CI 专用的超时：作业上限 30 分钟，会话 600 秒，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
           [roles]
           survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
           translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
-          review         = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "medium", max_turns = 300, timeout_seconds = 240 }
-          precompile_fix = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 240 }
-          compile_fix    = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 240 }
+          review         = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "medium", max_turns = 300, timeout_seconds = 600 }
+          precompile_fix = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 600 }
+          compile_fix    = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 600 }
           TOML
 
       - run: uv run tongtu doctor
