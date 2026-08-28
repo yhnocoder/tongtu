@@ -248,8 +248,12 @@ def _format_heading_tree(brief: BriefFile) -> str:
 
 
 def _neighbor_section(bodies: Sequence[str], index: int) -> str:
-    before = _paragraphs(bodies[index - 1], tail=True) if index > 0 else "[START]"
-    after = _paragraphs(bodies[index + 1], tail=False) if index + 1 < len(bodies) else "[END]"
+    before = _paragraphs(bodies[index - 1], tail=True) if index > 0 else "（这是全文的第一块，前面没有内容）"
+    after = (
+        _paragraphs(bodies[index + 1], tail=False)
+        if index + 1 < len(bodies)
+        else "（这是全文的最后一块，后面没有内容）"
+    )
     return (
         "## 相邻上下文（原文）\n\n供衔接参考。\n\n"
         f"### 前一块的结尾\n\n```\n{before}\n```\n\n### 后一块的开头\n\n```\n{after}\n```"

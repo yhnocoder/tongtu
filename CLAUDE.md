@@ -46,7 +46,6 @@
 - 过渡期：步骤 1、2 只建新模块（`tongtu/model/`、新的命令行与工作目录代码），旧的 `tongtu/agent/`、`tongtu/stages/`、`tongtu/artifacts/` 与旧测试在各自阶段的步骤里整体删除；重构期间 main 上的流水线不保证可跑，以各步的测试与验证为准。
 - 提案图是实现依据，但不是不能改：觉得它设计不合理、写不通、与代码冲突，停下来向用户说明并给替代方案，由用户拍板；不许隐瞒、不许绕过、不许自己决定偏离。提案图的改动只放进步骤 PR、随代码一起由用户 merge 认可；主 agent 不单独向 main 提交提案图改动。
 - 进度与问题用 GitHub Issues 管理，不写文件。每个步骤一个 issue（标签 `step`），PR 描述里写 `Closes #N`，合并即关闭；发现的问题一个 issue（标签 `question`），结论写进 issue 再关，不删。新会话先 `gh issue list --state open`。步骤 issue 的状态：open 且无 PR = 待做或进行中，有 PR 关联 = 待验证，closed = 完成。
-- papers.yml（定时跑真实论文）已在步骤 0 删掉，重构完成后按新流水线重写。
 
 ### 步骤顺序
 
