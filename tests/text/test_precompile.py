@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -123,9 +124,24 @@ def wire_work(
     return calls
 
 
+def wire_fc_list(monkeypatch: pytest.MonkeyPatch, installed: set[str] | None) -> list[str]:
+    asked: list[str] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if installed is None:
+            raise FileNotFoundError("fc-list")
+        name = command[1].removeprefix(":family=")
+        asked.append(name)
+        return subprocess.CompletedProcess(command, 0, stdout=name.encode() if name in installed else b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return asked
+
+
 def run_ok_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]) -> tuple[Workdir, dict]:
     workdir = make_workdir(tmp_path, files)
     wire_expand(monkeypatch)
+    wire_fc_list(monkeypatch, None)
     calls = wire_latexmk(monkeypatch, [{}])
     return workdir, calls
 
@@ -236,6 +252,50 @@ def test_injects_default_fonts_without_models_toml(tmp_path: Path, monkeypatch: 
     assert "\\setCJKmainfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}" in output
     assert "\\IfFontExistsTF{Hiragino Sans GB}" in output
     assert "\\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Light.ttf}" in output
+
+
+SANS_FILE_FALLBACK = "\\setCJKsansfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}"
+
+
+def test_sans_chain_takes_the_first_installed_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    asked = wire_fc_list(monkeypatch, {"Hiragino Sans GB", "Noto Sans CJK SC"})
+    precompile.run(workdir)
+    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    assert "\\setCJKsansfont{Hiragino Sans GB}\n" in output
+    assert "\\IfFontExistsTF" not in output
+    assert asked == ["Hiragino Sans GB"]
+
+
+def test_sans_chain_falls_to_the_second_installed_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    wire_fc_list(monkeypatch, {"Noto Sans CJK SC"})
+    precompile.run(workdir)
+    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    assert "\\setCJKsansfont{Noto Sans CJK SC}\n" in output
+    assert "Hiragino" not in output
+    assert "\\IfFontExistsTF" not in output
+
+
+def test_sans_chain_falls_to_the_bundled_file_when_nothing_is_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    wire_fc_list(monkeypatch, set())
+    precompile.run(workdir)
+    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    assert SANS_FILE_FALLBACK in output
+    assert "Hiragino" not in output
+    assert "\\IfFontExistsTF" not in output
+
+
+def test_sans_chain_keeps_tex_probing_without_fc_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    precompile.run(workdir)
+    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    assert "\\IfFontExistsTF{Hiragino Sans GB}" in output
+    assert "\\IfFontExistsTF{Noto Sans CJK SC}" in output
+    assert SANS_FILE_FALLBACK in output
 
 
 def test_fonts_config_switches_to_system_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

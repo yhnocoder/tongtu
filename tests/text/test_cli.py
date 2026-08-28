@@ -529,7 +529,12 @@ def test_link_and_id_resolve_to_the_same_workdir(tmp_path: Path, monkeypatch: py
     assert str(tmp_path / "2002.05202") in first_lines[0]
 
 
-def test_stage_display_action_aligns_status_and_summary() -> None:
+@pytest.fixture
+def terminal_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: True))
+
+
+def test_stage_display_action_aligns_status_and_summary(terminal_console: None) -> None:
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
@@ -539,7 +544,7 @@ def test_stage_display_action_aligns_status_and_summary() -> None:
     assert progress.tasks[0].description == f"{expected:<{width}}"
 
 
-def test_stage_display_action_truncates_long_summaries() -> None:
+def test_stage_display_action_truncates_long_summaries(terminal_console: None) -> None:
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
@@ -551,7 +556,7 @@ def test_stage_display_action_truncates_long_summaries() -> None:
     assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
 
 
-def test_stage_display_action_pads_a_bare_status_to_the_same_width() -> None:
+def test_stage_display_action_pads_a_bare_status_to_the_same_width(terminal_console: None) -> None:
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
@@ -560,6 +565,32 @@ def test_stage_display_action_pads_a_bare_status_to_the_same_width() -> None:
     description = progress.tasks[0].description
     assert description.rstrip() == f"{'precompile':<{cli.NAME_WIDTH}}fix session"
     assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
+
+
+def test_stage_display_action_prints_a_line_when_not_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: False))
+    progress = Progress(disable=True)
+    task = progress.add_task("precompile", total=None)
+    display = cli.StageDisplay(progress=progress, task=task, name="precompile")
+    display.action("fix session", "Read: flat.tex")
+    display.action("verifying")
+    out = capsys.readouterr().out
+    assert "    fix session: Read: flat.tex" in out
+    assert "    verifying: " in out
+    assert progress.tasks[0].description == "precompile"
+
+
+def test_stage_display_chunks_prints_a_line_when_not_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: False))
+    progress = Progress(disable=True)
+    task = progress.add_task("translate", total=None, chunks="", tokens="", chunk_progress=())
+    cli.StageDisplay(progress=progress, task=task, name="translate").chunks(CHUNKS)
+    assert "    chunks 2/4, 0.0k/0.1k tok" in capsys.readouterr().out
+    assert progress.tasks[0].fields["chunks"] == ""
 
 
 CHUNKS = (
@@ -605,7 +636,7 @@ def test_chunk_line_is_empty_below_the_minimum_width() -> None:
     assert cli._chunk_line(CHUNKS, cli.MIN_CHUNK_LINE_WIDTH - 1, False).plain == ""
 
 
-def test_stage_display_chunks_counts_finished_tokens() -> None:
+def test_stage_display_chunks_counts_finished_tokens(terminal_console: None) -> None:
     progress = Progress(disable=True)
     task = progress.add_task("translate", total=None, chunks="", tokens="", chunk_progress=())
     cli.StageDisplay(progress=progress, task=task, name="translate").chunks(CHUNKS)
@@ -634,14 +665,14 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
     )
     baseline = report.model_copy(update={"pages": 5})
     session = FixSession(stop_reason="finished", model="rt/m", duration_seconds=1.0)
-    assert cli._stage_summary(CompileManifest(status=CompileStatus.OK)) == ""
-    assert cli._stage_summary(CompileManifest(status=CompileStatus.OK, report=report)) == "6 pages"
+    assert cli.stage_summary(CompileManifest(status=CompileStatus.OK)) == ""
+    assert cli.stage_summary(CompileManifest(status=CompileStatus.OK, report=report)) == "6 pages"
     assert (
-        cli._stage_summary(CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline))
+        cli.stage_summary(CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline))
         == "6 pages, baseline 5"
     )
     assert (
-        cli._stage_summary(
+        cli.stage_summary(
             CompileManifest(status=CompileStatus.OK, report=report, baseline=baseline, fix_session=session)
         )
         == "6 pages, baseline 5, 1 fix session"

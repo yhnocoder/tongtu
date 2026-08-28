@@ -1,0 +1,231 @@
+name: papers
+
+# 手动触发的多篇全流程翻译：每篇一个 matrix 作业，在参考镜像 :env 里从 fetch 跑到 compile，
+# 整个论文目录上传为 artifact paper-<paper>，PDF 另传一份 pdf-<paper>；最后 report 作业读各篇
+# manifest，把一张表写进 run 页面的 step summary，每行链接到该篇的两个 artifact。
+#
+# ask 角色走 opencode（[provider.opencode]），work 角色走 DeepSeek 官方的 Anthropic 兼容端点
+# （[runtime.claude_code_deepseek]：Claude Code 二进制 + api.deepseek.com/anthropic）。secret 是
+# environment `llm` 里的 OPENCODE_API_KEY 与 DEEPSEEK_API_KEY。models.toml 由作业写：load_config
+# 没有内置回退，tongtu setup 也没有非交互路径。
+#
+# 隔离边界是容器 + 一次性 runner。Actions 的非特权容器不允许创建用户命名空间，bwrap 起不来
+# （enableWeakerNestedSandbox 也不行，#88 实测每次 Bash 都报 "No permissions to create a new
+# namespace"），所以内层 Bash 沙箱关掉：sandbox = { enabled = false }。
+
+
+on:
+  workflow_dispatch:
+    inputs:
+      arxiv_ids:
+        description: 空格分隔的论文清单；article / conference / revtex 指 examples/papers/ 的模板论文
+        type: string
+        default: article
+      from:
+        description: 非空时传 --from <stage>
+        type: string
+        default: ""
+      no_review:
+        description: 跳过 review 阶段
+        type: boolean
+        default: false
+      ask_model:
+        description: 非空时传 --ask-model，格式 PROVIDER/MODEL
+        type: string
+        default: ""
+      work_model:
+        description: 非空时传 --work-model，格式 RUNTIME/MODEL
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: papers
+  cancel-in-progress: false
+
+env:
+  CLAUDE_CODE_VERSION: 2.1.250
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      papers: ${{ steps.split.outputs.papers }}
+    steps:
+      - id: split
+        env:
+          ARXIV_IDS: ${{ inputs.arxiv_ids }}
+        run: |
+          papers=$(printf '%s\n' $ARXIV_IDS | jq -R . | jq -sc .)
+          echo "papers=$papers" >> "$GITHUB_OUTPUT"
+          echo "本次要跑的论文：$papers"
+
+  run:
+    name: Run ${{ matrix.paper }}
+    needs: plan
+    if: github.actor == 'yhnocoder'
+    runs-on: ubuntu-latest
+    container: ghcr.io/yhnocoder/tongtu:env
+    environment: llm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        paper: ${{ fromJSON(needs.plan.outputs.papers) }}
+    env:
+      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DISABLE_AUTOUPDATER: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # runner 上下文在作业级 env 里不可用，配置目录与工作目录根改在这里导出。
+      - name: Point config and work directories at the runner temp
+        run: |
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
+          echo "TONGTU_HOME=$RUNNER_TEMP/tongtu" >> "$GITHUB_ENV"
+
+      # 镜像只管 TeX + Python 依赖 + 字体；agent 运行时在这里装。
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CODE_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # 镜像里的 venv 只有依赖，项目本体由 checkout 提供，这里装进去。
+      - run: uv sync --frozen
+
+      - name: Write models.toml
+        run: |
+          mkdir -p "$XDG_CONFIG_HOME/tongtu"
+          cat > "$XDG_CONFIG_HOME/tongtu/models.toml" <<'TOML'
+          [provider.opencode]
+          base_url    = "https://opencode.ai/zen/go"
+          api_key     = ""
+          api_key_env = "OPENCODE_API_KEY"
+
+          [provider.opencode.models]
+          "deepseek-v4-pro" = "chat"
+          "deepseek-v4-flash" = "chat"
+
+          [provider.deepseek_anthropic]
+          base_url    = "https://api.deepseek.com/anthropic"
+          api_key     = ""
+          api_key_env = "DEEPSEEK_API_KEY"
+          api         = "messages"
+
+          [runtime.claude_code_opencode]
+          provider = "opencode"
+          skill_path = ".claude/skills/{role}"
+          events     = "stream-json"
+          command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
+                     "--output-format", "stream-json", "--verbose",
+                     "--setting-sources", "", "--strict-mcp-config",
+                     "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
+                     "--disallowedTools", "Edit(.claude/skills/**)",
+                     "--settings", "{settings}"]
+          settings = { sandbox = { enabled = false } }
+          env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
+
+          [runtime.claude_code_deepseek]
+          provider = "deepseek_anthropic"
+          skill_path = ".claude/skills/{role}"
+          events     = "stream-json"
+          command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
+                     "--output-format", "stream-json", "--verbose",
+                     "--setting-sources", "", "--strict-mcp-config",
+                     "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
+                     "--disallowedTools", "Edit(.claude/skills/**)",
+                     "--settings", "{settings}"]
+          settings = { sandbox = { enabled = false } }
+          env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
+
+          # CI 专用的超时：作业上限 30 分钟，会话 600 秒，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
+          [roles]
+          survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
+          translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
+          review         = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "medium", max_turns = 300, timeout_seconds = 600 }
+          precompile_fix = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 600 }
+          compile_fix    = { runtime = "claude_code_deepseek", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 600 }
+          TOML
+
+      - run: uv run tongtu doctor
+
+      # 模板论文名映射到 examples/papers/ 下的目录；总时长与退出码写进工作目录的 ci.json，供 summary 作业读。
+      - name: Run pipeline
+        env:
+          PAPER: ${{ matrix.paper }}
+          FROM: ${{ inputs.from }}
+          NO_REVIEW: ${{ inputs.no_review }}
+          ASK_MODEL: ${{ inputs.ask_model }}
+          WORK_MODEL: ${{ inputs.work_model }}
+        run: |
+          target="$PAPER"
+          if [ -d "examples/papers/$PAPER" ]; then target="examples/papers/$PAPER"; fi
+          args=()
+          if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
+          if [ "$NO_REVIEW" = "true" ]; then args+=(--no-review); fi
+          if [ -n "$ASK_MODEL" ]; then args+=(--ask-model "$ASK_MODEL"); fi
+          if [ -n "$WORK_MODEL" ]; then args+=(--work-model "$WORK_MODEL"); fi
+          start=$(date +%s)
+          code=0
+          uv run tongtu run "$target" "${args[@]}" || code=$?
+          mkdir -p "$TONGTU_HOME/$PAPER"
+          printf '{"paper": "%s", "seconds": %d, "exit_code": %d}\n' "$PAPER" "$(( $(date +%s) - start ))" "$code" \
+            > "$TONGTU_HOME/$PAPER/ci.json"
+          cat "$TONGTU_HOME/$PAPER/ci.json"
+          exit "$code"
+
+      # 只给一个目录，artifact 根就是论文目录本身，report 作业按 paper-<paper>/build/manifests 读。
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: paper-${{ matrix.paper }}
+          path: ${{ runner.temp }}/tongtu/${{ matrix.paper }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pdf-${{ matrix.paper }}
+          path: ${{ runner.temp }}/tongtu/${{ matrix.paper }}/out/zh.pdf
+          if-no-files-found: ignore
+          retention-days: 14
+
+  report:
+    name: Report
+    needs: run
+    if: always() && needs.run.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: paper-*
+          path: ${{ runner.temp }}/papers
+      - name: Write step summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "${{ runner.temp }}/papers"
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --paginate --jq '.artifacts[] | {name, id}' | jq -s . > "${{ runner.temp }}/artifacts.json"
+          uv run python scripts/ci_summary.py "${{ runner.temp }}/papers" "${{ runner.temp }}/artifacts.json" \
+            >> "$GITHUB_STEP_SUMMARY"
