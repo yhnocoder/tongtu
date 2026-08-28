@@ -86,13 +86,50 @@ def test_star_variant_is_a_distinct_control_sequence() -> None:
     assert validation.CHECK_CONTROL_SEQUENCES in checks(SOURCE, translation)
     text = message(SOURCE, translation, validation.CHECK_CONTROL_SEQUENCES)
     assert text == (
-        "\\section appears 1 times in source, 0 in translation; \\section* appears 0 times in source, 1 in translation"
+        "\\section appears 1 times in source, 0 in translation"
+        ' (paragraph 1 beginning "\\section{Introduction} \\label{sec:intro}" has 1 in source, 0 in translation); '
+        "\\section* appears 0 times in source, 1 in translation"
+        ' (paragraph 1 beginning "\\section{Introduction} \\label{sec:intro}" has 0 in source, 1 in translation)'
     )
 
 
 def test_control_sequence_difference_reads_as_counts_on_both_sides() -> None:
     text = message("\\cite{a} \\cite{b} x", "\\cite{a} 甲", validation.CHECK_CONTROL_SEQUENCES)
-    assert text == "\\cite appears 2 times in source, 1 in translation"
+    assert text == (
+        "\\cite appears 2 times in source, 1 in translation"
+        ' (paragraph 1 beginning "\\cite{a} \\cite{b} x" has 2 in source, 1 in translation)'
+    )
+
+
+def test_control_sequence_difference_is_located_in_the_differing_paragraph() -> None:
+    source = "\\emph{a} one\n\n\\emph{b} two\n\n\\emph{c} three"
+    translation = "\\emph{甲} 一\n\n乙 二\n\n\\emph{丙} 三"
+    assert message(source, translation, validation.CHECK_CONTROL_SEQUENCES) == (
+        "\\emph appears 3 times in source, 2 in translation"
+        ' (paragraph 2 beginning "\\emph{b} two" has 1 in source, 0 in translation)'
+    )
+
+
+def test_control_sequence_differences_in_several_paragraphs_are_listed_in_order() -> None:
+    source = "a \\& b\n\nc\n\nd \\& e\n\ne \\& f"
+    translation = "甲 和 乙\n\n丙\n\n丁 \\& 戊\n\n戊 \\& \\& \\& 己"
+    assert message(source, translation, validation.CHECK_CONTROL_SEQUENCES) == (
+        "\\& appears 3 times in source, 4 in translation"
+        ' (paragraph 1 beginning "a \\& b" has 1 in source, 0 in translation; '
+        'paragraph 4 beginning "e \\& f" has 1 in source, 3 in translation)'
+    )
+
+
+def test_paragraph_preview_is_flattened_and_cut_short() -> None:
+    source = "\\emph{x}\n" + "word " * 20
+    text = message(source, "甲", validation.CHECK_CONTROL_SEQUENCES)
+    flattened = "\\emph{x} " + "word " * 20
+    assert f'beginning "{flattened[: validation.PARAGRAPH_PREVIEW_LENGTH]}…"' in text
+
+
+def test_differences_are_not_located_when_paragraph_counts_differ() -> None:
+    text = message("\\emph{a}\n\nb", "甲 乙", validation.CHECK_CONTROL_SEQUENCES)
+    assert text == "\\emph appears 1 times in source, 0 in translation"
 
 
 def test_escaped_brace_is_a_control_sequence_not_a_brace() -> None:
@@ -128,6 +165,15 @@ def test_fewer_dollars_than_the_source_fails() -> None:
     assert (
         message("$x$ and $y$", "$x$ 与 y", validation.CHECK_BRACES_AND_MATH)
         == "$ count differs: 4 in source, 2 in translation"
+        ' (paragraph 1 beginning "$x$ and $y$" has 4 in source, 2 in translation)'
+    )
+
+
+def test_dollar_difference_is_located_in_the_differing_paragraph() -> None:
+    assert (
+        message("$x$\n\n$y$ and $z$", "$x$\n\n$y$ 与 z", validation.CHECK_BRACES_AND_MATH)
+        == "$ count differs: 6 in source, 4 in translation"
+        ' (paragraph 2 beginning "$y$ and $z$" has 4 in source, 2 in translation)'
     )
 
 

@@ -161,7 +161,10 @@ def test_a_failed_check_is_retried_in_the_same_conversation(tmp_path: Path, monk
     assert calls[1]["messages"][1] == ("assistant", "你好 x 世界。")
     role, retry = calls[1]["messages"][2]
     assert role == "user"
-    assert "- braces_and_math: $ count differs: 2 in source, 0 in translation" in retry
+    assert (
+        "- braces_and_math: $ count differs: 2 in source, 0 in translation"
+        ' (paragraph 1 beginning "Hello $x$ world." has 2 in source, 0 in translation)'
+    ) in retry
     assert "只输出译文本身" in retry
     assert calls[1]["log_path"] == workdir.logs / "translate-c000-2.json"
     assert calls[1]["system"] == calls[0]["system"]
@@ -199,7 +202,10 @@ def test_two_failed_checks_fall_back_to_the_source(tmp_path: Path, monkeypatch: 
     record = manifest.chunks["c004"]
     assert record.status is ChunkTranslateStatus.FALLBACK
     assert record.attempts == 2
-    assert record.failures == ["braces_and_math: $ count differs: 2 in source, 0 in translation"]
+    assert record.failures == [
+        "braces_and_math: $ count differs: 2 in source, 0 in translation"
+        ' (paragraph 1 beginning "Sentence 4 $x$." has 2 in source, 0 in translation)'
+    ]
     assert translated(workdir, "c004") == "Sentence 4 $x$.\n"
     assert translated(workdir, "c000") == "句子 0 $x$.\n"
     assert len(calls) == 6
@@ -217,6 +223,7 @@ def test_every_fallback_chunk_is_reported_as_a_warning(tmp_path: Path, monkeypat
     assert manifest.warnings == [
         f"c00{number} fell back to the English source; the last attempt failed: "
         "braces_and_math: $ count differs: 2 in source, 0 in translation"
+        f' (paragraph 1 beginning "Sentence {number} $x$." has 2 in source, 0 in translation)'
         for number in (3, 4)
     ]
     assert translated(workdir, "c003") == "Sentence 3 $x$.\n"
@@ -253,7 +260,10 @@ def test_an_ask_error_then_a_failed_check_falls_back(tmp_path: Path, monkeypatch
     record = manifest.chunks["c000"]
     assert record.status is ChunkTranslateStatus.FALLBACK
     assert record.attempts == 2
-    assert record.failures == ["braces_and_math: $ count differs: 2 in source, 0 in translation"]
+    assert record.failures == [
+        "braces_and_math: $ count differs: 2 in source, 0 in translation"
+        ' (paragraph 1 beginning "Hello $x$ world." has 2 in source, 0 in translation)'
+    ]
     assert len(calls) == 2
     assert calls[1]["messages"] == [("user", wrapped("Hello $x$ world."))]
     assert calls[1]["effort"] is None
