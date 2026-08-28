@@ -67,7 +67,7 @@ MIN_CHUNK_LINE_WIDTH = 20
 
 CHUNK_GLYPHS: dict[ChunkProgressState, tuple[str, str, str]] = {
     ChunkProgressState.PENDING: ("─", "-", "dim"),
-    ChunkProgressState.RUNNING: ("┅", "~", "cyan"),
+    ChunkProgressState.RUNNING: ("─", "~", "cyan"),
     ChunkProgressState.DONE: ("━", "=", "green"),
     ChunkProgressState.WARNING: ("━", "!", "yellow"),
 }

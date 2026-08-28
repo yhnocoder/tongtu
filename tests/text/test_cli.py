@@ -580,7 +580,7 @@ def test_chunk_line_splits_the_width_by_tokens(width: int) -> None:
     assert len(text.plain) == width
     parts = spans(text)
     assert [style for _run, style in parts] == ["green", "yellow", "cyan", "dim"]
-    assert [run[0] for run, _style in parts] == ["━", "━", "┅", "─"]
+    assert [run[0] for run, _style in parts] == ["━", "━", "─", "─"]
     lengths = [len(run) for run, _style in parts]
     assert lengths[1] == 1
     assert lengths[2] > lengths[3] > lengths[0] > lengths[1]
