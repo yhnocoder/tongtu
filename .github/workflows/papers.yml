@@ -1,8 +1,8 @@
 name: papers
 
 # 手动触发的多篇全流程翻译：每篇一个 matrix 作业，在参考镜像 :env 里从 fetch 跑到 compile，
-# PDF 与调试材料分别上传为 artifact；最后 summary 作业读各篇 manifest，把一张表写进
-# run 页面的 step summary，每行链接到该篇的 PDF 与 logs。
+# 整个论文目录上传为 artifact paper-<paper>，PDF 另传一份 pdf-<paper>；最后 report 作业读各篇
+# manifest，把一张表写进 run 页面的 step summary，每行链接到该篇的两个 artifact。
 #
 # 模型调用全走 opencode：ask 角色用 [provider.opencode]，work 角色用 [runtime.claude_code_opencode]
 # （Claude Code 二进制 + opencode 的 messages 端点），唯一的 secret 是 environment `llm` 里的
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/yhnocoder/tongtu:env
     environment: llm
-    timeout-minutes: 180
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -148,12 +148,13 @@ jobs:
           settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, enableWeakerNestedSandbox = true, network = { allowedDomains = [] } } }
           env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
 
+          # CI 专用的超时：作业上限 10 分钟，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
           [roles]
           survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
           translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
-          review         = { runtime = "claude_code_opencode", model = "deepseek-v4-pro", effort = "medium", max_turns = 300, timeout_seconds = 3600 }
-          precompile_fix = { runtime = "claude_code_opencode", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
-          compile_fix    = { runtime = "claude_code_opencode", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
+          review         = { runtime = "claude_code_opencode", model = "deepseek-v4-pro", effort = "medium", max_turns = 300, timeout_seconds = 240 }
+          precompile_fix = { runtime = "claude_code_opencode", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 240 }
+          compile_fix    = { runtime = "claude_code_opencode", model = "deepseek-v4-pro", effort = "xhigh", max_turns = 40, timeout_seconds = 240 }
           TOML
 
       - run: uv run tongtu doctor
@@ -183,7 +184,16 @@ jobs:
           cat "$TONGTU_HOME/$PAPER/ci.json"
           exit "$code"
 
-      - uses: actions/upload-artifact@v4
+      # 只给一个目录，artifact 根就是论文目录本身，report 作业按 paper-<paper>/build/manifests 读。
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: paper-${{ matrix.paper }}
+          path: ${{ runner.temp }}/tongtu/${{ matrix.paper }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: pdf-${{ matrix.paper }}
@@ -191,19 +201,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: logs-${{ matrix.paper }}
-          path: |
-            ${{ runner.temp }}/tongtu/${{ matrix.paper }}/build/manifests/
-            ${{ runner.temp }}/tongtu/${{ matrix.paper }}/logs/
-            ${{ runner.temp }}/tongtu/${{ matrix.paper }}/ci.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-  summary:
-    name: Summary
+  report:
+    name: Report
     needs: run
     if: always() && needs.run.result != 'skipped'
     runs-on: ubuntu-latest
@@ -216,9 +215,9 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          pattern: logs-*
+          pattern: paper-*
           path: ${{ runner.temp }}/papers
       - name: Write step summary
         env:

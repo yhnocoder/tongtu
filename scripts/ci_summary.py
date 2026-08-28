@@ -30,7 +30,7 @@ MANIFEST_CLASSES: dict[str, type[Manifest]] = {
     "compile": CompileManifest,
 }
 
-LOGS_PREFIX = "logs-"
+PAPER_PREFIX = "paper-"
 
 PDF_PREFIX = "pdf-"
 
@@ -49,11 +49,11 @@ class PaperRow:
 def read_rows(papers_dir: Path) -> list[PaperRow]:
     rows = []
     for entry in sorted(papers_dir.iterdir()):
-        if not entry.is_dir() or not entry.name.startswith(LOGS_PREFIX):
+        if not entry.is_dir() or not entry.name.startswith(PAPER_PREFIX):
             continue
         workdir = Workdir(entry)
         manifests = {stage: load_manifest(workdir.manifest_path(stage), MANIFEST_CLASSES[stage]) for stage in STAGES}
-        rows.append(PaperRow(entry.name.removeprefix(LOGS_PREFIX), manifests, _read_seconds(entry / CI_FILENAME)))
+        rows.append(PaperRow(entry.name.removeprefix(PAPER_PREFIX), manifests, _read_seconds(entry / CI_FILENAME)))
     return rows
 
 
@@ -71,7 +71,7 @@ def render(rows: list[PaperRow], artifacts: dict[str, int], repo: str, run_id: s
             return text
         return f"[{text}](https://github.com/{repo}/actions/runs/{run_id}/artifacts/{artifact_id})"
 
-    header = ["paper", *STAGES, "summary", "logs", "total"]
+    header = ["paper", *STAGES, "summary", "artifact", "total"]
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     notes = []
     for row in rows:
@@ -87,7 +87,7 @@ def render(rows: list[PaperRow], artifacts: dict[str, int], repo: str, run_id: s
             else:
                 notes.append(f"- **{row.paper} / {stage}**: {manifest.message}")
         cells.append("; ".join(summary for summary in summaries if summary))
-        cells.append(link("logs", LOGS_PREFIX + row.paper))
+        cells.append(link("artifact", PAPER_PREFIX + row.paper))
         cells.append(_duration(row.seconds))
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join([*lines, "", *notes]) + "\n"

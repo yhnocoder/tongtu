@@ -219,6 +219,9 @@ class StageDisplay:
         total_tokens = sum(chunk.tokens for chunk in chunks)
         if self.rate_baseline is None:
             self.rate_baseline = (time.monotonic(), done_tokens)
+        if not console.is_terminal:
+            console.print(f"    chunks {len(finished)}/{len(chunks)}, {_kilo(done_tokens)}/{_kilo(total_tokens)} tok")
+            return
         self.progress.update(
             self.task,
             completed=done_tokens,
@@ -234,6 +237,9 @@ class StageDisplay:
         console.print(f"    {status}: {summary}")
 
     def action(self, status: str, summary: str = "") -> None:
+        if not console.is_terminal:
+            self.line(status, summary)
+            return
         width = STATUS_WIDTH + SUMMARY_WIDTH
         text = f"{status:<{STATUS_WIDTH}}{summary[:SUMMARY_WIDTH]}" if summary else status
         self.progress.update(self.task, description=f"{self.name:<{NAME_WIDTH}}{text[:width]:<{width}}")

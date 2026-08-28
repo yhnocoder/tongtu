@@ -10,11 +10,11 @@ from tongtu.artifacts.translate import ChunkTranslateRecord, ChunkTranslateStatu
 from tongtu.manifests import write_manifest
 from tongtu.workdir import Workdir
 
-ARTIFACTS = {"pdf-article": 11, "logs-article": 12, "logs-2002.05202": 13}
+ARTIFACTS = {"pdf-article": 11, "paper-article": 12, "paper-2002.05202": 13}
 
 
 def write_paper(papers_dir: Path, paper: str, seconds: int | None) -> Workdir:
-    workdir = Workdir(papers_dir / f"logs-{paper}")
+    workdir = Workdir(papers_dir / f"paper-{paper}")
     workdir.create()
     if seconds is not None:
         (workdir.path / "ci.json").write_text(json.dumps({"paper": paper, "seconds": seconds, "exit_code": 0}))
@@ -52,8 +52,8 @@ def test_rows_and_render(tmp_path: Path) -> None:
     text = ci_summary.render(rows, ARTIFACTS, "yhnocoder/tongtu", "99")
 
     assert "[article](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/11)" in text
-    assert "[logs](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/12)" in text
-    assert "[logs](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/13)" in text
+    assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/12)" in text
+    assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/13)" in text
     assert "| 2002.05202 |" in text
     assert "| ok | — | — | — | ok | — | — | local, 1 tex files; 2 chunks, 1 fallback |" in text
     assert "| 38m12s |" in text
