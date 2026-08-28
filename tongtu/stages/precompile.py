@@ -145,7 +145,6 @@ def _execute(
 
     final, fix_session, failure = compiling.compile_with_fix(
         ROLE,
-        paper_workdir.src,
         tree,
         FLAT_FILENAME,
         paper_workdir.precompile_fix_log,

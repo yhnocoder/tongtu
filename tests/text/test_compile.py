@@ -378,19 +378,6 @@ def test_fix_session_error_or_timeout_still_verifies(
     assert calls == {"compile": 2, "clean": 1}
 
 
-def test_session_changes_outside_zh_tex_are_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir = make_workdir(tmp_path)
-    wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
-
-    def edit(tree: Path) -> None:
-        (tree / "figure.pdf").write_bytes(b"%PDF changed")
-
-    wire_work(monkeypatch, edit=edit)
-    manifest = compile.run(workdir)
-    assert manifest.status is CompileStatus.OK
-    assert any("figure.pdf" in line for line in manifest.warnings)
-
-
 def test_control_sequences_must_match_the_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])

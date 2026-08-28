@@ -102,7 +102,6 @@ def _execute(
 
     final, fix_session, failure = compiling.compile_with_fix(
         ROLE,
-        paper_workdir.src,
         tree,
         zh_name,
         paper_workdir.compile_fix_log,
