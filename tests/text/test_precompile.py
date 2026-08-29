@@ -225,12 +225,17 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert manifest.report.undefined_citations == 1
     assert manifest.report.missing_characters == 1
     assert manifest.report.duration_seconds > 0
-    assert calls == {"compile": 1, "clean": 0}
+    assert calls == {"compile": 1, "clean": 1}
     assert outputs_present(workdir, "precompile")
-    tree = workdir.build / "sandbox" / "precompile"
+    tree = workdir.build / "sandbox" / "tex"
     assert (tree / "flat.tex").is_file()
-    assert (tree / "fonts" / "LXGWWenKai-Light.ttf").is_file()
-    assert (workdir.fonts / "LXGWWenKai-Light.ttf").is_file()
+    assert (tree / "main.tex").is_file()
+    assert not (tree / "flat.pdf").exists()
+    for name in ("LXGWWenKai-Light.ttf", "LXGWWenKai-Medium.ttf"):
+        link = tree / "fonts" / name
+        assert link.is_symlink()
+        assert link.read_bytes()[:4] == b"\x00\x01\x00\x00"
+    assert not (workdir.build / "fonts").exists()
     written = json.loads(workdir.manifest_path("precompile").read_text(encoding="utf-8"))
     assert written["status"] == "ok"
     assert written["report"]["pages"] == 7
@@ -326,7 +331,7 @@ def test_fonts_config_switches_to_repo_font_file(tmp_path: Path, monkeypatch: py
     assert "\\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Medium.ttf}" in output
 
 
-def test_fonts_config_external_file_is_copied_into_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fonts_config_external_file_is_linked_into_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     font_path = tmp_path / "custom" / "MyFont.otf"
     font_path.parent.mkdir(parents=True)
     font_path.write_bytes(b"font-bytes")
@@ -336,9 +341,9 @@ def test_fonts_config_external_file_is_copied_into_tree(tmp_path: Path, monkeypa
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert manifest.status is PrecompileStatus.OK
     assert "\\setCJKmainfont[Path={fonts/}]{MyFont.otf}" in output
-    copied = workdir.build / "sandbox" / "precompile" / "fonts" / "MyFont.otf"
-    assert copied.read_bytes() == b"font-bytes"
-    assert (workdir.fonts / "MyFont.otf").read_bytes() == b"font-bytes"
+    link = workdir.build / "sandbox" / "tex" / "fonts" / "MyFont.otf"
+    assert link.is_symlink()
+    assert link.read_bytes() == b"font-bytes"
 
 
 def test_fonts_config_missing_file_falls_back_to_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -492,9 +497,9 @@ def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "finished"
     assert manifest.fix_session.duration_seconds >= 0
-    assert calls == {"compile": 2, "clean": 1}
+    assert calls == {"compile": 2, "clean": 2}
     assert work_calls[0]["role"] == "precompile_fix"
-    assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "precompile"
+    assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "tex"
     assert work_calls[0]["trace_path"] == workdir.logs / "precompile-fix.jsonl"
     assert work_calls[0]["model"] == "claude_code/claude-sonnet-5"
     assert work_calls[0]["effort"] == "high"
@@ -510,7 +515,7 @@ def test_fix_session_error_still_goes_to_verification(tmp_path: Path, monkeypatc
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
     assert any("the fix session ended with error" in line and "claude_code" in line for line in manifest.warnings)
-    assert calls == {"compile": 2, "clean": 1}
+    assert calls == {"compile": 2, "clean": 2}
     assert outputs_present(workdir, "precompile")
 
 
@@ -578,17 +583,14 @@ def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"broken.tex": "no documentclass\n"})
-    (workdir.build / "sandbox" / "precompile").mkdir(parents=True)
-    (workdir.build / "sandbox" / "precompile" / "flat.pdf").write_bytes(b"stale")
+    (workdir.build / "sandbox" / "tex").mkdir(parents=True)
+    (workdir.build / "sandbox" / "tex" / "flat.pdf").write_bytes(b"stale")
     (workdir.build / "precompile.tex").write_text("stale", encoding="utf-8")
-    workdir.fonts.mkdir(parents=True)
-    (workdir.fonts / "Stale.ttf").write_bytes(b"stale")
     (workdir.logs / "precompile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.MAIN_NOT_FOUND
-    assert not (workdir.build / "sandbox" / "precompile").exists()
+    assert not (workdir.build / "sandbox" / "tex").exists()
     assert not (workdir.build / "precompile.tex").exists()
-    assert not workdir.fonts.exists()
     assert not (workdir.logs / "precompile-fix.jsonl").exists()
 
 
