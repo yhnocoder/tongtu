@@ -1,10 +1,10 @@
 import re
 from pathlib import Path
 
-PROPOSAL = Path(__file__).resolve().parent.parent / "docs" / "proposal"
-OUT = PROPOSAL / "proposal.html"
+DESIGN = Path(__file__).resolve().parent.parent / "docs" / "design"
+OUT = DESIGN / "index.html"
 PAGES = [
-    ("pipeline-v0.html", "流水线"),
+    ("pipeline.html", "流水线"),
     ("model.html", "模型调用层"),
     ("cli.html", "命令行"),
 ]
@@ -14,7 +14,7 @@ TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>通途提案</title>
+<title>通途设计文档</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="style.css">
 <style>
@@ -42,7 +42,7 @@ body{display:flex;flex-direction:column}
 </style>
 </head>
 <body>
-<nav class="topbar"><span class="brand">通途提案</span>@TABS@</nav>
+<nav class="topbar"><span class="brand">通途设计文档</span>@TABS@</nav>
 <main class="scroll" id="scroll">
 @PANELS@
 </main>
@@ -68,7 +68,7 @@ panels.forEach(p => io.observe(p));
 
 
 def page_body(name: str) -> str:
-    text = (PROPOSAL / name).read_text()
+    text = (DESIGN / name).read_text()
     if "<style" in text:
         raise SystemExit(f"{name}: page-level <style> is not allowed; put rules in style.css")
     body = re.search(r"<body>\s*(.*?)\s*</body>", text, re.S).group(1)
