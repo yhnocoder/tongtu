@@ -10,7 +10,7 @@
 <body>
 <div class="wrap">
 <h1>模型调用层</h1>
-<p class="sub"><code>tongtu/model/</code>。流水线里每一处调模型都经这一层，只认两个函数：<code>ask</code> 单次问答（survey 提议术语、translate 逐 chunk 翻译），<code>work</code> 在一棵目录树里拉起一次 agent 会话（precompile / compile 的修复、review）。服务商、运行时与各角色的默认模型都在 <code>models.toml</code>。各阶段见 <a href="pipeline-v0.html">pipeline-v0.html</a>，命令行见 <a href="cli.html">cli.html</a>。</p>
+<p class="sub"><code>tongtu/model/</code>。流水线里每一处调模型都经这一层，只认两个函数：<code>ask</code> 单次问答（survey 提议术语、translate 逐 chunk 翻译），<code>work</code> 在一棵目录树里拉起一次 agent 会话（precompile / compile 的修复、review）。服务商、运行时与各角色的默认模型都在 <code>models.toml</code>。各阶段见 <a href="pipeline.html">pipeline.html</a>，命令行见 <a href="cli.html">cli.html</a>。</p>
 
 <div class="card" style="margin-top:8px">
 <div class="cols">
@@ -55,7 +55,11 @@
 base_url    = "https://opencode.ai/zen/go"   <span class="c"># 接口前缀的根，chat / responses / messages 都在它下面的 /v1/...</span>
 api_key     = ""                  <span class="c"># 直接写密钥，或留空改用下面的环境变量；setup -i 填的是这里</span>
 api_key_env = "OPENCODE_API_KEY"
-models = { "deepseek-v4-flash" = "chat", "gpt-5.6-luna" = "responses", "minimax-m3" = "messages" }
+
+[provider.opencode.models]          <span class="c"># 逐模型写接口；setup 生成的模板列全 opencode 当前可用的模型，这里只举三种接口各一例</span>
+"deepseek-v4-pro" = "chat"
+"gpt-5.6-luna"    = "responses"
+"minimax-m3"      = "messages"
 
 [provider.deepseek]
 base_url    = "https://api.deepseek.com"
@@ -124,7 +128,12 @@ survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = 
 translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
 review         = { runtime = "claude_code", model = "claude-opus-5", effort = "medium", max_turns = 300, timeout_seconds = 3600 }
 precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
-compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }</pre>
+compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
+
+<span class="c"># 中文字体，字段与取值见 pipeline.html 的字体卡</span>
+[fonts]
+main = "LXGWWenKai-Light.ttf"
+bold = "LXGWWenKai-Medium.ttf"</pre>
 <p style="font-size:13px;color:var(--muted);margin:8px 0 0">命令行 <code>--ask-model</code> / <code>--ask-effort</code> 覆盖全部 API 直调（ask）类角色，<code>--work-model</code> / <code>--work-effort</code> 覆盖全部 agent 会话（work）类角色；没有 <code>tongtu config</code> 子命令，文件手改。密钥写在服务商条目的 <code>api_key</code>（文件 0600），留空则用 <code>api_key_env</code> 指的环境变量。messages 接口的推理强度按档位表换算成 <code>thinking.budget_tokens</code>（low 1024 / medium 2048 / high 4096），<code>max_tokens</code> 32768。<code>tongtu doctor</code> 只检查 <code>[roles]</code> 引用到的服务商与运行时。</p>
 </details>
 <div style="margin-top:18px">

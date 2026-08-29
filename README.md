@@ -4,14 +4,20 @@
 
 > 命名取自《水调歌头·游泳》「一桥飞架南北，天堑变通途」——语言是天堑，翻译使之为通途。
 
-**状态：按 `docs/design/pipeline.html` 重构中，尚不可用。** 项目约定与重构流程见 `CLAUDE.md`。
+**状态：v0.1，可运行。** `tongtu run <arxiv_id>` 走完 fetch → precompile → mask → survey → translate → review → compile 七个阶段，在验证集的论文上出了中文 PDF；未发布到 PyPI。v0.2 在设计中。
+
+从哪里进：
+
+- 设计文档 https://yhnocoder.github.io/tongtu/ ——七个阶段、模型调用层、命令行各是什么、读写哪些文件（源文件在 `docs/design/`）
+- [`CLAUDE.md`](CLAUDE.md)——项目的目标、判断与协作约定
+- [Milestone](https://github.com/yhnocoder/tongtu/milestone/2)—— v0.2 的进度
 
 ## 开发
 
 ```
 uv sync              # 装依赖（含 dev 组）
-make install-hooks   # 装 git pre-commit hook（ruff check / ruff format / diction lint / comment lint）
-make lint            # 检查：ruff check + ruff format --check + diction lint + comment lint
+make install-hooks   # 装 git pre-commit hook（ruff check / ruff format / comment lint）
+make lint            # 检查：ruff check + ruff format --check + comment lint
 make format          # 自动修：ruff check --fix + ruff format
 ```
 

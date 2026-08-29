@@ -19,6 +19,8 @@ ROLE = "review"
 
 VALIDATE_FILENAME = "validate.py"
 
+READ_ONLY_MODE = 0o444
+
 SKIPPED_MESSAGE = "--no-review: no review session was started; translated/ was copied to reviewed/ unchanged."
 
 
@@ -112,6 +114,8 @@ def _stage_site(paper_workdir: Workdir, sources: dict[str, str], translated: dic
         (site / dirname).mkdir(parents=True, exist_ok=True)
         for chunk_id, body in contents.items():
             (site / dirname / f"{chunk_id}.tex").write_text(body, encoding=ENCODING)
+    for path in (site / paper_workdir.chunks.name).iterdir():
+        path.chmod(READ_ONLY_MODE)
     shutil.copyfile(paper_workdir.brief, site / paper_workdir.brief.name)
     (site / skill_path).mkdir(parents=True, exist_ok=True)
     shutil.copyfile(Path(validation.__file__), site / skill_path / VALIDATE_FILENAME)

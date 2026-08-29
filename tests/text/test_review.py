@@ -143,6 +143,7 @@ def test_the_site_holds_only_the_isolated_inputs(tmp_path: Path, monkeypatch: py
     review.run(workdir)
     site = site_path(workdir)
     assert (site / "chunks" / "c000.tex").read_text(encoding="utf-8") == SOURCE
+    assert (site / "chunks" / "c000.tex").stat().st_mode & 0o777 == 0o444
     assert in_site(workdir, "c000").read_text(encoding="utf-8") == TRANSLATION
     assert (site / "brief.json").read_text(encoding="utf-8") == BRIEF
     assert sorted(path.name for path in site.iterdir()) == [".agent", "brief.json", "chunks", "reviewed"]

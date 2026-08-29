@@ -1,4 +1,0 @@
-{
-  "note": "diction_lint 基线：存量违例的 {路径: {正则: 数量}}，数量只许减少；清理后跑 scripts/diction_lint.py --update-baseline 重新生成 diction_baseline.json。不要手工更改这个文件来放宽限制。",
-  "counts": {}
-}

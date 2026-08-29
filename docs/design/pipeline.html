@@ -53,6 +53,13 @@
 <tr><td>build/manifests/fetch.json</td><td class="src">—</td><td><a href="#def-fetch">FetchManifest</a></td><td>来源、格式、tex 文件清单、被拒绝的 tar 成员</td></tr>
 </tbody></table>
 </div>
+<details><summary>细节与常量</summary>
+<ul class="fine">
+<li>下载：<code>https://export.arxiv.org/e-print/{arxiv_id}</code>，超时 60 秒，User-Agent 带 tongtu 版本号与仓库地址</li>
+<li>分流：看前四字节 <code>%PDF</code> → PDF；<code>1f 8b</code> → gzip，解出来再判 tar 还是单个 tex；其余按 tar 试，不是 tar 就当裸 tex</li>
+<li>PDF 套壳判定：全部 .tex 的字符数少于 1000（源码里有 <code>\includepdf</code> 时为 5000）→ <code>pdf_only</code></li>
+<li>拷贝本地目录时跳过 <code>.git</code> <code>.svn</code> <code>.hg</code> <code>__pycache__</code> <code>.DS_Store</code>；tar 里非普通文件与目录的成员（链接、设备文件）不解出，成员名记进 manifest 的 <code>rejected</code></li>
+</ul></details>
 <details open id="def-fetch"><summary>产物</summary>
 <pre><span class="c"># 各阶段 manifest 的共用基类（tongtu/artifacts/common.py）：status 在 JSON 里排第一，warnings / message 紧随其后，阶段自己的字段在后面。子类把 status 收窄成自己的状态枚举。</span>
 <span class="k">class</span> Manifest(BaseModel):
@@ -244,6 +251,7 @@
 <ul class="fine">
 <li>切 chunk：扫标题结构选首选层级 → 按章节切 → 大于 SPLIT_ABOVE 下分、小于 MERGE_BELOW 合并 → 定区 front / body / appendix → 自检拼接恒等。token 数用 <code>tiktoken</code>（o200k_base）实数，只用于分块决策</li>
 <li>术语提议：<code>--no-terms</code> 或角色未配置时跳过；system 是 <code>skill/survey_terms/SKILL.md</code>，输入摘要 + 标题树 + 全文掩码文本，schema 约束输出 <code>{terms, do_not_translate}</code>。提议的译名机械补空格：中文字符与 ASCII 字母数字相邻处插一个空格（<code>细粒度token选择</code> → <code>细粒度 token 选择</code>）</li>
+<li><code>chunk_failed</code> 的三个出口：读不到或解析不了 masked.tex / blocks.json；tiktoken 的 o200k_base 编码加载失败（首次使用要联网下载 BPE 文件，或以 <code>TIKTOKEN_CACHE_DIR</code> 指向已有的）；切不出满足拼接恒等的 chunk</li>
 <li>摘要来路：先取 blocks.json 的 abstract 槽位，没有再找 masked.tex 里的 abstract 环境；两条都落空则 brief.abstract 为 null 并记 warning，不算失败</li>
 </ul></details>
 <details open id="def-survey"><summary>产物</summary>
@@ -332,7 +340,7 @@ skill/translate/SKILL.md          <span class="c"># 翻译规则，随 prompt_ve
 ## 术语表                          <span class="c"># brief 里全部 terms 与 do_not_translate，不逐 chunk 筛</span>
 ## 额外要求                        <span class="c"># brief.style</span>
 <span class="c"># —— 本 chunk 特有，从这里起缓存失效 ——</span>
-## 全文章节标题树                  <span class="c"># 只放进第一个 chunk（含标题与摘要的那段）；正文 chunk 不带</span>
+## 全文章节标题树                  <span class="c"># 只放进 front 区的 chunk（含标题与摘要）；body / appendix 的 chunk 不带</span>
 ## 相邻上下文（原文）              <span class="c"># 前一 chunk 末 3 段 + 后一 chunk 首 3 段</span></pre>
 <pre style="margin-top:10px;font-size:12px">system:     上面那一段
 user:       请翻译：+ ``` 围栏包住的 chunk
@@ -340,7 +348,7 @@ assistant:  上一次的译文                                  <span class="tag
 user:       各层差异说明 + 请修正并重新输出完整译文         <span class="tag" style="font-size:11px">第一次失败后追加</span></pre>
 <ul class="fine">
 <li>重试在同一段对话里续写：前缀逐字节不变，第一次的整个提示词都命中缓存；模型看得见自己上一次的输出，修的是具体错误而不是从头再翻</li>
-<li>相邻上下文取的是原文（不是前一 chunk 的译文，所以 chunk 之间没有数据依赖，可以并发），包在 ``` 围栏里，全文开头与结尾标 [START] / [END]；不包围栏时模型曾把邻块当成正文续写而不翻译（2512.02556 c004）</li>
+<li>相邻上下文取的是原文（不是前一 chunk 的译文，所以 chunk 之间没有数据依赖，可以并发），包在 ``` 围栏里，首块与末块没有邻块的一侧写一句中文说明（「这是全文的第一块，前面没有内容」/「这是全文的最后一块，后面没有内容」）</li>
 <li>思考强度：首译用角色配置的强度（默认 none，思考对首译无增益）；校验不过引起的重试固定升到 low——关思考的重试输出逐字节不变，思考对修复是必要的（思考开销的调研课题见 #44）。ask 报错或返回空引起的重试沿用首译强度</li>
 </ul></details>
 
@@ -363,6 +371,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 
 <details><summary>细节与常量</summary>
 <ul class="fine">
+<li>章节标题树按 chunk 的 <code>part</code> 决定带不带：front 区的每个 chunk 都带（front 被切成多块时每块都带），body / appendix 不带</li>
 <li>译文整段包在代码围栏里时剥掉围栏再校验</li>
 <li>重试的两种触发：校验不过 → 续写一轮（assistant = 上一次译文，user = 差异说明 + 请重新输出完整译文）；ask 报错或返回空 → 直接再 ask 一次，不带差异说明。无论哪种，每 chunk 至多 2 次 ask，第二次之后必定得出 translated 或 fallback</li>
 <li>并发数由 <code>--jobs</code> 给出，记进 manifest 的 <code>jobs</code>；结果按文档顺序写出，中途被杀不留半套产物</li>
@@ -389,7 +398,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div class="card-head"><span class="name">review</span><span class="one">agent 通读，补翻回退、修正跨 chunk 不一致</span><span class="tag agent">work</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
-<li><b>搭隔离现场</b> <code>build/sandbox/review/</code>：只放原文 <code>chunks/</code>（只读）、译文 <code>reviewed/</code>（translated/ 的拷贝，可改）、<code>brief.json</code> 与 skill。agent 看不到工作目录里的其他东西</li>
+<li><b>搭隔离现场</b> <code>build/sandbox/review/</code>：只放原文 <code>chunks/</code>（文件权限 0444）、译文 <code>reviewed/</code>（translated/ 的拷贝，可改）、<code>brief.json</code> 与 skill。agent 看不到工作目录里的其他东西</li>
 <li><b>拉一次 agent work</b>（角色 <code>review</code>）：通读全部原文与译文，把 translate 回退成英文的 chunk 翻出来，统一术语、同一概念的译法、记号与称呼，改明显误译。只许改 <code>reviewed/</code> 下的文件，不许增删文件；每改完一个文件自己跑一遍与 translate 相同的校验脚本</li>
 <li><b>脚本校验</b>：不信 agent 的自查，每个 chunk 对着原文再跑一遍 <a href="#translate">translate</a> 的校验；不过的 chunk 整个回退到 translate 的版本，其他 chunk 的修订保留；agent 删掉的文件同样视为回退</li>
 <li><b>写出</b> <code>build/reviewed/</code>，文件集合与 <code>chunks/</code> 一致。会话拉不起来 → <code>review_failed</code>；改了 0 个 chunk 也是 ok</li>
@@ -401,7 +410,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div class="io">
 <span class="label">读</span>
 <table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
-<tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>原文，拷进隔离现场只读；校验的源</td></tr>
+<tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>原文，拷进隔离现场并设为 0444；校验的源</td></tr>
 <tr><td>build/translated/*.tex</td><td class="src"><a href="#translate">translate</a></td><td><span class="ty">LaTeX</span></td><td>修订的起点，拷进现场为 reviewed/；未过校验的 chunk 回退到这一版</td></tr>
 <tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>术语表与全局语境，拷进现场</td></tr>
 <tr><td>skill/review/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>SKILL.md，由 work 拷进现场的 skill 目录</td></tr>
@@ -421,7 +430,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <li>SKILL 要求 agent 每改完一个文件就跑 <code>python3 -I .claude/skills/review/validate.py chunks/cNNN.tex reviewed/cNNN.tex</code>，不过接着改。Bash 在现场内自由使用，不做前缀放行</li>
 <li>脚本校验先查 <code>reviewed/</code> 的文件名集合与 <code>chunks/</code> 完全一致：多出来的忽略，缺的视为 agent 动过且回退，同时记入 <code>changed</code> 与 <code>reverted</code>。一个文件就是一个 chunk，agent 改不了 chunk 边界</li>
 <li>拷出到 <code>build/reviewed/</code> 时把正文首尾的空白按源 chunk 原样包回：chunk 文件是 masked.tex 的精确切片，compile 按序拼接，首尾空白是拼接正确性的一部分</li>
-<li><code>--no-review</code> 时 manifest：status ok，<code>changed</code> / <code>reverted</code> 为空，<code>session</code> 为 null</li>
+<li><code>--no-review</code> 时 manifest：status ok，<code>changed</code> / <code>reverted</code> 为空，<code>session</code> 为 null，<code>message</code> 写明 translated/ 已原样拷成 reviewed/</li>
 </ul></details>
 <details open id="def-review"><summary>产物</summary>
 <pre><span class="k">class</span> ReviewManifest(Manifest):
@@ -462,6 +471,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <tr><td>out/zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物</td></tr>
 <tr><td>build/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>编译通过的中文全文（修复过就是修复后的）；判据不过时不写</td></tr>
 <tr><td>build/sandbox/tex/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>写进编译目录的译文；修复会话的现场就是这个目录；结束时 <code>latexmk -C</code> 清掉中间文件</td></tr>
+<tr><td>build/sandbox/tex/zh.log、zh.pdf</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物：计数从 zh.log 解析，修复会话读 zh.log 定位错误；通过后 zh.pdf 拷出为 out/zh.pdf，<code>latexmk -C</code> 后不保留</td></tr>
 <tr><td>logs/compile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过修复会话才有</td></tr>
 <tr><td>build/manifests/compile.json</td><td class="src">—</td><td><a href="#def-compile">CompileManifest</a></td><td>译文的编译统计与原文基线并排、修复会话结局</td></tr>
 </tbody></table>
@@ -531,10 +541,10 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div class="card-head"><span class="name">fonts</span><span class="one">切换译文 PDF 的中文字体，改 models.toml 即生效，无命令行选项</span></div>
 <div><span class="label">规则</span>
 <ol class="steps">
-<li>四个槽位：<code>main</code> 正文、<code>bold</code> 粗体（BoldFont）、<code>sans</code> 无衬线、<code>mono</code> 等宽。sans 不写则按平台探测（Hiragino Sans GB → Noto Sans CJK SC → 霞鹜文楷），mono 不写则用 main</li>
+<li>四个槽位：<code>main</code> 正文、<code>bold</code> 粗体（BoldFont）、<code>sans</code> 无衬线、<code>mono</code> 等宽。sans 不写则用固定链 Hiragino Sans GB → Noto Sans CJK SC，末尾同样补默认霞鹜文楷兜底；mono 不写则用 main</li>
 <li>取值两类：<b>字体文件</b>——.ttf / .otf / .ttc，写仓库 fonts/ 里的文件名或一个文件路径（可用 <code>~</code>），precompile 把文件以软链放进编译目录的 fonts/，以 <code>Path={fonts/}</code> 相对引用；<b>系统字体名</b>——不带扩展名即视为字体名，由 fontspec 按名字查找</li>
-<li><code>main</code> / <code>sans</code> / <code>mono</code> 可写成列表按序回退（同 CSS 的 font-family）：每个字体名候选包一层 <code>\IfFontExistsTF</code>，存在就用，不存在试下一个；文件候选必然可用、终止链条，它之后的候选不会被用到（写 warning）；候选全是字体名时，末尾自动补默认霞鹜文楷作为最后一级回退。单个字体名不包检测，写错由编译失败暴露</li>
-<li><code>bold</code> 是单值，与候选同类（文件配文件、字体名配字体名）才配对；默认的 bold 只与默认的 main 配对，不跟随换掉的字体；与所有候选都配不上时写 warning 并忽略</li>
+<li><code>main</code> / <code>sans</code> / <code>mono</code> 可写成列表按序回退（同 CSS 的 font-family）：字体名候选先用 <code>fc-list :family=&lt;名字&gt;</code> 探测（超时 5 秒），探测到不存在的直接剔除，探测不了（fc-list 缺失或超时）的保留；留下的每个字体名候选再包一层 <code>\IfFontExistsTF</code>，存在就用，不存在试下一个；文件候选必然可用、终止链条，它之后的候选不会被用到（写 warning）；候选全是字体名时，末尾自动补默认霞鹜文楷作为最后一级回退。单个字体名不包检测，写错由编译失败暴露</li>
+<li><code>bold</code> 是单值，与候选同类（文件配文件、字体名配字体名）才配对；默认的 bold 只与默认的 main 配对，不跟随换掉的字体；与所有候选都配不上时写 warning 并忽略。sans 链固定以默认 bold 配对</li>
 <li>失败不抛异常：配置的字体文件不存在则跳过该候选并写进 manifest 的 warnings，候选全部不可用时用默认字体</li>
 </ol></div>
 <div class="io">
