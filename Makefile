@@ -1,4 +1,4 @@
-.PHONY: lint format install-hooks proposal
+.PHONY: lint format install-hooks design
 
 lint:
 	uv run pre-commit run --all-files
@@ -10,6 +10,6 @@ format:
 install-hooks:
 	uv run pre-commit install
 
-proposal:
-	python3 scripts/build_proposal.py
-	open docs/proposal/proposal.html
+design:
+	python3 scripts/build_design_docs.py
+	open docs/design/index.html

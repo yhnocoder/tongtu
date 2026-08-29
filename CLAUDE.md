@@ -28,10 +28,11 @@
 
 ## 当前状态
 
-- V2 原型（`~/Projects/arxiv_trans/arXiv-2606.19348v1/arxiv-translator/`，约 1300 行脚本）已经跑通四篇论文出中文 PDF，是本仓库的参考基线。
-- 本仓库 fetch、flatten、precompile、mask、survey、chunk、translate 已实现，但还没有出过一份中文 PDF。这一版封存在 commit `b751db9`（重构前的最后一版）。
-- 设计依据只有一份：`docs/proposal/pipeline-v0.html`（下称提案图）。它是 2026-08-20 逐卡、逐字段讨论定下的共识：七个阶段 fetch → precompile → mask → survey → translate → review → compile，每张卡写这个阶段读什么、写什么、做什么，产物的类定义附在卡底；模型调用层在同目录的 `model.html`，命令行与重跑语义在 `cli.html`。人只需记住本文件；AI 实现某个阶段时读对应那张卡（卡片有 `id`，例如 `#translate`）。旧的 docs/ 已删除，不要再建第二份设计文档。
-- 下一步是按提案图重构，不是在现有代码上继续建。理由：现状的阶段划分、重跑语义、manifest 形态都与提案不同，在上面继续建 compile 只会扩大要改的面。重构完成的判据是第一份中文 PDF——重构就是到它的最短路。
+- 七个阶段 fetch → precompile → mask → survey → translate → review → compile 全部实现，`tongtu run <arxiv_id>` 已在验证集的九篇 arXiv 论文上出了中文 PDF（`out/zh.pdf`）。重构目标（第一份中文 PDF）已达成，现在的工作是让译文更好、让流程更稳。
+- 设计文档在 `docs/design/`：`pipeline.html` 是七个阶段的卡片（每张卡写主线任务、状态、读写的文件、折叠的细节与常量、产物的类定义），另有术语表与字体两张配置卡；`model.html` 是模型调用层；`cli.html` 是命令行与重跑语义。`make design` 合成为带标签页的 `index.html`，push 到 main 后由 pages.yml 发布。人只需记住本文件；AI 实现或修改某个阶段时读对应那张卡（卡片有 `id`，例如 `#translate`）。不要再建第二份设计文档。
+- 设计文档与代码必须一致：改代码先改卡片，卡片没写的行为不做；发现两者不一致，按总则停下来问，不许悄悄改任一方。
+- V2 原型（`~/Projects/arxiv_trans/arXiv-2606.19348v1/arxiv-translator/`）与重构前的封存版 `b751db9` 只作历史参考，不再是实现依据。
+- 待落地的设计改动记在 GitHub Issues（`gh issue list --state open`），当前有 #103（precompile 与 compile 共用编译目录 `build/sandbox/tex/`，删 `build/fonts/`）。
 
 ## 重构怎么做
 
@@ -63,7 +64,7 @@
 
 ### 每一步的流程
 
-1. 主 agent 读本文件、open 的 issues 与对应卡片，写任务书：目标、读哪张卡（`docs/proposal/pipeline-v0.html` 的 `#<id>`）、允许改动的文件、完成判据、验证命令。如果有不确定的地方，停下来询问用户；提案图没给数值的常量先查询 b751db9 旧值，并向用户询问应该怎么决策。任务书必须自足，subagent 没有主会话的上下文。任务书先用 `gh issue comment` 贴到步骤 issue，等用户 Review 通过后，再以原文作为 subagent 的 prompt；退回 subagent 的补充要求同样追加为评论。任务书不进仓库。
+1. 主 agent 读本文件、open 的 issues 与对应卡片，写任务书：目标、读哪张卡（`docs/design/pipeline.html` 的 `#<id>`）、允许改动的文件、完成判据、验证命令。如果有不确定的地方，停下来询问用户；提案图没给数值的常量先查询 b751db9 旧值，并向用户询问应该怎么决策。任务书必须自足，subagent 没有主会话的上下文。任务书先用 `gh issue comment` 贴到步骤 issue，等用户 Review 通过后，再以原文作为 subagent 的 prompt；退回 subagent 的补充要求同样追加为评论。任务书不进仓库。
 2. 开发 subagent：按提案图实现该部分功能，重写该模块的测试；删光改动文件里的注释与 docstring；跑 `make lint` 与 pytest；返回改动文件清单与测试输出原文。
 3. 主 agent review：按下面的清单逐条判定，读 diff、读 subagent 的汇报、自己跑命令都可以，判据是清单。不过就退回同一个 subagent 并指明条目；两轮不过，停下来报告用户。
 4. 验证 subagent（新开上下文，与开发 subagent 无关）：按任务书的验证命令实际运行，报告命令、退出码、产物路径与关键内容。步骤 0–2 没有论文可跑，验证就是实际执行命令（`make lint`、`tongtu setup`、`tongtu doctor`、`tongtu status` 等）；步骤 3 起验证集 12 篇全跑，每篇状态与耗时写进报告，没有硬性通过线，由用户看报告定。以运行结果为准，不以读代码为准。

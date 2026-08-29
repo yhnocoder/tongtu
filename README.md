@@ -4,7 +4,7 @@
 
 > 命名取自《水调歌头·游泳》「一桥飞架南北，天堑变通途」——语言是天堑，翻译使之为通途。
 
-**状态：按 `docs/proposal/pipeline-v0.html` 重构中，尚不可用。** 项目约定与重构流程见 `CLAUDE.md`。
+**状态：按 `docs/design/pipeline.html` 重构中，尚不可用。** 项目约定与重构流程见 `CLAUDE.md`。
 
 ## 开发
 

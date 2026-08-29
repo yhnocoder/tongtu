@@ -47,6 +47,6 @@ def test_in_scope_filters_path_and_suffix() -> None:
     assert in_scope("tongtu/cli.py")
     assert in_scope("tests/text/test_comment_lint.py")
     assert in_scope("scripts/comment_lint.py")
-    assert not in_scope("docs/proposal/pipeline-v0.html")
+    assert not in_scope("docs/design/pipeline.html")
     assert not in_scope("examples/papers/main.tex")
     assert not in_scope("noxfile.py")
