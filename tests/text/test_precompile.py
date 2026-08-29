@@ -231,6 +231,7 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert (tree / "flat.tex").is_file()
     assert (tree / "main.tex").is_file()
     assert not (tree / "flat.pdf").exists()
+    assert workdir.precompile_pdf.read_bytes().startswith(b"%PDF")
     for name in ("LXGWWenKai-Light.ttf", "LXGWWenKai-Medium.ttf"):
         link = tree / "fonts" / name
         assert link.is_symlink()

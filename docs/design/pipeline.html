@@ -81,7 +81,7 @@
 <li><b>选主文件</b>：src/ 里带 <code>\documentclass</code> 的 .tex；选不出来 → <code>main_not_found</code>，选不唯一 → <code>main_ambiguous</code></li>
 <li><b>展开成单文件</b>：用 <code>latexpand</code> 把 <code>\input</code> / <code>\include</code> 全部内联，有 .bbl 就一并内联进去；展开失败 → <code>expand_failed</code></li>
 <li><b>注入中文排版设置</b>：在前导区加上 xeCJK 与中文字体（字体来自 <a href="#fonts">fonts</a> 配置）。放在这一步而不是 compile，是让宏包冲突在翻译之前暴露并修掉：之后 compile 与这里的差别只剩正文文字，再出错只可能是译文引起</li>
-<li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，加上展开后的 flat.tex 与以软链放进编译目录的 fonts/，latexmk 就在这个目录里跑，不碰 src/），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
+<li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，加上展开后的 flat.tex 与以软链放进编译目录的 fonts/，latexmk 就在这个目录里跑，不碰 src/），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数，PDF 拷出为 <code>build/precompile.pdf</code>。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
 <li class="branch"><b>编译不通过 → 修复会话</b>：拉一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改 flat.tex，然后重新编译一次，结论只认这一次；仍不通过 → <code>compile_failed</code>。agent 改过的 flat.tex 就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，自然沿用</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
@@ -96,6 +96,7 @@
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
 <tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝 + flat.tex + fonts/（仓库字体与外部字体文件的软链）；修复会话的现场；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
 <tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
+<tr><td>build/precompile.pdf</td><td class="src">—</td><td><span class="ty">PDF</span></td><td>原文（注入中文排版设置后）编译出的 PDF；与 out/zh.pdf 对照看版式差异</td></tr>
 <tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过修复会话才有</td></tr>
 <tr><td>build/manifests/precompile.json</td><td class="src"><a href="#compile">compile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>主文件、原文的 CompileReport（页数等五个基线计数）、修复会话结局</td></tr>
 </tbody></table>
