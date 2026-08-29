@@ -27,6 +27,11 @@ jobs:
             exit 1
           fi
 
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build wheel and sdist
+        run: uv build
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,4 +40,5 @@ jobs:
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --title "$TAG" \
-            --generate-notes
+            --generate-notes \
+            dist/*
