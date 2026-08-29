@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -107,9 +108,12 @@ def make_workdir(tmp_path: Path, paper: str = PAPER) -> Workdir:
         workdir.manifest_path("precompile"),
         PrecompileManifest(status=PrecompileStatus.OK, main_file="main.tex", report=BASELINE),
     )
-    fonts = workdir.build / "fonts"
-    fonts.mkdir(parents=True)
-    (fonts / "LXGWWenKai-Light.ttf").write_bytes(b"font")
+    tree = workdir.build / "sandbox" / "tex"
+    (tree / "fonts").mkdir(parents=True)
+    (tree / "main.tex").write_text(paper, encoding="utf-8")
+    (tree / "figure.pdf").write_bytes(b"%PDF")
+    (tree / "flat.tex").write_text(paper, encoding="utf-8")
+    (tree / "fonts" / "LXGWWenKai-Light.ttf").symlink_to(workdir.src / "figure.pdf")
     return workdir
 
 
@@ -190,13 +194,16 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert manifest.baseline == BASELINE
     assert manifest.fix_session is None
     assert manifest.warnings == []
-    assert calls == {"compile": 1, "clean": 0}
+    assert calls == {"compile": 1, "clean": 1}
     assert work_calls == []
     assert outputs_present(workdir, "compile")
     zh = (workdir.build / "zh.tex").read_text(encoding="utf-8")
     assert zh == translate(PAPER)
-    assert (workdir.build / "sandbox" / "compile" / "figure.pdf").is_file()
-    assert (workdir.build / "sandbox" / "compile" / "fonts" / "LXGWWenKai-Light.ttf").is_file()
+    tree = workdir.build / "sandbox" / "tex"
+    assert (tree / "zh.tex").read_text(encoding="utf-8") == zh
+    assert not (tree / "zh.pdf").exists()
+    assert (tree / "flat.tex").is_file()
+    assert not (workdir.build / "fonts").exists()
     assert not (workdir.logs / "compile-fix.jsonl").exists()
 
 
@@ -237,11 +244,9 @@ def test_precompile_manifest_without_report(tmp_path: Path, monkeypatch: pytest.
     assert "report" in manifest.message
 
 
-def test_missing_precompile_fonts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_compile_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
-    fonts = workdir.build / "fonts"
-    (fonts / "LXGWWenKai-Light.ttf").unlink()
-    fonts.rmdir()
+    shutil.rmtree(workdir.build / "sandbox" / "tex")
     manifest = compile.run(workdir)
     assert_failed(workdir, manifest)
     assert manifest.baseline == BASELINE
@@ -288,7 +293,7 @@ def test_chunks_do_not_add_up_to_masked(tmp_path: Path, monkeypatch: pytest.Monk
     manifest = compile.run(workdir)
     assert_failed(workdir, manifest)
     assert "masked.tex" in manifest.message
-    assert not (workdir.build / "sandbox" / "compile").exists()
+    assert not (workdir.build / "sandbox" / "tex" / "zh.tex").exists()
 
 
 def test_unmask_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -339,9 +344,9 @@ def test_fix_session_then_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
     assert manifest.fix_session.stop_reason == "finished"
     assert manifest.fix_session.model == "claude_code/claude-sonnet-5"
     assert manifest.report is not None and manifest.baseline == BASELINE
-    assert calls == {"compile": 2, "clean": 1}
+    assert calls == {"compile": 2, "clean": 2}
     assert work_calls[0]["role"] == "compile_fix"
-    assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "compile"
+    assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "tex"
     assert work_calls[0]["trace_path"] == workdir.logs / "compile-fix.jsonl"
     assert work_calls[0]["model"] == "claude_code/claude-sonnet-5"
     assert work_calls[0]["effort"] == "high"
@@ -375,7 +380,7 @@ def test_fix_session_error_or_timeout_still_verifies(
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == str(stop_reason)
     assert any(str(stop_reason) in line for line in manifest.warnings)
-    assert calls == {"compile": 2, "clean": 1}
+    assert calls == {"compile": 2, "clean": 2}
 
 
 def test_control_sequences_must_match_the_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -438,14 +443,12 @@ def test_caption_fallback_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.
 def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     workdir.manifest_path("precompile").unlink()
-    (workdir.build / "sandbox" / "compile").mkdir(parents=True)
-    (workdir.build / "sandbox" / "compile" / "zh.pdf").write_bytes(b"stale")
     (workdir.build / "zh.tex").write_text("stale", encoding="utf-8")
     (workdir.out / "zh.pdf").write_bytes(b"stale")
     (workdir.logs / "compile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = compile.run(workdir)
     assert_failed(workdir, manifest)
-    assert not (workdir.build / "sandbox" / "compile").exists()
+    assert (workdir.build / "sandbox" / "tex" / "flat.tex").is_file()
     assert not (workdir.logs / "compile-fix.jsonl").exists()
 
 

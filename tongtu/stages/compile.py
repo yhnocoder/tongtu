@@ -21,7 +21,7 @@ ROLE = "compile_fix"
 
 PRECOMPILE_STAGE_NAME = "precompile"
 
-FONTS_DIRNAME = "fonts"
+TREE_NAME = "tex"
 
 PAGE_RATIO_MIN = 0.7
 
@@ -57,10 +57,10 @@ def _execute(
     if precompile_manifest is None or precompile_manifest.report is None:
         return _failed("build/manifests/precompile.json is missing or carries no report; run precompile first.")
     baseline = precompile_manifest.report
-    fonts_dir = paper_workdir.fonts
-    if not fonts_dir.is_dir():
+    tree = paper_workdir.sandbox(TREE_NAME)
+    if not tree.is_dir():
         return _failed(
-            f"{fonts_dir} does not exist; the compile tree takes its fonts from the precompile output build/fonts/. "
+            f"{tree} does not exist; compile builds inside the tree that precompile leaves behind. "
             f"Rerun with --from {PRECOMPILE_STAGE_NAME}.",
             baseline=baseline,
         )
@@ -94,11 +94,8 @@ def _execute(
             f"from the translation: {', '.join(unmasked.fallbacks)}"
         )
 
-    tree = paper_workdir.sandbox(STAGE_NAME)
     zh_name = paper_workdir.zh_tex.name
-    warnings.extend(compiling.copy_src_tree(paper_workdir.src, tree, zh_name))
     (tree / zh_name).write_text(unmasked.text, encoding=ENCODING)
-    shutil.copytree(fonts_dir, tree / FONTS_DIRNAME, dirs_exist_ok=True)
 
     final, fix_session, failure = compiling.compile_with_fix(
         ROLE,
@@ -123,6 +120,7 @@ def _execute(
     paper_workdir.zh_tex.write_text(zh_final, encoding=ENCODING)
     paper_workdir.out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(tree / paper_workdir.zh_pdf.name, paper_workdir.zh_pdf)
+    warnings.extend(compiling.clean_tree(tree, zh_name))
     return CompileManifest(
         status=CompileStatus.OK,
         report=compile_report,

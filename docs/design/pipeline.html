@@ -81,7 +81,7 @@
 <li><b>选主文件</b>：src/ 里带 <code>\documentclass</code> 的 .tex；选不出来 → <code>main_not_found</code>，选不唯一 → <code>main_ambiguous</code></li>
 <li><b>展开成单文件</b>：用 <code>latexpand</code> 把 <code>\input</code> / <code>\include</code> 全部内联，有 .bbl 就一并内联进去；展开失败 → <code>expand_failed</code></li>
 <li><b>注入中文排版设置</b>：在前导区加上 xeCJK 与中文字体（字体来自 <a href="#fonts">fonts</a> 配置）。放在这一步而不是 compile，是让宏包冲突在翻译之前暴露并修掉：之后 compile 与这里的差别只剩正文文字，再出错只可能是译文引起</li>
-<li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，加上展开后的 flat.tex 与字体目录 fonts/，latexmk 就在这个目录里跑，不碰 src/），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
+<li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，加上展开后的 flat.tex 与以软链放进编译目录的 fonts/，latexmk 就在这个目录里跑，不碰 src/），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
 <li class="branch"><b>编译不通过 → 修复会话</b>：拉一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改 flat.tex，然后重新编译一次，结论只认这一次；仍不通过 → <code>compile_failed</code>。agent 改过的 flat.tex 就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，自然沿用</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
@@ -94,7 +94,7 @@
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝 + flat.tex + fonts/（仓库字体与拷入的外部字体文件）；修复会话的现场；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
+<tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝 + flat.tex + fonts/（仓库字体与外部字体文件的软链）；修复会话的现场；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
 <tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
 <tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过修复会话才有</td></tr>
 <tr><td>build/manifests/precompile.json</td><td class="src"><a href="#compile">compile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>主文件、原文的 CompileReport（页数等五个基线计数）、修复会话结局</td></tr>
@@ -105,7 +105,7 @@
 <li>主文件判定：候选是注释外含 <code>\documentclass</code> 或 <code>\documentstyle</code> 的 .tex；多个候选时取唯一含 <code>\begin{document}</code> 的，再不唯一取名为 <code>main.tex</code> 的；<code>main_ambiguous</code> 时 message 列出全部候选</li>
 <li>展开：<code>latexpand --keep-comments --fatal</code>，超时 10 秒；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>；仍残留 <code>\input</code> 的行数记 warning</li>
 <li>注入块：<code>\documentclass</code> 之后插入 xeCJK 设置，Path 指向编译目录里的 <code>fonts/</code>，断行按中文规则，行距 <code>\linespread{1.4}</code>。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包（<code>CJK</code> <code>CJKutf8</code> <code>CJKspace</code> <code>CJKpunct</code>）时，先从 <code>\usepackage</code> 里删掉这些包名、删掉 <code>\begin{CJK}</code> / <code>\end{CJK}</code> 与 <code>\CJKfamily{…}</code>，再注入 xeCJK</li>
-<li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝 + <code>flat.tex</code> + 仓库的 <code>fonts/</code>。命令 <code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒；通过的判据是退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0；latexmk 跑不起来或超时 → <code>compile_failed</code></li>
+<li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝 + <code>flat.tex</code> + 以软链放进编译目录的 <code>fonts/</code>。命令 <code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒；通过的判据是退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0；latexmk 跑不起来或超时 → <code>compile_failed</code></li>
 <li>修复会话：现场就是编译目录，agent 自己读 skill 与 flat.log；会话结束 <code>latexmk -C</code> 清掉中间产物再校验编译；会话以 error / timeout 结束记 warning，判定仍由校验编译给出</li>
 </ul></details>
 <details open id="def-precompile"><summary>产物（两个子模型与 compile 共用）</summary>
@@ -531,7 +531,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div><span class="label">规则</span>
 <ol class="steps">
 <li>四个槽位：<code>main</code> 正文、<code>bold</code> 粗体（BoldFont）、<code>sans</code> 无衬线、<code>mono</code> 等宽。sans 不写则按平台探测（Hiragino Sans GB → Noto Sans CJK SC → 霞鹜文楷），mono 不写则用 main</li>
-<li>取值两类：<b>字体文件</b>——.ttf / .otf / .ttc，写仓库 fonts/ 里的文件名或一个文件路径（可用 <code>~</code>），precompile 把文件拷进编译目录的 fonts/，以 <code>Path={fonts/}</code> 相对引用，编译目录保持自包含；<b>系统字体名</b>——不带扩展名即视为字体名，由 fontspec 按名字查找</li>
+<li>取值两类：<b>字体文件</b>——.ttf / .otf / .ttc，写仓库 fonts/ 里的文件名或一个文件路径（可用 <code>~</code>），precompile 把文件以软链放进编译目录的 fonts/，以 <code>Path={fonts/}</code> 相对引用；<b>系统字体名</b>——不带扩展名即视为字体名，由 fontspec 按名字查找</li>
 <li><code>main</code> / <code>sans</code> / <code>mono</code> 可写成列表按序回退（同 CSS 的 font-family）：每个字体名候选包一层 <code>\IfFontExistsTF</code>，存在就用，不存在试下一个；文件候选必然可用、终止链条，它之后的候选不会被用到（写 warning）；候选全是字体名时，末尾自动补默认霞鹜文楷作为最后一级回退。单个字体名不包检测，写错由编译失败暴露</li>
 <li><code>bold</code> 是单值，与候选同类（文件配文件、字体名配字体名）才配对；默认的 bold 只与默认的 main 配对，不跟随换掉的字体；与所有候选都配不上时写 warning 并忽略</li>
 <li>失败不抛异常：配置的字体文件不存在则跳过该候选并写进 manifest 的 warnings，候选全部不可用时用默认字体</li>
@@ -544,7 +544,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>build/sandbox/tex/fonts/</td><td class="src"><a href="#precompile">precompile</a> <a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>仓库字体与拷入的外部字体文件，编译时以 <code>Path={fonts/}</code> 相对引用</td></tr>
+<tr><td>build/sandbox/tex/fonts/</td><td class="src"><a href="#precompile">precompile</a> <a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>仓库字体与外部字体文件的软链，编译时以 <code>Path={fonts/}</code> 相对引用</td></tr>
 <tr><td>build/sandbox/tex/flat.tex</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">LaTeX</span></td><td>前导区的注入块，按本配置生成</td></tr>
 </tbody></table>
 </div>
@@ -559,7 +559,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 main = ["Source Han Serif SC", "Noto Serif CJK SC", "LXGWWenKai-Light.ttf"]   <span class="c"># 按序回退，末位文件收尾</span>
 bold = "LXGWWenKai-Medium.ttf"
 sans = "Noto Sans CJK SC"
-mono = "~/Fonts/Sarasa-Mono-SC.ttf"      <span class="c"># 第三方字体文件，会被拷进编译目录</span></pre></details>
+mono = "~/Fonts/Sarasa-Mono-SC.ttf"      <span class="c"># 第三方字体文件，以软链放进编译目录</span></pre></details>
 </div>
 </div>
 

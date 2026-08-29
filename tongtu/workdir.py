@@ -88,10 +88,6 @@ class Workdir:
         return self.build / "precompile.tex"
 
     @property
-    def fonts(self) -> Path:
-        return self.build / "fonts"
-
-    @property
     def precompile_fix_log(self) -> Path:
         return self.logs / "precompile-fix.jsonl"
 

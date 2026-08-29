@@ -67,14 +67,11 @@ def clean_tree(tree: Path, main_filename: str) -> list[str]:
     try:
         outcome = processes.run_in_process_group([*LATEXMK_CLEAN_COMMAND, main_filename], tree, CLEAN_TIMEOUT_SECONDS)
     except OSError as error:
-        return [f"failed to clean compile outputs before the verify compile ({describe_error(error)})"]
+        return [f"failed to clean compile outputs ({describe_error(error)})"]
     if outcome.timed_out:
-        return [
-            f"cleaning compile outputs before the verify compile hit the {CLEAN_TIMEOUT_SECONDS}s timeout; "
-            "the process group was terminated"
-        ]
+        return [f"cleaning compile outputs hit the {CLEAN_TIMEOUT_SECONDS}s timeout; the process group was terminated"]
     if outcome.returncode != 0:
-        return [f"latexmk exited with code {outcome.returncode} while cleaning before the verify compile"]
+        return [f"latexmk exited with code {outcome.returncode} while cleaning compile outputs"]
     return []
 
 

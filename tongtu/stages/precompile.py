@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 import re
-import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,6 +20,8 @@ STAGE_NAME = "precompile"
 ROLE = "precompile_fix"
 
 FLAT_FILENAME = "flat.tex"
+
+TREE_NAME = "tex"
 
 FONTS_DIRNAME = "fonts"
 
@@ -138,7 +140,7 @@ def _execute(
         )
 
     injected, font_files = _inject_cjk(expanded, warnings, _fonts_config())
-    tree = paper_workdir.sandbox(STAGE_NAME)
+    tree = paper_workdir.sandbox(TREE_NAME)
     _assemble_tree(paper_workdir, tree, injected, warnings, font_files)
 
     final, fix_session, failure = compiling.compile_with_fix(
@@ -155,8 +157,7 @@ def _execute(
         return _compile_failed(main_file, warnings, failure, fix_session)
 
     paper_workdir.precompile_tex.write_bytes((tree / FLAT_FILENAME).read_bytes())
-    if (tree / FONTS_DIRNAME).is_dir():
-        shutil.copytree(tree / FONTS_DIRNAME, paper_workdir.fonts, dirs_exist_ok=True)
+    warnings.extend(compiling.clean_tree(tree, FLAT_FILENAME))
     return PrecompileManifest(
         status=PrecompileStatus.OK,
         main_file=main_file,
@@ -523,12 +524,15 @@ def _assemble_tree(
     warnings.extend(compiling.copy_src_tree(paper_workdir.src, tree, FLAT_FILENAME))
     (tree / FLAT_FILENAME).write_bytes(flat)
     if FONTS_DIR.is_dir():
-        shutil.copytree(FONTS_DIR, tree / FONTS_DIRNAME, dirs_exist_ok=True)
+        repo_fonts = sorted(path for path in FONTS_DIR.iterdir() if path.is_file())
     else:
+        repo_fonts = []
         warnings.append(
             f"repository font directory {FONTS_DIR} does not exist; the injected xeCJK setup will not find the fonts"
         )
-    if font_files:
-        (tree / FONTS_DIRNAME).mkdir(exist_ok=True)
-        for path in font_files:
-            shutil.copy2(path, tree / FONTS_DIRNAME / path.name)
+    fonts_dir = tree / FONTS_DIRNAME
+    fonts_dir.mkdir(exist_ok=True)
+    for path in (*repo_fonts, *font_files):
+        link = fonts_dir / path.name
+        link.unlink(missing_ok=True)
+        os.symlink(path.absolute(), link)
