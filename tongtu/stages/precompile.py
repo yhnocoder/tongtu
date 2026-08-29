@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -157,6 +158,7 @@ def _execute(
         return _compile_failed(main_file, warnings, failure, fix_session)
 
     paper_workdir.precompile_tex.write_bytes((tree / FLAT_FILENAME).read_bytes())
+    shutil.copyfile((tree / FLAT_FILENAME).with_suffix(".pdf"), paper_workdir.precompile_pdf)
     warnings.extend(compiling.clean_tree(tree, FLAT_FILENAME))
     return PrecompileManifest(
         status=PrecompileStatus.OK,

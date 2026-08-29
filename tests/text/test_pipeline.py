@@ -7,7 +7,7 @@ from tongtu.workdir import Workdir
 
 OUTPUT_FILES: dict[str, tuple[str, ...]] = {
     "fetch": ("src/main.tex",),
-    "precompile": ("build/precompile.tex",),
+    "precompile": ("build/precompile.tex", "build/precompile.pdf"),
     "mask": ("build/masked.tex", "build/blocks.json"),
     "survey": ("build/brief.json", "build/chunks/c000.tex"),
     "translate": ("build/translated/c000.tex",),

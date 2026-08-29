@@ -88,6 +88,10 @@ class Workdir:
         return self.build / "precompile.tex"
 
     @property
+    def precompile_pdf(self) -> Path:
+        return self.build / "precompile.pdf"
+
+    @property
     def precompile_fix_log(self) -> Path:
         return self.logs / "precompile-fix.jsonl"
 
