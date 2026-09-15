@@ -617,3 +617,235 @@ def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: p
         ("fix session", "Bash: ls"),
         ("verifying", "flat.tex"),
     ]
+
+
+def wire_missing_inputs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    calls: list[Path] = []
+
+    def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
+        assert command[:-1] == list(precompile.LATEXPAND_COMMAND)
+        calls.append(cwd)
+        source = (cwd / command[-1]).read_bytes()
+        for name in ("macros_new", "new_cmds", "wrong/body", "sections/body"):
+            marker = b"\\include{" + name.encode() + b"}"
+            if marker not in [line.strip() for line in source.splitlines()]:
+                continue
+            path = cwd / (name + ".tex")
+            if not path.is_file():
+                return ProcessOutcome(
+                    returncode=2,
+                    stdout=b"incomplete expansion must never become flat.tex",
+                    stderr=f"ERROR: Could not find file [{name}.tex]\n".encode(),
+                    timed_out=False,
+                    duration_seconds=0.1,
+                )
+            source = source.replace(marker, path.read_bytes())
+        return ProcessOutcome(returncode=0, stdout=source, stderr=b"", timed_out=False, duration_seconds=0.1)
+
+    monkeypatch.setattr(processes, "run_in_process_group", run)
+    return calls
+
+
+def missing_input_paper() -> str:
+    return PLAIN_PAPER.replace("\\begin{document}", "\\include{macros_new}\n\\include{new_cmds}\n\\begin{document}")
+
+
+@pytest.mark.parametrize("main_file", ["main.tex", "flat.tex"])
+@pytest.mark.parametrize("stop_reason", [StopReason.FINISHED, StopReason.ERROR, StopReason.TIMEOUT])
+def test_arxiv_1905_12322v3_missing_legacy_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, main_file: str
+) -> None:
+    source = missing_input_paper().replace("Hello world.", "Hello world.\n\\bibliography{refs}")
+    workdir = make_workdir(
+        tmp_path,
+        {main_file: source, str(Path(main_file).with_suffix(".bbl")): "Bibliography content\n", "local.sty": "old"},
+    )
+    expansions = wire_missing_inputs(monkeypatch)
+    wire_fc_list(monkeypatch, None)
+    latexmk = wire_latexmk(monkeypatch, [{}])
+
+    def edit(tree: Path) -> None:
+        diagnostic = (tree / precompile.EXPAND_LOG_FILENAME).read_text()
+        assert f"Main file: {main_file}" in diagnostic
+        assert f"{main_file}:3: " + r"\include{macros_new}" in diagnostic
+        assert f"{main_file}:4: " + r"\include{new_cmds}" in diagnostic
+        assert "ERROR: Could not find file [macros_new.tex]" in diagnostic
+        assert (tree / main_file).read_text() == source
+        (tree / main_file).write_text(source.replace("\\include{", "%\\include{"))
+        (tree / "local.sty").write_text("repaired")
+        workdir.precompile_fix_log.write_text("one session\n")
+
+    calls = wire_work(monkeypatch, stop_reason, edit=edit)
+    manifest = precompile.run(workdir, model_override="rt/model", effort="high")
+    tree = workdir.sandbox("tex")
+    assert manifest.status is PrecompileStatus.OK
+    assert manifest.fix_session is not None and manifest.fix_session.stop_reason == str(stop_reason)
+    assert manifest.report is not None and manifest.report.pdf_bytes > 0
+    assert len(calls) == 1
+    assert calls[0]["model"] == "rt/model" and calls[0]["effort"] == "high"
+    assert expansions == [workdir.src, tree]
+    assert latexmk == {"compile": 1, "clean": 2}
+    assert (workdir.src / main_file).read_text() == source
+    assert (workdir.src / "local.sty").read_text() == "old"
+    assert (tree / "local.sty").read_text() == "repaired"
+    assert not (tree / "macros_new.tex").exists() and not (tree / "new_cmds.tex").exists()
+    output = workdir.precompile_tex.read_text()
+    assert "Hello world." in output and "Bibliography content" in output
+    assert "\\usepackage{xeCJK}" in output
+    assert "incomplete expansion" not in output
+    assert outputs_present(workdir, "precompile")
+    assert workdir.precompile_fix_log.read_text() == "one session\n"
+    written = json.loads(workdir.manifest_path("precompile").read_text())
+    assert written["fix_session"]["stop_reason"] == str(stop_reason)
+    assert written["status"] == "ok"
+
+
+def test_missing_input_path_repair_inlines_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = PLAIN_PAPER.replace("Hello world.", "\\include{wrong/body}")
+    workdir = make_workdir(tmp_path, {"main.tex": source, "sections/body.tex": "Essential body content."})
+    wire_missing_inputs(monkeypatch)
+    wire_fc_list(monkeypatch, None)
+    wire_latexmk(monkeypatch, [{}])
+
+    def edit(tree: Path) -> None:
+        (tree / "main.tex").write_text(source.replace("wrong/body", "sections/body"))
+
+    calls = wire_work(monkeypatch, edit=edit)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.OK
+    assert len(calls) == 1
+    assert "Essential body content." in workdir.precompile_tex.read_text()
+    assert "\\include{sections/body}" not in workdir.precompile_tex.read_text()
+    assert (workdir.src / "main.tex").read_text() == source
+
+
+@pytest.mark.parametrize("stop_reason", [StopReason.FINISHED, StopReason.ERROR, StopReason.TIMEOUT])
+@pytest.mark.parametrize("partial_repair", [False, True])
+def test_missing_input_unresolved_fails_strict_recheck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, partial_repair: bool
+) -> None:
+    source = missing_input_paper()
+    workdir = make_workdir(tmp_path, {"main.tex": source})
+    expansions = wire_missing_inputs(monkeypatch)
+    latexmk = wire_latexmk(monkeypatch, [{}])
+
+    def edit(tree: Path) -> None:
+        if partial_repair:
+            (tree / "main.tex").write_text(source.replace("\\include{macros_new}", "%\\include{macros_new}"))
+        (tree / "flat.tex").write_text(PLAIN_PAPER)
+        (tree / "flat.pdf").write_bytes(b"%PDF agent result cannot bypass strict expansion")
+
+    calls = wire_work(monkeypatch, stop_reason, edit=edit)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.EXPAND_FAILED
+    assert manifest.fix_session is not None and manifest.fix_session.stop_reason == str(stop_reason)
+    assert manifest.report is None
+    assert ("new_cmds.tex" if partial_repair else "macros_new.tex") in manifest.message
+    assert len(calls) == 1 and len(expansions) == 2
+    assert latexmk == {"compile": 0, "clean": 0}
+    assert (workdir.src / "main.tex").read_text() == source
+    assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
+    assert not outputs_present(workdir, "precompile")
+    written = json.loads(workdir.manifest_path("precompile").read_text())
+    assert written["status"] == "expand_failed"
+    assert written["fix_session"]["stop_reason"] == str(stop_reason)
+
+
+@pytest.mark.parametrize("spec", [{"returncode": 1, "log": LOG_ERROR}, {"timeout": True}, {"pdf": False}])
+def test_expansion_fix_does_not_start_second_compile_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec: dict
+) -> None:
+    source = missing_input_paper()
+    workdir = make_workdir(tmp_path, {"main.tex": source})
+    wire_missing_inputs(monkeypatch)
+    wire_fc_list(monkeypatch, None)
+    latexmk = wire_latexmk(monkeypatch, [spec])
+
+    def edit(tree: Path) -> None:
+        (tree / "main.tex").write_text(source.replace("\\include{", "%\\include{"))
+        (tree / "flat.pdf").write_bytes(b"%PDF stale agent output")
+        (tree / "flat.log").write_text(LOG_OK)
+        workdir.precompile_fix_log.write_text("original session\n")
+
+    calls = wire_work(monkeypatch, edit=edit)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.COMPILE_FAILED
+    assert manifest.fix_session is not None and manifest.fix_session.stop_reason == "finished"
+    assert manifest.report is None
+    assert len(calls) == 1
+    assert latexmk == {"compile": 1, "clean": 1}
+    assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
+    assert workdir.precompile_fix_log.read_text() == "original session\n"
+    assert json.loads(workdir.manifest_path("precompile").read_text())["fix_session"] is not None
+
+
+@pytest.mark.parametrize("failure", ["missing_tool", "timeout", "other"])
+def test_non_missing_expansion_failures_do_not_start_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
+
+    def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
+        if failure == "missing_tool":
+            raise FileNotFoundError("latexpand")
+        return ProcessOutcome(
+            returncode=2,
+            stdout=b"partial",
+            stderr=b"ERROR: Could not find file [missing.tex]\n" if failure == "timeout" else b"ERROR: broken syntax\n",
+            timed_out=failure == "timeout",
+            duration_seconds=0.1,
+        )
+
+    monkeypatch.setattr(processes, "run_in_process_group", run)
+    calls = wire_work(monkeypatch)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.EXPAND_FAILED
+    assert manifest.fix_session is None and manifest.report is None
+    assert calls == []
+    assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
+
+
+def test_missing_essential_body_remains_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = PLAIN_PAPER.replace("Hello world.", "\\include{sections/body}")
+    workdir = make_workdir(tmp_path, {"main.tex": source})
+    wire_missing_inputs(monkeypatch)
+    calls = wire_work(monkeypatch)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.EXPAND_FAILED
+    assert "sections/body.tex" in manifest.message
+    assert manifest.fix_session is not None and len(calls) == 1
+    assert (workdir.src / "main.tex").read_text() == source
+    assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
+    assert not (workdir.sandbox("tex") / "sections/body.tex").exists()
+
+
+def test_expand_diagnostic_preserves_full_stderr_and_nested_locations(tmp_path: Path) -> None:
+    (tmp_path / "main.tex").write_text(PLAIN_PAPER)
+    (tmp_path / "sections").mkdir()
+    (tmp_path / "sections/body.tex").write_text("%\\input{ignored}\n\\input missing\n")
+    stderr = "diagnostic context\n" * processes.OUTPUT_EXCERPT_CHARS + "ERROR: Could not find file [missing.tex]\n"
+    precompile._write_expand_diagnostic(tmp_path, "main.tex", "failed", stderr, [])
+    diagnostic = (tmp_path / precompile.EXPAND_LOG_FILENAME).read_text()
+    assert stderr in diagnostic
+    assert "sections/body.tex:2: \\input missing" in diagnostic
+    assert "ignored" not in diagnostic
+
+
+def test_unreadable_auxiliary_source_still_enters_fix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path, {"main.tex": missing_input_paper(), "unreadable.tex": "auxiliary"})
+    original = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path.name == "unreadable.tex":
+            raise PermissionError("unreadable auxiliary source")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    wire_missing_inputs(monkeypatch)
+    calls = wire_work(monkeypatch)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.EXPAND_FAILED
+    assert manifest.fix_session is not None and len(calls) == 1
+    assert any("unreadable.tex" in warning for warning in manifest.warnings)
+    assert workdir.manifest_path("precompile").is_file()
+    assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
