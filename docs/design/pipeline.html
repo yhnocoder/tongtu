@@ -104,7 +104,7 @@
 <tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝 + flat.tex + fonts/（仓库字体与外部字体文件的软链）；修复会话的现场；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
 <tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
 <tr><td>build/precompile.pdf</td><td class="src">—</td><td><span class="ty">PDF</span></td><td>原文（注入中文排版设置后）编译出的 PDF；与 out/zh.pdf 对照看版式差异</td></tr>
-<tr><td>build/sandbox/tex/precompile-expand.log</td><td class="src">precompile_fix</td><td><span class="ty">文本</span></td><td>仅缺文件展开失败时写出：主文件相对路径、严格展开命令及失败原因、完整 stderr、源码中 input/include 引用的文件与行号（辅助文件读失败记 warning，继续收集）；作为源码修复模式入口，失败 stdout 丢弃。普通编译模式移除源码副本中的同名文件，避免误判</td></tr>
+<tr><td>build/sandbox/tex/precompile-expand.log</td><td class="src">precompile_fix</td><td><span class="ty">文本</span></td><td>仅缺文件展开失败时写出：主文件相对路径、严格展开命令及失败原因、完整 stderr、源码中 input/include 引用的文件与行号（辅助文件读失败记 warning，继续收集）；作为源码修复模式入口，失败 stdout 丢弃</td></tr>
 <tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>唯一一次修复会话的逐轮记录（展开或编译）；拉起过修复会话才有，不会被第二次会话覆盖</td></tr>
 <tr><td>build/manifests/precompile.json</td><td class="src"><a href="#compile">compile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>主文件、原文的 CompileReport（页数等五个基线计数）、修复会话结局</td></tr>
 </tbody></table>

@@ -805,22 +805,6 @@ def test_non_missing_expansion_failures_do_not_start_fix(
     assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
 
 
-def test_normal_compile_fix_ignores_source_diagnostic_filename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir, _ = run_ok_setup(
-        tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER, precompile.EXPAND_LOG_FILENAME: "old source log"}
-    )
-    wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
-
-    def edit(tree: Path) -> None:
-        assert not (tree / precompile.EXPAND_LOG_FILENAME).exists()
-        assert (tree / "flat.tex").exists()
-
-    calls = wire_work(monkeypatch, edit=edit)
-    manifest = precompile.run(workdir)
-    assert manifest.status is PrecompileStatus.OK and len(calls) == 1
-    assert (workdir.src / precompile.EXPAND_LOG_FILENAME).read_text() == "old source log"
-
-
 def test_missing_essential_body_remains_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = PLAIN_PAPER.replace("Hello world.", "\\include{sections/body}")
     workdir = make_workdir(tmp_path, {"main.tex": source})

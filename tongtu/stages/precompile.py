@@ -176,7 +176,6 @@ def _execute(
     injected, font_files = _inject_cjk(expanded, warnings, _fonts_config())
     if fix_session is None:
         warnings.extend(compiling.copy_src_tree(src, tree, FLAT_FILENAME))
-        (tree / EXPAND_LOG_FILENAME).unlink(missing_ok=True)
     _assemble_tree(tree, injected, warnings, font_files)
 
     final, fix_session, failure = compiling.compile_with_fix(
