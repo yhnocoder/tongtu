@@ -1063,6 +1063,7 @@ def test_strip_unterminated_code_environment_is_kept_with_warning() -> None:
         ("\\foo\\iftrue world\\fi", "\\foo world"),
         ("ab\\iftrue cd\\fi", "abcd"),
         ("\\foo\\iftrue{x}\\fi", "\\foo{x}"),
+        ("\\foo@bar\\iftrue world\\fi", "\\foo@bar world"),
     ],
 )
 def test_strip_separates_control_word_from_following_letters(source: str, expected: str) -> None:
@@ -1074,6 +1075,16 @@ def test_strip_before_assignment_is_false() -> None:
     output, warnings = strip("\\newif\\ifarxiv \\ifarxiv A\\else B\\fi \\arxivtrue \\ifarxiv C\\else D\\fi")
     assert output == "\\newif\\ifarxiv B\\arxivtrue C"
     assert warnings == ["constant switch \\ifarxiv is true: removed 2 dead branches, kept 0"]
+
+
+def test_strip_keeps_macro_body_written_before_assignment() -> None:
+    source = "\\newif\\ifarxiv \\newcommand{\\chosen}{\\ifarxiv T\\else F\\fi} \\arxivtrue \\chosen"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\ifarxiv at line 1 is kept: precedes assignment inside a group",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+    ]
 
 
 def test_strip_leaves_switch_assigned_by_let() -> None:
@@ -1089,6 +1100,16 @@ def test_strip_keeps_operand_of_ifdefined() -> None:
     assert output == source
     assert warnings == [
         "\\ifarxiv at line 1 is kept: operand of \\ifdefined",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_keeps_operand_separated_by_comment() -> None:
+    source = "\\newif\\ifarxiv\\arxivtrue \\ifdefined%\n\\ifarxiv X\\else Y\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\ifarxiv at line 2 is kept: operand of \\ifdefined",
         "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
     ]
 

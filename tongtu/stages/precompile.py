@@ -15,6 +15,7 @@ from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
 from ..manifests import describe_error, write_manifest
 from ..masking import (
+    COMMENT_TAIL_RE,
     ENVIRONMENTS_TABLE_PATH,
     MaskError,
     TableEntry,
@@ -120,7 +121,7 @@ CONDITIONAL_PREFIX = "if"
 
 SKIPPED_SPACE_RE = re.compile(r"[ \t]*\n?")
 
-CONTROL_WORD_TAIL_RE = re.compile(r"\\[A-Za-z]+\Z")
+CONTROL_WORD_TAIL_RE = re.compile(r"\\[A-Za-z][A-Za-z@]*\Z")
 
 XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 \usepackage{xeCJK}
@@ -511,7 +512,11 @@ def _read_control_word(text: str, position: int) -> tuple[str, int]:
 
 def _preceding_names(text: str, words: list[ControlWord], index: int) -> list[str]:
     names: list[str] = []
-    while index > 0 and len(names) < 2 and not text[words[index - 1].end : words[index].start].strip():
+    while (
+        index > 0
+        and len(names) < 2
+        and not COMMENT_TAIL_RE.sub("", text[words[index - 1].end : words[index].start]).strip()
+    ):
         index -= 1
         names.append(words[index].name)
     return names
@@ -574,6 +579,14 @@ def _collect_dead_ranges(
             abandoned[word.name] = abandoned.get(word.name, 0) + 1
             index += 1
             continue
+        assigned_at, assigned = constants[word.name]
+        if word.start < assigned_at and word.depth > 0:
+            warnings.append(
+                f"\\{word.name} at line {_line_number(text, word.start)} is kept: precedes assignment inside a group"
+            )
+            abandoned[word.name] = abandoned.get(word.name, 0) + 1
+            index += 1
+            continue
         boundaries = _find_boundaries(text, words, index, high, openers, warnings)
         if boundaries is None:
             abandoned[word.name] = abandoned.get(word.name, 0) + 1
@@ -581,7 +594,6 @@ def _collect_dead_ranges(
             continue
         else_index, fi_index = boundaries
         removed[word.name] = removed.get(word.name, 0) + 1
-        assigned_at, assigned = constants[word.name]
         value = assigned and word.start >= assigned_at
         start = word.start
         if index > low and words[index - 1].name == "unless" and words[index - 1].end == word.start:
