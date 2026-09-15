@@ -32,6 +32,12 @@ LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--keep-comments", "--fatal")
 
 LATEXPAND_TIMEOUT_SECONDS = 10.0
 
+EXPAND_LOG_FILENAME = "precompile-expand.log"
+
+MISSING_INPUT_RE = re.compile(r"^ERROR: Could not find file \[[^\]\n]+\]", re.MULTILINE)
+
+SOURCE_INPUT_RE = re.compile(rb"\\(?:input|include)\b")
+
 DOCUMENT_CLASS_MARKERS: tuple[bytes, ...] = (rb"\documentclass", rb"\documentstyle")
 
 BEGIN_DOCUMENT_MARKER = rb"\begin{document}"
@@ -122,16 +128,43 @@ def _execute(
             ),
         )
 
-    expanded, failure = _expand(src, main_file, warnings)
+    tree = paper_workdir.sandbox(TREE_NAME)
+    fix_session = None
+    expanded, failure, missing_diagnostic = _expand(src, main_file, warnings)
+    if expanded is None and missing_diagnostic:
+        warnings.extend(compiling.copy_src_tree(src, tree, FLAT_FILENAME))
+        _write_expand_diagnostic(tree, main_file, failure, missing_diagnostic, warnings)
+        report("fix session", "running")
+        fix_session = compiling.fix(
+            ROLE,
+            tree,
+            paper_workdir.precompile_fix_log,
+            main_file,
+            warnings,
+            model_override,
+            effort,
+            report=lambda action: report("fix session", action),
+        )
+        src = tree
+        report("verifying", main_file)
+        expanded, failure, _ = _expand(src, main_file, warnings)
     if expanded is None:
         return PrecompileManifest(
-            status=PrecompileStatus.EXPAND_FAILED, main_file=main_file, warnings=warnings, message=failure
+            status=PrecompileStatus.EXPAND_FAILED,
+            main_file=main_file,
+            fix_session=fix_session,
+            warnings=warnings,
+            message=failure,
         )
     expanded = _inline_bbl(expanded, src, main_file, warnings)
     exit_check = _exit_check_message(expanded)
     if exit_check:
         return PrecompileManifest(
-            status=PrecompileStatus.EXPAND_FAILED, main_file=main_file, warnings=warnings, message=exit_check
+            status=PrecompileStatus.EXPAND_FAILED,
+            main_file=main_file,
+            fix_session=fix_session,
+            warnings=warnings,
+            message=exit_check,
         )
     residual = _count_residual_input_lines(expanded)
     if residual:
@@ -141,8 +174,10 @@ def _execute(
         )
 
     injected, font_files = _inject_cjk(expanded, warnings, _fonts_config())
-    tree = paper_workdir.sandbox(TREE_NAME)
-    _assemble_tree(paper_workdir, tree, injected, warnings, font_files)
+    if fix_session is None:
+        warnings.extend(compiling.copy_src_tree(src, tree, FLAT_FILENAME))
+        (tree / EXPAND_LOG_FILENAME).unlink(missing_ok=True)
+    _assemble_tree(tree, injected, warnings, font_files)
 
     final, fix_session, failure = compiling.compile_with_fix(
         ROLE,
@@ -153,6 +188,7 @@ def _execute(
         model_override,
         effort,
         report,
+        fix_session=fix_session,
     )
     if final is None or failure:
         return _compile_failed(main_file, warnings, failure, fix_session)
@@ -220,29 +256,69 @@ def _select_main_file(candidates: list[tuple[str, bool]]) -> str | None:
     return None
 
 
-def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | None, str]:
+def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | None, str, str]:
     command = [*LATEXPAND_COMMAND, main_file]
     try:
         outcome = processes.run_in_process_group(command, src, LATEXPAND_TIMEOUT_SECONDS)
     except OSError as error:
-        return None, (
-            f"failed to run latexpand ({describe_error(error)}). latexpand ships with TeX Live; "
-            "check that it is installed and in PATH."
+        return (
+            None,
+            (
+                f"failed to run latexpand ({describe_error(error)}). latexpand ships with TeX Live; "
+                "check that it is installed and in PATH."
+            ),
+            "",
         )
     stderr_text = outcome.stderr_text
     warnings.extend(line for line in stderr_text.splitlines() if line.strip())
     if outcome.timed_out:
-        return None, (
-            f"latexpand did not finish within {LATEXPAND_TIMEOUT_SECONDS}s and its process group was terminated; "
-            "the common cause is a self-reference in the source, "
-            "for example main.tex containing \\input{main}."
+        return (
+            None,
+            (
+                f"latexpand did not finish within {LATEXPAND_TIMEOUT_SECONDS}s and its process group was terminated; "
+                "the common cause is a self-reference in the source, "
+                "for example main.tex containing \\input{main}."
+            ),
+            "",
         )
     if outcome.returncode != 0:
-        return None, (
-            f"latexpand exited with code {outcome.returncode}; "
-            f"stderr: {stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]}"
+        return (
+            None,
+            (
+                f"latexpand exited with code {outcome.returncode}; "
+                f"stderr: {stderr_text.strip()[: processes.OUTPUT_EXCERPT_CHARS]}"
+            ),
+            stderr_text if MISSING_INPUT_RE.search(stderr_text) else "",
         )
-    return outcome.stdout, ""
+    return outcome.stdout, "", ""
+
+
+def _write_expand_diagnostic(tree: Path, main_file: str, failure: str, stderr: str, warnings: list[str]) -> None:
+    references: list[str] = []
+    for path in sorted(tree.rglob("*.tex")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            warning = f"cannot read {path.relative_to(tree)} while locating source inputs: {describe_error(error)}"
+            warnings.append(warning)
+            references.append(warning)
+            continue
+        for number, line in enumerate(content.splitlines(), start=1):
+            if SOURCE_INPUT_RE.search(_code_before_comment(line)):
+                references.append(f"{path.relative_to(tree)}:{number}: {line.decode('utf-8', errors='replace')}")
+    diagnostic = tree / EXPAND_LOG_FILENAME
+    diagnostic.unlink(missing_ok=True)
+    diagnostic.write_text(
+        f"Main file: {main_file}\n"
+        f"Command: {' '.join((*LATEXPAND_COMMAND, main_file))}\n"
+        f"Failure: {failure}\n\nFull stderr:\n{stderr}\n"
+        "Source input/include locations (inspect the tree for subsequent missing references):\n"
+        + "\n".join(references)
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _inline_bbl(output: bytes, src: Path, main_file: str, warnings: list[str]) -> bytes:
@@ -520,10 +596,7 @@ def _strip_legacy_cjk(lines: list[bytes], preamble_end: int, warnings: list[str]
     return rewritten
 
 
-def _assemble_tree(
-    paper_workdir: Workdir, tree: Path, flat: bytes, warnings: list[str], font_files: list[Path]
-) -> None:
-    warnings.extend(compiling.copy_src_tree(paper_workdir.src, tree, FLAT_FILENAME))
+def _assemble_tree(tree: Path, flat: bytes, warnings: list[str], font_files: list[Path]) -> None:
     (tree / FLAT_FILENAME).write_bytes(flat)
     if FONTS_DIR.is_dir():
         repo_fonts = sorted(path for path in FONTS_DIR.iterdir() if path.is_file())

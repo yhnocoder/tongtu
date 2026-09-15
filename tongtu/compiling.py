@@ -110,21 +110,31 @@ def compile_with_fix(
     model_override: str | None,
     effort: str | None,
     report: Callable[[str, str], None],
+    *,
+    fix_session: FixSession | None = None,
 ) -> tuple[CompileAttempt | None, FixSession | None, str]:
-    report("compiling", main_filename)
+    if fix_session is not None:
+        warnings.extend(clean_tree(tree, main_filename))
+    report("verifying" if fix_session is not None else "compiling", main_filename)
     try:
         first = attempt_compile(tree, main_filename)
     except OSError as error:
         return (
             None,
-            None,
+            fix_session,
             f"failed to run latexmk ({describe_error(error)}). latexmk ships with the TeX "
             "distribution; check that it is installed and in PATH.",
         )
     if first.outcome.timed_out:
-        return first, None, timeout_message(first)
+        return first, fix_session, timeout_message(first)
     if first.passed:
-        return first, None, ""
+        return first, fix_session, ""
+    if fix_session is not None:
+        return (
+            first,
+            fix_session,
+            (f"after the fix session the verify compile still fails the exit checks: {failure_message(first)}"),
+        )
     report("fix session", "running")
     session = fix(
         role,

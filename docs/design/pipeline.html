@@ -86,25 +86,26 @@
 <div><span class="label">任务</span>
 <ol class="steps">
 <li><b>选主文件</b>：src/ 里带 <code>\documentclass</code> 的 .tex；选不出来 → <code>main_not_found</code>，选不唯一 → <code>main_ambiguous</code></li>
-<li><b>展开成单文件</b>：用 <code>latexpand</code> 把 <code>\input</code> / <code>\include</code> 全部内联，有 .bbl 就一并内联进去；展开失败 → <code>expand_failed</code></li>
+<li><b>展开成单文件</b>：用 <code>latexpand</code> 把 <code>\input</code> / <code>\include</code> 全部内联，有 .bbl 就一并内联进去；缺失引用文件时在源码副本中进入修复会话，修复后重新严格展开；其他展开错误或修复后仍失败 → <code>expand_failed</code></li>
 <li><b>注入中文排版设置</b>：在前导区加上 xeCJK 与中文字体（字体来自 <a href="#fonts">fonts</a> 配置）。放在这一步而不是 compile，是让宏包冲突在翻译之前暴露并修掉：之后 compile 与这里的差别只剩正文文字，再出错只可能是译文引起</li>
 <li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，加上展开后的 flat.tex 与以软链放进编译目录的 fonts/，latexmk 就在这个目录里跑，不碰 src/），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数，PDF 拷出为 <code>build/precompile.pdf</code>。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
-<li class="branch"><b>编译不通过 → 修复会话</b>：拉一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改 flat.tex，然后重新编译一次，结论只认这一次；仍不通过 → <code>compile_failed</code>。agent 改过的 flat.tex 就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，自然沿用</li>
+<li class="branch"><b>编译不通过 → 修复会话</b>：尚未因展开失败用过修复会话时，拉一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改 flat.tex，然后重新编译一次，结论只认这一次；已用过展开修复会话则只验证编译，不再开会话；仍不通过 → <code>compile_failed</code>。agent 改过的 flat.tex 就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，自然沿用</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
 <div class="io">
 <span class="label">读</span>
 <table class="iot"><thead><tr><th>文件</th><th>来源</th><th>结构</th><th>用它做什么</th></tr></thead><tbody>
 <tr><td>src/</td><td class="src"><a href="#fetch">fetch</a></td><td><span class="ty">目录</span></td><td>判定主文件；latexpand 展开；整体拷成编译目录</td></tr>
-<tr><td>skill/precompile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>编译失败时拷进编译目录，修复会话读它</td></tr>
-<tr><td>$XDG_CONFIG_HOME/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>编译失败时拉一次 work，角色 precompile_fix 用哪个运行时与模型</td></tr>
+<tr><td>skill/precompile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>缺文件展开失败或编译失败时拷进编译目录，修复会话读它</td></tr>
+<tr><td>$XDG_CONFIG_HOME/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>展开修复与编译修复共用一次 work 预算，角色 precompile_fix 用哪个运行时与模型</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
 <tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝 + flat.tex + fonts/（仓库字体与外部字体文件的软链）；修复会话的现场；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
 <tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
 <tr><td>build/precompile.pdf</td><td class="src">—</td><td><span class="ty">PDF</span></td><td>原文（注入中文排版设置后）编译出的 PDF；与 out/zh.pdf 对照看版式差异</td></tr>
-<tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；拉起过修复会话才有</td></tr>
+<tr><td>build/sandbox/tex/precompile-expand.log</td><td class="src">precompile_fix</td><td><span class="ty">文本</span></td><td>仅缺文件展开失败时写出：主文件相对路径、严格展开命令及失败原因、完整 stderr、源码中 input/include 引用的文件与行号（辅助文件读失败记 warning，继续收集）；作为源码修复模式入口，失败 stdout 丢弃。普通编译模式移除源码副本中的同名文件，避免误判</td></tr>
+<tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>唯一一次修复会话的逐轮记录（展开或编译）；拉起过修复会话才有，不会被第二次会话覆盖</td></tr>
 <tr><td>build/manifests/precompile.json</td><td class="src"><a href="#compile">compile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>主文件、原文的 CompileReport（页数等五个基线计数）、修复会话结局</td></tr>
 </tbody></table>
 </div>
@@ -114,7 +115,9 @@
 <li>展开：<code>latexpand --keep-comments --fatal</code>，超时 10 秒；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>；仍残留 <code>\input</code> 的行数记 warning</li>
 <li>注入块：<code>\documentclass</code> 之后插入 xeCJK 设置，Path 指向编译目录里的 <code>fonts/</code>，断行按中文规则，行距 <code>\linespread{1.4}</code>。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包（<code>CJK</code> <code>CJKutf8</code> <code>CJKspace</code> <code>CJKpunct</code>）时，先从 <code>\usepackage</code> 里删掉这些包名、删掉 <code>\begin{CJK}</code> / <code>\end{CJK}</code> 与 <code>\CJKfamily{…}</code>，再注入 xeCJK</li>
 <li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝 + <code>flat.tex</code> + 以软链放进编译目录的 <code>fonts/</code>。命令 <code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒；通过的判据是退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0；latexmk 跑不起来或超时 → <code>compile_failed</code></li>
-<li>修复会话：现场就是编译目录，agent 自己读 skill 与 flat.log；会话结束 <code>latexmk -C</code> 清掉中间产物再校验编译；会话以 error / timeout 结束记 warning，判定仍由校验编译给出</li>
+<li>缺文件展开修复：仅子进程非超时、非零退出且 stderr 含 <code>ERROR: Could not find file [...]</code> 时触发；工具不存在、超时及其他错误直接 <code>expand_failed</code>。先完整复制 src/ 到 sandbox，写 <code>precompile-expand.log</code>，让 precompile_fix 在源码副本里修路径或有依据地注释无用引用；不得删除正文/图表、用空文件或空宏伪造缺失内容，必需内容无法可靠恢复则保留失败。主文件可能名为 flat.tex，源码模式以诊断文件为准。agent 在同一会话内反复严格展开以发现后续缺失文件，并验证原文在 XeLaTeX 下的兼容性；不运行 tongtu</li>
+<li>展开修复结束后，脚本从修复后的源码树重新执行同一严格展开命令，失败 stdout 从不作为 flat.tex 使用；再从该树内联 .bbl、检查全文、注入 CJK，写 flat.tex 并放入 fonts/，不再拷贝 src/，附属文件修复保留。随后清理 flat.tex 的编译产物再校验编译；注入后的 XeLaTeX 校验仍失败则 <code>compile_failed</code>，不追加会话</li>
+<li>修复预算：整个 precompile 最多一次 work，展开修复和编译修复共用角色已有的 max_turns / timeout_seconds，不新增预算。正常编译失败时现场是 flat.tex 与 flat.log；会话结束 <code>latexmk -C</code> 清掉中间产物再校验编译。任何一次会话以 error / timeout 结束都记 warning，仍执行脚本校验；仅展开与编译均通过才为 ok。manifest.fix_session 保留唯一会话结局，包括 expand_failed / compile_failed；report 仅最终编译通过才有；logs/precompile-fix.jsonl 只属于该会话</li>
 </ul></details>
 <details open id="def-precompile"><summary>产物（两个子模型与 compile 共用）</summary>
 <pre><span class="c"># 一次编译的统计结果。precompile 对原文记一份，compile 对译文记一份，两份字段相同，放在一起就能看出译文比原文多了几页、多了几个未定义引用。</span>
