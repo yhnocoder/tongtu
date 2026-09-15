@@ -121,7 +121,7 @@ CONDITIONAL_PREFIX = "if"
 
 SKIPPED_SPACE_RE = re.compile(r"[ \t]*\n?")
 
-CONTROL_WORD_TAIL_RE = re.compile(r"\\[A-Za-z][A-Za-z@]*\Z")
+CONTROL_WORD_TAIL_RE = re.compile(r"\\(?:[A-Za-z][A-Za-z@]*|@[A-Za-z@]+)\Z")
 
 XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 \usepackage{xeCJK}
@@ -494,6 +494,7 @@ def _scan_control_words(text: str, table: Mapping[str, TableEntry]) -> tuple[lis
                 if entry is not None and entry.category is BlockCategory.CODE:
                     position = skip_code_environment(text, body_start, environment)
                     continue
+            depth += (name == "begingroup") - (name == "endgroup")
             words.append(ControlWord(name, position, after, depth))
             position = after
         else:
@@ -503,7 +504,7 @@ def _scan_control_words(text: str, table: Mapping[str, TableEntry]) -> tuple[lis
 
 def _read_control_word(text: str, position: int) -> tuple[str, int]:
     name, after = read_control_sequence(text, position)
-    if name.isalpha() and text.startswith("@", after):
+    if name == "@" or (name.isascii() and name.isalpha()):
         while after < len(text) and (text[after] == "@" or (text[after].isascii() and text[after].isalpha())):
             after += 1
         name = text[position + 1 : after]
@@ -512,14 +513,14 @@ def _read_control_word(text: str, position: int) -> tuple[str, int]:
 
 def _preceding_names(text: str, words: list[ControlWord], index: int) -> list[str]:
     names: list[str] = []
-    while (
-        index > 0
-        and len(names) < 2
-        and not COMMENT_TAIL_RE.sub("", text[words[index - 1].end : words[index].start]).strip()
-    ):
+    while index > 0 and len(names) < 2 and not _gap(text, words, index):
         index -= 1
         names.append(words[index].name)
     return names
+
+
+def _gap(text: str, words: list[ControlWord], index: int) -> str:
+    return COMMENT_TAIL_RE.sub("", text[words[index - 1].end : words[index].start]).strip()
 
 
 def _constant_assignment(
@@ -572,6 +573,8 @@ def _collect_dead_ranges(
             operand_of = preceding[0]
         elif preceding[1:] and preceding[1] in BINARY_CONDITIONALS:
             operand_of = preceding[1]
+        elif index > 0 and words[index - 1].name in BINARY_CONDITIONALS and len(_gap(text, words, index)) <= 1:
+            operand_of = words[index - 1].name
         if operand_of is not None:
             warnings.append(
                 f"\\{word.name} at line {_line_number(text, word.start)} is kept: operand of \\{operand_of}"
@@ -596,7 +599,7 @@ def _collect_dead_ranges(
         removed[word.name] = removed.get(word.name, 0) + 1
         value = assigned and word.start >= assigned_at
         start = word.start
-        if index > low and words[index - 1].name == "unless" and words[index - 1].end == word.start:
+        if preceding[:1] == ["unless"]:
             value = not value
             start = words[index - 1].start
         if value:

@@ -948,6 +948,23 @@ def test_strip_global_assignment() -> None:
 def test_strip_unless_negates() -> None:
     output, _ = strip(SWITCH_TRUE + "\\unless\\ifarxiv\nA\n\\else\nB\n\\fi\nC\n")
     assert output == SWITCH_TRUE + "B\nC\n"
+    output, _ = strip("\\unless \\iftrue A\\else B\\fi")
+    assert output == "B"
+
+
+def test_strip_reads_at_prefixed_names_whole() -> None:
+    output, warnings = strip("\\makeatletter\\newif\\if@foo\\@footrue \\if@foo A\\else B\\fi")
+    assert output == "\\makeatletter\\newif\\if@foo\\@footrue A"
+    assert warnings == ["constant switch \\if@foo is true: removed 1 dead branches, kept 0"]
+    output, _ = strip("\\makeatletter\\newif\\if@foo\\@footrue\\if@foo A\\else B\\fi")
+    assert output == "\\makeatletter\\newif\\if@foo\\@footrue A"
+
+
+def test_strip_leaves_switch_assigned_inside_begingroup() -> None:
+    source = "\\newif\\ifarxiv\\begingroup\\arxivtrue\\endgroup\\ifarxiv A\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == []
 
 
 def test_strip_balances_nested_primitive() -> None:
@@ -1110,6 +1127,16 @@ def test_strip_keeps_operand_separated_by_comment() -> None:
     assert output == source
     assert warnings == [
         "\\ifarxiv at line 2 is kept: operand of \\ifdefined",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_keeps_operand_of_ifx_after_character_operand() -> None:
+    source = "\\newif\\ifarxiv\\arxivtrue \\ifx a\\ifarxiv X\\else Y\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\ifarxiv at line 1 is kept: operand of \\ifx",
         "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
     ]
 
