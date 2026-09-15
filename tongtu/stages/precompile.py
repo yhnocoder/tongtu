@@ -13,7 +13,9 @@ from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
 from ..manifests import describe_error, write_manifest
+from ..masking import skip_verb
 from ..model.config import FontsConfig, load_config
+from ..validation import read_control_sequence
 from ..workdir import Workdir
 
 STAGE_NAME = "precompile"
@@ -28,7 +30,7 @@ FONTS_DIRNAME = "fonts"
 
 FONTS_DIR = asset_path(FONTS_DIRNAME)
 
-LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--keep-comments", "--fatal")
+LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--empty-comments", "--fatal")
 
 LATEXPAND_TIMEOUT_SECONDS = 10.0
 
@@ -68,6 +70,41 @@ CJK_ENV_RE = re.compile(rb"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\})*|\\end\s*\{CJK\*
 
 FONT_FILE_SUFFIXES = (".ttf", ".otf", ".ttc")
 
+PRIMITIVE_CONDITIONALS = frozenset(
+    {
+        "if",
+        "ifcat",
+        "ifnum",
+        "ifdim",
+        "ifodd",
+        "ifvmode",
+        "ifhmode",
+        "ifmmode",
+        "ifinner",
+        "ifvoid",
+        "ifhbox",
+        "ifvbox",
+        "ifx",
+        "ifeof",
+        "iftrue",
+        "iffalse",
+        "ifcase",
+        "ifdefined",
+        "ifcsname",
+        "iffontchar",
+        "ifincsname",
+        "ifprimitive",
+    }
+)
+
+LITERAL_CONDITIONALS = {"iftrue": True, "iffalse": False}
+
+KNOWN_NON_CONDITIONALS = frozenset({"iff", "ifthenelse"})
+
+CONDITIONAL_PREFIX = "if"
+
+SKIPPED_SPACE_RE = re.compile(r"[ \t]*\n?")
+
 XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 \usepackage{xeCJK}
 """
@@ -89,6 +126,14 @@ XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 class ResolvedFont:
     name: str
     is_file: bool
+
+
+@dataclass(frozen=True)
+class ControlWord:
+    name: str
+    start: int
+    end: int
+    depth: int
 
 
 def run(
@@ -156,6 +201,7 @@ def _execute(
             warnings=warnings,
             message=failure,
         )
+    expanded = _strip_dead_branches(expanded, warnings)
     expanded = _inline_bbl(expanded, src, main_file, warnings)
     exit_check = _exit_check_message(expanded)
     if exit_check:
@@ -341,6 +387,194 @@ def _inline_bbl(output: bytes, src: Path, main_file: str, warnings: list[str]) -
     lines[index] = line[: match.start()] + bbl_path.read_bytes() + line[match.end() :]
     warnings.append(f"inlined {bbl_relative} at the \\bibliography command")
     return b"".join(lines)
+
+
+def _strip_dead_branches(output: bytes, warnings: list[str]) -> bytes:
+    try:
+        text = output.decode("utf-8")
+    except UnicodeDecodeError as error:
+        warnings.append(f"the expansion is not valid UTF-8 ({error}); constant switch branches are not removed")
+        return output
+    return strip_dead_branches(text, warnings).encode("utf-8")
+
+
+def strip_dead_branches(text: str, warnings: list[str]) -> str:
+    scanned, document_start = _scan_control_words(text)
+    declared: set[str] = set()
+    words: list[ControlWord] = []
+    for previous, word in zip([None, *scanned], scanned, strict=False):
+        if previous is None or previous.name != "newif":
+            words.append(word)
+        elif (
+            previous.start < document_start
+            and word.name.startswith(CONDITIONAL_PREFIX)
+            and len(word.name) > len(CONDITIONAL_PREFIX)
+        ):
+            declared.add(word.name[len(CONDITIONAL_PREFIX) :])
+    openers = PRIMITIVE_CONDITIONALS | {CONDITIONAL_PREFIX + name for name in declared}
+    conditions: list[int] = []
+    depth = 0
+    for word in words:
+        conditions.append(depth)
+        depth += (word.name in openers) - (word.name == "fi")
+    constants = dict(LITERAL_CONDITIONALS)
+    for name in declared:
+        value = _constant_value(words, conditions, name, document_start)
+        if value is not None:
+            constants[CONDITIONAL_PREFIX + name] = value
+    removed: dict[str, int] = {}
+    abandoned: dict[str, int] = {}
+    ranges: list[tuple[int, int]] = []
+    _collect_dead_ranges(text, words, 0, len(words), constants, openers, ranges, removed, abandoned, warnings)
+    for name in sorted(removed | abandoned):
+        warnings.append(
+            f"constant switch \\{name} is {str(constants[name]).lower()}: "
+            f"removed {removed.get(name, 0)} dead branches, kept {abandoned.get(name, 0)}"
+        )
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in sorted(ranges):
+        if start > cursor:
+            pieces.append(text[cursor:start])
+        cursor = max(cursor, end)
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def _scan_control_words(text: str) -> tuple[list[ControlWord], int]:
+    words: list[ControlWord] = []
+    depth = 0
+    document_start = len(text)
+    position = 0
+    while position < len(text):
+        character = text[position]
+        if character == "%":
+            newline = text.find("\n", position)
+            position = len(text) if newline < 0 else newline
+        elif character == "{":
+            depth += 1
+            position += 1
+        elif character == "}":
+            depth -= 1
+            position += 1
+        elif character == "\\":
+            name, after = _read_control_word(text, position)
+            if name == "verb":
+                position = skip_verb(text, after)
+                continue
+            if name == "begin" and document_start == len(text) and text.startswith("{document}", after):
+                document_start = position
+            words.append(ControlWord(name, position, after, depth))
+            position = after
+        else:
+            position += 1
+    return words, document_start
+
+
+def _read_control_word(text: str, position: int) -> tuple[str, int]:
+    name, after = read_control_sequence(text, position)
+    if name.isalpha() and text.startswith("@", after):
+        while after < len(text) and (text[after] == "@" or (text[after].isascii() and text[after].isalpha())):
+            after += 1
+        name = text[position + 1 : after]
+    return name, after
+
+
+def _constant_value(words: list[ControlWord], conditions: list[int], name: str, document_start: int) -> bool | None:
+    assignments = [
+        (word, condition)
+        for word, condition in zip(words, conditions, strict=True)
+        if word.name in (name + "true", name + "false")
+    ]
+    if len(assignments) > 1 or any(
+        word.start >= document_start or word.depth != 0 or condition != 0 for word, condition in assignments
+    ):
+        return None
+    assignments = [word for word, _ in assignments]
+    return assignments[0].name == name + "true" if assignments else False
+
+
+def _collect_dead_ranges(
+    text: str,
+    words: list[ControlWord],
+    low: int,
+    high: int,
+    constants: dict[str, bool],
+    openers: frozenset[str],
+    ranges: list[tuple[int, int]],
+    removed: dict[str, int],
+    abandoned: dict[str, int],
+    warnings: list[str],
+) -> None:
+    index = low
+    while index < high:
+        word = words[index]
+        if word.name not in constants:
+            index += 1
+            continue
+        boundaries = _find_boundaries(text, words, index, high, openers, warnings)
+        if boundaries is None:
+            abandoned[word.name] = abandoned.get(word.name, 0) + 1
+            index += 1
+            continue
+        else_index, fi_index = boundaries
+        removed[word.name] = removed.get(word.name, 0) + 1
+        value = constants[word.name]
+        start = word.start
+        if index > low and words[index - 1].name == "unless" and words[index - 1].end == word.start:
+            value = not value
+            start = words[index - 1].start
+        if value:
+            ranges.append((start, _skip_space(text, word.end)))
+            live_end = else_index if else_index is not None else fi_index
+            ranges.append((words[live_end].start, _skip_space(text, words[fi_index].end)))
+            _collect_dead_ranges(
+                text, words, index + 1, live_end, constants, openers, ranges, removed, abandoned, warnings
+            )
+        elif else_index is not None:
+            ranges.append((start, _skip_space(text, words[else_index].end)))
+            ranges.append((words[fi_index].start, _skip_space(text, words[fi_index].end)))
+            _collect_dead_ranges(
+                text, words, else_index + 1, fi_index, constants, openers, ranges, removed, abandoned, warnings
+            )
+        else:
+            ranges.append((start, _skip_space(text, words[fi_index].end)))
+        index = fi_index + 1
+
+
+def _find_boundaries(
+    text: str, words: list[ControlWord], index: int, high: int, openers: frozenset[str], warnings: list[str]
+) -> tuple[int | None, int] | None:
+    opener = words[index]
+    depth = 0
+    else_index: int | None = None
+    for position in range(index + 1, high):
+        word = words[position]
+        if word.name in openers:
+            depth += 1
+        elif word.name == "fi":
+            if depth == 0:
+                return else_index, position
+            depth -= 1
+        elif word.name == "else":
+            if depth == 0 and else_index is None:
+                else_index = position
+        elif word.name.startswith(CONDITIONAL_PREFIX) and word.name not in KNOWN_NON_CONDITIONALS:
+            warnings.append(
+                f"\\{opener.name} at line {_line_number(text, opener.start)} is kept: "
+                f"\\{word.name} at line {_line_number(text, word.start)} is not a known conditional"
+            )
+            return None
+    warnings.append(f"\\{opener.name} at line {_line_number(text, opener.start)} is kept: no matching \\fi")
+    return None
+
+
+def _skip_space(text: str, position: int) -> int:
+    return SKIPPED_SPACE_RE.match(text, position).end()
+
+
+def _line_number(text: str, position: int) -> int:
+    return text.count("\n", 0, position) + 1
 
 
 def _exit_check_message(output: bytes) -> str:

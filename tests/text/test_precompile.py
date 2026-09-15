@@ -849,3 +849,183 @@ def test_unreadable_auxiliary_source_still_enters_fix(tmp_path: Path, monkeypatc
     assert any("unreadable.tex" in warning for warning in manifest.warnings)
     assert workdir.manifest_path("precompile").is_file()
     assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
+
+
+def strip(text: str) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    return precompile.strip_dead_branches(text, warnings), warnings
+
+
+SWITCH_TRUE = "\\newif\\ifarxiv\n\\arxivtrue\n"
+
+SWITCH_FALSE = "\\newif\\ifarxiv\n\\arxivfalse\n"
+
+BRANCHES = "\\ifarxiv\nA\n\\else\nB\n\\fi\nC\n"
+
+
+def test_strip_true_keeps_first_branch() -> None:
+    output, warnings = strip(SWITCH_TRUE + BRANCHES)
+    assert output == SWITCH_TRUE + "A\nC\n"
+    assert warnings == ["constant switch \\ifarxiv is true: removed 1 dead branches, kept 0"]
+
+
+def test_strip_false_keeps_else_branch() -> None:
+    output, warnings = strip(SWITCH_FALSE + BRANCHES)
+    assert output == SWITCH_FALSE + "B\nC\n"
+    assert warnings == ["constant switch \\ifarxiv is false: removed 1 dead branches, kept 0"]
+
+
+def test_strip_without_else() -> None:
+    output, _ = strip(SWITCH_TRUE + "\\ifarxiv\nA\n\\fi\nC\n")
+    assert output == SWITCH_TRUE + "A\nC\n"
+    output, _ = strip(SWITCH_FALSE + "\\ifarxiv\nA\n\\fi\nC\n")
+    assert output == SWITCH_FALSE + "C\n"
+
+
+def test_strip_iffalse_literal_removes_whole_block() -> None:
+    output, warnings = strip("X\n\\iffalse\nA\n\\fi\nC\n")
+    assert output == "X\nC\n"
+    assert warnings == ["constant switch \\iffalse is false: removed 1 dead branches, kept 0"]
+
+
+def test_strip_unassigned_switch_is_false() -> None:
+    output, _ = strip("\\newif\\ifarxiv\n" + BRANCHES)
+    assert output == "\\newif\\ifarxiv\nB\nC\n"
+
+
+@pytest.mark.parametrize(
+    "preamble",
+    [
+        "\\newif\\ifarxiv\n\\arxivtrue\n\\arxivfalse\n",
+        "\\newif\\ifarxiv\n\\begin{document}\n\\arxivtrue\n",
+        "\\newif\\ifarxiv\n\\AtBeginDocument{\\arxivtrue}\n",
+    ],
+)
+def test_strip_leaves_non_constant_switches(preamble: str) -> None:
+    output, warnings = strip(preamble + BRANCHES)
+    assert output == preamble + BRANCHES
+    assert warnings == []
+
+
+def test_strip_leaves_switch_assigned_inside_another_conditional() -> None:
+    source = "\\newif\\ifarxiv \\ifdefined\\ARXIV\\arxivtrue\\fi \\ifarxiv A\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == []
+
+
+def test_strip_skips_known_non_conditionals() -> None:
+    output, warnings = strip(SWITCH_TRUE + "\\ifarxiv $a \\iff b$ \\else B \\fi")
+    assert output == SWITCH_TRUE + "$a \\iff b$ "
+    assert warnings == ["constant switch \\ifarxiv is true: removed 1 dead branches, kept 0"]
+
+
+def test_strip_keeps_at_names_whole() -> None:
+    source = "\\makeatletter\\newif\\ifhl@active\\newcommand\\on{\\global\\hl@activetrue}\\ifhl@active A\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == []
+
+
+def test_strip_abandons_on_unknown_at_conditional() -> None:
+    source = "\\newif\\ifarxiv\\arxivtrue\\ifarxiv\\ifhl@active X\\fi\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\ifarxiv at line 1 is kept: \\ifhl@active at line 1 is not a known conditional",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_global_assignment() -> None:
+    output, _ = strip("\\newif\\ifarxiv\n\\global\\arxivtrue\n" + BRANCHES)
+    assert output == "\\newif\\ifarxiv\n\\global\\arxivtrue\nA\nC\n"
+
+
+def test_strip_unless_negates() -> None:
+    output, _ = strip(SWITCH_TRUE + "\\unless\\ifarxiv\nA\n\\else\nB\n\\fi\nC\n")
+    assert output == SWITCH_TRUE + "B\nC\n"
+
+
+def test_strip_balances_nested_primitive() -> None:
+    body = "\\ifarxiv\n\\ifx\\a\\b X\\else Y\\fi\n\\else\nB\n\\fi\nC\n"
+    output, _ = strip(SWITCH_TRUE + body)
+    assert output == SWITCH_TRUE + "\\ifx\\a\\b X\\else Y\\fi\nC\n"
+
+
+def test_strip_abandons_unknown_conditional_macro() -> None:
+    body = "\\ifarxiv\n\\iftodonotes{x}\n\\else\nB\n\\fi\n" + BRANCHES
+    output, warnings = strip(SWITCH_TRUE + body)
+    assert output == SWITCH_TRUE + "\\ifarxiv\n\\iftodonotes{x}\n\\else\nB\n\\fi\nA\nC\n"
+    assert warnings == [
+        "\\ifarxiv at line 3 is kept: \\iftodonotes at line 4 is not a known conditional",
+        "constant switch \\ifarxiv is true: removed 1 dead branches, kept 1",
+    ]
+
+
+def test_strip_does_not_confuse_fi_with_figref() -> None:
+    output, warnings = strip(SWITCH_TRUE + "\\ifarxiv\n\\figref{a}\n\\else\nB\n\\fi\nC\n")
+    assert output == SWITCH_TRUE + "\\figref{a}\nC\n"
+    assert warnings == ["constant switch \\ifarxiv is true: removed 1 dead branches, kept 0"]
+
+
+def test_strip_does_not_confuse_ifx_with_ifxyz() -> None:
+    body = "\\ifarxiv\n\\ifxyz X\\fi\n\\else\nB\n\\fi\nC\n"
+    output, warnings = strip(SWITCH_TRUE + body)
+    assert output == SWITCH_TRUE + body
+    assert warnings == [
+        "\\ifarxiv at line 3 is kept: \\ifxyz at line 4 is not a known conditional",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_inside_macro_body() -> None:
+    output, _ = strip(SWITCH_TRUE + "\\newcommand{\\confonly}[1]{\\ifarxiv\\else#1\\fi}\n")
+    assert output == SWITCH_TRUE + "\\newcommand{\\confonly}[1]{}\n"
+
+
+def test_strip_does_not_add_blank_lines() -> None:
+    output, _ = strip(SWITCH_TRUE + "\\section{X}\n\\ifarxiv\n\\begin{table}\n\\end{table}\n\\fi\n")
+    assert output == SWITCH_TRUE + "\\section{X}\n\\begin{table}\n\\end{table}\n"
+
+
+@pytest.mark.parametrize(("preamble", "star"), [(SWITCH_TRUE, ""), (SWITCH_FALSE, "*")])
+def test_strip_keeps_environments_balanced(preamble: str, star: str) -> None:
+    body = (
+        "\\ifarxiv \\begin{table} \\else \\begin{table*} \\fi body \\ifarxiv \\end{table} \\else \\end{table*} \\fi\n"
+    )
+    output, _ = strip(preamble + body)
+    assert output == preamble + f"\\begin{{table{star}}} body \\end{{table{star}}} "
+
+
+def test_strip_skips_comments_and_verb() -> None:
+    body = "\\verb|\\ifarxiv| %\n\\ifarxiv\nA\\verb+\\fi+\n\\else\nB\n\\fi\nC\n"
+    output, _ = strip(SWITCH_TRUE + body)
+    assert output == SWITCH_TRUE + "\\verb|\\ifarxiv| %\nA\\verb+\\fi+\nC\n"
+
+
+def test_strip_invalid_utf8_is_kept_with_warning() -> None:
+    warnings: list[str] = []
+    output = precompile._strip_dead_branches(b"\\iffalse\n\xff\n\\fi\n", warnings)
+    assert output == b"\\iffalse\n\xff\n\\fi\n"
+    assert any("UTF-8" in line for line in warnings)
+
+
+def test_latexpand_empties_comments() -> None:
+    assert "--empty-comments" in precompile.LATEXPAND_COMMAND
+    assert "--keep-comments" not in precompile.LATEXPAND_COMMAND
+
+
+def test_injects_xecjk_after_the_live_documentclass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paper = (
+        "\\newif\\ifarxiv\n\\arxivtrue\n\\ifarxiv\n\\documentclass{article}\n\\else\n"
+        "\\documentclass{revtex4-2}\n\\fi\n\\begin{document}\nHello\n\\end{document}\n"
+    )
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
+    manifest = precompile.run(workdir)
+    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    assert manifest.status is PrecompileStatus.OK
+    assert output.count("\\documentclass") == 1
+    assert "revtex4-2" not in output
+    assert "\\documentclass{article}\n% ---- injected by tongtu (precompile) ----\n" in output
+    assert "constant switch \\ifarxiv is true: removed 1 dead branches, kept 0" in manifest.warnings
