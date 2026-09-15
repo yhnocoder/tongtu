@@ -4,16 +4,25 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .. import compiling, pipeline, processes
 from ..artifacts.common import FixSession
+from ..artifacts.mask import BlockCategory
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
 from ..manifests import describe_error, write_manifest
-from ..masking import skip_verb
+from ..masking import (
+    ENVIRONMENTS_TABLE_PATH,
+    MaskError,
+    TableEntry,
+    parse_environment_table,
+    read_environment_name,
+    skip_code_environment,
+    skip_verb,
+)
 from ..model.config import FontsConfig, load_config
 from ..validation import read_control_sequence
 from ..workdir import Workdir
@@ -97,13 +106,21 @@ PRIMITIVE_CONDITIONALS = frozenset(
     }
 )
 
-LITERAL_CONDITIONALS = {"iftrue": True, "iffalse": False}
+LITERAL_CONDITIONALS = {"iftrue": (0, True), "iffalse": (0, False)}
 
 KNOWN_NON_CONDITIONALS = frozenset({"iff", "ifthenelse"})
+
+LET_COMMAND = "let"
+
+OPERAND_COMMANDS = frozenset({"ifdefined", "ifx", "ifcat", "meaning", "string", "noexpand", "expandafter", "show"})
+
+BINARY_CONDITIONALS = frozenset({"ifx", "ifcat"})
 
 CONDITIONAL_PREFIX = "if"
 
 SKIPPED_SPACE_RE = re.compile(r"[ \t]*\n?")
+
+CONTROL_WORD_TAIL_RE = re.compile(r"\\[A-Za-z]+\Z")
 
 XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 \usepackage{xeCJK}
@@ -395,11 +412,16 @@ def _strip_dead_branches(output: bytes, warnings: list[str]) -> bytes:
     except UnicodeDecodeError as error:
         warnings.append(f"the expansion is not valid UTF-8 ({error}); constant switch branches are not removed")
         return output
-    return strip_dead_branches(text, warnings).encode("utf-8")
+    table = parse_environment_table(ENVIRONMENTS_TABLE_PATH.read_text(encoding="utf-8"))
+    try:
+        return strip_dead_branches(text, table, warnings).encode("utf-8")
+    except MaskError as error:
+        warnings.append(f"{error}; constant switch branches are not removed")
+        return output
 
 
-def strip_dead_branches(text: str, warnings: list[str]) -> str:
-    scanned, document_start = _scan_control_words(text)
+def strip_dead_branches(text: str, table: Mapping[str, TableEntry], warnings: list[str]) -> str:
+    scanned, document_start = _scan_control_words(text, table)
     declared: set[str] = set()
     words: list[ControlWord] = []
     for previous, word in zip([None, *scanned], scanned, strict=False):
@@ -419,29 +441,30 @@ def strip_dead_branches(text: str, warnings: list[str]) -> str:
         depth += (word.name in openers) - (word.name == "fi")
     constants = dict(LITERAL_CONDITIONALS)
     for name in declared:
-        value = _constant_value(words, conditions, name, document_start)
-        if value is not None:
-            constants[CONDITIONAL_PREFIX + name] = value
+        assignment = _constant_assignment(text, words, conditions, name, document_start)
+        if assignment is not None:
+            constants[CONDITIONAL_PREFIX + name] = assignment
     removed: dict[str, int] = {}
     abandoned: dict[str, int] = {}
     ranges: list[tuple[int, int]] = []
     _collect_dead_ranges(text, words, 0, len(words), constants, openers, ranges, removed, abandoned, warnings)
     for name in sorted(removed | abandoned):
         warnings.append(
-            f"constant switch \\{name} is {str(constants[name]).lower()}: "
+            f"constant switch \\{name} is {str(constants[name][1]).lower()}: "
             f"removed {removed.get(name, 0)} dead branches, kept {abandoned.get(name, 0)}"
         )
     pieces: list[str] = []
     cursor = 0
-    for start, end in sorted(ranges):
+    for start, end in [*sorted(ranges), (len(text), len(text))]:
         if start > cursor:
+            if pieces and CONTROL_WORD_TAIL_RE.search(pieces[-1]) and text[cursor].isascii() and text[cursor].isalpha():
+                pieces.append(" ")
             pieces.append(text[cursor:start])
         cursor = max(cursor, end)
-    pieces.append(text[cursor:])
     return "".join(pieces)
 
 
-def _scan_control_words(text: str) -> tuple[list[ControlWord], int]:
+def _scan_control_words(text: str, table: Mapping[str, TableEntry]) -> tuple[list[ControlWord], int]:
     words: list[ControlWord] = []
     depth = 0
     document_start = len(text)
@@ -462,8 +485,14 @@ def _scan_control_words(text: str) -> tuple[list[ControlWord], int]:
             if name == "verb":
                 position = skip_verb(text, after)
                 continue
-            if name == "begin" and document_start == len(text) and text.startswith("{document}", after):
-                document_start = position
+            if name == "begin":
+                environment, body_start = read_environment_name(text, after)
+                if environment == "document" and document_start == len(text):
+                    document_start = position
+                entry = None if environment is None else table.get(environment) or table.get(environment.rstrip("*"))
+                if entry is not None and entry.category is BlockCategory.CODE:
+                    position = skip_code_environment(text, body_start, environment)
+                    continue
             words.append(ControlWord(name, position, after, depth))
             position = after
         else:
@@ -480,18 +509,35 @@ def _read_control_word(text: str, position: int) -> tuple[str, int]:
     return name, after
 
 
-def _constant_value(words: list[ControlWord], conditions: list[int], name: str, document_start: int) -> bool | None:
+def _preceding_names(text: str, words: list[ControlWord], index: int) -> list[str]:
+    names: list[str] = []
+    while index > 0 and len(names) < 2 and not text[words[index - 1].end : words[index].start].strip():
+        index -= 1
+        names.append(words[index].name)
+    return names
+
+
+def _constant_assignment(
+    text: str, words: list[ControlWord], conditions: list[int], name: str, document_start: int
+) -> tuple[int, bool] | None:
     assignments = [
         (word, condition)
         for word, condition in zip(words, conditions, strict=True)
         if word.name in (name + "true", name + "false")
     ]
-    if len(assignments) > 1 or any(
-        word.start >= document_start or word.depth != 0 or condition != 0 for word, condition in assignments
+    if (
+        len(assignments) > 1
+        or any(word.start >= document_start or word.depth != 0 or condition != 0 for word, condition in assignments)
+        or any(
+            word.name == CONDITIONAL_PREFIX + name and _preceding_names(text, words, index)[:1] == [LET_COMMAND]
+            for index, word in enumerate(words)
+        )
     ):
         return None
-    assignments = [word for word, _ in assignments]
-    return assignments[0].name == name + "true" if assignments else False
+    if not assignments:
+        return 0, False
+    word = assignments[0][0]
+    return word.start, word.name == name + "true"
 
 
 def _collect_dead_ranges(
@@ -499,7 +545,7 @@ def _collect_dead_ranges(
     words: list[ControlWord],
     low: int,
     high: int,
-    constants: dict[str, bool],
+    constants: dict[str, tuple[int, bool]],
     openers: frozenset[str],
     ranges: list[tuple[int, int]],
     removed: dict[str, int],
@@ -512,6 +558,22 @@ def _collect_dead_ranges(
         if word.name not in constants:
             index += 1
             continue
+        preceding = _preceding_names(text, words, index)
+        if LET_COMMAND in preceding:
+            index += 1
+            continue
+        operand_of = None
+        if preceding[:1] and preceding[0] in OPERAND_COMMANDS:
+            operand_of = preceding[0]
+        elif preceding[1:] and preceding[1] in BINARY_CONDITIONALS:
+            operand_of = preceding[1]
+        if operand_of is not None:
+            warnings.append(
+                f"\\{word.name} at line {_line_number(text, word.start)} is kept: operand of \\{operand_of}"
+            )
+            abandoned[word.name] = abandoned.get(word.name, 0) + 1
+            index += 1
+            continue
         boundaries = _find_boundaries(text, words, index, high, openers, warnings)
         if boundaries is None:
             abandoned[word.name] = abandoned.get(word.name, 0) + 1
@@ -519,7 +581,8 @@ def _collect_dead_ranges(
             continue
         else_index, fi_index = boundaries
         removed[word.name] = removed.get(word.name, 0) + 1
-        value = constants[word.name]
+        assigned_at, assigned = constants[word.name]
+        value = assigned and word.start >= assigned_at
         start = word.start
         if index > low and words[index - 1].name == "unless" and words[index - 1].end == word.start:
             value = not value

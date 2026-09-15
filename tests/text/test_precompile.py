@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import tongtu.model
-from tongtu import processes
+from tongtu import masking, processes
 from tongtu.artifacts.precompile import PrecompileStatus
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.pipeline import outputs_present
@@ -851,9 +851,12 @@ def test_unreadable_auxiliary_source_still_enters_fix(tmp_path: Path, monkeypatc
     assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
 
 
+ENVIRONMENTS_TABLE = masking.parse_environment_table(masking.ENVIRONMENTS_TABLE_PATH.read_text(encoding="utf-8"))
+
+
 def strip(text: str) -> tuple[str, list[str]]:
     warnings: list[str] = []
-    return precompile.strip_dead_branches(text, warnings), warnings
+    return precompile.strip_dead_branches(text, ENVIRONMENTS_TABLE, warnings), warnings
 
 
 SWITCH_TRUE = "\\newif\\ifarxiv\n\\arxivtrue\n"
@@ -1029,3 +1032,74 @@ def test_injects_xecjk_after_the_live_documentclass(tmp_path: Path, monkeypatch:
     assert "revtex4-2" not in output
     assert "\\documentclass{article}\n% ---- injected by tongtu (precompile) ----\n" in output
     assert "constant switch \\ifarxiv is true: removed 1 dead branches, kept 0" in manifest.warnings
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "\\begin{verbatim}\\iffalse x\\fi\\end{verbatim}\n",
+        SWITCH_TRUE + "\\begin{lstlisting}\\ifarxiv A\\else B\\fi\\end{lstlisting}\n",
+        SWITCH_TRUE + "\\begin{lstlisting*}\\ifarxiv A\\else B\\fi\\end{lstlisting*}\n",
+    ],
+)
+def test_strip_skips_code_environments(source: str) -> None:
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == []
+
+
+def test_strip_unterminated_code_environment_is_kept_with_warning() -> None:
+    warnings: list[str] = []
+    source = b"\\begin{verbatim}\n\\iffalse x\\fi\n"
+    assert precompile._strip_dead_branches(source, warnings) == source
+    assert warnings == [
+        "environment verbatim has no matching \\end{verbatim} before end of file; constant switch branches are not removed"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("\\foo\\iftrue world\\fi", "\\foo world"),
+        ("ab\\iftrue cd\\fi", "abcd"),
+        ("\\foo\\iftrue{x}\\fi", "\\foo{x}"),
+    ],
+)
+def test_strip_separates_control_word_from_following_letters(source: str, expected: str) -> None:
+    output, _ = strip(source)
+    assert output == expected
+
+
+def test_strip_before_assignment_is_false() -> None:
+    output, warnings = strip("\\newif\\ifarxiv \\ifarxiv A\\else B\\fi \\arxivtrue \\ifarxiv C\\else D\\fi")
+    assert output == "\\newif\\ifarxiv B\\arxivtrue C"
+    assert warnings == ["constant switch \\ifarxiv is true: removed 2 dead branches, kept 0"]
+
+
+def test_strip_leaves_switch_assigned_by_let() -> None:
+    source = "\\newif\\ifarxiv\\let\\ifarxiv\\iftrue \\ifarxiv A\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == []
+
+
+def test_strip_keeps_operand_of_ifdefined() -> None:
+    source = "\\newif\\ifarxiv\\arxivtrue \\ifdefined\\ifarxiv X\\else Y\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\ifarxiv at line 1 is kept: operand of \\ifdefined",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_keeps_second_operand_of_ifx() -> None:
+    source = "\\newif\\ifarxiv\\arxivtrue \\ifx\\ifarxiv\\iftrue X\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\ifarxiv at line 1 is kept: operand of \\ifx",
+        "\\iftrue at line 1 is kept: operand of \\ifx",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+        "constant switch \\iftrue is true: removed 0 dead branches, kept 1",
+    ]
