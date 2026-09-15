@@ -1081,6 +1081,8 @@ def test_strip_unterminated_code_environment_is_kept_with_warning() -> None:
         ("ab\\iftrue cd\\fi", "abcd"),
         ("\\foo\\iftrue{x}\\fi", "\\foo{x}"),
         ("\\foo@bar\\iftrue world\\fi", "\\foo@bar world"),
+        ("\\\\foo\\iftrue bar\\fi", "\\\\foobar"),
+        ("\\foo\\iftrue @bar\\fi", "\\foo @bar"),
     ],
 )
 def test_strip_separates_control_word_from_following_letters(source: str, expected: str) -> None:
@@ -1108,7 +1110,72 @@ def test_strip_leaves_switch_assigned_by_let() -> None:
     source = "\\newif\\ifarxiv\\let\\ifarxiv\\iftrue \\ifarxiv A\\else B\\fi"
     output, warnings = strip(source)
     assert output == source
+    assert warnings == [
+        "\\iftrue at line 1 is kept: operand of \\let",
+        "constant switch \\iftrue is true: removed 0 dead branches, kept 1",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "\\newif\\ifarxiv\\ifpdf\\arxivtrue\\fi \\ifarxiv A\\else B\\fi",
+        "\\newif\\ifarxiv\\let\\enable\\arxivtrue \\ifarxiv A\\else B\\fi",
+        "\\newif\\ifarxiv\\arxivtrue\\newif\\ifarxiv \\ifarxiv A\\else B\\fi",
+        "\\newif\\ifarxiv\\bgroup\\arxivtrue\\egroup \\ifarxiv A\\else B\\fi",
+        "\\newif\\ifarxiv\\begin{setup}\\arxivtrue\\end{setup} \\ifarxiv A\\else B\\fi",
+    ],
+)
+def test_strip_leaves_switch_whose_assignment_is_not_a_top_level_execution(source: str) -> None:
+    output, warnings = strip(source)
+    assert output == source
     assert warnings == []
+
+
+def test_strip_leaves_literal_redefined_by_let() -> None:
+    source = "\\let\\iftrue\\iffalse \\iftrue A\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\iffalse at line 1 is kept: operand of \\let",
+        "constant switch \\iffalse is false: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_let_with_equals_sign_takes_its_operand() -> None:
+    output, warnings = strip("\\let\\check=\\iftrue \\iftrue A\\fi")
+    assert output == "\\let\\check=\\iftrue A"
+    assert warnings == [
+        "\\iftrue at line 1 is kept: operand of \\let",
+        "constant switch \\iftrue is true: removed 1 dead branches, kept 1",
+    ]
+
+
+def test_strip_operands_do_not_pair() -> None:
+    output, _ = strip("\\iftrue\\ifx\\fi\\relax A\\else B\\fi\\else C\\fi")
+    assert output == "\\ifx\\fi\\relax A\\else B\\fi"
+    output, warnings = strip("\\newif\\ifarxiv\\arxivtrue \\ifarxiv\\let\\ifpreprint\\iftrue\\fi")
+    assert output == "\\newif\\ifarxiv\\arxivtrue \\let\\ifpreprint\\iftrue"
+    assert warnings == [
+        "\\iftrue at line 1 is kept: operand of \\let",
+        "constant switch \\ifarxiv is true: removed 1 dead branches, kept 0",
+        "constant switch \\iftrue is true: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_unless_as_operand_does_not_negate() -> None:
+    output, _ = strip(SWITCH_TRUE + "\\ifdefined\\unless\\ifarxiv A\\else B\\fi\\fi")
+    assert output == SWITCH_TRUE + "\\ifdefined\\unless A\\fi"
+
+
+def test_strip_keeps_switch_after_expandafter() -> None:
+    source = "\\newif\\ifarxiv\\arxivtrue \\expandafter\\ifarxiv A\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\ifarxiv at line 1 is kept: follows \\expandafter",
+        "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
+    ]
 
 
 def test_strip_keeps_operand_of_ifdefined() -> None:
