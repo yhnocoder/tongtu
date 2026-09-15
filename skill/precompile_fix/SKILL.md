@@ -1,7 +1,7 @@
 ---
 name: precompile_fix
 description: precompile 阶段修复会话的任务说明：在一次性编译目录内修复缺失源码引用或原文 xelatex 编译失败，不改动文字内容。
-version: 3
+version: 4
 ---
 
 # 原文编译修复会话
@@ -44,6 +44,17 @@ version: 3
 2. **残留的 CJKutf8 机制**：驱动器已在注入时移除 `CJKutf8` 系宏包并剥掉 `\begin{CJK*}` 包裹，但个别变体写法（自定义包装命令、`\AtBeginDocument` 里的加载）可能漏网，xelatex 下报 `Package CJK Error` 或 `Undefined control sequence`。处置：注释掉残留的 CJK 机制命令，正文原样保留；中文排版由注入的 xeCJK 配置负责。
 3. **图引用带显式扩展名但文件缺失**：如 `\includegraphics{fig.eps}` 而树里只有 `fig.pdf`，报 `File 'fig.eps' not found`。处置：确认同主干、其他扩展名的图文件确实存在，然后把引用改成存在的扩展名（或去掉扩展名交给 LaTeX 按默认顺序找）。
 4. **宏包与 xeCJK / fontspec 冲突**：如重复定义字体命令、`inputenc`/`fontenc` 与 XeTeX 引擎不兼容。处置：注释掉 `\usepackage[utf8]{inputenc}` 一类在 xelatex 下多余的行；其余冲突按日志逐个处理。
+5. **fontspec 按字体名找不到 texmf 里的字体**：XeTeX 按字体名查找时只问系统字体库，TeX Live 自带的字体文件不在其中，报 `Package fontspec Error: The font "..." cannot be found`，随后连锁 `Font TU/... not loadable`。按文件名（带 `.otf`/`.ttf` 扩展名）加载则经 kpsewhich 查找，`kpsewhich <文件名>` 能找到就能用。字体名写在宏包内部时，要在宏包加载前用文件名定义好同名字体命令，并让宏包内部那次定义落空，例如 `fontawesome`（v4）内部的 `\newfontfamily{\FA}{FontAwesome}`：
+
+   ```latex
+   \newfontfamily\FA{FontAwesome.otf}
+   \let\tongtuorig\newfontfamily
+   \def\newfontfamily#1#2{\global\let\newfontfamily\tongtuorig}
+   \usepackage{fontawesome}
+   ```
+
+   不要用 `\let` 保存后 `\RenewDocumentCommand` 重定义 fontspec 的命令：它们的主体存在内部宏里，会被一并替换，`\let` 的拷贝仍指向它，结果是无限递归（`TeX capacity exceeded [parameter stack size]`）。
+6. **microtype 的 protrusion 遇到 TFM 字体**：XeTeX 下 microtype 对部分编码（如 `TS1`）用字形名描述突出量，需要 `\XeTeXglyph`，而传统 Type1 字体（Times 的 `ptm` 等，会议模板常把 `\rmdefault` 设成它）是 TFM 字体，报 `Cannot use XeTeXglyph with <字体名>; not a native platform font`，紧接着 `Missing number, treated as zero`。处置：`\usepackage[protrusion=false]{microtype}`。
 
 ## 结束时
 
