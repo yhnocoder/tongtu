@@ -1218,3 +1218,62 @@ def test_strip_keeps_second_operand_of_ifx() -> None:
         "constant switch \\ifarxiv is true: removed 0 dead branches, kept 1",
         "constant switch \\iftrue is true: removed 0 dead branches, kept 1",
     ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("a\\iftrue\n  b\\fi", "ab"),
+        ("a\\iftrue\n\nb\\fi", "a%\n\nb"),
+        ("\\iftrue a\\fi\n\nb", "a%\n\nb"),
+    ],
+)
+def test_strip_skips_space_like_tex_but_keeps_blank_lines(source: str, expected: str) -> None:
+    output, _ = strip(source)
+    assert output == expected
+
+
+def test_strip_pairs_dead_branch_by_name() -> None:
+    output, _ = strip("\\iffalse\\let\\check\\iftrue X\\fi\\fi Y")
+    assert output == "Y"
+
+
+def test_strip_consumed_command_does_not_consume() -> None:
+    output, _ = strip("\\iftrue\\let\\check\\ifx a\\iffalse A\\else B\\fi\\else C\\fi")
+    assert output == "\\let\\check\\ifx aB"
+
+
+def test_strip_space_after_character_is_the_second_operand() -> None:
+    output, warnings = strip("\\ifx a \\iffalse A\\else B\\fi")
+    assert output == "\\ifx a B"
+    assert warnings == ["constant switch \\iffalse is false: removed 1 dead branches, kept 0"]
+    source = "\\ifx a\\iffalse A\\else B\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == [
+        "\\iffalse at line 1 is kept: operand of \\ifx",
+        "constant switch \\iffalse is false: removed 0 dead branches, kept 1",
+    ]
+
+
+def test_strip_ifcat_expands_its_operand() -> None:
+    output, _ = strip("\\ifcat\\iftrue a1\\else bb\\fi")
+    assert output == "\\ifcat a1"
+
+
+def test_strip_newif_as_operand_does_not_declare() -> None:
+    source = "\\ifdefined\\newif\\ifXeTeX A\\else B\\fi\\fi"
+    output, warnings = strip(source)
+    assert output == source
+    assert warnings == []
+
+
+def test_strip_leaves_switch_redefined_by_def() -> None:
+    source = "\\newif\\ifarxiv\\arxivtrue\\def\\ifarxiv{\\iffalse} \\ifarxiv A\\else B\\fi"
+    output, _ = strip(source)
+    assert output == source
+
+
+def test_strip_separates_single_at_from_following_letters() -> None:
+    output, _ = strip("\\@\\iftrue foo\\fi")
+    assert output == "\\@ foo"

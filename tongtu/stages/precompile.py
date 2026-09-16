@@ -114,13 +114,19 @@ KNOWN_NON_CONDITIONALS = frozenset({"iff", "ifthenelse"})
 
 LET_COMMAND = "let"
 
-OPERAND_COMMANDS = frozenset({"ifdefined", "ifx", "ifcat", "meaning", "string", "noexpand", "show", "let"})
+NEWIF_COMMAND = "newif"
 
-BINARY_CONDITIONALS = frozenset({"ifx", "ifcat"})
+DEFINING_COMMANDS = frozenset({LET_COMMAND, "def", "edef", "gdef", "xdef", "futurelet"})
+
+OPERAND_COMMANDS = DEFINING_COMMANDS | {"ifdefined", "ifx", "meaning", "string", "noexpand", "show", NEWIF_COMMAND}
+
+BINARY_CONDITIONALS = frozenset({"ifx"})
 
 CONDITIONAL_PREFIX = "if"
 
-SKIPPED_SPACE_RE = re.compile(r"[ \t]*\n?")
+SKIPPED_SPACE_RE = re.compile(r"[ \t]*(?:\n[ \t]*+(?!\n))?")
+
+BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
 
 LETTER_NAME_RE = re.compile(r"[A-Za-z@]+")
 
@@ -423,20 +429,21 @@ def _strip_dead_branches(output: bytes, warnings: list[str]) -> bytes:
 
 
 def strip_dead_branches(text: str, table: Mapping[str, TableEntry], warnings: list[str]) -> str:
-    scanned, document_start = _scan_control_words(text, table)
+    words, document_start = _scan_control_words(text, table)
+    roles = _operand_roles(text, words)
     declarations: Counter[str] = Counter()
     declared: set[str] = set()
-    words: list[ControlWord] = []
-    for previous, word in zip([None, *scanned], scanned, strict=False):
-        if previous is None or previous.name != "newif":
-            words.append(word)
-        elif word.name.startswith(CONDITIONAL_PREFIX) and len(word.name) > len(CONDITIONAL_PREFIX):
+    for index, word in enumerate(words):
+        if (
+            roles.get(index) == NEWIF_COMMAND
+            and word.name.startswith(CONDITIONAL_PREFIX)
+            and len(word.name) > len(CONDITIONAL_PREFIX)
+        ):
             name = word.name[len(CONDITIONAL_PREFIX) :]
             declarations[name] += 1
-            if previous.start < document_start:
+            if word.start < document_start:
                 declared.add(name)
     declared -= {name for name, count in declarations.items() if count > 1}
-    roles = _operand_roles(text, words)
     openers = PRIMITIVE_CONDITIONALS | {CONDITIONAL_PREFIX + name for name in declared}
     conditions: list[int] = []
     depth = 0
@@ -445,7 +452,9 @@ def strip_dead_branches(text: str, table: Mapping[str, TableEntry], warnings: li
         if index not in roles:
             depth += _opens_conditional(word.name) - (word.name == "fi")
     redefined = {
-        word.name for index, word in enumerate(words) if _preceding_names(text, words, index)[:1] == [LET_COMMAND]
+        words[index].name
+        for index, role in roles.items()
+        if role in DEFINING_COMMANDS and words[index - 1].name == role
     }
     constants = {name: value for name, value in LITERAL_CONDITIONALS.items() if name not in redefined}
     for name in declared:
@@ -461,7 +470,7 @@ def strip_dead_branches(text: str, table: Mapping[str, TableEntry], warnings: li
             f"constant switch \\{name} is {str(constants[name][1]).lower()}: "
             f"removed {removed.get(name, 0)} dead branches, kept {abandoned.get(name, 0)}"
         )
-    word_ends = {word.end for word in scanned if word.name != "@" and LETTER_NAME_RE.fullmatch(word.name)}
+    word_ends = {word.end for word in words if LETTER_NAME_RE.fullmatch(word.name)}
     pieces: list[str] = []
     cursor = 0
     piece_end = 0
@@ -469,6 +478,8 @@ def strip_dead_branches(text: str, table: Mapping[str, TableEntry], warnings: li
         if start > cursor:
             if piece_end in word_ends and _letter(text[cursor]):
                 pieces.append(" ")
+            elif cursor > piece_end and BLANK_LINE_RE.match(text, cursor):
+                pieces.append("%")
             pieces.append(text[cursor:start])
             piece_end = start
         cursor = max(cursor, end)
@@ -543,8 +554,10 @@ def _preceding_names(text: str, words: list[ControlWord], index: int) -> list[st
 
 
 def _gap(text: str, words: list[ControlWord], index: int) -> str:
-    gap = COMMENT_TAIL_RE.sub("", text[words[index - 1].end : words[index].start]).strip()
-    return "" if gap == "=" else gap
+    gap = COMMENT_TAIL_RE.sub("", text[words[index - 1].end : words[index].start])
+    if LETTER_NAME_RE.fullmatch(words[index - 1].name):
+        gap = gap.lstrip()
+    return "" if gap.strip() == "=" else gap
 
 
 def _operand_roles(text: str, words: list[ControlWord]) -> dict[int, str]:
@@ -553,9 +566,13 @@ def _operand_roles(text: str, words: list[ControlWord]) -> dict[int, str]:
         names = _preceding_names(text, words, index)
         if names[:1] and names[0] in OPERAND_COMMANDS and index - 1 not in roles:
             roles[index] = names[0]
-        elif names[1:] and names[1] in BINARY_CONDITIONALS | {LET_COMMAND}:
+        elif names[1:] and names[1] in BINARY_CONDITIONALS | {LET_COMMAND} and index - 2 not in roles:
             roles[index] = names[1]
-        elif words[index - 1].name in BINARY_CONDITIONALS and len(_gap(text, words, index)) == 1:
+        elif (
+            words[index - 1].name in BINARY_CONDITIONALS
+            and index - 1 not in roles
+            and len(_gap(text, words, index)) == 1
+        ):
             roles[index] = words[index - 1].name
     return roles
 
@@ -591,7 +608,7 @@ def _collect_dead_ranges(
     index = low
     while index < high:
         word = words[index]
-        if word.name not in constants:
+        if word.name not in constants or roles.get(index) == NEWIF_COMMAND:
             index += 1
             continue
         preceding = _preceding_names(text, words, index)
@@ -608,18 +625,18 @@ def _collect_dead_ranges(
             abandoned[word.name] = abandoned.get(word.name, 0) + 1
             index += 1
             continue
-        boundaries = _find_boundaries(text, words, index, high, openers, roles, warnings)
+        value = assigned and word.start >= assigned_at
+        start = word.start
+        if preceding[:1] == ["unless"] and index - 1 not in roles:
+            value = not value
+            start = words[index - 1].start
+        boundaries = _find_boundaries(text, words, index, high, value, openers, roles, warnings)
         if boundaries is None:
             abandoned[word.name] = abandoned.get(word.name, 0) + 1
             index += 1
             continue
         else_index, fi_index = boundaries
         removed[word.name] = removed.get(word.name, 0) + 1
-        value = assigned and word.start >= assigned_at
-        start = word.start
-        if preceding[:1] == ["unless"] and index - 1 not in roles:
-            value = not value
-            start = words[index - 1].start
         if value:
             ranges.append((start, _skip_space(text, word.end)))
             live_end = else_index if else_index is not None else fi_index
@@ -643,6 +660,7 @@ def _find_boundaries(
     words: list[ControlWord],
     index: int,
     high: int,
+    value: bool,
     openers: frozenset[str],
     roles: dict[int, str],
     warnings: list[str],
@@ -650,9 +668,10 @@ def _find_boundaries(
     opener = words[index]
     depth = 0
     else_index: int | None = None
+    live = value
     for position in range(index + 1, high):
         word = words[position]
-        if position in roles:
+        if position in roles and (live or roles[position] == NEWIF_COMMAND):
             continue
         if word.name in openers:
             depth += 1
@@ -663,6 +682,7 @@ def _find_boundaries(
         elif word.name == "else":
             if depth == 0 and else_index is None:
                 else_index = position
+                live = not value
         elif _opens_conditional(word.name):
             warnings.append(
                 f"\\{opener.name} at line {_line_number(text, opener.start)} is kept: "
