@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tongtu import masking
+from tongtu import conditionals, masking
 from tongtu.stages import precompile
 
 pytestmark = pytest.mark.compile
@@ -237,7 +237,7 @@ def test_stripped_source_compiles_like_the_original(tmp_path: Path, name: str) -
         [*precompile.LATEXPAND_COMMAND, "input.tex"], cwd=tmp_path, capture_output=True, text=True, check=True
     ).stdout
     warnings: list[str] = []
-    stripped = precompile.strip_dead_branches(expanded, ENVIRONMENTS_TABLE, warnings)
+    stripped = conditionals.strip_dead_branches(expanded, ENVIRONMENTS_TABLE, warnings)
     (tmp_path / "original.tex").write_text(expanded, encoding="utf-8")
     (tmp_path / "stripped.tex").write_text(stripped, encoding="utf-8")
     original = compile_markers(tmp_path, "original.tex")

@@ -4,29 +4,18 @@ import os
 import re
 import shutil
 import subprocess
-from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .. import compiling, pipeline, processes
 from ..artifacts.common import FixSession
-from ..artifacts.mask import BlockCategory
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
+from ..conditionals import strip_dead_branches
 from ..manifests import describe_error, write_manifest
-from ..masking import (
-    COMMENT_TAIL_RE,
-    ENVIRONMENTS_TABLE_PATH,
-    MaskError,
-    TableEntry,
-    parse_environment_table,
-    read_environment_name,
-    skip_code_environment,
-    skip_verb,
-)
+from ..masking import ENVIRONMENTS_TABLE_PATH, MaskError, parse_environment_table
 from ..model.config import FontsConfig, load_config
-from ..validation import read_control_sequence
 from ..workdir import Workdir
 
 STAGE_NAME = "precompile"
@@ -81,55 +70,6 @@ CJK_ENV_RE = re.compile(rb"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\})*|\\end\s*\{CJK\*
 
 FONT_FILE_SUFFIXES = (".ttf", ".otf", ".ttc")
 
-PRIMITIVE_CONDITIONALS = frozenset(
-    {
-        "if",
-        "ifcat",
-        "ifnum",
-        "ifdim",
-        "ifodd",
-        "ifvmode",
-        "ifhmode",
-        "ifmmode",
-        "ifinner",
-        "ifvoid",
-        "ifhbox",
-        "ifvbox",
-        "ifx",
-        "ifeof",
-        "iftrue",
-        "iffalse",
-        "ifcase",
-        "ifdefined",
-        "ifcsname",
-        "iffontchar",
-        "ifincsname",
-        "ifprimitive",
-    }
-)
-
-LITERAL_CONDITIONALS = {"iftrue": (0, True), "iffalse": (0, False)}
-
-KNOWN_NON_CONDITIONALS = frozenset({"iff", "ifthenelse"})
-
-LET_COMMAND = "let"
-
-NEWIF_COMMAND = "newif"
-
-DEFINING_COMMANDS = frozenset({LET_COMMAND, "def", "edef", "gdef", "xdef", "futurelet"})
-
-OPERAND_COMMANDS = DEFINING_COMMANDS | {"ifdefined", "ifx", "meaning", "string", "noexpand", "show", NEWIF_COMMAND}
-
-BINARY_CONDITIONALS = frozenset({"ifx"})
-
-CONDITIONAL_PREFIX = "if"
-
-SKIPPED_SPACE_RE = re.compile(r"[ \t]*(?:\n[ \t]*+(?!\n))?")
-
-BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
-
-LETTER_NAME_RE = re.compile(r"[A-Za-z@]+")
-
 XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
 \usepackage{xeCJK}
 """
@@ -151,14 +91,6 @@ XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 class ResolvedFont:
     name: str
     is_file: bool
-
-
-@dataclass(frozen=True)
-class ControlWord:
-    name: str
-    start: int
-    end: int
-    depth: int
 
 
 def run(
@@ -426,279 +358,6 @@ def _strip_dead_branches(output: bytes, warnings: list[str]) -> bytes:
     except MaskError as error:
         warnings.append(f"{error}; constant switch branches are not removed")
         return output
-
-
-def strip_dead_branches(text: str, table: Mapping[str, TableEntry], warnings: list[str]) -> str:
-    words, document_start = _scan_control_words(text, table)
-    roles = _operand_roles(text, words)
-    declarations: Counter[str] = Counter()
-    declared: set[str] = set()
-    for index, word in enumerate(words):
-        if (
-            roles.get(index) == NEWIF_COMMAND
-            and word.name.startswith(CONDITIONAL_PREFIX)
-            and len(word.name) > len(CONDITIONAL_PREFIX)
-        ):
-            name = word.name[len(CONDITIONAL_PREFIX) :]
-            declarations[name] += 1
-            if word.start < document_start:
-                declared.add(name)
-    declared -= {name for name, count in declarations.items() if count > 1}
-    openers = PRIMITIVE_CONDITIONALS | {CONDITIONAL_PREFIX + name for name in declared}
-    conditions: list[int] = []
-    depth = 0
-    for index, word in enumerate(words):
-        conditions.append(depth)
-        if index not in roles:
-            depth += _opens_conditional(word.name) - (word.name == "fi")
-    redefined = {
-        words[index].name
-        for index, role in roles.items()
-        if role in DEFINING_COMMANDS and words[index - 1].name == role
-    }
-    constants = {name: value for name, value in LITERAL_CONDITIONALS.items() if name not in redefined}
-    for name in declared:
-        assignment = _constant_assignment(words, conditions, roles, name, document_start)
-        if assignment is not None and CONDITIONAL_PREFIX + name not in redefined:
-            constants[CONDITIONAL_PREFIX + name] = assignment
-    removed: dict[str, int] = {}
-    abandoned: dict[str, int] = {}
-    ranges: list[tuple[int, int]] = []
-    _collect_dead_ranges(text, words, 0, len(words), constants, openers, roles, ranges, removed, abandoned, warnings)
-    for name in sorted(removed | abandoned):
-        warnings.append(
-            f"constant switch \\{name} is {str(constants[name][1]).lower()}: "
-            f"removed {removed.get(name, 0)} dead branches, kept {abandoned.get(name, 0)}"
-        )
-    word_ends = {word.end for word in words if LETTER_NAME_RE.fullmatch(word.name)}
-    pieces: list[str] = []
-    cursor = 0
-    piece_end = 0
-    for start, end in [*sorted(ranges), (len(text), len(text))]:
-        if start > cursor:
-            if piece_end in word_ends and _letter(text[cursor]):
-                pieces.append(" ")
-            elif cursor > piece_end and BLANK_LINE_RE.match(text, cursor):
-                pieces.append("%")
-            pieces.append(text[cursor:start])
-            piece_end = start
-        cursor = max(cursor, end)
-    return "".join(pieces)
-
-
-def _opens_conditional(name: str) -> bool:
-    return name.startswith(CONDITIONAL_PREFIX) and name not in KNOWN_NON_CONDITIONALS
-
-
-def _letter(character: str) -> bool:
-    return character == "@" or (character.isascii() and character.isalpha())
-
-
-def _scan_control_words(text: str, table: Mapping[str, TableEntry]) -> tuple[list[ControlWord], int]:
-    words: list[ControlWord] = []
-    depth = 0
-    document_start = len(text)
-    position = 0
-    while position < len(text):
-        character = text[position]
-        if character == "%":
-            newline = text.find("\n", position)
-            position = len(text) if newline < 0 else newline
-        elif character == "{":
-            depth += 1
-            position += 1
-        elif character == "}":
-            depth -= 1
-            position += 1
-        elif character == "\\":
-            name, after = _read_control_word(text, position)
-            if name == "verb":
-                position = skip_verb(text, after)
-                continue
-            if name in ("begin", "end"):
-                environment, body_start = read_environment_name(text, after)
-                if name == "begin":
-                    if environment == "document" and document_start == len(text):
-                        document_start = position
-                    entry = (
-                        None if environment is None else table.get(environment) or table.get(environment.rstrip("*"))
-                    )
-                    if entry is not None and entry.category is BlockCategory.CODE:
-                        position = skip_code_environment(text, body_start, environment)
-                        continue
-                if environment not in (None, "document"):
-                    depth += 1 if name == "begin" else -1
-            depth += (name in ("begingroup", "bgroup")) - (name in ("endgroup", "egroup"))
-            words.append(ControlWord(name, position, after, depth))
-            position = after
-        else:
-            position += 1
-    return words, document_start
-
-
-def _read_control_word(text: str, position: int) -> tuple[str, int]:
-    name, after = read_control_sequence(text, position)
-    if _letter(name):
-        while after < len(text) and _letter(text[after]):
-            after += 1
-        name = text[position + 1 : after]
-    return name, after
-
-
-def _preceding_names(text: str, words: list[ControlWord], index: int) -> list[str]:
-    names: list[str] = []
-    while index > 0 and len(names) < 2 and not _gap(text, words, index):
-        index -= 1
-        names.append(words[index].name)
-    return names
-
-
-def _gap(text: str, words: list[ControlWord], index: int) -> str:
-    gap = COMMENT_TAIL_RE.sub("", text[words[index - 1].end : words[index].start])
-    if LETTER_NAME_RE.fullmatch(words[index - 1].name):
-        gap = gap.lstrip()
-    return "" if gap.strip() == "=" else gap
-
-
-def _operand_roles(text: str, words: list[ControlWord]) -> dict[int, str]:
-    roles: dict[int, str] = {}
-    for index in range(1, len(words)):
-        names = _preceding_names(text, words, index)
-        if names[:1] and names[0] in OPERAND_COMMANDS and index - 1 not in roles:
-            roles[index] = names[0]
-        elif names[1:] and names[1] in BINARY_CONDITIONALS | {LET_COMMAND} and index - 2 not in roles:
-            roles[index] = names[1]
-        elif (
-            words[index - 1].name in BINARY_CONDITIONALS
-            and index - 1 not in roles
-            and len(_gap(text, words, index)) == 1
-        ):
-            roles[index] = words[index - 1].name
-    return roles
-
-
-def _constant_assignment(
-    words: list[ControlWord], conditions: list[int], roles: dict[int, str], name: str, document_start: int
-) -> tuple[int, bool] | None:
-    assignments = [(index, word) for index, word in enumerate(words) if word.name in (name + "true", name + "false")]
-    if len(assignments) > 1 or any(
-        index in roles or word.start >= document_start or word.depth != 0 or conditions[index] != 0
-        for index, word in assignments
-    ):
-        return None
-    if not assignments:
-        return 0, False
-    word = assignments[0][1]
-    return word.start, word.name == name + "true"
-
-
-def _collect_dead_ranges(
-    text: str,
-    words: list[ControlWord],
-    low: int,
-    high: int,
-    constants: dict[str, tuple[int, bool]],
-    openers: frozenset[str],
-    roles: dict[int, str],
-    ranges: list[tuple[int, int]],
-    removed: dict[str, int],
-    abandoned: dict[str, int],
-    warnings: list[str],
-) -> None:
-    index = low
-    while index < high:
-        word = words[index]
-        if word.name not in constants or roles.get(index) == NEWIF_COMMAND:
-            index += 1
-            continue
-        preceding = _preceding_names(text, words, index)
-        assigned_at, assigned = constants[word.name]
-        reason = None
-        if index in roles:
-            reason = f"operand of \\{roles[index]}"
-        elif preceding[:1] == ["expandafter"]:
-            reason = "follows \\expandafter"
-        elif word.start < assigned_at and word.depth > 0:
-            reason = "precedes assignment inside a group"
-        if reason is not None:
-            warnings.append(f"\\{word.name} at line {_line_number(text, word.start)} is kept: {reason}")
-            abandoned[word.name] = abandoned.get(word.name, 0) + 1
-            index += 1
-            continue
-        value = assigned and word.start >= assigned_at
-        start = word.start
-        if preceding[:1] == ["unless"] and index - 1 not in roles:
-            value = not value
-            start = words[index - 1].start
-        boundaries = _find_boundaries(text, words, index, high, value, openers, roles, warnings)
-        if boundaries is None:
-            abandoned[word.name] = abandoned.get(word.name, 0) + 1
-            index += 1
-            continue
-        else_index, fi_index = boundaries
-        removed[word.name] = removed.get(word.name, 0) + 1
-        if value:
-            ranges.append((start, _skip_space(text, word.end)))
-            live_end = else_index if else_index is not None else fi_index
-            ranges.append((words[live_end].start, _skip_space(text, words[fi_index].end)))
-            _collect_dead_ranges(
-                text, words, index + 1, live_end, constants, openers, roles, ranges, removed, abandoned, warnings
-            )
-        elif else_index is not None:
-            ranges.append((start, _skip_space(text, words[else_index].end)))
-            ranges.append((words[fi_index].start, _skip_space(text, words[fi_index].end)))
-            _collect_dead_ranges(
-                text, words, else_index + 1, fi_index, constants, openers, roles, ranges, removed, abandoned, warnings
-            )
-        else:
-            ranges.append((start, _skip_space(text, words[fi_index].end)))
-        index = fi_index + 1
-
-
-def _find_boundaries(
-    text: str,
-    words: list[ControlWord],
-    index: int,
-    high: int,
-    value: bool,
-    openers: frozenset[str],
-    roles: dict[int, str],
-    warnings: list[str],
-) -> tuple[int | None, int] | None:
-    opener = words[index]
-    depth = 0
-    else_index: int | None = None
-    live = value
-    for position in range(index + 1, high):
-        word = words[position]
-        if position in roles and (live or roles[position] == NEWIF_COMMAND):
-            continue
-        if word.name in openers:
-            depth += 1
-        elif word.name == "fi":
-            if depth == 0:
-                return else_index, position
-            depth -= 1
-        elif word.name == "else":
-            if depth == 0 and else_index is None:
-                else_index = position
-                live = not value
-        elif _opens_conditional(word.name):
-            warnings.append(
-                f"\\{opener.name} at line {_line_number(text, opener.start)} is kept: "
-                f"\\{word.name} at line {_line_number(text, word.start)} is not a known conditional"
-            )
-            return None
-    warnings.append(f"\\{opener.name} at line {_line_number(text, opener.start)} is kept: no matching \\fi")
-    return None
-
-
-def _skip_space(text: str, position: int) -> int:
-    return SKIPPED_SPACE_RE.match(text, position).end()
-
-
-def _line_number(text: str, position: int) -> int:
-    return text.count("\n", 0, position) + 1
 
 
 def _exit_check_message(output: bytes) -> str:
