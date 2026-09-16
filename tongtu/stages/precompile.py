@@ -12,7 +12,9 @@ from .. import compiling, pipeline, processes
 from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
+from ..conditionals import strip_dead_branches
 from ..manifests import describe_error, write_manifest
+from ..masking import ENVIRONMENTS_TABLE_PATH, MaskError, parse_environment_table
 from ..model.config import FontsConfig, load_config
 from ..workdir import Workdir
 
@@ -28,7 +30,7 @@ FONTS_DIRNAME = "fonts"
 
 FONTS_DIR = asset_path(FONTS_DIRNAME)
 
-LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--keep-comments", "--fatal")
+LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--empty-comments", "--fatal")
 
 LATEXPAND_TIMEOUT_SECONDS = 10.0
 
@@ -156,6 +158,7 @@ def _execute(
             warnings=warnings,
             message=failure,
         )
+    expanded = _strip_dead_branches(expanded, warnings)
     expanded = _inline_bbl(expanded, src, main_file, warnings)
     exit_check = _exit_check_message(expanded)
     if exit_check:
@@ -341,6 +344,20 @@ def _inline_bbl(output: bytes, src: Path, main_file: str, warnings: list[str]) -
     lines[index] = line[: match.start()] + bbl_path.read_bytes() + line[match.end() :]
     warnings.append(f"inlined {bbl_relative} at the \\bibliography command")
     return b"".join(lines)
+
+
+def _strip_dead_branches(output: bytes, warnings: list[str]) -> bytes:
+    try:
+        text = output.decode("utf-8")
+    except UnicodeDecodeError as error:
+        warnings.append(f"the expansion is not valid UTF-8 ({error}); constant switch branches are not removed")
+        return output
+    table = parse_environment_table(ENVIRONMENTS_TABLE_PATH.read_text(encoding="utf-8"))
+    try:
+        return strip_dead_branches(text, table, warnings).encode("utf-8")
+    except MaskError as error:
+        warnings.append(f"{error}; constant switch branches are not removed")
+        return output
 
 
 def _exit_check_message(output: bytes) -> str:

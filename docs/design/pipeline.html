@@ -87,6 +87,7 @@
 <ol class="steps">
 <li><b>选主文件</b>：src/ 里带 <code>\documentclass</code> 的 .tex；选不出来 → <code>main_not_found</code>，选不唯一 → <code>main_ambiguous</code></li>
 <li><b>展开成单文件</b>：用 <code>latexpand</code> 把 <code>\input</code> / <code>\include</code> 全部内联，有 .bbl 就一并内联进去；缺失引用文件时在源码副本中进入修复会话，修复后重新严格展开；其他展开错误或修复后仍失败 → <code>expand_failed</code></li>
+<li><b>删掉注释文字与常量开关的死分支</b>：latexpand 已清空注释文字；前导区里 <code>\newif</code> 声明、取值定死的开关（论文常用 <code>\ifarxiv</code> 做双版本排版）只留活分支，让 mask 与 survey 配对环境时不被死分支干扰，<code>\documentclass</code> 也只剩一处。拿不准的地方原样保留并记 warning</li>
 <li><b>注入中文排版设置</b>：在前导区加上 xeCJK 与中文字体（字体来自 <a href="#fonts">fonts</a> 配置）。放在这一步而不是 compile，是让宏包冲突在翻译之前暴露并修掉：之后 compile 与这里的差别只剩正文文字，再出错只可能是译文引起</li>
 <li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，加上展开后的 flat.tex 与以软链放进编译目录的 fonts/，latexmk 就在这个目录里跑，不碰 src/），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数，PDF 拷出为 <code>build/precompile.pdf</code>。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
 <li class="branch"><b>编译不通过 → 修复会话</b>：尚未因展开失败用过修复会话时，拉一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改 flat.tex，然后重新编译一次，结论只认这一次；已用过展开修复会话则只验证编译，不再开会话；仍不通过 → <code>compile_failed</code>。agent 改过的 flat.tex 就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，自然沿用</li>
@@ -112,7 +113,11 @@
 <details><summary>细节与常量</summary>
 <ul class="fine">
 <li>主文件判定：候选是注释外含 <code>\documentclass</code> 或 <code>\documentstyle</code> 的 .tex；多个候选时取唯一含 <code>\begin{document}</code> 的，再不唯一取名为 <code>main.tex</code> 的；<code>main_ambiguous</code> 时 message 列出全部候选</li>
-<li>展开：<code>latexpand --keep-comments --fatal</code>，超时 10 秒；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>；仍残留 <code>\input</code> 的行数记 warning</li>
+<li>展开：<code>latexpand --empty-comments --fatal</code>（整行注释与行尾注释只剩 <code>%</code>，换行保留），超时 10 秒；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>；仍残留 <code>\input</code> 的行数记 warning</li>
+<li>死分支删除：在 .bbl 内联与注入中文排版设置之前做，纯文本处理；不是 UTF-8 就跳过并记 warning。注释、<code>\verb</code> 与 code 类环境的内容不参与；<code>@</code> 算控制字名字的一部分</li>
+<li>常量开关：前导区 <code>\newif</code> 只声明一次、<code>\Xtrue</code> / <code>\Xfalse</code> 在前导区顶层至多出现一次且确实会执行的开关，零次为 false；<code>\iftrue</code> / <code>\iffalse</code> 字面量同样处理。赋值在分组或条件内、开关或赋值命令被 <code>\let</code> / <code>\def</code> 一族重定义或作为它们的操作数出现，都不当常量</li>
+<li>配对与删除：按 TeX 的规则配 <code>\else</code> / <code>\fi</code>：死分支按名字数嵌套，活分支里 <code>\let</code> / <code>\ifx</code> 一类的操作数不算。遇到不认识的 <code>\if…</code>、配不平、<code>\ifX</code> 本身是操作数 → 这一处保留并记 warning。删掉 <code>\ifX</code>、死的那半连同 <code>\else</code> 与 <code>\fi</code>，以及 TeX 本来会跳过的空白，结果与原文逐 token 等价（xelatex 回归用例在 tests/compile）；活分支里的嵌套继续处理</li>
+<li>记录：每个处理过的开关一条 warning（取值、删了几处、留了几处），每处保留单独一条写原因；manifest 不加字段、不加状态</li>
 <li>注入块：<code>\documentclass</code> 之后插入 xeCJK 设置，Path 指向编译目录里的 <code>fonts/</code>，断行按中文规则，行距 <code>\linespread{1.4}</code>。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包（<code>CJK</code> <code>CJKutf8</code> <code>CJKspace</code> <code>CJKpunct</code>）时，先从 <code>\usepackage</code> 里删掉这些包名、删掉 <code>\begin{CJK}</code> / <code>\end{CJK}</code> 与 <code>\CJKfamily{…}</code>，再注入 xeCJK</li>
 <li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝 + <code>flat.tex</code> + 以软链放进编译目录的 <code>fonts/</code>。命令 <code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒；通过的判据是退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0；latexmk 跑不起来或超时 → <code>compile_failed</code></li>
 <li>缺文件展开修复：仅子进程非超时、非零退出且 stderr 含 <code>ERROR: Could not find file [...]</code> 时触发；工具不存在、超时及其他错误直接 <code>expand_failed</code>。先完整复制 src/ 到 sandbox，写 <code>precompile-expand.log</code>，让 precompile_fix 在源码副本里修路径或有依据地注释无用引用；不得删除正文/图表、用空文件或空宏伪造缺失内容，必需内容无法可靠恢复则保留失败。主文件可能名为 flat.tex，源码模式以诊断文件为准。agent 在同一会话内反复严格展开以发现后续缺失文件，并验证原文在 XeLaTeX 下的兼容性；不运行 tongtu</li>

@@ -849,3 +849,39 @@ def test_unreadable_auxiliary_source_still_enters_fix(tmp_path: Path, monkeypatc
     assert any("unreadable.tex" in warning for warning in manifest.warnings)
     assert workdir.manifest_path("precompile").is_file()
     assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
+
+
+def test_strip_invalid_utf8_is_kept_with_warning() -> None:
+    warnings: list[str] = []
+    output = precompile._strip_dead_branches(b"\\iffalse\n\xff\n\\fi\n", warnings)
+    assert output == b"\\iffalse\n\xff\n\\fi\n"
+    assert any("UTF-8" in line for line in warnings)
+
+
+def test_latexpand_empties_comments() -> None:
+    assert "--empty-comments" in precompile.LATEXPAND_COMMAND
+    assert "--keep-comments" not in precompile.LATEXPAND_COMMAND
+
+
+def test_injects_xecjk_after_the_live_documentclass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paper = (
+        "\\newif\\ifarxiv\n\\arxivtrue\n\\ifarxiv\n\\documentclass{article}\n\\else\n"
+        "\\documentclass{revtex4-2}\n\\fi\n\\begin{document}\nHello\n\\end{document}\n"
+    )
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
+    manifest = precompile.run(workdir)
+    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    assert manifest.status is PrecompileStatus.OK
+    assert output.count("\\documentclass") == 1
+    assert "revtex4-2" not in output
+    assert "\\documentclass{article}\n% ---- injected by tongtu (precompile) ----\n" in output
+    assert "constant switch \\ifarxiv is true: removed 1 dead branches, kept 0" in manifest.warnings
+
+
+def test_strip_unterminated_code_environment_is_kept_with_warning() -> None:
+    warnings: list[str] = []
+    source = b"\\begin{verbatim}\n\\iffalse x\\fi\n"
+    assert precompile._strip_dead_branches(source, warnings) == source
+    assert warnings == [
+        "environment verbatim has no matching \\end{verbatim} before end of file; constant switch branches are not removed"
+    ]

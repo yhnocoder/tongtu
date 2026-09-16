@@ -175,7 +175,7 @@ def _enumerate_environments(text: str, table: Mapping[str, TableEntry]) -> tuple
                 occurrences[environment] = occurrences.get(environment, 0) + 1
             entry = _table_lookup(table, environment)
             if entry is not None and entry.category is BlockCategory.CODE:
-                position = _skip_code_environment(text, after, environment)
+                position = skip_code_environment(text, after, environment)
             else:
                 position = after
             continue
@@ -422,7 +422,7 @@ class _MaskRun:
         self, body_start: int, name: str, category: BlockCategory | None, *, collect_captions: bool
     ) -> tuple[int, list[_CaptionSlot]]:
         if category is BlockCategory.CODE:
-            return _skip_code_environment(self.text, body_start, name), []
+            return skip_code_environment(self.text, body_start, name), []
         slots: list[_CaptionSlot] = []
         depth = 1
         position = body_start
@@ -449,7 +449,7 @@ class _MaskRun:
                     continue
                 nested = self._decision_for(environment)
                 position = (
-                    _skip_code_environment(self.text, after, environment)
+                    skip_code_environment(self.text, after, environment)
                     if nested.category is BlockCategory.CODE
                     else after
                 )
@@ -584,7 +584,7 @@ def skip_verb(text: str, position: int) -> int:
     return line_end if close < 0 else close + 1
 
 
-def _skip_code_environment(text: str, body_start: int, name: str) -> int:
+def skip_code_environment(text: str, body_start: int, name: str) -> int:
     marker = f"\\end{{{name}}}"
     close = text.find(marker, body_start)
     if close < 0:
