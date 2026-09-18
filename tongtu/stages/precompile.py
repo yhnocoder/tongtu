@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .. import compiling, pipeline, processes
+from .. import compiling, pipeline, preamble, processes
 from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..assets import asset_path
@@ -60,17 +60,14 @@ CJK_PACKAGES = frozenset({b"xeCJK", b"ctex", b"ctexcap"})
 
 CTEX_CLASSES = frozenset({b"ctexart", b"ctexrep", b"ctexbook", b"ctexbeamer"})
 
-CJK_LEGACY_PACKAGES = frozenset({b"CJKutf8", b"CJK", b"CJKspace", b"CJKpunct"})
-
 PACKAGE_RE = re.compile(rb"\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{([^}]*)\}")
 
 DOCUMENTCLASS_RE = re.compile(rb"\\(?:documentclass|documentstyle)\s*(\[[^\]]*\])?\s*\{([^}]*)\}")
 
-CJK_ENV_RE = re.compile(rb"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\})*|\\end\s*\{CJK\*?\}|\\CJKfamily\s*\{[^}]*\}")
-
 FONT_FILE_SUFFIXES = (".ttf", ".otf", ".ttc")
 
 XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
+\PassOptionsToPackage{no-math}{fontspec}
 \usepackage{xeCJK}
 """
 
@@ -385,6 +382,7 @@ def _code_before_comment(line: bytes) -> bytes:
 
 
 def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> tuple[bytes, list[Path]]:
+    source = _adapt_preamble(source, warnings)
     lines = source.splitlines(keepends=True)
     document_index = _line_index_of(lines, BEGIN_DOCUMENT_MARKER)
     preamble_end = document_index if document_index is not None else len(lines)
@@ -392,11 +390,6 @@ def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> tuple
     documentclass, class_end_index = _find_documentclass(lines, preamble_end)
     if packages & CJK_PACKAGES or documentclass in CTEX_CLASSES:
         return source, []
-    if packages & CJK_LEGACY_PACKAGES:
-        lines = _strip_legacy_cjk(lines, preamble_end, warnings)
-        document_index = _line_index_of(lines, BEGIN_DOCUMENT_MARKER)
-        preamble_end = document_index if document_index is not None else len(lines)
-        _, class_end_index = _find_documentclass(lines, preamble_end)
     if class_end_index is None:
         warnings.append(
             "no \\documentclass outside comments in the expansion; "
@@ -408,6 +401,15 @@ def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> tuple
     font_files: list[Path] = []
     block = _xecjk_block(fonts, warnings, font_files)
     return b"".join(lines[:insert_at]) + block + b"".join(lines[insert_at:]), font_files
+
+
+def _adapt_preamble(output: bytes, warnings: list[str]) -> bytes:
+    try:
+        text = output.decode("utf-8")
+    except UnicodeDecodeError as error:
+        warnings.append(f"the expansion is not valid UTF-8 ({error}); pdflatex leftovers are not rewritten")
+        return output
+    return preamble.adapt(text, warnings).encode("utf-8")
 
 
 def _fonts_config() -> FontsConfig:
@@ -580,36 +582,6 @@ def _brace_balance_end(lines: list[bytes], start: int, preamble_end: int) -> int
         if seen_open and depth <= 0:
             return index
     return start
-
-
-def _strip_legacy_cjk(lines: list[bytes], preamble_end: int, warnings: list[str]) -> list[bytes]:
-    removed: set[bytes] = set()
-
-    def rewrite_packages(match: re.Match[bytes]) -> bytes:
-        names = [name.strip() for name in match.group(2).split(b",") if name.strip()]
-        kept = [name for name in names if name not in CJK_LEGACY_PACKAGES]
-        removed.update(name for name in names if name in CJK_LEGACY_PACKAGES)
-        if not kept:
-            return b""
-        options = match.group(1) or b""
-        return b"\\usepackage" + options + b"{" + b",".join(kept) + b"}"
-
-    stripped_envs = 0
-    rewritten: list[bytes] = []
-    for index, line in enumerate(lines):
-        code = _code_before_comment(line)
-        comment = line[len(code) :]
-        if index < preamble_end:
-            code = PACKAGE_RE.sub(rewrite_packages, code)
-        code, count = CJK_ENV_RE.subn(b"", code)
-        stripped_envs += count
-        rewritten.append(code + comment)
-    if removed:
-        removed_names = ", ".join(sorted(name.decode() for name in removed))
-        warnings.append(f"removed the pdflatex-era CJK packages {removed_names} in favor of the injected xeCJK setup")
-    if stripped_envs:
-        warnings.append(f"stripped {stripped_envs} CJK environment wrappers and \\CJKfamily settings")
-    return rewritten
 
 
 def _assemble_tree(tree: Path, flat: bytes, warnings: list[str], font_files: list[Path]) -> None:
