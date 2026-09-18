@@ -1,0 +1,54 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "tongtu",
+  "title": "Tongtu",
+  "description": "Translate arXiv papers into Chinese with tongtu and browse the results",
+  "icon": "icon.png",
+  "author": "zach",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "translate",
+      "title": "Translate Paper",
+      "description": "Run tongtu in the background and notify when the PDF is ready",
+      "mode": "no-view",
+      "arguments": [
+        {
+          "name": "paper",
+          "placeholder": "arXiv id or URL",
+          "type": "text",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "papers",
+      "title": "Papers",
+      "description": "Browse translated papers, progress, logs and PDFs",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "repo",
+      "title": "tongtu repository",
+      "description": "Directory passed to uv run --directory",
+      "type": "textfield",
+      "required": false,
+      "default": "~/Projects/wenshu-ws/tongtu"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "typescript": "^5"
+  },
+  "scripts": {
+    "dev": "ray develop",
+    "build": "ray build -e dist",
+    "lint": "ray lint"
+  }
+}

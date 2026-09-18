@@ -10,3 +10,5 @@ __pycache__/
 .pytest_cache/
 .hypothesis/
 .ruff_cache/
+raycast/node_modules/
+raycast/raycast-env.d.ts
