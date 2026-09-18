@@ -17,7 +17,10 @@ const ENV = {
   ...(process.env.TONGTU_HOME ? { TONGTU_HOME: process.env.TONGTU_HOME } : {}),
 };
 
-export type Stage = { name: string; status: string; message: string };
+export type Stage = { name: string; status: string; message: string; warnings: string[] };
+
+const SESSION_LOGS: Record<string, string> = { precompile: "precompile-fix.jsonl", review: "review.jsonl", compile: "compile-fix.jsonl" };
+const CACHE = path.join(os.homedir(), ".cache/tongtu-raycast");
 
 export type Paper = {
   id: string;
@@ -30,6 +33,7 @@ export type Paper = {
   done: number;
   message: string;
   stages: Stage[];
+  events: string[];
   translated: [number, number] | null;
   mtime: number;
 };
@@ -82,6 +86,20 @@ function translateProgress(dir: string): [number, number] | null {
   return [new Set(done).size, total];
 }
 
+function sessionEvents(dir: string, stage: string): string[] {
+  const file = SESSION_LOGS[stage];
+  if (!file) return [];
+  const events: string[] = [];
+  for (const line of read(path.join(dir, "logs", file)).split("\n")) {
+    if (!line.startsWith('{"type":"assistant"')) continue;
+    for (const block of JSON.parse(line).message?.content ?? []) {
+      if (block.type === "text" && block.text.trim()) events.push(block.text.trim());
+      if (block.type === "tool_use") events.push(`${block.name}: ${block.input.command ?? block.input.file_path ?? block.input.description ?? ""}`);
+    }
+  }
+  return events.slice(-8);
+}
+
 function inspect(id: string, pgid: number | null): Paper {
   const dir = path.join(ROOT, id);
   const stages: Stage[] = [];
@@ -93,7 +111,7 @@ function inspect(id: string, pgid: number | null): Paper {
     if (!text) break;
     const manifest = JSON.parse(text);
     mtime = Math.max(mtime, fs.statSync(file).mtimeMs);
-    stages.push({ name, status: manifest.status, message: manifest.message ?? "" });
+    stages.push({ name, status: manifest.status, message: manifest.message ?? "", warnings: manifest.warnings ?? [] });
     if (manifest.status !== "ok") {
       failed = stages[stages.length - 1];
       break;
@@ -112,6 +130,7 @@ function inspect(id: string, pgid: number | null): Paper {
     done,
     message: failed ? `${failed.status} ${failed.message}`.trim() : "",
     stages,
+    events: sessionEvents(dir, stage),
     translated: stage === "translate" ? translateProgress(dir) : null,
     mtime: mtime || fs.statSync(dir).mtimeMs,
   };
@@ -143,11 +162,11 @@ export async function fetchTitles(papers: Paper[]): Promise<boolean> {
 }
 
 export function thumbnail(paper: Paper): string | null {
-  const png = path.join(environment.supportPath, `${paper.id}.png`);
+  const png = path.join(CACHE, `${paper.id}.png`);
   try {
     const pdf = fs.statSync(paper.pdf);
     if (!fs.existsSync(png) || fs.statSync(png).mtimeMs < pdf.mtimeMs) {
-      fs.mkdirSync(environment.supportPath, { recursive: true });
+      fs.mkdirSync(CACHE, { recursive: true });
       execFileSync("sips", ["-s", "format", "png", "-Z", "1200", paper.pdf, "--out", png], { stdio: "ignore" });
     }
     return png;

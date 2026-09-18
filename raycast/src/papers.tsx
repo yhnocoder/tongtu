@@ -9,23 +9,34 @@ const ICONS = {
   partial: { source: Icon.Circle, tintColor: Color.SecondaryText },
 };
 
-function subtitle(p: Paper): string {
+const TAG_COLORS = { running: Color.Blue, ok: Color.Green, failed: Color.Red, partial: Color.SecondaryText };
+
+function tag(p: Paper): string {
   if (p.status === "ok") return "done";
-  const step = `${p.stage} ${p.done}/${STAGES.length}`;
-  if (p.translated) return `${step} · chunks ${p.translated[0]}/${p.translated[1]}`;
-  return p.message ? `${step} · ${p.message}` : step;
+  return p.translated ? `translate ${p.translated[0]}/${p.translated[1]}` : p.stage;
 }
 
-function detail(p: Paper): string {
+function stageText(p: Paper, name: string): { value: string; color: Color } {
+  const stage = p.stages.find((s) => s.name === name);
+  if (!stage) return { value: p.status === "running" && p.stage === name ? "running" : "—", color: Color.SecondaryText };
+  if (stage.status !== "ok") return { value: stage.status, color: Color.Red };
+  return stage.warnings.length
+    ? { value: `ok · ${stage.warnings.length} warning${stage.warnings.length > 1 ? "s" : ""}`, color: Color.Yellow }
+    : { value: "ok", color: Color.Green };
+}
+
+function markdown(p: Paper): string {
+  const parts: string[] = [];
   const png = p.status === "ok" ? thumbnail(p) : null;
-  const table = ["| stage | status | |", "|---|---|---|", ...p.stages.map((s) => `| ${s.name} | ${s.status} | ${s.message} |`)];
-  return [
-    `## ${p.title || p.id}`,
-    png && `![](${encodeURI(`file://${png}`)})`,
-    table.join("\n"),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  if (png) parts.push(`![](file://${png})`);
+  for (const s of p.stages) {
+    if (s.status !== "ok") parts.push(`### ${s.name}: ${s.status}\n\n${s.message}`);
+    if (s.warnings.length) parts.push(`### ${s.name} warnings\n\n${s.warnings.map((w) => `- ${w}`).join("\n")}`);
+  }
+  if (p.events.length) parts.push(`### ${p.stage} session\n\n${p.events.map((e) => "- " + e.replace(/\s+/g, " ").slice(0, 200)).join("\n")}`);
+  if (!p.stages.find((s) => s.name === p.stage) && !p.events.length && p.status !== "ok")
+    parts.push(`_${p.stage} has not run: no manifest and no session log._`);
+  return parts.join("\n\n");
 }
 
 export default function Command() {
@@ -41,12 +52,24 @@ export default function Command() {
         <List.Item
           key={p.id}
           title={p.title || p.id}
-          subtitle={subtitle(p)}
           keywords={[p.id]}
-          accessories={[{ text: p.id }]}
+          accessories={[{ tag: { value: tag(p), color: TAG_COLORS[p.status] } }]}
           icon={ICONS[p.status]}
           quickLook={p.status === "ok" ? { path: p.pdf, name: p.id } : undefined}
-          detail={<List.Item.Detail markdown={detail(p)} />}
+          detail={
+            <List.Item.Detail
+              markdown={markdown(p)}
+              metadata={
+                <List.Item.Detail.Metadata>
+                  <List.Item.Detail.Metadata.Link title="arXiv" text={p.id} target={`https://arxiv.org/abs/${p.id}`} />
+                  <List.Item.Detail.Metadata.Separator />
+                  {STAGES.map((name) => (
+                    <List.Item.Detail.Metadata.Label key={name} title={name} text={stageText(p, name)} />
+                  ))}
+                </List.Item.Detail.Metadata>
+              }
+            />
+          }
           actions={
             <ActionPanel>
               {p.status === "ok" && <Action.ToggleQuickLook title="Preview PDF" />}
