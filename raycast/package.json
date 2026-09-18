@@ -22,9 +22,15 @@
       ]
     },
     {
-      "name": "papers",
-      "title": "Papers",
-      "description": "Browse translated papers, progress, logs and PDFs",
+      "name": "recent",
+      "title": "Recent Papers",
+      "description": "Running translations and papers touched in the last days",
+      "mode": "view"
+    },
+    {
+      "name": "library",
+      "title": "Library",
+      "description": "Browse all translated papers, grouped and searchable",
       "mode": "view"
     }
   ],
@@ -36,6 +42,110 @@
       "type": "textfield",
       "required": false,
       "default": "~/Projects/wenshu-ws/tongtu"
+    },
+    {
+      "name": "view",
+      "title": "Default view",
+      "description": "How Recent Papers and Library open; toggle at runtime with ⌘⇧V",
+      "type": "dropdown",
+      "required": false,
+      "default": "grid",
+      "data": [
+        {
+          "title": "Grid",
+          "value": "grid"
+        },
+        {
+          "title": "List",
+          "value": "list"
+        }
+      ]
+    },
+    {
+      "name": "groupBy",
+      "title": "Default grouping",
+      "description": "Sections in Library; change at runtime with the dropdown",
+      "type": "dropdown",
+      "required": false,
+      "default": "none",
+      "data": [
+        {
+          "title": "None",
+          "value": "none"
+        },
+        {
+          "title": "Month added",
+          "value": "added"
+        },
+        {
+          "title": "Month submitted",
+          "value": "submitted"
+        },
+        {
+          "title": "arXiv category",
+          "value": "category"
+        }
+      ]
+    },
+    {
+      "name": "thumbnail",
+      "title": "Thumbnail",
+      "description": "Which part of the first page to show",
+      "type": "dropdown",
+      "required": false,
+      "default": "half",
+      "data": [
+        {
+          "title": "Full page",
+          "value": "full"
+        },
+        {
+          "title": "Top half",
+          "value": "half"
+        },
+        {
+          "title": "Top third",
+          "value": "third"
+        }
+      ]
+    },
+    {
+      "name": "margin",
+      "title": "Thumbnail margin",
+      "description": "Percent trimmed from each page edge before cropping",
+      "type": "textfield",
+      "required": false,
+      "default": "6"
+    },
+    {
+      "name": "columns",
+      "title": "Grid columns",
+      "description": "",
+      "type": "dropdown",
+      "required": false,
+      "default": "5",
+      "data": [
+        {
+          "title": "4",
+          "value": "4"
+        },
+        {
+          "title": "5",
+          "value": "5"
+        },
+        {
+          "title": "6",
+          "value": "6"
+        }
+      ]
+    },
+    {
+      "name": "recentDays",
+      "title": "Recent window (days)",
+      "description": "Papers touched within this many days stay in the Recent section",
+      "type": "textfield",
+      "required": false,
+      "default": "7"
     }
   ],
   "dependencies": {
@@ -43,7 +153,7 @@
   },
   "devDependencies": {
     "@types/node": "^22",
-    "@types/react": "^19",
+    "@types/react": "^19.0.10",
     "typescript": "^5"
   },
   "scripts": {
