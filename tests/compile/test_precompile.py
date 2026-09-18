@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 import tongtu.model
 from tongtu import processes
 from tongtu.artifacts.precompile import PrecompileStatus
+from tongtu.model.config import FontsConfig
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.stages import precompile
@@ -85,3 +87,60 @@ def test_arxiv_1905_12322v3_double_missing_inputs(
         assert manifest.report is None
         assert not workdir.precompile_tex.exists() and not workdir.precompile_pdf.exists()
         assert not outputs_present(workdir, "precompile")
+
+
+PDFLATEX_LEFTOVERS = {
+    "pdfoutput": ("\\pdfoutput=1\n\\documentclass{article}\n\\begin{document}\nHello\n\\end{document}\n", ()),
+    "pdfinfo": (
+        "\\documentclass{article}\n\\pdfinfo{\n/Title (A title)\n/Author (An author)\n}\n"
+        "\\begin{document}\nHello\n\\end{document}\n",
+        (),
+    ),
+    "pdftex_graphicx": (
+        "\\documentclass{article}\n\\usepackage[pdftex]{graphicx}\n\\begin{document}\nHello\n\\end{document}\n",
+        (),
+    ),
+    "microtype_tfm_font": (
+        "\\documentclass{article}\n\\renewcommand{\\rmdefault}{ptm}\n\\usepackage{microtype}\n"
+        "\\begin{document}\nHello, world: a paragraph long enough to be protruded.\n\\end{document}\n",
+        ("microtype.sty",),
+    ),
+    "fdsymbol_no_math": (
+        "\\documentclass{article}\n\\usepackage{fdsymbol}\n\\begin{document}\n$\\mdblksquare$ costs \\$1\n\\end{document}\n",
+        ("fdsymbol.sty",),
+    ),
+    "ucs_bxcjkjatype": (
+        "\\documentclass{article}\n\\usepackage[postscript, cjkjis]{ucs}\n\\usepackage[whole]{bxcjkjatype}\n"
+        "\\begin{document}\nHello\n\\end{document}\n",
+        (),
+    ),
+    "fontawesome": (
+        "\\documentclass{article}\n\\usepackage{fontawesome}\n\\begin{document}\n\\faGithub\n\\end{document}\n",
+        ("fontawesome.sty", "FontAwesome.otf"),
+    ),
+    "legacy_cjk": (
+        "\\documentclass{article}\n\\usepackage{CJKutf8}\n\\begin{document}\n"
+        "\\begin{CJK*}{UTF8}{gbsn}\n中文正文\n\\end{CJK*}\n\\end{document}\n",
+        (),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PDFLATEX_LEFTOVERS))
+def test_pdflatex_leftovers_compile_after_adapt(tmp_path: Path, name: str) -> None:
+    source, required = PDFLATEX_LEFTOVERS[name]
+    if required and subprocess.run(["kpsewhich", *required], capture_output=True, check=False).returncode != 0:
+        pytest.skip(f"{' '.join(required)} not installed")
+    warnings: list[str] = []
+    injected, font_files = precompile._inject_cjk(source.encode("utf-8"), warnings, FontsConfig())
+    precompile._assemble_tree(tmp_path, injected, warnings, font_files)
+    completed = subprocess.run(
+        ["xelatex", "-interaction=nonstopmode", "-halt-on-error", precompile.FLAT_FILENAME],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    assert (tmp_path / "flat.pdf").stat().st_size > 0
