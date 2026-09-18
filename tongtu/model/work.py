@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -34,6 +35,8 @@ WORK_ROLE_FIELDS = ("max_turns", "timeout_seconds")
 SYSTEM_PATH_ENTRIES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
 TEX_EXECUTABLE = "xelatex"
+
+PYTHON_EXECUTABLE = "python3"
 
 
 class StopReason(StrEnum):
@@ -114,6 +117,17 @@ def _launch(
             )
         shutil.copytree(source, workdir / skill_path, dirs_exist_ok=True)
 
+        python_bin = Path(tmp_dir) / "bin"
+        interpreter = Path(sys.base_prefix) / "bin" / PYTHON_EXECUTABLE
+        try:
+            python_bin.mkdir()
+            (python_bin / PYTHON_EXECUTABLE).symlink_to(interpreter)
+        except OSError as error:
+            return _error(
+                f"failed to prepare the {PYTHON_EXECUTABLE} link to {interpreter} for the session"
+                f" ({type(error).__name__}: {error})."
+            )
+
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with trace_path.open("wb") as trace_file:
@@ -122,7 +136,7 @@ def _launch(
                     workdir,
                     entry.timeout_seconds,
                     input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
-                    env=_session_env(runtime.provider is not None) | session_env,
+                    env=_session_env(runtime.provider is not None, python_bin) | session_env,
                     on_stdout_line=_trace_line(trace_file, summarizer(runtime.events), report),
                 )
         except OSError as error:
@@ -158,9 +172,9 @@ def _trace_line(
     return handle
 
 
-def _session_env(provider_backed: bool) -> dict[str, str]:
+def _session_env(provider_backed: bool, python_bin: Path) -> dict[str, str]:
     tex = shutil.which(TEX_EXECUTABLE)
-    entries = ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
+    entries = [str(python_bin)] + ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
     environment = dict(os.environ)
     if provider_backed:
         environment.pop("CLAUDE_CODE_REMOTE", None)
