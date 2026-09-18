@@ -86,7 +86,7 @@ command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-
 settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
 env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   <span class="c"># 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录</span>
 <span class="c"># 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网</span>
-<span class="c"># Bash 在沙箱内自由使用：写范围 = 现场，断网；agent 做得对不对由驱动器在现场外重跑校验终判。work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单。
+<span class="c"># Bash 在沙箱内自由使用：写范围 = 现场，断网；agent 做得对不对由驱动器在现场外重跑校验终判。work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单，并在最前面加一个只含 python3 符号链接的目录，指向驱动器自身的基础解释器（sys.base_prefix），供现场的校验脚本使用。
 # Codex 的运行时条目按同一套机制写在下面的 [runtime.codex_opencode]（issue #27）。
 # .codex/rules 的 allow 是「沙箱外执行」，不用它做放行（issue #26 实测，2026-08-22）</span>
 
@@ -142,7 +142,7 @@ bold = "LXGWWenKai-Medium.ttf"</pre>
 <li><b>Bash 不做前缀放行</b>：运行时的 <code>autoAllowBashIfSandboxed</code> 让沙箱内的命令一律放行，<code>failIfUnavailable</code> 又保证沙箱不可用时会话直接失败，角色级放行清单起不了作用，故去掉（<a href="https://github.com/yhnocoder/tongtu/issues/20">issue #20</a> 实测，2026-08-24）。约束交给第 2 条的沙箱，正确性交给驱动器在现场外重跑校验。仍 deny 对 skill 目录的编辑：agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它。</li>
 <li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 本来就能执行任意代码，前缀放行拦不住，靠沙箱把写范围限制在会话 cwd、断网。</li>
 <li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻退出码 2。给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过——有意绕过只能走第 2 条管住的那条路：嵌套的 run 要写 cwd 之外的工作目录根、要出网，第一个阶段就失败。</li>
-<li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin + 系统 bin）。</li>
+<li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin + 系统 bin），并在最前面加一个只含 <code>python3</code> 符号链接的目录，指向驱动器自身的基础解释器（<code>sys.base_prefix</code>）；只链接这一个文件，不把基础解释器的 bin 目录放进 PATH，会话拿不到装在那里的 <code>tongtu</code>。</li>
 </ol>
 <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0;max-width:none">运行时只认 Claude Code 与 Codex：Codex 不用 <code>.codex/rules</code> 做放行——<code>decision="allow"</code> 的规则是「沙箱外执行」（<a href="https://github.com/yhnocoder/tongtu/issues/26">issue #26</a> 实测，2026-08-22）——只靠沙箱 <code>-s workspace-write -c approval_policy="never"</code> 把写范围限制在现场；opencode 作为运行时没有沙箱，在它有之前不作为使用方案。</p>
 </div>

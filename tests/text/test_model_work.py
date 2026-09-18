@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -101,7 +102,16 @@ def record_run(
         env: dict[str, str],
         on_stdout_line: Callable[[bytes], None],
     ) -> ProcessOutcome:
-        recorded.update(command=command, cwd=cwd, timeout_seconds=timeout_seconds, input_bytes=input_bytes, env=env)
+        python_bin = Path(env["PATH"].partition(":")[0])
+        recorded.update(
+            command=command,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            input_bytes=input_bytes,
+            env=env,
+            python_bin_entries=[entry.name for entry in python_bin.iterdir()],
+            python3_target=(python_bin / "python3").resolve(),
+        )
         if isinstance(outcome, Exception):
             raise outcome
         for line in lines:
@@ -166,12 +176,18 @@ def test_nested_sandbox_variable_weakens_sandbox_settings(configured: Path, monk
     }
 
 
+def assert_path_starts_with_the_base_interpreter(recorded: dict, rest: str) -> None:
+    assert recorded["env"]["PATH"].partition(":")[2] == rest
+    assert recorded["python_bin_entries"] == ["python3"]
+    assert recorded["python3_target"] == (Path(sys.base_prefix) / "bin" / "python3").resolve()
+
+
 def test_session_environment_is_narrowed(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
     work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert recorded["env"]["TONGTU_DISABLE"] == "1"
-    assert recorded["env"]["PATH"] == "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    assert_path_starts_with_the_base_interpreter(recorded, "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
 
 def test_session_environment_keeps_claude_code_remote_without_provider(
@@ -200,7 +216,7 @@ def test_session_environment_without_tex(configured: Path, monkeypatch: pytest.M
     record_run(monkeypatch, recorded, finished())
     monkeypatch.setattr(shutil, "which", lambda name: None if name == "xelatex" else EXECUTABLES.get(name))
     work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert recorded["env"]["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert_path_starts_with_the_base_interpreter(recorded, "/usr/bin:/bin:/usr/sbin:/sbin")
 
 
 def test_runtime_without_settings_table_is_error(configured: Path) -> None:
@@ -349,7 +365,7 @@ def test_provider_fills_command_and_session_environment(configured: Path, monkey
     assert recorded["env"]["API_KEY"] == "gateway-key"
     assert recorded["env"]["MODEL"] == "m1"
     assert recorded["env"]["TONGTU_DISABLE"] == "1"
-    assert recorded["env"]["PATH"] == "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    assert_path_starts_with_the_base_interpreter(recorded, "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
 
 def test_runtime_without_provider_adds_no_environment(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
