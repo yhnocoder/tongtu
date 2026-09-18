@@ -1,6 +1,6 @@
 import { Action, ActionPanel, Color, Icon, List, showHUD, showInFinder, open } from "@raycast/api";
 import { useEffect, useState } from "react";
-import { Paper, STAGES, fetchTitles, scan, start, stop, tail, thumbnail } from "./tongtu";
+import { Paper, STAGES, fetchTitles, scan, start, stop, thumbnail } from "./tongtu";
 
 const ICONS = {
   running: { source: Icon.CircleProgress50, tintColor: Color.Blue },
@@ -18,13 +18,11 @@ function subtitle(p: Paper): string {
 
 function detail(p: Paper): string {
   const png = p.status === "ok" ? thumbnail(p) : null;
-  const log = tail(p.log, png ? 20 : 60);
   const table = ["| stage | status | |", "|---|---|---|", ...p.stages.map((s) => `| ${s.name} | ${s.status} | ${s.message} |`)];
   return [
     `## ${p.title || p.id}`,
     png && `![](${encodeURI(`file://${png}`)})`,
     table.join("\n"),
-    log && "```\n" + log + "\n```",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -54,7 +52,6 @@ export default function Command() {
               {p.status === "ok" && <Action.ToggleQuickLook title="Preview PDF" />}
               {p.status === "ok" && <Action title="Open PDF" icon={Icon.Document} onAction={() => open(p.pdf)} />}
               <Action title="Show in Finder" icon={Icon.Finder} onAction={() => showInFinder(p.dir)} />
-              <Action title="Open Log" icon={Icon.Terminal} onAction={() => open(p.log)} />
               {p.status === "running" ? (
                 <Action
                   title="Stop"

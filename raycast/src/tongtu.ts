@@ -6,8 +6,7 @@ import path from "node:path";
 
 export const STAGES = ["fetch", "precompile", "mask", "survey", "translate", "review", "compile"] as const;
 export const ROOT = process.env.TONGTU_HOME || path.join(os.homedir(), ".local/share/tongtu");
-const LOGS = path.join(os.homedir(), "Library/Logs/tongtu");
-const ARXIV_ID = /^\d{4}\.\d{4,5}(v\d+)?$/;
+const ARXIV_ID = /\d{4}\.\d{4,5}(v\d+)?/;
 const ENV = {
   HOME: os.homedir(),
   USER: os.userInfo().username,
@@ -25,8 +24,7 @@ export type Paper = {
   title: string;
   dir: string;
   pdf: string;
-  log: string;
-  pid: number | null;
+  pgid: number | null;
   status: "running" | "ok" | "failed" | "partial";
   stage: string;
   done: number;
@@ -37,39 +35,32 @@ export type Paper = {
 };
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-export const logPath = (id: string) => path.join(LOGS, `${id}.log`);
-const pidPath = (id: string) => path.join(LOGS, `${id}.pid`);
 const titlePath = (id: string) => path.join(environment.supportPath, `${id}.title`);
-export const normalize = (paper: string) => paper.trim().replace(/\/$/, "").split("/abs/").pop()!.replace("/", "_");
+export const normalize = (paper: string) => paper.match(ARXIV_ID)?.[0] ?? paper.trim();
 
 export function start(paper: string) {
   const id = normalize(paper);
   const repo = getPreferenceValues<{ repo: string }>().repo.replace(/^~/, os.homedir());
   const dir = path.join(ROOT, id);
-  fs.mkdirSync(LOGS, { recursive: true });
   const script = [
-    `uv run --directory ${q(repo)} tongtu run ${q(paper)} > ${q(logPath(id))} 2>&1`,
-    `code=$?; rm -f ${q(pidPath(id))}`,
-    `if [ $code = 0 ]; then terminal-notifier -title Tongtu -message ${q(`${id} translated`)} -open ${q(`file://${dir}/out`)}`,
+    `if uv run --directory ${q(repo)} tongtu run ${q(id)} > /dev/null 2>&1`,
+    `then terminal-notifier -title Tongtu -message ${q(`${id} translated`)} -open ${q(`file://${dir}/out`)}`,
     `else terminal-notifier -title Tongtu -message ${q(`${id} failed`)} -open ${q(`file://${dir}`)}; fi`,
   ].join("; ");
-  const child = spawn("/bin/zsh", ["-c", script], { detached: true, stdio: "ignore", env: ENV });
-  fs.writeFileSync(pidPath(id), String(child.pid));
-  child.unref();
+  spawn("/bin/zsh", ["-c", script], { detached: true, stdio: "ignore", env: ENV }).unref();
 }
 
 export function stop(paper: Paper) {
-  if (paper.pid) process.kill(-paper.pid, "SIGTERM");
+  if (paper.pgid) process.kill(-paper.pgid, "SIGTERM");
 }
 
-function alive(id: string): number | null {
-  try {
-    const pid = Number(fs.readFileSync(pidPath(id), "utf8"));
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
+function runningGroups(): Map<string, number> {
+  const groups = new Map<string, number>();
+  for (const line of execFileSync("ps", ["-ax", "-o", "pgid=,command="], { encoding: "utf8" }).split("\n")) {
+    const match = line.match(/^\s*(\d+) .*tongtu run (\S+)$/);
+    if (match) groups.set(match[2], Number(match[1]));
   }
+  return groups;
 }
 
 function read(file: string): string {
@@ -80,9 +71,19 @@ function read(file: string): string {
   }
 }
 
-function inspect(id: string): Paper {
+function translateProgress(dir: string): [number, number] | null {
+  const brief = read(path.join(dir, "build/brief.json"));
+  if (!brief) return null;
+  const total = JSON.parse(brief).chunks.filter((c: { translatable_chars: number }) => c.translatable_chars).length;
+  let done: string[] = [];
+  try {
+    done = fs.readdirSync(path.join(dir, "logs")).flatMap((f) => f.match(/^translate-(.+)-\d+\.json$/)?.[1] ?? []);
+  } catch {}
+  return [new Set(done).size, total];
+}
+
+function inspect(id: string, pgid: number | null): Paper {
   const dir = path.join(ROOT, id);
-  const pid = alive(id);
   const stages: Stage[] = [];
   let mtime = 0;
   let failed: Stage | null = null;
@@ -100,25 +101,19 @@ function inspect(id: string): Paper {
   }
   const done = stages.length - (failed ? 1 : 0);
   const stage = failed?.name ?? STAGES[done] ?? "compile";
-  const chunks = stage === "translate" ? tail(logPath(id), 200).match(/chunks (\d+)\/(\d+)(?![\s\S]*chunks \d+\/\d+)/) : null;
-  const status = pid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial";
-  try {
-    mtime = Math.max(mtime, fs.statSync(logPath(id)).mtimeMs);
-  } catch {}
   return {
     id,
     title: read(titlePath(id)),
     dir,
     pdf: path.join(dir, "out/zh.pdf"),
-    log: logPath(id),
-    pid,
-    status,
+    pgid,
+    status: pgid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial",
     stage,
     done,
     message: failed ? `${failed.status} ${failed.message}`.trim() : "",
     stages,
-    translated: chunks ? [Number(chunks[1]), Number(chunks[2])] : null,
-    mtime,
+    translated: stage === "translate" ? translateProgress(dir) : null,
+    mtime: mtime || fs.statSync(dir).mtimeMs,
   };
 }
 
@@ -127,7 +122,10 @@ export function scan(): Paper[] {
   try {
     ids = fs.readdirSync(ROOT, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {}
-  return ids.map(inspect).sort((a, b) => Number(b.status === "running") - Number(a.status === "running") || b.mtime - a.mtime);
+  const groups = runningGroups();
+  return ids
+    .map((id) => inspect(id, groups.get(id) ?? null))
+    .sort((a, b) => Number(b.status === "running") - Number(a.status === "running") || b.mtime - a.mtime);
 }
 
 export async function fetchTitles(papers: Paper[]): Promise<boolean> {
@@ -142,11 +140,6 @@ export async function fetchTitles(papers: Paper[]): Promise<boolean> {
     if (match && title) fs.writeFileSync(titlePath(match), title);
   }
   return true;
-}
-
-export function tail(file: string, lines = 60): string {
-  const all = read(file).trimEnd().split("\n");
-  return all.filter((line, i) => line !== all[i + 1]).slice(-lines).join("\n");
 }
 
 export function thumbnail(paper: Paper): string | null {
