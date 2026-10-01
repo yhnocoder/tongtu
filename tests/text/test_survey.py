@@ -480,12 +480,12 @@ def test_a_reply_off_schema_degrades_to_an_empty_proposal(tmp_path: Path, monkey
     assert read_brief(workdir).terms == []
 
 
-def test_unreadable_model_config_degrades_to_an_empty_proposal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unreadable_model_config_fails_before_chunking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(survey, "load_config", lambda: (None, "读不到 models.toml"))
     workdir = make_workdir(tmp_path)
     manifest = survey.run(workdir)
-    assert manifest.status is SurveyStatus.OK
-    assert any("读不到 models.toml" in warning for warning in manifest.warnings)
+    assert manifest.status is SurveyStatus.CHUNK_FAILED
+    assert "读不到 models.toml" in manifest.message
 
 
 def test_no_terms_skips_the_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -666,3 +666,20 @@ def test_a_user_translation_keeps_its_spacing(tmp_path: Path) -> None:
     survey.run(workdir, glossary=(cli_path,))
     brief = read_brief(workdir)
     assert [(entry.word, entry.translation) for entry in brief.terms] == [("mixed RL training", "混合RL训练")]
+
+
+@pytest.mark.parametrize("backend", ["provider", "runtime"])
+def test_translation_chunk_limits_control_survey(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str) -> None:
+    config = ModelsConfig(roles={"translate": RoleConfig(model="astra", effort="light", **{backend: "demo"})})
+    monkeypatch.setattr(survey, "load_config", lambda: (config, ""))
+    text = "\\section{Test}\n\n" + "\n\n".join("A paragraph with enough text. " * 200 for _ in range(12))
+    workdir = make_workdir(tmp_path, text)
+    assert survey.run(workdir, no_terms=True).status is SurveyStatus.OK
+    smaller = read_brief(workdir).chunks
+    config.roles["translate"].chunk_tokens = 20000
+    config.roles["translate"].chunk_merge_tokens = 12000
+    assert survey.run(workdir, no_terms=True).status is SurveyStatus.OK
+    larger = read_brief(workdir).chunks
+    assert len(larger) < len(smaller)
+    assert max(chunk.tokens for chunk in larger) > 5000
+    assert "".join((workdir.chunks / f"{chunk.id}.tex").read_text() for chunk in larger) == text

@@ -276,6 +276,8 @@ def _translate_entry(options: RunOptions, display: StageDisplay) -> Manifest:
         jobs=options.jobs,
         ask_model=options.ask_model,
         ask_effort=options.ask_effort,
+        work_model=options.work_model,
+        work_effort=options.work_effort,
         report=display.line,
         progress=display.chunks,
     )
@@ -325,7 +327,7 @@ AskModelOpt = Annotated[
         "--ask-model",
         metavar="PROVIDER/MODEL",
         help=(
-            "override every ask role involved in this run (survey_terms, translate); "
+            "override every ask role involved in this run (survey_terms, API translate); "
             "PROVIDER is a \\[provider.*] name in models.toml"
         ),
     ),
@@ -339,7 +341,7 @@ WorkModelOpt = Annotated[
         "--work-model",
         metavar="RUNTIME/MODEL",
         help=(
-            "override every work role involved in this run (review, precompile_fix, compile_fix); "
+            "override every work role involved in this run (Agent translate, review, precompile_fix, compile_fix); "
             "RUNTIME is a \\[runtime.*] name in models.toml"
         ),
     ),

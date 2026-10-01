@@ -32,6 +32,10 @@ def summarize_codex_json(event: dict) -> str | None:
         return _codex_protocol_action(msg)
     item = event.get("item")
     if isinstance(item, dict):
+        kind = item.get("type") or item.get("item_type")
+        expected = "item.started" if kind == "command_execution" else "item.completed"
+        if event.get("type") != expected:
+            return None
         return _codex_item_action(item)
     return None
 

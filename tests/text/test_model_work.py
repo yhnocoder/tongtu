@@ -455,3 +455,55 @@ def test_without_report_the_trace_is_still_written(configured: Path, monkeypatch
     outcome = work("smoke", configured / "paper", trace_path=trace_path)
     assert outcome.stop_reason == StopReason.FINISHED
     assert trace_path.read_bytes() == ACTION_LINE
+
+
+def test_codex_login_isolated_home_and_custom_prompt(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, _ = work_module.load_config()
+    assert config is not None
+    runtime = config.runtime["demo"]
+    runtime.auth = "codex"
+    runtime.command = ["runner", "--model", "{model}"]
+    config.roles["smoke"].max_turns = None
+    monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
+    auth_home = configured / "login"
+    auth_home.mkdir()
+    (auth_home / "auth.json").write_text('{"test":true}')
+    (auth_home / "config.toml").write_text('sandbox_mode="danger-full-access"')
+    monkeypatch.setenv("CODEX_HOME", str(auth_home))
+    monkeypatch.setenv("CODEX_API_KEY", "must-not-inherit")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-inherit")
+    homes: list[Path] = []
+
+    def run_session(*args: object, **kwargs: object) -> ProcessOutcome:
+        env = kwargs["env"]
+        home = Path(env["CODEX_HOME"])
+        homes.append(home)
+        assert home != auth_home
+        assert (home / "auth.json").resolve() == auth_home / "auth.json"
+        assert not (home / "config.toml").exists()
+        assert "CODEX_API_KEY" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert kwargs["input_bytes"] == b"read task.md"
+        scratch = Path(env["TMPDIR"])
+        assert scratch.is_dir()
+        assert scratch.parent == (configured / "paper").resolve()
+        assert env["TMP"] == env["TEMP"] == env["TMPDIR"]
+        return finished()
+
+    monkeypatch.setattr(work_module, "run_in_process_group", run_session)
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", prompt="read task.md")
+    assert outcome.stop_reason is StopReason.FINISHED
+    assert homes and not homes[0].exists()
+    assert (auth_home / "auth.json").read_text() == '{"test":true}'
+
+
+def test_codex_missing_login_does_not_start_session(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, _ = work_module.load_config()
+    assert config is not None
+    config.runtime["demo"].auth = "codex"
+    monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
+    monkeypatch.setenv("CODEX_HOME", str(configured / "missing-login"))
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason is StopReason.ERROR
+    assert "codex login" in outcome.detail
+    assert not (configured / "trace.jsonl").exists()

@@ -41,7 +41,7 @@ for f in chunks/*.tex; do cmp -s "$f" "reviewed/$(basename "$f")" && echo "内�
 2. 每改完一个文件，立即跑
 
    ```
-   python3 -I .claude/skills/review/validate.py chunks/cNNN.tex reviewed/cNNN.tex
+   python3 -I <本 SKILL.md 所在目录>/validate.py chunks/cNNN.tex reviewed/cNNN.tex
    ```
 
    四层机械校验（占位符 multiset / 控制序列 multiset / 花括号与 `$` `%` / 段落数）任何一层不过就接着改这个文件，直到通过再看下一个文件。不要攒到最后一起校验：回退按整块算，错发现得越晚，越可能连着这一块的其他修订一起丢。

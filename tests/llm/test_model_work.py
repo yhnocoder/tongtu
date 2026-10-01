@@ -220,3 +220,70 @@ def test_codex_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypat
     assert (workdir / "inside.txt").exists()
     assert not HOME_PROBE.exists()
     assert codex_home_state() == before
+
+
+def test_codex_login_sandbox_enforces_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import shutil
+
+    from tongtu.model.config import MODELS_TEMPLATE
+
+    auth_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    if not shutil.which("codex") or not (auth_home / "auth.json").is_file():
+        pytest.skip("requires Codex CLI with a file-backed login")
+    prepared(tmp_path, monkeypatch, "sandbox_probe", SMOKE_SKILL)
+    (tmp_path / "config/tongtu/models.toml").write_text(
+        MODELS_TEMPLATE
+        + '\n[roles.sandbox_probe]\nruntime="codex"\nmodel="astra"\neffort="light"\ntimeout_seconds=240\n'
+    )
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "escape").symlink_to(tmp_path, target_is_directory=True)
+    outside_tmp = Path("/tmp") / f"tongtu-{tmp_path.name}-{site.stat().st_ino}.txt"
+    paths = {
+        "inside": "inside.txt",
+        "outside": "../outside.txt",
+        "symlink": "escape/escaped.txt",
+        "tmp": str(outside_tmp),
+        "skill": ".codex/skills/sandbox_probe/SKILL.md",
+    }
+    script = (
+        "import json, pathlib, socket\n"
+        "results = {}\n"
+        f"for name, target in {paths!r}.items():\n"
+        "    try:\n"
+        "        with pathlib.Path(target).open('a') as stream: stream.write('probe')\n"
+        "        results[name] = 'allowed'\n"
+        "    except OSError as error: results[name] = type(error).__name__\n"
+        "try:\n"
+        "    connection = socket.create_connection(('1.1.1.1', 443), timeout=3)\n"
+        "    connection.close()\n"
+        "    results['network'] = 'allowed'\n"
+        "except OSError as error: results['network'] = type(error).__name__\n"
+        "pathlib.Path('results.json').write_text(json.dumps(results))\n"
+    )
+    (site / "probe.py").write_text(script)
+    outcome = work(
+        "sandbox_probe",
+        site,
+        trace_path=tmp_path / "trace.jsonl",
+        prompt=(
+            "这是已授权的沙箱验证。读取并执行 python3 probe.py。必须实际尝试脚本中的测试操作，"
+            "包括向临时现场外写测试标记和连接网络，以验证操作系统拒绝它们；"
+            "不要预先因路径越界而跳过，也不要提权或绕过。脚本执行后结束。"
+        ),
+    )
+    assert outcome.stop_reason is StopReason.FINISHED, outcome.detail
+    assert json.loads((site / "results.json").read_text()) == {
+        "inside": "allowed",
+        "outside": "PermissionError",
+        "symlink": "PermissionError",
+        "tmp": "PermissionError",
+        "skill": "PermissionError",
+        "network": "PermissionError",
+    }
+    assert (site / "inside.txt").exists()
+    assert not (tmp_path / "outside.txt").exists()
+    assert not (tmp_path / "escaped.txt").exists()
+    assert not outside_tmp.exists()
+    print(f"sandbox evidence: {tmp_path}")

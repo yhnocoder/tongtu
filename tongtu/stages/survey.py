@@ -141,6 +141,12 @@ def _execute(
         units = _read_layers(paper_workdir, glossary_paths)
     except GlossaryError as error:
         return SurveyManifest(status=SurveyStatus.GLOSSARY_INVALID, message=str(error))
+    config, detail = load_config()
+    if config is None:
+        return SurveyManifest(status=SurveyStatus.CHUNK_FAILED, message=detail)
+    translation = config.roles.get("translate")
+    split_above = translation.chunk_tokens if translation else SPLIT_ABOVE
+    merge_below = translation.chunk_merge_tokens if translation else MERGE_BELOW
     try:
         encoder = tiktoken.get_encoding(TOKEN_ENCODING_NAME)
     except Exception as error:
@@ -153,7 +159,7 @@ def _execute(
             ),
         )
     try:
-        document = _Document(masked, encoder)
+        document = _Document(masked, encoder, split_above=split_above, merge_below=merge_below)
         chunks = document.chunks()
         contents = [masked[chunk.start : chunk.end] for chunk in chunks]
         _verify(masked, chunks, contents)
@@ -185,10 +191,10 @@ def _execute(
         _record(index, chunk, body, document) for index, (chunk, body) in enumerate(zip(chunks, contents, strict=True))
     ]
     warnings.extend(
-        f"{record.id} has {record.tokens} tokens, over the split line {SPLIT_ABOVE}, "
+        f"{record.id} has {record.tokens} tokens, over the split line {split_above}, "
         "with no finer cut point inside the unit."
         for record in records
-        if record.tokens > SPLIT_ABOVE
+        if record.tokens > split_above
     )
     brief = BriefFile(
         abstract=abstract,
@@ -671,9 +677,13 @@ class _Depth:
 
 
 class _Document:
-    def __init__(self, text: str, encoder: tiktoken.Encoding) -> None:
+    def __init__(
+        self, text: str, encoder: tiktoken.Encoding, *, split_above: int = SPLIT_ABOVE, merge_below: int = MERGE_BELOW
+    ) -> None:
         self.text = text
         self.encoder = encoder
+        self.split_above = split_above
+        self.merge_below = merge_below
         self._token_counts: dict[tuple[int, int], int] = {}
         self.scan = _scan(text)
         self.command = _preferred_command(self.scan.headings)
@@ -749,7 +759,7 @@ class _Document:
 
     def _expand(self, unit: tuple[int, int], command: str | None) -> list[tuple[int, int]]:
         start, end = unit
-        if self.tokens(start, end) <= SPLIT_ABOVE:
+        if self.tokens(start, end) <= self.split_above:
             return [unit]
         deeper_commands = HEADING_COMMANDS[HEADING_COMMANDS.index(command) + 1 :] if command is not None else ()
         for deeper in deeper_commands:
@@ -768,7 +778,7 @@ class _Document:
         for chunk in chunks:
             if (
                 merged
-                and self.tokens(merged[-1].start, merged[-1].end) < MERGE_BELOW
+                and self.tokens(merged[-1].start, merged[-1].end) < self.merge_below
                 and self._joinable(merged[-1], chunk)
             ):
                 merged[-1] = _join(merged[-1], chunk)
@@ -776,7 +786,7 @@ class _Document:
                 merged.append(chunk)
         index = len(merged) - 1
         while index >= 1:
-            if self.tokens(merged[index].start, merged[index].end) < MERGE_BELOW and self._joinable(
+            if self.tokens(merged[index].start, merged[index].end) < self.merge_below and self._joinable(
                 merged[index - 1], merged[index]
             ):
                 merged[index - 1] = _join(merged[index - 1], merged[index])
@@ -785,7 +795,7 @@ class _Document:
         return merged
 
     def _joinable(self, first: _Chunk, second: _Chunk) -> bool:
-        return first.part is second.part and self.tokens(first.start, second.end) <= SPLIT_ABOVE
+        return first.part is second.part and self.tokens(first.start, second.end) <= self.split_above
 
 
 def _join(first: _Chunk, second: _Chunk) -> _Chunk:

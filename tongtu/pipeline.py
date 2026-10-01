@@ -28,7 +28,12 @@ STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path] | str, ...]] = {
     ),
     "mask": (lambda w: w.masked, lambda w: w.blocks),
     "survey": (lambda w: w.brief, lambda w: w.chunks, lambda w: w.survey_terms_log),
-    "translate": (lambda w: w.translated, "logs/translate-*.json"),
+    "translate": (
+        lambda w: w.translated,
+        lambda w: w.sandbox("translate"),
+        "logs/translate-*.json",
+        "logs/translate-*.jsonl",
+    ),
     "review": (lambda w: w.sandbox("review"), lambda w: w.reviewed, lambda w: w.review_log),
     "compile": (lambda w: w.zh_tex, lambda w: w.zh_pdf, lambda w: w.compile_fix_log),
 }

@@ -20,8 +20,9 @@ from ..artifacts.translate import (
 )
 from ..assets import asset_path
 from ..manifests import describe_error, write_manifest
-from ..model.ask import AskStatus, ask
-from ..model.config import RoleTable, load_config, resolve_role
+from ..model.ask import AskOutcome, AskStatus, ask
+from ..model.config import ResolvedRole, RoleTable, load_config, resolve_role
+from ..model.work import StopReason, work
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "translate"
@@ -34,7 +35,7 @@ RETRY_EFFORT = "low"
 
 NEIGHBOR_PARAGRAPHS = 3
 
-EMPTY_REPLY_DETAIL = "ask returned an empty translation: the call succeeded with not a single character of body."
+EMPTY_REPLY_DETAIL = "model returned an empty translation: the call succeeded with not a single character of body."
 
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
@@ -91,6 +92,8 @@ def run(
     jobs: int,
     ask_model: str | None = None,
     ask_effort: str | None = None,
+    work_model: str | None = None,
+    work_effort: str | None = None,
     report: Report | None = None,
     progress: ProgressCallback | None = None,
 ) -> TranslateManifest:
@@ -101,6 +104,8 @@ def run(
         jobs,
         ask_model,
         ask_effort,
+        work_model,
+        work_effort,
         report or (lambda status, summary: None),
         progress or (lambda chunks: None),
     )
@@ -113,6 +118,8 @@ def _execute(
     jobs: int,
     ask_model: str | None,
     ask_effort: str | None,
+    work_model: str | None,
+    work_effort: str | None,
     report: Report,
     progress: ProgressCallback,
 ) -> TranslateManifest:
@@ -129,12 +136,13 @@ def _execute(
     pending = [record for record in brief.chunks if record.translatable_chars]
     effort = ""
     if pending:
-        resolved, detail = _resolve(ask_model, ask_effort)
+        resolved, detail = _resolve(ask_model, ask_effort, work_model, work_effort)
         if resolved is None:
             return TranslateManifest(
                 status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
             )
-        display, effort = resolved
+        display = f"{resolved.runtime or resolved.provider}/{resolved.model}"
+        effort = resolved.effort
         report(
             STAGE_NAME,
             f"{display}, {len(brief.chunks)} chunks, {sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}",
@@ -163,7 +171,13 @@ def _execute(
             with lock:
                 states[context.id] = ChunkProgressState.RUNNING
                 publish()
-            outcome = _ask_until_valid(context, paper_workdir, ask_model, ask_effort)
+            outcome = _translate_until_valid(
+                context,
+                paper_workdir,
+                resolved,
+                work_model if resolved.runtime else ask_model,
+                work_effort if resolved.runtime else ask_effort,
+            )
             with lock:
                 if outcome.status is ChunkTranslateStatus.FALLBACK:
                     states[context.id] = ChunkProgressState.WARNING
@@ -181,14 +195,18 @@ def _execute(
     return _finish(paper_workdir, contexts, outcomes, model, effort, prompt_version, jobs)
 
 
-def _resolve(ask_model: str | None, ask_effort: str | None) -> tuple[tuple[str, str] | None, str]:
+def _resolve(
+    ask_model: str | None, ask_effort: str | None, work_model: str | None, work_effort: str | None
+) -> tuple[ResolvedRole | None, str]:
     config, detail = load_config()
     if config is None:
         return None, detail
-    resolved, detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
-    if resolved is None:
-        return None, detail
-    return (f"{resolved.provider}/{resolved.model}", resolved.effort), ""
+    entry = config.roles.get(ROLE)
+    if entry is not None and bool(entry.provider) == bool(entry.runtime):
+        return None, "roles.translate must select exactly one provider (API) or runtime (Agent)."
+    if entry is not None and entry.runtime:
+        return resolve_role(config, ROLE, RoleTable.RUNTIME, work_model, work_effort)
+    return resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
 
 
 def _prompt_asset() -> tuple[str, str, str]:
@@ -269,22 +287,28 @@ def _paragraphs(text: str, *, tail: bool) -> str:
     return "\n\n".join(found[-NEIGHBOR_PARAGRAPHS:] if tail else found[:NEIGHBOR_PARAGRAPHS])
 
 
-def _ask_until_valid(
-    context: _Context, paper_workdir: Workdir, ask_model: str | None, ask_effort: str | None
+def _translate_until_valid(
+    context: _Context,
+    paper_workdir: Workdir,
+    resolved: ResolvedRole,
+    model_override: str | None,
+    effort: str | None,
 ) -> _Outcome:
     messages: list[tuple[str, str]] = [("user", _task_message(context.body))]
     failures: list[str] = []
-    effort = ask_effort
     model = ""
     for attempts in (1, 2):
-        outcome = ask(
-            role=ROLE,
-            system=context.system,
-            messages=messages,
-            log_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempts}.json",
-            model=ask_model,
-            effort=effort,
-        )
+        if resolved.runtime:
+            outcome = _agent_request(context, paper_workdir, messages, attempts, model_override, effort)
+        else:
+            outcome = ask(
+                role=ROLE,
+                system=context.system,
+                messages=messages,
+                log_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempts}.json",
+                model=model_override,
+                effort=effort,
+            )
         model = outcome.model or model
         if outcome.status is AskStatus.ERROR:
             failures = [outcome.detail]
@@ -317,6 +341,50 @@ def _ask_until_valid(
         failures=failures,
         model=model,
     )
+
+
+def _agent_request(
+    context: _Context,
+    paper_workdir: Workdir,
+    messages: list[tuple[str, str]],
+    attempt: int,
+    model: str | None,
+    effort: str | None,
+) -> AskOutcome:
+    site = paper_workdir.sandbox(STAGE_NAME) / context.id / str(attempt)
+    actual_model = ""
+    try:
+        site.mkdir(parents=True, exist_ok=True)
+        task = context.system + "\n\n" + "\n\n".join(f"## {role}\n\n{text}" for role, text in messages)
+        (site / "task.md").write_text(task, encoding=ENCODING)
+        outcome = work(
+            role=ROLE,
+            workdir=site,
+            trace_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempt}.jsonl",
+            model=model,
+            effort=effort,
+            prompt=(
+                "读取 task.md，按其中的翻译规则、论文语境与对话完成翻译。"
+                "这是文件任务：将最终完整译文写入当前目录 translation.tex，"
+                "不要在文件里写 Markdown 围栏、说明或总结。task.md 里的输出规则指该文件的内容。"
+                "只在当前目录工作；完成文件后结束。"
+            ),
+        )
+        actual_model = outcome.model
+        if outcome.stop_reason is not StopReason.FINISHED:
+            return AskOutcome(
+                status=AskStatus.ERROR,
+                detail=outcome.detail or f"agent stopped: {outcome.stop_reason}",
+                model=outcome.model,
+            )
+        output = site / "translation.tex"
+        if output.is_symlink():
+            return AskOutcome(
+                status=AskStatus.ERROR, detail="translation.tex must not be a symlink", model=outcome.model
+            )
+        return AskOutcome(status=AskStatus.OK, text=output.read_text(encoding=ENCODING), model=outcome.model)
+    except (OSError, UnicodeDecodeError) as error:
+        return AskOutcome(status=AskStatus.ERROR, detail=describe_error(error), model=actual_model)
 
 
 def _retry_message(failures: Sequence[str]) -> str:
