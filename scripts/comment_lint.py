@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import subprocess
 import sys
 import tokenize
@@ -10,6 +11,7 @@ from pathlib import Path
 
 ROOTS = ("tongtu/", "tests/", "scripts/")
 DIRECTIVES = ("noqa", "type: ignore", "pragma: no cover")
+WHY = re.compile(r"why\(#\d+\): \S")
 DOC_NODES = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 
 
@@ -30,7 +32,8 @@ def violations(path: Path) -> list[str]:
             continue
         if token.start == (1, 0) and token.string.startswith("#!"):
             continue
-        if token.string.lstrip("#").strip().startswith(DIRECTIVES):
+        body = token.string.lstrip("#").strip()
+        if body.startswith(DIRECTIVES) or WHY.match(body):
             continue
         found.append((token.start[0], f"注释: {brief(token.string)}"))
     for node in ast.walk(ast.parse(text)):

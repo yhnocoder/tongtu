@@ -50,3 +50,8 @@ def test_in_scope_filters_path_and_suffix() -> None:
     assert not in_scope("docs/design/pipeline.html")
     assert not in_scope("examples/papers/main.tex")
     assert not in_scope("noxfile.py")
+
+
+def test_why_with_issue_number_is_allowed(tmp_path: Path) -> None:
+    path = write(tmp_path, "x = 1  # why(#140): 删掉会让 xelatex 报错\ny = 2  # why: 缺 issue 编号\n")
+    assert violations(path) == [f"{path}:2: 注释: # why: 缺 issue 编号"]
