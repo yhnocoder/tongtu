@@ -5,8 +5,9 @@ import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ..config import config_dir
 from .events import SUMMARIZERS
@@ -50,6 +51,7 @@ class RuntimeConfig(BaseModel):
     provider: str | None = None
     env: dict[str, str] | None = None
     events: str | None = None
+    auth: Literal["codex"] | None = None
 
 
 class FontsConfig(BaseModel):
@@ -66,6 +68,14 @@ class RoleConfig(BaseModel):
     runtime: str | None = None
     max_turns: int | None = None
     timeout_seconds: float | None = None
+    chunk_tokens: int = Field(default=5000, gt=0, strict=True)
+    chunk_merge_tokens: int = Field(default=1500, ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def valid_chunk_limits(self) -> RoleConfig:
+        if self.chunk_merge_tokens > self.chunk_tokens:
+            raise ValueError("chunk_merge_tokens must not exceed chunk_tokens")
+        return self
 
 
 class ModelsConfig(BaseModel):
@@ -160,8 +170,8 @@ def resolve_role(
     resolved = ResolvedRole(
         provider=name if table is RoleTable.PROVIDER else None,
         runtime=name if table is RoleTable.RUNTIME else None,
-        model=chosen,
-        effort=effort or entry.effort,
+        model="gpt-6-astra" if chosen == "astra" else chosen,
+        effort="low" if (effort or entry.effort) == "light" else (effort or entry.effort),
     )
     return resolved, ""
 
@@ -230,39 +240,55 @@ api_key_env = "ANTHROPIC_API_KEY"
 api         = "messages"          # 整个服务商一种接口时不必逐模型列
 
 # 会话运行时：一条命令模板，{model} {effort} {max_turns} {tmp_dir} 由 work 填入；{tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删
-[runtime.claude_code]
-skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
-events     = "stream-json"               # stdout 事件流的格式，live 行据此解析当前动作；不写则不解析
-command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
-           "--output-format", "stream-json", "--verbose",
-           "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
-           "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
-           "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
-settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
-env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   # 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录
+# [runtime.claude_code]
+# skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
+# events     = "stream-json"               # stdout 事件流的格式，live 行据此解析当前动作；不写则不解析
+# command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
+#            "--output-format", "stream-json", "--verbose",
+#            "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
+#            "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
+#            "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
+#            "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
+# settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
+# env = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "", ANTHROPIC_BASE_URL = "" }   # 空串 = 未设：钉死订阅登录；-p 模式下 shell 里导出的这些变量会不问直接压过登录
 # 沙箱：macOS 零安装（Seatbelt），Linux 镜像装 bubblewrap 与 socat；写范围 = 会话 cwd，断网
 # 嵌套容器（如云端会话）里设环境变量 TONGTU_NESTED_SANDBOX=1，work 会在有 sandbox 表的运行时合入 enableWeakerNestedSandbox = true
 # Bash 在沙箱内自由使用：写范围 = 现场，断网；agent 做得对不对由驱动器在现场外重跑校验终判
 # work 拉起子进程时环境加 TONGTU_DISABLE=1、PATH 收成固定清单
 
 # 同一个 Claude Code，模型换成 opencode 上的：一个运行时条目 = 一个「工具 × 服务商」组合
-[runtime.claude_code_opencode]
-provider = "opencode"                    # {base_url} 与 {api_key} 由 work 从 [provider.opencode] 填入
-skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
-events     = "stream-json"
-command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
-           "--output-format", "stream-json", "--verbose",
-           "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
-           "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
-           "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
-settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
-env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
+# [runtime.claude_code_opencode]
+# provider = "opencode"                    # {base_url} 与 {api_key} 由 work 从 [provider.opencode] 填入
+# skill_path = ".claude/skills/{role}"     # skill 目录拷到现场的哪里
+# events     = "stream-json"
+# command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
+#            "--output-format", "stream-json", "--verbose",
+#            "--setting-sources", "", "--strict-mcp-config",                       # 不加载用户 hooks / MCP / 插件；订阅登录照常（--bare 只认 API key，不用）
+#            "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
+#            "--disallowedTools", "Edit(.claude/skills/**)",                       # agent 改不了 skill 目录（含 validate.py），重定向覆盖也按这条拦
+#            "--settings", "{settings}"]                                           # 下面 settings 表序列化成 JSON 填入
+# settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
+# env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
 # opencode 的 messages 端点只认 x-api-key，所以密钥写进 ANTHROPIC_API_KEY；ANTHROPIC_AUTH_TOKEN 走 Bearer，会 401
 # Claude Code 把 ANTHROPIC_BASE_URL 当根，自己拼 /v1/messages，所以这里填的是不带 /v1 的 base_url
 # 三个 DEFAULT_*_MODEL 都指同一个模型，防止后台的小调用拿 claude 系列的名字去打 opencode
 # 密钥经进程环境传入而不是写进命令行参数：命令行参数在 ps 里可见
+
+# Codex 登录会话：astra / light 在调用时解析为 gpt-6-astra / low
+[runtime.codex]
+auth       = "codex"
+skill_path = ".codex/skills/{role}"
+events     = "codex-json"
+command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+           "-s", "workspace-write", "-c", 'approval_policy="never"',
+           "-c", 'sandbox_workspace_write.network_access=false',
+           "-c", 'sandbox_workspace_write.exclude_slash_tmp=true',
+           "-c", 'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+           "-c", 'allow_login_shell=false', "-c", 'project_doc_max_bytes=0',
+           "-c", 'web_search="disabled"', "-c", 'skills.include_instructions=false',
+           "-m", "{model}", "-c", 'model_reasoning_effort="{effort}"']
+# 独立临时 CODEX_HOME 只链接已有 auth.json，认证刷新可保存；不复制用户配置、rules、skills 或插件
+# 工具只能写 cwd，不能联网；workspace-write 不限制主机可读文件。无 max_turns，使用 timeout_seconds 限时
 
 # Codex + opencode：只靠 Codex 自带的沙箱（-s workspace-write + approval never），不写 .codex/rules——它的 allow 是「沙箱外执行」
 [runtime.codex_opencode]
@@ -294,11 +320,22 @@ env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 main = "LXGWWenKai-Light.ttf"
 bold = "LXGWWenKai-Medium.ttf"
 
-# 角色：流水线里每一处调模型的地方一个名字，这里定它默认用什么
+# 角色：翻译选择 runtime（Agent）或 provider（API），恰好一个；分块量对两者通用
 [roles]
-survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   # 可选；不配就不提议
-translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
-review         = { runtime = "claude_code", model = "claude-opus-5", effort = "medium", max_turns = 300, timeout_seconds = 3600 }
-precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
-compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
+survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
+translate      = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 1800, chunk_tokens = 20000, chunk_merge_tokens = 12000 }
+review         = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 3600 }
+precompile_fix = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 1800 }
+compile_fix    = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 1800 }
+# chunk_tokens 是结构化分块的上限（o200k_base token），chunk_merge_tokens 是小块合并阈值；不可分单元超限会警告
+# 改分块配置后从 survey 重跑；API 示例：
+# translate = { provider = "opencode", model = "deepseek-v4-pro", effort = "none", chunk_tokens = 5000, chunk_merge_tokens = 1500 }
+
+# 原有角色配置（保留，取消注释前先注释对应的新配置）
+# survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }   # 可选；不配就不提议
+# translate      = { provider = "opencode", model = "deepseek-v4-pro", effort = "none" }
+# review         = { runtime = "claude_code", model = "claude-opus-5", effort = "medium", max_turns = 300, timeout_seconds = 3600 }
+# precompile_fix = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
+# compile_fix    = { runtime = "claude_code", model = "claude-sonnet-5", effort = "xhigh", max_turns = 40, timeout_seconds = 1800 }
+
 """

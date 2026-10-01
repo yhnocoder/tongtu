@@ -60,10 +60,10 @@ def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> 
 def test_template_parses_and_validates() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
     assert set(config.provider) == {"opencode", "deepseek", "anthropic"}
-    assert set(config.runtime) == {"claude_code", "claude_code_opencode", "codex_opencode"}
+    assert set(config.runtime) == {"codex", "codex_opencode"}
     assert set(config.roles) == {"survey_terms", "translate", "review", "precompile_fix", "compile_fix"}
     assert config.provider["opencode"].models["deepseek-v4-flash"] == Api.CHAT
-    assert config.roles["review"].max_turns == 300
+    assert config.roles["review"].timeout_seconds == 3600
     assert config.provider["opencode"].base_url == "https://opencode.ai/zen/go"
     assert config.provider["anthropic"].base_url == "https://api.anthropic.com"
     assert config.provider["opencode"].api_key == ""
@@ -111,8 +111,21 @@ def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.Mo
     assert config.fonts == FontsConfig()
 
 
+def preserved_claude_config() -> ModelsConfig:
+    start = MODELS_TEMPLATE.index("# [runtime.claude_code]")
+    end = MODELS_TEMPLATE.index("# Codex 登录会话", start)
+    uncommented = "\n".join(
+        line.removeprefix("# ") for line in MODELS_TEMPLATE[start:end].splitlines() if line.startswith("# ")
+    )
+    lines = []
+    for line in uncommented.splitlines():
+        if line.startswith(("[", "skill_path", "events", "command", "settings", "env", "provider", "           ")):
+            lines.append(line)
+    return ModelsConfig.model_validate(tomllib.loads("\n".join(lines)))
+
+
 def test_template_runtime_carries_sandbox_settings() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    config = preserved_claude_config()
     runtime = config.runtime["claude_code"]
     assert runtime.settings == {
         "sandbox": {
@@ -132,7 +145,7 @@ def test_template_runtime_carries_sandbox_settings() -> None:
 
 
 def test_template_opencode_runtime_carries_provider_and_env() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    config = preserved_claude_config()
     runtime = config.runtime["claude_code_opencode"]
     plain = config.runtime["claude_code"]
     assert runtime.provider == "opencode"
@@ -148,7 +161,6 @@ def test_template_opencode_runtime_carries_provider_and_env() -> None:
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "DISABLE_TELEMETRY": "1",
     }
-    assert {entry.runtime for entry in config.roles.values() if entry.runtime} == {"claude_code"}
 
 
 def test_template_codex_runtime_carries_provider_and_env() -> None:
@@ -165,8 +177,7 @@ def test_template_codex_runtime_carries_provider_and_env() -> None:
 
 def test_template_runtimes_declare_events() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
-    assert config.runtime["claude_code"].events == "stream-json"
-    assert config.runtime["claude_code_opencode"].events == "stream-json"
+    assert config.runtime["codex"].events == "codex-json"
     assert config.runtime["codex_opencode"].events == "codex-json"
 
 
@@ -359,3 +370,33 @@ def test_resolve_role_rejects_unknown_prefix(tmp_path: Path, monkeypatch: pytest
     resolved, detail = resolve_role(config, "review", RoleTable.RUNTIME, "demo/sonnet")
     assert resolved is None
     assert "runtime demo" in detail
+
+
+def test_codex_defaults_resolve_aliases_and_require_sandbox() -> None:
+    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    resolved, detail = resolve_role(config, "translate", RoleTable.RUNTIME)
+    assert detail == ""
+    assert resolved is not None
+    assert (resolved.runtime, resolved.model, resolved.effort) == ("codex", "gpt-6-astra", "low")
+    runtime = config.runtime["codex"]
+    assert runtime.auth == "codex"
+    assert "workspace-write" in runtime.command
+    for setting in (
+        'approval_policy="never"',
+        "sandbox_workspace_write.network_access=false",
+        "sandbox_workspace_write.exclude_slash_tmp=true",
+        "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        "allow_login_shell=false",
+    ):
+        assert setting in runtime.command
+    assert config.roles["translate"].chunk_tokens == 20000
+
+
+@pytest.mark.parametrize(
+    "limits", ["chunk_tokens = 0", "chunk_tokens = -1", "chunk_tokens = true", "chunk_merge_tokens = 6000"]
+)
+def test_invalid_chunk_limits_fail_config_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limits: str) -> None:
+    write_config(tmp_path, monkeypatch, '[roles.translate]\nmodel="astra"\neffort="light"\n' + limits)
+    config, detail = load_config()
+    assert config is None
+    assert "chunk" in detail

@@ -30,8 +30,6 @@ SKILL_ROOT = asset_path("skill")
 
 PROMPT = "读 {skill_path}/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
 
-WORK_ROLE_FIELDS = ("max_turns", "timeout_seconds")
-
 SYSTEM_PATH_ENTRIES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
 TEX_EXECUTABLE = "xelatex"
@@ -60,6 +58,7 @@ def work(
     model: str | None = None,
     effort: str | None = None,
     report: Callable[[str], None] | None = None,
+    prompt: str | None = None,
 ) -> WorkOutcome:
     config, detail = load_config()
     if config is None:
@@ -67,7 +66,7 @@ def work(
     resolved, detail = resolve_role(config, role, RoleTable.RUNTIME, model, effort)
     if resolved is None:
         return _error(detail)
-    outcome = _launch(config, resolved, role, workdir, trace_path, report)
+    outcome = _launch(config, resolved, role, workdir, trace_path, report, prompt)
     return replace(outcome, model=f"{resolved.runtime}/{resolved.model}")
 
 
@@ -78,13 +77,17 @@ def _launch(
     workdir: Path,
     trace_path: Path,
     report: Callable[[str], None] | None,
+    prompt: str | None,
 ) -> WorkOutcome:
     entry = config.roles[role]
-    absent = [name for name in WORK_ROLE_FIELDS if getattr(entry, name) is None]
-    if absent:
-        return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {models_path()}.")
     name = resolved.runtime or ""
     runtime = config.runtime[name]
+    required = ["timeout_seconds"]
+    if any("{max_turns}" in argument for argument in runtime.command):
+        required.append("max_turns")
+    absent = [name for name in required if getattr(entry, name) is None]
+    if absent:
+        return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {models_path()}.")
     skill_path = runtime.skill_path.format(role=role)
 
     base_url: str | None = None
@@ -106,6 +109,15 @@ def _launch(
         if built is None:
             return _error(detail)
         command, session_env = built
+        if runtime.auth == "codex":
+            auth = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "auth.json"
+            if not auth.is_file():
+                return _error(f"Codex login file {auth} is missing; run codex login first (file credential store).")
+            try:
+                (Path(tmp_dir) / "auth.json").symlink_to(auth.resolve())
+            except OSError as error:
+                return _error(f"cannot prepare Codex authentication ({type(error).__name__}: {error}).")
+            session_env["CODEX_HOME"] = tmp_dir
         executable = shutil.which(command[0])
         if executable is None:
             return _error(f"runtime {name} is not in PATH; its command is {command[0]}.")
@@ -129,14 +141,22 @@ def _launch(
             )
 
         trace_path.parent.mkdir(parents=True, exist_ok=True)
+        environment = _session_env(runtime.provider is not None, python_bin) | session_env
+        if runtime.auth == "codex":
+            for variable in ("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"):
+                environment.pop(variable, None)
         try:
-            with trace_path.open("wb") as trace_file:
+            with (
+                tempfile.TemporaryDirectory(prefix=".tongtu-tmp-", dir=workdir) as sandbox_tmp,
+                trace_path.open("wb") as trace_file,
+            ):
+                environment.update({name: str(Path(sandbox_tmp).resolve()) for name in ("TMPDIR", "TMP", "TEMP")})
                 outcome = run_in_process_group(
                     [executable, *command[1:]],
                     workdir,
                     entry.timeout_seconds,
-                    input_bytes=PROMPT.format(skill_path=skill_path).encode("utf-8"),
-                    env=_session_env(runtime.provider is not None, python_bin) | session_env,
+                    input_bytes=(prompt or PROMPT.format(skill_path=skill_path)).encode("utf-8"),
+                    env=environment,
                     on_stdout_line=_trace_line(trace_file, summarizer(runtime.events), report),
                 )
         except OSError as error:

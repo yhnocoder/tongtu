@@ -132,14 +132,12 @@ def test_setup_interactive_fills_first_provider(tmp_path: Path, monkeypatch: pyt
     assert written["provider"]["opencode"]["api_key"] == "zen-key"
     assert written["provider"]["opencode"]["api_key_env"] == "OPENCODE_API_KEY"
     assert written["provider"]["anthropic"]["api_key"] == ""
-    assert written["roles"]["translate"] == {
-        "provider": "opencode",
-        "model": "deepseek-v4-pro",
-        "effort": "none",
-    }
+    assert written["roles"]["translate"]["runtime"] == "codex"
+    assert written["roles"]["translate"]["model"] == "astra"
+    assert written["roles"]["translate"]["effort"] == "light"
     assert written["roles"]["survey_terms"]["provider"] == "opencode"
-    assert written["roles"]["review"]["runtime"] == "claude_code"
-    assert written["roles"]["review"]["model"] == "claude-opus-5"
+    assert written["roles"]["review"]["runtime"] == "codex"
+    assert written["roles"]["review"]["model"] == "astra"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -150,11 +148,9 @@ def test_setup_interactive_points_ask_roles_at_second_provider(tmp_path: Path, m
     written = tomllib.loads(path.read_text(encoding="utf-8"))
     assert written["provider"]["anthropic"]["api_key"] == "sk-key"
     assert written["provider"]["opencode"]["api_key"] == ""
-    assert written["roles"]["translate"] == {
-        "provider": "anthropic",
-        "model": "claude-sonnet-5",
-        "effort": "none",
-    }
+    assert written["roles"]["translate"]["runtime"] == "codex"
+    assert written["roles"]["translate"]["model"] == "astra"
+    assert written["roles"]["translate"]["effort"] == "light"
 
 
 def test_setup_interactive_without_any_provider_exits_two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

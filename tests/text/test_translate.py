@@ -499,3 +499,82 @@ def test_report_absent_changes_nothing(tmp_path: Path, monkeypatch: pytest.Monke
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
     assert translated(workdir, "c000") == "你好世界。\n"
+
+
+def agent_config() -> ModelsConfig:
+    from tongtu.model.config import RuntimeConfig
+
+    return ModelsConfig(
+        runtime={"codex": RuntimeConfig(skill_path=".codex/skills/{role}", command=["codex", "exec"])},
+        roles={translate.ROLE: RoleConfig(model="astra", effort="light", runtime="codex", timeout_seconds=60)},
+    )
+
+
+def test_agent_translation_retries_against_original_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tongtu.model.work import StopReason, WorkOutcome
+
+    monkeypatch.setattr(translate, "load_config", lambda: (agent_config(), ""))
+    calls: list[dict] = []
+
+    def run_agent(**kwargs: object) -> WorkOutcome:
+        calls.append(kwargs)
+        site = kwargs["workdir"]
+        assert isinstance(site, Path)
+        task = (site / "task.md").read_text()
+        assert "Hello ⟦BLK-0⟧." in task
+        if len(calls) == 2:
+            assert "上一次的译文未通过机械校验" in task
+        (site / "translation.tex").write_text("你好。" if len(calls) == 1 else "你好 ⟦BLK-0⟧。")
+        (site / "task.md").write_text("tampered")
+        return WorkOutcome(stop_reason=StopReason.FINISHED, model="codex/gpt-6-astra")
+
+    monkeypatch.setattr(translate, "work", run_agent)
+    workdir = make_workdir(tmp_path, ["\nHello ⟦BLK-0⟧.\n"])
+    manifest = translate.run(workdir, jobs=1, work_model="codex/astra", work_effort="light")
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
+    assert manifest.chunks["c000"].attempts == 2
+    assert manifest.model == "codex/gpt-6-astra"
+    assert manifest.effort == "low"
+    assert translated(workdir, "c000") == "\n你好 ⟦BLK-0⟧。\n"
+    assert calls[0]["model"] == "codex/astra"
+    assert calls[0]["effort"] == "light"
+    assert calls[0]["workdir"] != calls[1]["workdir"]
+    assert calls[0]["trace_path"] == workdir.logs / "translate-c000-1.jsonl"
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout", "missing", "empty", "symlink", "invalid"])
+def test_agent_failure_falls_back_without_accepting_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from tongtu.model.work import StopReason, WorkOutcome
+
+    monkeypatch.setattr(translate, "load_config", lambda: (agent_config(), ""))
+    external = tmp_path / "external.tex"
+    external.write_text("Hello.")
+
+    def run_agent(**kwargs: object) -> WorkOutcome:
+        output = kwargs["workdir"] / "translation.tex"
+        if failure == "symlink":
+            output.symlink_to(external)
+        elif failure != "missing":
+            output.write_text("" if failure == "empty" else "你好 ⟦BLK-99⟧。")
+        reason = StopReason(failure) if failure in ("error", "timeout") else StopReason.FINISHED
+        return WorkOutcome(stop_reason=reason, detail=failure, model="codex/gpt-6-astra")
+
+    monkeypatch.setattr(translate, "work", run_agent)
+    workdir = make_workdir(tmp_path, ["Hello.\n"])
+    manifest = translate.run(workdir, jobs=1)
+    assert manifest.chunks["c000"].status is ChunkTranslateStatus.FALLBACK
+    assert manifest.chunks["c000"].attempts == 2
+    assert manifest.warnings
+    assert translated(workdir, "c000") == "Hello.\n"
+
+
+def test_translate_rejects_ambiguous_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = agent_config()
+    config.roles[translate.ROLE].provider = "p"
+    monkeypatch.setattr(translate, "load_config", lambda: (config, ""))
+    manifest = translate.run(make_workdir(tmp_path, ["Hello."]), jobs=1)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert "exactly one" in manifest.message

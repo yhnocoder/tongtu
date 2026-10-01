@@ -110,3 +110,15 @@ def test_summarizer_parses_a_stream_json_line() -> None:
     summarize = summarizer("stream-json")
     assert summarize is not None
     assert summarize(stream_line(tool_use("Bash", {"command": "ls"})) + b"\n") == "Bash: ls"
+
+
+def test_codex_actions_are_not_repeated_at_completion() -> None:
+    for item in (
+        {"type": "command_execution", "command": "latexmk flat.tex"},
+        {"type": "file_change", "changes": [{"path": "flat.tex"}]},
+    ):
+        actions = [
+            summarize_codex_json({"type": event, "item": item})
+            for event in ("item.started", "item.updated", "item.completed")
+        ]
+        assert sum(action is not None for action in actions) == 1
