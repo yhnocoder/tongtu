@@ -67,7 +67,6 @@ jobs:
     env:
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      DISABLE_AUTOUPDATER: "1"
     defaults:
       run:
         shell: bash
