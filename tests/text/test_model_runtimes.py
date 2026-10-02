@@ -387,5 +387,7 @@ def test_write_credentials_overwrites_an_existing_file(tmp_path: Path) -> None:
     codex = tmp_path / ".codex" / "auth.json"
     codex.parent.mkdir()
     codex.write_text("old", encoding="utf-8")
+    codex.chmod(0o644)
     write_credentials({"TONGTU_CODEX_AUTH": "new"}, tmp_path)
     assert codex.read_text(encoding="utf-8") == "new"
+    assert stat.S_IMODE(codex.stat().st_mode) == 0o600

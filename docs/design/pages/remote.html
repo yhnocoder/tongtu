@@ -93,7 +93,7 @@ td:first-child { white-space: nowrap; }
     <tr><td>论文容器（Mac 测试 server 或服务器）</td><td>容器</td><td>三种</td><td>从所在机器的登录派生</td></tr>
     <tr><td>Claude 云端</td><td>整台一次性虚拟机</td><td>claude-code、pi</td><td>会话自带的 Claude 登录；DeepSeek 的 key 在环境变量里</td></tr>
   </table></div>
-  <p>tongtu 不判断自己在哪个环境里，没有环境开关。三种运行时的参数在三个环境里相同，只有 claude-code 的沙箱按平台决定：darwin 用 Seatbelt，其他平台不开（见 10）。凭据按环境变量有无写入（见 08）。云端环境是原生 Linux，不用 Docker；setup 脚本只需装 TeX Live、tongtu 与需要的 CLI，字体随包走，不再装 <code>fonts-noto-cjk</code>、bubblewrap、socat。</p>
+  <p>tongtu 不判断自己在哪个环境里，没有环境开关。原生与云端的运行时参数相同，只有 claude-code 的沙箱按平台决定：darwin 用 Seatbelt，其他平台不开；codex 在论文容器里的参数见 10，属于 T7。凭据按环境变量有无写入（见 08）。云端环境是原生 Linux，不用 Docker；setup 脚本只需装 TeX Live、tongtu 与需要的 CLI，字体随包走，不再装 <code>fonts-noto-cjk</code>、bubblewrap、socat。</p>
 </section>
 
 <section class="sheet">
@@ -222,7 +222,7 @@ ssh remote_vps docker exec -it -w /root/.tongtu/papers/ID tongtu-server bash  # 
     <tr><th>运行时</th><th>容器里得到</th></tr>
     <tr><td>claude-code</td><td><code>claude-code-token</code> 的内容。只能调模型，一年有效，可吊销</td></tr>
     <tr><td>codex</td><td>派生 auth.json：access token 照抄，refresh token 为空。tongtu 启动时发现 <code>TONGTU_CODEX_AUTH</code> 就写到 <code>~/.codex/auth.json</code>，没设就不写</td></tr>
-    <tr><td>pi</td><td>主 <code>auth.json</code> 的内容，写到 <code>~/.pi/agent/auth.json</code>。pi 要在这里建锁目录、写模型缓存，都落在 tmpfs</td></tr>
+    <tr><td>pi</td><td>主 <code>auth.json</code> 的内容。tongtu 启动时发现 <code>TONGTU_PI_AUTH</code> 就写到 <code>~/.pi/agent/auth.json</code>。pi 要在这里建锁目录、写模型缓存，都落在 tmpfs</td></tr>
   </table></div>
   <p class="sub">主凭据不进论文容器。环境变量在宿主上用 <code>docker inspect</code> 能看到，宿主本来就在可信边界内。</p>
 </section>
@@ -262,7 +262,7 @@ compile_fix  = { model = "pi/deepseek/deepseek-flash", timeout_seconds = 1800 }<
   <div class="tbl"><table>
     <tr><th></th><th>原生（Mac）</th><th>Claude 云端</th><th>论文容器</th><th>失败判定（实测）</th></tr>
     <tr><td>codex</td><td>临时 CODEX_HOME（隔离用户 <code>~/.codex</code> 里的配置、插件与会话记录）软链 <code>~/.codex/auth.json</code>、<code>workspace-write</code></td><td>不跑</td><td>沙箱起不来（15），用 <code>danger-full-access</code>，容器充当边界；由启动器传入容器内信号决定，属于 T7</td><td>退出码非 0，或 <code>turn.failed</code></td></tr>
-    <tr><td>claude-code</td><td>权限模式 <code>auto</code>，Bash 不预先放行、逐条经分类器；Seatbelt 沙箱；从环境删除 <code>ANTHROPIC_*</code>、<code>CLAUDE_CODE_USE_*</code>，确保走订阅</td><td>同原生，只是没有 bwrap 不开沙箱（非 darwin 不传 <code>--settings</code>；云端实测去掉 <code>ANTHROPIC_BASE_URL</code> 后 <code>claude -p</code> 仍可用）</td><td>同云端</td><td>result 的 <code>is_error</code></td></tr>
+    <tr><td>claude-code</td><td>权限模式 <code>auto</code>，Bash 不预先放行、逐条经分类器；Seatbelt 沙箱；从环境删除 <code>ANTHROPIC_*</code>、<code>CLAUDE_CODE_USE_*</code>，确保走订阅</td><td>同原生；非 darwin 不传 <code>--settings</code>，没有沙箱</td><td>同云端</td><td>result 的 <code>is_error</code></td></tr>
     <tr><td>pi</td><td>允许，无沙箱</td><td>同原生</td><td>同原生</td><td><code>stopReason</code> 为 error 或 aborted；退出码恒为 0</td></tr>
   </table></div>
   <p class="sub">pi 在所有环境都加隔离参数 <code>-ne -ns -np -nc -na --offline --no-session --skill</code>。三种运行时写在 <code>tongtu/model/runtimes.py</code>，配置里没有命令模板。删除别名与 <code>setup -i</code>，旧配置不兼容。effort 不写不传。tongtu 启动时把 <code>TONGTU_CODEX_AUTH</code>、<code>TONGTU_PI_AUTH</code> 的内容写到 HOME 下对应的 auth.json（目录 0700、文件 0600，覆盖已有文件），没设的不写，写失败退出 2；原生环境不设这两个变量。claude-code 的沙箱默认关闭，由 <code>--settings</code> 打开，所以不传就是没有沙箱。tongtu 调用 latexmk 一律加 <code>-norc</code>。</p>
@@ -344,7 +344,7 @@ flowchart LR
     <tr><th>主题</th><th>结果</th><th>用在</th></tr>
     <tr><td>服务器环境</td><td>Ubuntu 24.04.5，x86_64，Docker 29.8.1，docker compose v5.5.1，root，4 核 7GB 内存，可用磁盘 44G；80、443 已被其他服务占用。Mac 上 docker compose v5.1.2</td><td>06</td></tr>
     <tr><td>容器里的内层沙箱</td><td>两者在 Linux 上都经 bwrap，bwrap 要创建 user namespace，docker 默认的 seccomp 不允许，服务器另开了 <code>apparmor_restrict_unprivileged_userns=1</code>。codex 0.160.0 已不能只用 Landlock 加 seccomp；在 <code>node:22-bookworm-slim</code> 容器里逐项放开，只有 root 加 <code>--privileged</code>（或 seccomp 与 apparmor 都 unconfined 再加 NET_ADMIN、SYS_ADMIN）才能起，不值得。两者沙箱起不来时都静默失败：退出码 0，但 Bash 工具不可用。Claude 云端容器是 root、无 seccomp 过滤、capability 几乎全开，codex 的 <code>workspace-write</code> 能起且限制生效；claude-code 的 bwrap 与 socat 没装，<code>failIfUnavailable</code> 下明确报错退出</td><td>10：容器里不开内层沙箱</td></tr>
-    <tr><td>claude-code 的 <code>auto</code> 权限模式</td><td>云端容器里 <code>claude -p --permission-mode auto</code>、Bash 不在 <code>--allowedTools</code> 里，让 haiku 执行 <code>echo ok</code>：Bash 经分类器放行后执行，<code>is_error</code> 为假，整个会话 4.4 秒，没有卡在审批上；被拒的调用以工具错误返回给模型，不挂起</td><td>10</td></tr>
+    <tr><td>claude-code 的 <code>auto</code> 权限模式</td><td>云端容器里 <code>claude -p --permission-mode auto</code>、Bash 不在 <code>--allowedTools</code> 里，让 haiku 执行 <code>echo ok</code>：Bash 经分类器放行后执行，<code>is_error</code> 为假，整个会话 4.4 秒，没有卡在审批上；被拒的调用以工具错误返回给模型，不挂起。同一容器里去掉 <code>ANTHROPIC_BASE_URL</code> 后 <code>claude -p</code> 仍能完成会话</td><td>10</td></tr>
     <tr><td>失败判定</td><td>pi 失败时退出码仍为 0，要看事件流 <code>message_end</code> 的 <code>stopReason</code> 是否为 error 或 aborted；claude-code 看 result 的 <code>is_error</code>，失败时 <code>subtype</code> 仍为 success，不能用它；codex 看 <code>turn.failed</code> 或退出码 1</td><td>10</td></tr>
     <tr><td>claude-code 凭据</td><td><code>claude setup-token</code> 生成的 <code>CLAUDE_CODE_OAUTH_TOKEN</code> 一年有效、只能调用模型；在容器里以非 root 运行，或 root 下设 <code>IS_SANDBOX=1</code>，可以正常完成会话（本机与服务器各一次）。Claude 云端环境里直接 <code>claude -p</code> 即可（用户实测）</td><td>08、10</td></tr>
     <tr><td>codex 凭据</td><td>派生 auth.json（access token 照抄、refresh token 置空）在容器里可以正常完成会话，宿主 auth.json 的哈希前后不变。access token 约 10 天有效；0.159.3 只在 401 或过期时刷新，不看 <code>last_refresh</code>。测试用的镜像里没有 ca-certificates 时连不上</td><td>05、06、08</td></tr>
