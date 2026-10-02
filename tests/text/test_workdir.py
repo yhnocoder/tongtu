@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tongtu.workdir import WorkdirError, normalize_arxiv_id, resolve
+from tongtu.workdir import Workdir, WorkdirError, normalize_arxiv_id, resolve
 
 
 def test_resolve_without_env_lands_under_default_home(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -35,3 +35,9 @@ def test_slash_in_the_id_becomes_underscore() -> None:
 def test_invalid_ids_are_rejected(bad: str) -> None:
     with pytest.raises(WorkdirError):
         normalize_arxiv_id(bad)
+
+
+def test_pdf_is_named_after_the_paper_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    workdir = Workdir(resolve("hep-th/9901001"))
+    assert workdir.zh_pdf == tmp_path / "papers" / "hep-th_9901001" / "out" / "hep-th_9901001.zh.pdf"

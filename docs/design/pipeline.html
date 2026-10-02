@@ -25,7 +25,7 @@
   <span class="dn">↓</span><span></span><span></span>
   <a class="st" href="#review">review</a><span class="one">agent 通读，补翻回退、修正跨 chunk 不一致</span><div class="out"><span class="f">build/reviewed/</span></div>
   <span class="dn">↓</span><span></span><span></span>
-  <a class="st" href="#compile">compile</a><span class="one">译文回填、编译出 PDF</span><div class="out"><span class="f">build/zh.tex</span><span class="f">out/zh.pdf</span></div>
+  <a class="st" href="#compile">compile</a><span class="one">译文回填、编译出 PDF</span><div class="out"><span class="f">build/zh.tex</span><span class="f">out/&lt;ID&gt;.zh.pdf</span></div>
 </div>
 
 <!-- ============ fetch ============ -->
@@ -105,7 +105,7 @@
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
 <tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝 + flat.tex + fonts/（仓库字体与外部字体文件的软链）；修复会话在这里运行；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
 <tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
-<tr><td>build/precompile.pdf</td><td class="src">—</td><td><span class="ty">PDF</span></td><td>原文（注入中文排版设置后）编译出的 PDF；与 out/zh.pdf 对照看版式差异</td></tr>
+<tr><td>build/precompile.pdf</td><td class="src">—</td><td><span class="ty">PDF</span></td><td>原文（注入中文排版设置后）编译出的 PDF；与 out/&lt;ID&gt;.zh.pdf 对照看版式差异</td></tr>
 <tr><td>build/sandbox/tex/precompile-expand.log</td><td class="src">precompile_fix</td><td><span class="ty">文本</span></td><td>仅缺文件展开失败时写出：主文件相对路径、展开命令与失败原因、完整 stderr、源码中 input/include 引用的文件与行号；修复会话据它进入源码修复模式</td></tr>
 <tr><td>logs/precompile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录（展开或编译）；启动过修复会话才有</td></tr>
 <tr><td>build/manifests/precompile.json</td><td class="src"><a href="#compile">compile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>主文件、原文的 CompileReport（页数等基线计数）、修复会话结局</td></tr>
@@ -457,7 +457,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <li><b>编译</b>：把 zh.tex 写进 precompile 留下的编译目录 <code>build/sandbox/tex/</code>（不拷 src/，字体与 precompile 修复过的文件都已在里面），跑 <code>latexmk -xelatex zh.tex</code></li>
 <li class="branch"><b>不通过 → 修复会话</b>：启动一次 agent work（角色 <code>compile_fix</code>）在编译目录里修，然后重新编译一次，以这次结果为准</li>
 <li><b>出口判据</b>：编译通过；页数与原文基线相差不超过 30%；修复会话没有删掉正文里的 LaTeX 命令。任一不过 → <code>compile_failed</code></li>
-<li><b>拷出</b>：<code>out/zh.pdf</code> 与 <code>build/zh.tex</code>（修复过就是修复后的），然后 <code>latexmk -C</code> 清掉中间文件；判据不过时两者都不写</li>
+<li><b>拷出</b>：<code>out/&lt;ID&gt;.zh.pdf</code> 与 <code>build/zh.tex</code>（修复过就是修复后的），然后 <code>latexmk -C</code> 清掉中间文件；判据不过时两者都不写</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">compile_failed</span></div>
 <div class="io">
@@ -475,10 +475,10 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>out/zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物</td></tr>
+<tr><td>out/&lt;ID&gt;.zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物。&lt;ID&gt; 是论文工作目录的名字，默认就是 arXiv 编号（/ 换成 _）；文件名带编号，拷出 out/ 之后也能认出是哪篇论文</td></tr>
 <tr><td>build/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>编译通过的中文全文（修复过就是修复后的）；判据不过时不写</td></tr>
 <tr><td>build/sandbox/tex/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>写进编译目录的译文；修复会话在这个目录里运行；结束时 <code>latexmk -C</code> 清掉中间文件</td></tr>
-<tr><td>build/sandbox/tex/zh.log、zh.pdf</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物：计数从 zh.log 解析，修复会话读 zh.log 定位错误；通过后 zh.pdf 拷出为 out/zh.pdf，<code>latexmk -C</code> 后不保留</td></tr>
+<tr><td>build/sandbox/tex/zh.log、zh.pdf</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物：计数从 zh.log 解析，修复会话读 zh.log 定位错误；通过后 zh.pdf 拷出为 out/&lt;ID&gt;.zh.pdf，<code>latexmk -C</code> 后不保留</td></tr>
 <tr><td>logs/compile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；启动过修复会话才有</td></tr>
 <tr><td>build/manifests/compile.json</td><td class="src">—</td><td><a href="#def-compile">CompileManifest</a></td><td>译文的编译统计与原文基线并排、修复会话结局</td></tr>
 </tbody></table>

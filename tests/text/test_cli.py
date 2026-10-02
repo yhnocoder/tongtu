@@ -511,7 +511,7 @@ def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch
     assert (workdir.build / "translated" / "c000.tex").is_file()
     assert workdir.manifest_path("translate").is_file()
     assert not (workdir.build / "reviewed").exists()
-    assert not (workdir.path / "out" / "zh.pdf").exists()
+    assert not workdir.zh_pdf.exists()
     assert not workdir.manifest_path("review").exists()
     assert not workdir.manifest_path("compile").exists()
 

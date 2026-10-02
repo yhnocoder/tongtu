@@ -177,7 +177,7 @@ def assert_failed(workdir: Workdir, manifest: CompileManifest) -> None:
     assert manifest.status is CompileStatus.COMPILE_FAILED
     assert manifest == read_manifest(workdir)
     assert not (workdir.build / "zh.tex").exists()
-    assert not (workdir.out / "zh.pdf").exists()
+    assert not workdir.zh_pdf.exists()
     assert not outputs_present(workdir, "compile")
 
 
@@ -195,6 +195,7 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert calls == {"compile": 1, "clean": 1}
     assert work_calls == []
     assert outputs_present(workdir, "compile")
+    assert sorted(path.name for path in workdir.out.iterdir()) == ["paper.zh.pdf"]
     zh = (workdir.build / "zh.tex").read_text(encoding="utf-8")
     assert zh == translate(PAPER)
     tree = workdir.build / "sandbox" / "tex"
@@ -440,7 +441,7 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     workdir = make_workdir(tmp_path)
     workdir.manifest_path("precompile").unlink()
     (workdir.build / "zh.tex").write_text("stale", encoding="utf-8")
-    (workdir.out / "zh.pdf").write_bytes(b"stale")
+    workdir.zh_pdf.write_bytes(b"stale")
     (workdir.logs / "compile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = compile.run(workdir)
     assert_failed(workdir, manifest)

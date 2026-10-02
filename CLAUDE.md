@@ -28,7 +28,7 @@
 
 ## 当前状态
 
-- v0.1 已完成。fetch → precompile → mask → survey → translate → review → compile 七个阶段全部实现，`tongtu run <arxiv_id>` 可以在验证集上生成中文 PDF（`out/zh.pdf`）。
+- v0.1 已完成。fetch → precompile → mask → survey → translate → review → compile 七个阶段全部实现，`tongtu run <arxiv_id>` 可以在验证集上生成中文 PDF（`out/<arxiv_id>.zh.pdf`）。
 - v0.2 还在设计，方向未定。候选方向记录在 GitHub Issues 中（`gh issue list --state open`），新会话先查看。
 
 ## 工作流程
