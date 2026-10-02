@@ -3,9 +3,15 @@
 # 三层构建，各层的变化频率差着数量级：
 #   base    基底层：debian + TeX Live scheme-full（release texlive-2026 的 ISO 打包产物）+ 图渲染
 #           工具 + uv 与受管 Python。几乎不变，层缓存常年命中。
-#   env     环境层：Python 依赖 + 字体注册。随 uv.lock 与 fonts/ 变，不含仓库代码。
+#   env     环境层：Python 依赖、字体文件、node 22 与三个 agent CLI。随 uv.lock、fonts/ 与
+#           CLI 版本变，不含仓库代码。
 #   runtime 代码层：仓库本体 + 项目安装 + 构建期自检。每次改代码只重跑这一层。
 # 各层之间不 COPY 产物（TeX 树 6GB 级，多阶段裁剪没意义），分层的目的就是缓存边界。
+#
+# runtime 阶段写成 `FROM ${ENV_IMAGE}`。`ENV_IMAGE` 默认是本文件的 env 阶段；本机 compose 构建时
+# 传 `--build-arg ENV_IMAGE=ghcr.io/yhnocoder/tongtu:env`，BuildKit 只构建用得到的阶段，所以
+# 本机只构建 runtime 层。改动涉及 base 或 env 层时，本机拿不到新的 env，先用 image.yml 推 :dev
+# 再测。
 #
 # env 层单独成 target 是给 CI 用的：编译层作业以 `ghcr.io/<owner>/<repo>:env` 为 container
 # 直接跑测试，代码由 checkout 提供，不必每次搬运 6GB 镜像。构建与推送见
@@ -15,8 +21,12 @@
 #     docker build -f docker/Dockerfile -t tongtu:dev .
 # 运行与三角色的用法见 docker/README.md。
 #
-# 刻意不用 BuildKit 专属语法（heredoc / COPY --link / RUN --mount）：本机没有 docker，
-# 首次构建验证在 CI 上做，保守写法优先——任何 builder 都能吃下这份 Dockerfile。
+# 刻意不用 BuildKit 专属语法（heredoc / COPY --link / RUN --mount）：本机构建只在 compose
+# 场景下做；Dockerfile 的改动一律由 image.yml 验证。保守写法优先，任何 builder 都能处理这份
+# Dockerfile。
+
+# 全局 ARG 才能在 FROM 里引用。
+ARG ENV_IMAGE=env
 
 # TeX Live 来自本仓库 release `texlive-2026`：.github/workflows/texlive-release.yml 从 CTAN 的
 # texlive2026.iso（发行冻结版，与 MacTeX / 本机同源，latex revision 76924）装 scheme-full（不含
@@ -36,8 +46,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # perl         —— tlmgr / latexmk / latexpand / epstopdf 都是 perl 脚本
 # zstd         —— 解 release 里的 TeX Live 分片
-# fontconfig  —— `tongtu doctor` 的字体探测（fc-list）与 xelatex 按字体名取字体都靠它
-# fonts-noto-cjk —— 探测链第二档（Hiragino 只有 macOS 有；第三档霞鹜文楷在代码层注册）
+# fontconfig   —— xelatex 与 xdvipdfmx 链接 libfontconfig
 # ghostscript  —— epstopdf 的后端，EPS/PS 链缺它就断
 # poppler-utils / imagemagick —— 图片格式转换，供修复会话与将来的图处理使用
 # git          —— 修复会话在编译树里干活时常要它
@@ -47,7 +56,6 @@ RUN apt-get update \
         ca-certificates \
         curl \
         fontconfig \
-        fonts-noto-cjk \
         ghostscript \
         git \
         imagemagick \
@@ -109,33 +117,47 @@ WORKDIR /opt/tongtu
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
-# 字体随环境层进镜像而不是留给代码层：字体文件是几乎不变的二进制，与依赖同属「环境」。
-# CI 的编译层以本层为 container 跑测试，代码由 checkout 提供、`/opt/tongtu` 下只有环境，
-# 因此 fontconfig 指向的这份必须在本层就位。
+# 字体随环境层进镜像，tongtu 编译时经 kpathsea 搜索路径找到它们（tongtu/fonts.py）。
+# CI 的 papers.yml 以本层为 container，代码与字体都由 checkout 提供，这份字体只对 runtime
+# 镜像有意义；runtime 层 `COPY . .` 会再拷一次，分层缓存不受影响。
 COPY fonts/ ./fonts/
 
-# 字体注册进 fontconfig，使探测链第三档（LXGW WenKai）在镜像内真实可命中。编译时 xeCJK
-# 用的仍是 `Path={fonts/}` 相对路径那条链（fonts/README.md），两者互不干扰。
-# 末尾的 fc-list 断言让「注册失败」在构建时就炸，而不是等到某篇论文排出一页豆腐。
-# 断言走临时文件而不是 `fc-list | grep -q`：SHELL 开了 pipefail，grep -q 命中即退出会
-# 给左边发 SIGPIPE，好好的自检会变成假失败。
-RUN printf '%s\n' \
-      '<?xml version="1.0"?>' \
-      '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
-      '<fontconfig>' \
-      '  <dir>/opt/tongtu/fonts</dir>' \
-      '</fontconfig>' > /etc/fonts/conf.d/99-tongtu-fonts.conf \
-    && fc-cache -f \
-    && fc-list > /tmp/fc-list.txt \
-    && grep -qi 'lxgw wenkai' /tmp/fc-list.txt \
-    && rm -f /tmp/fc-list.txt
+# node 从 nodejs.org 的发行 tarball 装到 /usr/local，不用发行版仓库：版本由 ARG 固定，校验和按官方 SHASUMS256.txt 核对
+ARG NODE_VERSION=22.23.3
+RUN mkdir -p /tmp/node \
+    && cd /tmp/node \
+    && curl -fL --retry 3 -o node.tar.gz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+    && curl -fL --retry 3 -o SHASUMS256.txt "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+    && grep " node-v${NODE_VERSION}-linux-x64.tar.gz\$" SHASUMS256.txt > node.sha256 \
+    && sed -i 's# node-v.*# node.tar.gz#' node.sha256 \
+    && sha256sum -c node.sha256 \
+    && tar -xzf node.tar.gz -C /usr/local --strip-components=1 --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md \
+    && cd / \
+    && rm -rf /tmp/node \
+    && node --version \
+    && npm --version
 
-# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/<arxiv_id>，宿主挂进来即可续跑。
+# 三个 agent CLI 装成全局 npm 包，可执行文件落在 /usr/local/bin：论文容器的 HOME 是 tmpfs（remote.html 第 08 节），装在 HOME 下的会丢
+ARG CODEX_VERSION=0.160.0
+ARG CLAUDE_CODE_VERSION=2.1.287
+ARG PI_VERSION=1.0.0
+RUN npm install -g --no-fund --no-audit \
+      "@openai/codex@${CODEX_VERSION}" \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && npm cache clean --force \
+    && codex --version \
+    && claude --version \
+    && pi --version
+
+# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/papers/<arxiv_id>，宿主挂进来即可续跑。
+# TONGTU_ISOLATED=1 放在 env 层：papers.yml 以 :env 为 container 时同样处于隔离环境，与云端一致。
 ENV PATH="/opt/tongtu/.venv/bin:${PATH}" \
-    TONGTU_HOME=/work
+    TONGTU_HOME=/work \
+    TONGTU_ISOLATED=1
 
 # =========================================================== 代码层（每次改码重跑）
-FROM env AS runtime
+FROM ${ENV_IMAGE} AS runtime
 
 WORKDIR /opt/tongtu
 
@@ -146,11 +168,11 @@ RUN uv sync --frozen
 
 WORKDIR /work
 
-# 构建时自检：xelatex / latexmk / latexpand 三件套 + 中文字体探测链全绿，这个镜像才成立。
-# 三个程序的在位判断本来就是 doctor 干的活（tongtu/cli.py 的 DOCTOR_TOOLCHAIN_CHECKS），
-# 这里不另抄一遍 `xxx --version`——那既重复又容易被某个工具「--version 退非零」坑成假失败。
-# doctor 的退出码只对工具链与字体那一组负责，OpenCode 密钥缺失不计入（docs/CLI.md）：这个
-# 镜像是要推 GHCR 的可分发产物，构建它的机器不该需要运行期凭证。
+# 构建时自检：xelatex / latexmk / latexpand 三件套 + 打包的字体文件齐全，这个镜像才成立。
+# 三个程序的在位判断本来就是 doctor 干的活（tongtu/cli.py 的 TOOLCHAIN_CHECKS），
+# 这里不另抄一遍 `xxx --version`：那既重复又容易被某个工具「--version 退非零」判成假失败。
+# doctor 的退出码只对工具链与字体那一组负责，密钥与登录缺失不计入（docs/design/pages/remote-cli.html）：
+# 这个镜像是要推 GHCR 的可分发产物，构建它的机器不该需要运行期凭证。
 RUN tongtu --version \
     && tongtu doctor
 
