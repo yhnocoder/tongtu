@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通途设计文档</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/lxgwwenkaiscreen.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wide index">
+<h1>通途设计文档</h1>
+<p class="lead">通途把 arXiv 论文的 LaTeX 源码翻译成中文，编译出保留原文排版与公式的 PDF。设计文档分三份：流水线写七个阶段的任务、状态与产物，模型调用层写 ask / work 与 models.toml，命令行写命令、选项与重跑规则。</p>
+
+<h2>设计文档</h2>
+<ul class="cards">
+  <li><a class="card" href="pipeline.html">
+    <div class="pv">
+      <div class="pv-line pv-a pv-s1">fetch       <span class="pv-chip">src/</span></div>
+      <div class="pv-line pv-a pv-s2">precompile  <span class="pv-chip">build/precompile.tex</span></div>
+      <div class="pv-line pv-a pv-s3">translate   <span class="pv-chip">build/translated/</span></div>
+      <div class="pv-line pv-a pv-s4">compile     <span class="pv-chip hot">out/zh.pdf</span></div>
+    </div>
+    <div class="card-body"><strong>通途流水线</strong><span>fetch → precompile → mask → survey → translate → review → compile 七个阶段，每个阶段一张卡片：任务、状态、读写的文件、细节与常量、产物的类定义；另有术语表与字体两张配置卡片。</span>
+    <div class="card-tags"><i>pipeline</i><i>stages</i><i>artifacts</i></div></div>
+  </a></li>
+  <li><a class="card" href="pages/model.html">
+    <div class="pv">
+      <div class="pv-line pv-a pv-s1">ask(role, system, messages)  <span class="pv-chip">AskOutcome</span></div>
+      <div class="pv-line pv-a pv-s2">work(role, workdir)          <span class="pv-chip">WorkOutcome</span></div>
+      <div class="pv-line pv-a pv-s3">[runtime.codex]  command = [...]</div>
+      <div class="pv-line pv-a pv-s4">[roles]  translate = { runtime = "codex" }</div>
+    </div>
+    <div class="card-body"><strong>模型调用层</strong><span>ask 做单次问答，work 在一棵目录树里启动一次 agent 会话；运行时是一条命令模板；models.toml 的格式与会话的约束。</span>
+    <div class="card-tags"><i>model</i><i>ask</i><i>work</i><i>models.toml</i></div></div>
+  </a></li>
+  <li><a class="card" href="pages/cli.html">
+    <div class="pv pv-dark">
+      <div class="pv-line pv-cmd"><b>$</b><span class="pv-a">tongtu run 2412.19437</span></div>
+      <div class="pv-line pv-a pv-s1">✓ fetch       ok   tar.gz, 14 tex files</div>
+      <div class="pv-line pv-a pv-s2">✓ precompile  ok   12 pages</div>
+      <div class="pv-line pv-a pv-s3">✓ translate   ok   17 chunks, 1 fallback</div>
+      <div class="pv-line pv-a pv-s4">✓ compile     ok   12 pages, baseline 12</div>
+    </div>
+    <div class="card-body"><strong>命令行</strong><span>tongtu run、stage、status、validate、doctor、setup 的用法，选项、退出码、文件与环境变量，以及各种情况下的示例输出。</span>
+    <div class="card-tags"><i>cli</i><i>run</i><i>options</i></div></div>
+  </a></li>
+  <li><a class="card" href="pages/remote.html">
+    <div class="pv">
+      <div class="pv-line pv-a pv-s1">Mac 原生开发   <span class="pv-chip">~/.tongtu-dev</span></div>
+      <div class="pv-line pv-a pv-s2">Raycast        <span class="pv-chip">release</span></div>
+      <div class="pv-line pv-a pv-s3">docker compose <span class="pv-chip">tongtu-server</span></div>
+      <div class="pv-line pv-a pv-s4">打 tag         <span class="pv-chip hot">自动部署</span></div>
+    </div>
+    <div class="card-body"><strong>通途远程运行设计</strong><span>四个场景、TONGTU_HOME、镜像、compose 与自动部署、REST 接口、论文容器、运行状态、模型调用层、字体、安全取舍、Task 拆分与待实测。</span>
+    <div class="card-tags"><i>remote</i><i>server</i><i>docker</i></div></div>
+  </a></li>
+  <li><a class="card" href="pages/remote-cli.html">
+    <div class="pv pv-dark">
+      <div class="pv-line pv-cmd"><b>$</b><span class="pv-a">tongtu run 2412.19437</span></div>
+      <div class="pv-line pv-a pv-s1">on remote · image 0.2.0</div>
+      <div class="pv-line pv-a pv-s2">✓ compile     ok   12 pages</div>
+      <div class="pv-line pv-a pv-s3">downloaded out/ → ~/.tongtu/papers/…</div>
+    </div>
+    <div class="card-body"><strong>远程运行命令</strong><span>--on 与 --dev、hosts.toml、各命令在原生与 server 两条路径上的行为、中断与断线、退出码与示例。</span>
+    <div class="card-tags"><i>cli</i><i>--on</i><i>hosts.toml</i></div></div>
+  </a></li>
+</ul>
+
+<h2>模板</h2>
+<ul class="cards">
+  <li><a class="card" href="pages/_template.html">
+    <div class="pv">
+      <div class="pv-kit">
+        <div class="k-quote pv-a pv-s1"><i></i><i></i></div>
+        <div class="k-code pv-a pv-s2"><i></i><i></i></div>
+        <div class="k-table pv-a pv-s3"><i></i><i></i><i></i></div>
+        <div class="k-wire pv-a pv-s4"><i></i><i></i></div>
+      </div>
+    </div>
+    <div class="card-body"><strong>Design Doc 组件展示</strong><span>style.css 支持的组件、渲染效果和写法。新文档把本文件复制到 pages/，保留 head 中的引入，按需使用组件；通途新增的组件在 style.css 末尾。</span>
+    <div class="card-tags"><i>template</i><i>pages/_template.html</i></div></div>
+  </a></li>
+</ul>
+</main>
+</body>
+</html>

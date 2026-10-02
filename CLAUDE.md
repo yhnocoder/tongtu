@@ -59,7 +59,7 @@ Design 使用 HTML 文档，放在 `docs/design/`，由用户描述需求和预�
 - Spec 描述实际的实现细节，要做到自包含，让 subagent 不需要知道其他背景就可以执行；需要其他背景时，在 Spec 中引用。Spec 写在 issue comment 里，不提交到仓库。
 - 实现过程中发现 Spec 有误，在 issue comment 中修正。
 - Task 之间会形成依赖链，也会发现之前的 Task 有错，这都是正常的，在新 Task 的 comment 中记录。
-- Implement 和 Test 的具体规则见 `.claude/agents/implementer.md`。普通任务使用 implementer 默认的 opus 模型；复杂任务在调用时指定 `model: fable`；更复杂的任务可以让多个 fable 和 opus subagent 协作。同一时间只有一个 subagent 修改代码。
+- Implement 和 Test 的具体规则见 `.claude/agents/implementer.md`。普通任务使用 implementer 默认的 opus 模型；复杂任务在调用时指定 `model: fable`；更复杂的任务可以让多个 fable 和 opus subagent 协作。同一时间只有一个 subagent 修改代码。每个新的 Spec 启动一个新的 subagent；只有 review 退回修改时才继续使用原来的 subagent。
 - Review 的依据是本文件和 `.claude/agents/implementer.md`。主 agent 另外检查：diff 只修改了 Spec 列出的文件；仓库里没有新建论文目录；测试输出是 subagent 贴出的原文，且全部通过。退回时指出未通过的条目。
 - 开发中发现的问题各开一个 issue，加 `question` 标签；得出结论后写进 issue 再关闭，不删除。
 
@@ -103,7 +103,7 @@ Validate 由用户执行：跑整篇论文，读中文 PDF。主 agent 给出从
 
 章节按读者会问的问题划分。上面列的几类内容写在相关章节里，和它们解释的机制放在一起，不单独成章；常量不在文末另做汇总。
 
-文件组织：`pipeline.html` 是七个阶段与术语表、字体两张配置卡片，卡片带 `id`，例如 `#translate`；`model.html` 是模型调用层；`cli.html` 是命令行与重跑规则。`make design` 把三份文档合成为带标签页的 `index.html`。
+文件组织：`index.html` 是索引；`style.css` 是共用样式，组件写法见 `pages/_template.html`，项目新增的组件追加在 `style.css` 末尾；项目文档放在 `pages/`，新文档复制 `_template.html` 开始。`pipeline.html` 暂留根目录，使用 `legacy.css`，等迁移完成后移入 `pages/`。改动 `docs/design/` 后运行 `uv run scripts/check_design.py`，脚本截取桌面、375px、深色三种截图并报告机械性错误，布局仍然要看截图。
 
 ### Intro Doc
 

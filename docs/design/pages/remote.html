@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通途远程运行设计</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 单栏文档：米白纸面，衬线标题，陶土色只用于编号与链接；每个决定一张 .sheet */
+:root {
+  --bg: #faf9f5; --paper: #ffffff; --ink: #1f1e1d; --muted: #6b6a65;
+  --line: #e6e3da; --clay: #c6613f; --clay-soft: #f5e6de; --code-bg: #f3f1ea;
+  --ok: #4d7c4f; --warn: #a8701b;
+  --display: "Source Serif 4", "Noto Serif SC", "Songti SC", serif;
+  --body: -apple-system, "PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #1d1c1a; --paper: #262523; --ink: #ece9e1; --muted: #a29f96;
+  --line: #3a3835; --clay: #e08a68; --clay-soft: #3b2a22; --code-bg: #2e2c29;
+  --ok: #8fbf8f; --warn: #e0b060; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #1d1c1a; --paper: #262523; --ink: #ece9e1; --muted: #a29f96;
+  --line: #3a3835; --clay: #e08a68; --clay-soft: #3b2a22; --code-bg: #2e2c29;
+  --ok: #8fbf8f; --warn: #e0b060; color-scheme: dark }
+
+body { background: var(--bg); color: var(--ink); font: 15px/1.75 var(--body); padding-inline: 16px; padding-block: 40px 80px; }
+main { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; line-height: 1.3; margin: 0; }
+h1 { font-size: 2.1rem; }
+h2 { font-size: 1.4rem; }
+h3 { font-size: 1.05rem; margin-top: 8px; }
+p, ul, ol { margin: 0; }
+ul, ol { padding-left: 1.3em; display: flex; flex-direction: column; gap: 4px; }
+a { color: var(--clay); }
+code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--code-bg); padding: 14px 16px; border-radius: 8px; overflow-x: auto; margin: 0; }
+pre code { background: none; padding: 0; }
+.lead { color: var(--muted); font-size: 1.02rem; max-width: 62ch; }
+.meta { font-size: 13px; color: var(--muted); letter-spacing: .02em; }
+.sheet { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 24px 26px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.sheet > header { display: flex; gap: 12px; align-items: baseline; }
+.num { font-family: var(--mono); font-size: 13px; color: var(--clay); font-weight: 600; }
+.sub { color: var(--muted); font-size: 14px; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 12.5px; letter-spacing: .04em; }
+td:first-child { white-space: nowrap; }
+.tag { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 99px; border: 1px solid currentColor; line-height: 1.6; white-space: nowrap; }
+.tag.test { color: var(--warn); }
+.tag.ok { color: var(--ok); }
+.ask { background: var(--clay-soft); border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.ask h3 { margin: 0; }
+.mermaid { background: var(--paper); text-align: center; }
+.note { font-size: 13.5px; color: var(--muted); }
+@media (max-width: 480px) { .sheet { padding: 18px 16px; } h1 { font-size: 1.7rem; } }
+</style>
+<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs"; mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
+</head>
+<body>
+<main>
+<header style="display:flex;flex-direction:column;gap:10px">
+  <p class="meta">设计草案 第 8 版 · 2026-10-02 · 未改代码 · 依据见「容器化运行调研」，命令行见「远程运行命令」</p>
+  <h1>通途远程运行设计</h1>
+  <p class="lead">服务器上常驻一个 tongtu server，为每篇论文启动一个容器运行整条流水线；打 tag 后自动部署。Mac 上原生开发，用 release 版 tongtu 与 Raycast 翻译论文，用同一份 compose 在本机起 server 做上云前的测试。同时合并配置与数据目录、打包全部字体、重做模型调用层。</p>
+</header>
+
+<section class="sheet">
+  <header><span class="num">01</span><h2>四个场景</h2></header>
+  <div class="tbl"><table>
+    <tr><th>场景</th><th>代码来源</th><th>怎么启动</th><th>数据</th><th>更新</th></tr>
+    <tr><td>① Mac 原生开发</td><td>工作树</td><td><code>uv run tongtu run ID --dev</code></td><td><code>~/.tongtu-dev</code></td><td>改代码即生效</td></tr>
+    <tr><td>② Raycast 翻译论文</td><td><code>uv tool install</code> 装的 release</td><td>Raycast 调用 <code>tongtu</code>；在哪跑看 <code>hosts.toml</code> 的默认值</td><td><code>~/.tongtu</code></td><td>Raycast 的「更新 tongtu」命令一键更新：查 GitHub 上最新的 release tag，执行 <code>uv tool install --force git+…@&lt;tag&gt;</code></td></tr>
+    <tr><td>③ Mac 上的 Docker 测试</td><td>工作树，构建在 release 的 env 层之上</td><td><code>docker compose up -d --build</code>，再 <code>uv run tongtu run ID --dev --on local</code></td><td><code>~/.tongtu-dev</code></td><td>重新 <code>up -d --build</code></td></tr>
+    <tr><td>④ 服务器</td><td>release 镜像</td><td>打 tag 后 Actions 自动部署</td><td><code>/root/.tongtu</code></td><td>自动，保留两个版本可回滚</td></tr>
+  </table></div>
+  <ul>
+    <li>③ 与 ④ 用同一份 <code>compose.yml</code>，区别只在 <code>.env</code>。命令行与 server 都不管理 server 容器的生命周期。</li>
+    <li>Claude 云端环境里，会话中的 AI 直接执行 <code>tongtu run</code>，再把产物的下载链接给出来。</li>
+    <li>work 支持 codex、claude-code、pi；ask 支持任意服务商与三种接口。</li>
+  </ul>
+  <p class="sub">不在这一期：网页与手机客户端本身（接口在这一期定好，前缀 <code>/v1</code>）、队列与并发上限。</p>
+</section>
+
+<section class="sheet">
+  <header><span class="num">02</span><h2>运行环境</h2></header>
+  <div class="tbl"><table>
+    <tr><th>环境</th><th>隔离边界</th><th>可用运行时</th><th>凭据来自</th></tr>
+    <tr><td>Mac 原生</td><td>codex 与 claude-code 自带的沙箱（Seatbelt）；pi 没有</td><td>三种</td><td>Mac 上的常规登录</td></tr>
+    <tr><td>论文容器（Mac 测试 server 或服务器）</td><td>容器</td><td>三种</td><td>从所在机器的登录派生</td></tr>
+    <tr><td>Claude 云端</td><td>整台一次性虚拟机</td><td>claude-code、pi</td><td>会话自带的 Claude 登录；DeepSeek 的 key 在环境变量里</td></tr>
+  </table></div>
+  <p>后两种是<strong>隔离环境</strong>：设置 <code>TONGTU_ISOLATED=1</code>（镜像里设好，云端 setup 脚本里 export）。运行时据此决定参数，见 10。云端环境是原生 Linux，不用 Docker；setup 脚本只需装 TeX Live、tongtu 与需要的 CLI，字体随包走，不再装 <code>fonts-noto-cjk</code>、bubblewrap、socat。</p>
+</section>
+
+<section class="sheet">
+  <header><span class="num">03</span><h2>目录：一个 TONGTU_HOME</h2></header>
+<pre><code>$TONGTU_HOME/                默认 ~/.tongtu；开发与本机测试用 ~/.tongtu-dev（--dev）
+  config.toml                服务商、角色、分块、字体（原 models.toml）。不含 tongtu 自己的 token
+  hosts.toml                 0600。默认位置、各 server 的 url 与 token；跑 server 的机器上另有 serve_token
+  claude-code-token          0600。claude setup-token 生成，只在隔离环境里用
+  glossary.json              全局术语表
+  papers/&lt;id&gt;/               论文目录，内部结构与现在相同</code></pre>
+  <ul>
+    <li>配置与数据放在一处，<code>XDG_CONFIG_HOME</code> 不再使用。新用户直接 <code>uv run tongtu run ID</code>，用的就是 <code>~/.tongtu</code>。</li>
+    <li>tongtu 自己的 token 全在 <code>hosts.toml</code>，所以 <code>config.toml</code> 可以原样挂进论文容器。</li>
+    <li>codex 与 pi 的凭据留在它们的标准位置 <code>~/.codex</code>、<code>~/.pi/agent</code>，每台机器上登录一次。开发版的 <code>claude-code-token</code> 可以软链到正式版那份。</li>
+    <li>现有的 <code>~/.config/tongtu/models.toml</code> 与 <code>~/.local/share/tongtu/*</code> 手动移过去一次，不写迁移代码；旧路径存在时 doctor 提示。CLAUDE.md 基本原则第 4 条里的默认路径随之修改。</li>
+  </ul>
+</section>
+
+<section class="sheet">
+  <header><span class="num">04</span><h2>总体结构</h2></header>
+  <pre class="mermaid">
+flowchart LR
+  subgraph mac[Mac]
+    rel[tongtu release / Raycast]
+    dev[uv run tongtu --dev]
+    nat[原生运行]
+    ls[compose：tongtu-server]
+    lp[容器 tongtu-ID]
+  end
+  subgraph srv[服务器 remote_vps]
+    cf[compose：cloudflared]
+    s[compose：tongtu-server]
+    p1[容器 tongtu-ID]
+    dep[deploy.sh]
+  end
+  gh[GitHub Actions] -- "ssh，固定命令" --> dep --> s
+  rel --> nat
+  dev --> nat
+  dev -- "REST 127.0.0.1" --> ls -- "docker.sock" --> lp
+  rel -- "REST：Cloudflare Tunnel" --> cf --> s -- "docker.sock" --> p1
+  </pre>
+  <ul>
+    <li>命令行只有两条路径：原生运行，或调用某个 server 的 REST 接口。</li>
+    <li><strong>启动器</strong>只有 server 调用：为一篇论文派生凭据、按固定参数启动论文容器，镜像与 server 自己相同。</li>
+    <li><strong>server 与论文容器相互独立</strong>：重启、升级、重建 server，不影响正在跑的论文。server 的状态全部从文件和 Docker 读出，没有自己的数据库。</li>
+    <li>Raycast 只调用 release 版命令行（<code>status --json</code>、<code>run</code>、<code>pull</code>），不直接访问 REST，也不再 <code>uv run --directory</code> 仓库。另有「更新 tongtu」命令，把 release 版更新到 GitHub 上最新的 tag。</li>
+  </ul>
+</section>
+
+<section class="sheet">
+  <header><span class="num">05</span><h2>镜像</h2></header>
+  <ul>
+    <li>三层不变：base（TeX）、env（Python 依赖、字体，以及新加的 node 22、ca-certificates、codex、claude-code、pi，CLI 版本用 ARG 固定）、runtime（<code>COPY</code> 加 <code>uv sync</code>）。设 <code>TONGTU_ISOLATED=1</code>。</li>
+    <li>runtime 阶段写成 <code>FROM ${ENV_IMAGE}</code>：CI 里指本文件的 env 阶段；本机 compose 里指 <code>ghcr.io/yhnocoder/tongtu:env</code>，BuildKit 只构建用得到的阶段，所以本机只构建 runtime 层。改动涉及 base 或 env 层时，本机拿不到新的 env，先用 image.yml 推 <code>:dev</code> 再测。</li>
+    <li>不改为只装 wheel：仓库除去字体（env 层已单独复制）只有约 1MB，省不下体积。<code>.dockerignore</code> 补上 <code>raycast/node_modules</code>。</li>
+    <li>server 与论文容器用同一个镜像，启动命令不同（<code>tongtu serve</code> 与 <code>tongtu run</code>）。</li>
+    <li>只有 x86_64，Mac 上经 Rosetta 运行，实测编译慢 1.3 到 1.6 倍，每篇多几秒。</li>
+  </ul>
+</section>
+
+<section class="sheet">
+  <header><span class="num">06</span><h2>compose 与部署</h2></header>
+  <p>仓库根目录一份 <code>compose.yml</code>，两个服务。默认值按 Mac 测试设定，服务器用 <code>.env</code> 覆盖。</p>
+  <div class="tbl"><table>
+    <tr><th>服务</th><th>要点</th></tr>
+    <tr><td><code>server</code></td><td><code>container_name: tongtu-server</code>，<code>restart: unless-stopped</code>，<code>platform: linux/amd64</code>，命令 <code>tongtu serve</code>，端口 <code>127.0.0.1:8787</code>。挂 docker.sock、数据目录、<code>~/.codex</code>、<code>~/.pi/agent</code>（只读），一律 bind 且挂在与宿主相同的路径，容器内 HOME 设成宿主的 HOME</td></tr>
+    <tr><td><code>cloudflared</code></td><td><code>profiles: [tunnel]</code>，只在服务器上启动；<code>network_mode: host</code></td></tr>
+  </table></div>
+  <div class="tbl"><table>
+    <tr><th>变量</th><th>默认（Mac 测试）</th><th>服务器 <code>.env</code></th></tr>
+    <tr><td><code>TONGTU_IMAGE</code></td><td><code>tongtu:local</code>，由 <code>--build</code> 从工作树构建</td><td><code>ghcr.io/yhnocoder/tongtu:&lt;tag&gt;</code></td></tr>
+    <tr><td><code>TONGTU_HOME_DIR</code></td><td><code>~/.tongtu-dev</code></td><td><code>/root/.tongtu</code></td></tr>
+    <tr><td><code>TONGTU_CODEX_REFRESH</code></td><td><code>0</code></td><td><code>1</code></td></tr>
+    <tr><td><code>COMPOSE_PROFILES</code></td><td>空</td><td><code>tunnel</code></td></tr>
+    <tr><td><code>TUNNEL_TOKEN</code></td><td>无</td><td>部署时手写一次</td></tr>
+  </table></div>
+  <ul>
+    <li>宿主目录挂在相同路径，是因为 server 通过 docker.sock 启动论文容器时挂载路径按宿主解析。挂 docker.sock 等于给 server 宿主的 root 权限，论文容器不挂它。</li>
+    <li>对外暴露：服务器只经 Cloudflare Tunnel，不开端口；Mac 只监听 127.0.0.1。server 校验 <code>Authorization: Bearer</code>，与 <code>hosts.toml</code> 的 <code>serve_token</code> 比对。</li>
+    <li><strong>codex 刷新</strong>：只有 <code>TONGTU_CODEX_REFRESH=1</code> 的 server 刷新，所以 Mac 上的测试 server 不会与 Mac 原生的 codex 抢同一个 refresh token。按需进行，没有定时任务：派生凭据前 access token 已过期，就在 server 容器里执行一次 <code>codex exec</code>，由 codex 自己刷新并写回 <code>~/.codex/auth.json</code>，再派生。运行中途过期的，那次运行以 failed 结束，用 <code>run --from</code> 接着跑。Mac 测试 server 遇到过期 token 报错，提示在 Mac 上原生运行一次 codex。</li>
+  </ul>
+  <h3>自动部署</h3>
+  <ol>
+    <li>推 tag 后 image.yml 构建并推送镜像，之后的 deploy job 用 GitHub secret 里的部署密钥 ssh 到服务器，参数只有 tag。</li>
+    <li>这把密钥在服务器 <code>authorized_keys</code> 里绑定 <code>command="/opt/tongtu-deploy/deploy.sh",no-pty,no-port-forwarding</code>，只能执行部署脚本。</li>
+    <li><code>deploy.sh</code>：校验 tag 格式；从这个 tag 取 <code>compose.yml</code>；改写 <code>.env</code> 里的 <code>TONGTU_IMAGE</code>；<code>docker compose pull</code> 与 <code>up -d --no-build</code>；删掉 tongtu 镜像中当前与上一个版本以外的，正在被论文容器使用的删不掉就跳过。</li>
+    <li>回滚：在服务器上执行 <code>/opt/tongtu-deploy/deploy.sh 0.1.9</code>。两个版本共用 base 与 env 层，多保留一个版本只多占 runtime 层。</li>
+    <li><code>/opt/tongtu-deploy/</code> 下的 <code>deploy.sh</code>、<code>.env</code> 与部署密钥第一次手动放好，见 T10。</li>
+  </ol>
+  <h3>进现场排查</h3>
+  <p>没有专门的命令。原生运行直接进论文目录。容器里运行的，进 server 容器：</p>
+<pre><code>docker compose exec -w ~/.tongtu-dev/papers/ID server bash                    # Mac 测试 server
+ssh remote_vps docker exec -it -w /root/.tongtu/papers/ID tongtu-server bash  # 服务器</code></pre>
+  <p class="sub">server 容器里的 TeX 与论文容器相同，手动复现 latexmk 足够；那里能看到主凭据，HOME 也与论文容器不同。要重跑 agent 阶段，用 <code>run --from</code>。</p>
+</section>
+
+<section class="sheet">
+  <header><span class="num">07</span><h2>REST 接口</h2></header>
+  <p class="sub">前缀 <code>/v1</code>。网页端以后单独部署，与 server 不一定同时升级，接口变了靠前缀区分。</p>
+  <div class="tbl"><table>
+    <tr><th>接口</th><th>作用</th></tr>
+    <tr><td><code>POST /papers/{id}/runs</code></td><td>启动一次运行。只接受 arXiv 编号。请求体：与 <code>run</code> 相同的选项，论文层术语表（JSON）。返回 202；已在运行返回 409</td></tr>
+    <tr><td><code>GET /papers?since=</code></td><td>论文列表与运行状态，按更新时间倒序；默认最近两天</td></tr>
+    <tr><td><code>GET /papers/{id}</code></td><td>一篇的阶段表与运行状态</td></tr>
+    <tr><td><code>GET /papers/{id}/files/{path}</code></td><td>下载文件，支持 <code>Range</code>。<code>path</code> 是目录时返回 tar。跟随日志就是每 2 秒带 <code>Range: bytes=N-</code> 取一次 <code>logs/run.log</code></td></tr>
+    <tr><td><code>POST /papers/{id}/stop</code></td><td>停止运行</td></tr>
+    <tr><td><code>GET /health</code></td><td>版本与 doctor 结果</td></tr>
+  </table></div>
+</section>
+
+<section class="sheet">
+  <header><span class="num">08</span><h2>论文容器</h2></header>
+  <div class="tbl"><table>
+    <tr><th>项目</th><th>取值</th><th>理由</th></tr>
+    <tr><td>名字</td><td><code>tongtu-ID</code>，<code>--rm</code></td><td>同一篇同一时间只有一个；结束即删，日志在 <code>run.log</code></td></tr>
+    <tr><td>镜像</td><td>与 server 相同（<code>TONGTU_IMAGE</code>）</td><td>部署新版本后，新提交的论文用新镜像，正在跑的不受影响</td></tr>
+    <tr><td>用户</td><td>宿主 uid:gid；为 0 时设 <code>IS_SANDBOX=1</code></td><td>文件属主正确；Claude 在 root 下需要它</td></tr>
+    <tr><td>论文目录</td><td>只挂这一篇，可写</td><td>恶意论文改不了别的论文</td></tr>
+    <tr><td>配置</td><td><code>config.toml</code>、<code>glossary.json</code> 原样只读挂入</td><td>服务商 key 本来就要给 ask 用；tongtu 的 token 在 <code>hosts.toml</code>，不挂</td></tr>
+    <tr><td>挂载方式</td><td>一律 <code>--mount type=bind</code></td><td>路径不存在时报错，<code>-v</code> 会悄悄建空目录</td></tr>
+    <tr><td>HOME</td><td>tmpfs</td><td>CLI 的缓存与凭据文件不落到宿主</td></tr>
+    <tr><td>凭据</td><td>全部经环境变量传入：<code>CLAUDE_CODE_OAUTH_TOKEN</code>、<code>TONGTU_CODEX_AUTH</code>、<code>TONGTU_PI_AUTH</code></td><td>单文件挂载实测有 EBUSY 与读到旧内容的问题；宿主上不留临时文件</td></tr>
+  </table></div>
+  <div class="tbl"><table>
+    <tr><th>运行时</th><th>容器里得到</th></tr>
+    <tr><td>claude-code</td><td><code>claude-code-token</code> 的内容。只能调模型，一年有效，可吊销</td></tr>
+    <tr><td>codex</td><td>派生 auth.json：access token 照抄，refresh token 为空。tongtu 在隔离环境下启动时写到 <code>~/.codex/auth.json</code></td></tr>
+    <tr><td>pi</td><td>主 <code>auth.json</code> 的内容，写到 <code>~/.pi/agent/auth.json</code>。pi 要在这里建锁目录、写模型缓存，都落在 tmpfs</td></tr>
+  </table></div>
+  <p class="sub">主凭据不进论文容器。环境变量在宿主上用 <code>docker inspect</code> 能看到，宿主本来就在可信边界内。</p>
+</section>
+
+<section class="sheet">
+  <header><span class="num">09</span><h2>运行状态与日志</h2></header>
+  <ul>
+    <li>每次运行把输出追加写入 <code>logs/run.log</code>，开头一行记时间、版本、参数、镜像，结尾一行记退出码。原生运行也写。</li>
+    <li>运行期间在论文目录写 <code>run.pid</code>（原生是进程号，容器方式是容器名），结束删除。</li>
+    <li>跟随日志一律是「从字节偏移 N 往后读」：原生读本地文件，server 用 Range 请求。</li>
+  </ul>
+  <div class="tbl"><table>
+    <tr><th>状态</th><th>条件</th></tr>
+    <tr><td><code>running</code></td><td>有 <code>run.pid</code>，且对应的进程或容器还在</td></tr>
+    <tr><td><code>done</code></td><td>不在运行，compile 的 manifest 为 ok</td></tr>
+    <tr><td><code>failed</code></td><td>不在运行，某阶段 manifest 为失败状态</td></tr>
+    <tr><td><code>interrupted</code></td><td>不在运行，其余情况（被打断、主机重启、OOM、stop）</td></tr>
+  </table></div>
+</section>
+
+<section class="sheet">
+  <header><span class="num">10</span><h2>模型调用层</h2></header>
+  <pre><code>[provider.deepseek]
+base_url    = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+api         = "chat"
+
+[chunking]
+chunk_tokens       = 20000
+chunk_merge_tokens = 12000
+
+[roles]                                # model = "后端/模型"，只在第一个 / 处切分
+survey_terms = { model = "deepseek/deepseek-v4-flash", effort = "low" }
+translate    = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 1800 }
+review       = { model = "claude-code/claude-opus-5", effort = "medium", timeout_seconds = 3600, max_turns = 300 }
+compile_fix  = { model = "pi/deepseek/deepseek-flash", timeout_seconds = 1800 }</code></pre>
+  <div class="tbl"><table>
+    <tr><th></th><th>原生（Mac）</th><th>隔离环境</th><th>失败判定（实测）</th></tr>
+    <tr><td>codex</td><td>临时 CODEX_HOME、<code>workspace-write</code></td><td><code>danger-full-access</code></td><td>退出码非 0，或 <code>turn.failed</code></td></tr>
+    <tr><td>claude-code</td><td>Seatbelt 沙箱；从环境删除 <code>ANTHROPIC_*</code> 等变量，确保走订阅</td><td><code>bypassPermissions</code>，不开沙箱，不改环境变量（云端实测直接 <code>claude -p</code> 即可）</td><td>result 的 <code>is_error</code></td></tr>
+    <tr><td>pi</td><td>允许，无沙箱</td><td>同原生</td><td><code>stopReason</code> 为 error 或 aborted；退出码恒为 0</td></tr>
+  </table></div>
+  <p class="sub">pi 在所有环境都加隔离参数 <code>-ne -ns -np -nc -na --offline --no-session --skill</code>。三种运行时写在 <code>tongtu/model/runtimes.py</code>，配置里没有命令模板。删除别名与 <code>setup -i</code>，旧配置不兼容。effort 不写不传。隔离环境下启动时把凭据环境变量写进 HOME。tongtu 调用 latexmk 一律加 <code>-norc</code>。</p>
+</section>
+
+<section class="sheet">
+  <header><span class="num">11</span><h2>字体</h2></header>
+  <ul>
+    <li>打包全部中文字体：现有的霞鹜文楷 Light 与 Medium，加一套开源黑体（如思源黑体 SC）作无衬线字体，总计不到 100MB。任何环境生成的 PDF 用同一套字体。</li>
+    <li><code>zh.tex</code> 只按文件名引用字体，不写路径，不按机器挑选系统字体，不建软链接。编译时 tongtu 把包内字体目录经 <code>TTFONTS</code>、<code>OPENTYPEFONTS</code> 交给 XeTeX（本机已用最小 xeCJK 文档验证），修复会话的环境里也设置它们。</li>
+    <li>论文目录因此可以在 Mac、服务器、容器之间直接搬动。</li>
+  </ul>
+</section>
+
+<section class="sheet">
+  <header><span class="num">12</span><h2>安全取舍</h2></header>
+  <ul>
+    <li>隔离环境是唯一的边界。agent 能联网，能读到这次运行的派生凭据与服务商 key。最坏情况是这些凭据被滥用，宿主、主凭据与其他论文不受影响。</li>
+    <li>token 一律明文存文件：每种凭据只存一份，文件 0600、目录 0700，不进日志；进论文容器的只有派生或能力受限的凭据。</li>
+    <li>server 挂 docker.sock，接口必须认证。服务器上只经 Cloudflare Tunnel 暴露，Mac 上只监听 127.0.0.1。</li>
+    <li>部署密钥只能执行 <code>deploy.sh</code>，泄漏后最多被用来部署一个已经公开的 tag。</li>
+  </ul>
+</section>
+
+<section class="sheet">
+  <header><span class="num">13</span><h2>Task 拆分</h2></header>
+  <pre class="mermaid">
+flowchart LR
+  A[T1 TONGTU_HOME 合并] --> F[T7 server 与启动器]
+  B[T2 字体] --> F
+  C[T3 模型层] --> F
+  D[T5 镜像] --> F
+  E[T6 run.log 与状态] --> F
+  F --> K[T11 compose 与自动部署]
+  F --> G[T8 命令行走 REST]
+  G --> H[T9 Raycast]
+  T4[T4 latexmk -norc]
+  T10[T10 setup 重新设计]
+  </pre>
+  <div class="tbl"><table>
+    <tr><th>Task</th><th>内容</th><th>验证</th></tr>
+    <tr><td>T1</td><td>目录布局、<code>config.toml</code>、<code>--dev</code>、doctor 提示旧路径</td><td>text 测试；你本机跑一篇</td></tr>
+    <tr><td>T2</td><td>打包黑体，<code>zh.tex</code> 只写文件名，<code>TTFONTS</code>/<code>OPENTYPEFONTS</code></td><td>compile 测试；把论文目录搬到另一路径后能继续编译</td></tr>
+    <tr><td>T3</td><td>模型层重构、三种运行时、<code>TONGTU_ISOLATED</code>、凭据环境变量写进 HOME、失败判定</td><td>text 测试；你本机与云端各跑一篇</td></tr>
+    <tr><td>T4</td><td>latexmk 加 <code>-norc</code>，skill 补一句</td><td>text 测试</td></tr>
+    <tr><td>T5</td><td>env 层加 node、三个 CLI、ca-certificates；runtime 阶段 <code>FROM ${ENV_IMAGE}</code>；<code>.dockerignore</code></td><td>image.yml</td></tr>
+    <tr><td>T6</td><td><code>run.log</code>、<code>run.pid</code>、四个状态、<code>status --json --since</code>、原生 <code>logs -f</code></td><td>text 测试；你本机跑一篇</td></tr>
+    <tr><td>T7</td><td><code>tongtu serve</code>、REST、启动器、派生凭据、codex 按需刷新</td><td>text 测试；容器里起 server 用 curl 跑一篇</td></tr>
+    <tr><td>T8</td><td><code>--on</code>、<code>hosts.toml</code>、跟随与自动下载、<code>pull</code>、<code>stop</code></td><td>你在 Mac 上对服务器跑一篇，合盖后再接上</td></tr>
+    <tr><td>T9</td><td>Raycast 改为调用 release 版命令行；加「更新 tongtu」命令</td><td>你在 Raycast 里看到服务器上的论文</td></tr>
+    <tr><td>T10</td><td><code>tongtu setup</code> 重新设计：生成 <code>config.toml</code> 与 <code>hosts.toml</code>、服务器首次部署（<code>/opt/tongtu-deploy</code>、部署密钥）、云端 setup 脚本。细节以后定</td><td>以后定</td></tr>
+    <tr><td>T11</td><td><code>compose.yml</code>、<code>deploy.sh</code>、image.yml 的 deploy job</td><td>你在 Mac 上 <code>up -d --build</code> 跑一篇；打一个测试 tag，服务器自动更新并保留上一个版本</td></tr>
+  </table></div>
+</section>
+
+<section class="sheet">
+  <header><span class="num">14</span><h2>待实测（各自放进对应 Task 的 Spec，开工前先验证）</h2></header>
+  <ul>
+    <li>T5：Mac 上经 Rosetta、<code>ENV_IMAGE=ghcr…:env</code> 构建时只构建 runtime 层，耗时多少。</li>
+    <li>T7：access token 过期后，在 server 容器里执行 <code>codex exec</code> 能刷新并写回可写挂载的 <code>~/.codex/auth.json</code>。</li>
+    <li>T7：server 通过 docker.sock 启动论文容器时的路径与属主，Mac 与服务器各一次。</li>
+    <li>T7：Starlette 的 <code>FileResponse</code> 对 <code>Range</code> 请求返回 206，经 Cloudflare Tunnel 后仍然有效。</li>
+    <li>T11：<code>compose.yml</code> 同时写 <code>build</code> 与 <code>image</code> 时，服务器上 <code>up -d --no-build</code> 直接使用 pull 下来的镜像。</li>
+    <li>T3：pi 在隔离参数下是否还需要 <code>settings.json</code>；需要的话一起经环境变量传入。</li>
+  </ul>
+</section>
+</main>
+</body>
+</html>

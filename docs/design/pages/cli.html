@@ -1,16 +1,24 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>命令行</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/lxgwwenkaiscreen.css">
+<link rel="stylesheet" href="../style.css">
+<script defer src="../math.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-chtml.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/line-highlight/prism-line-highlight.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/diff-highlight/prism-diff-highlight.min.js"></script>
+<script defer src="../code.js"></script>
 </head>
 <body>
-<div class="wrap man">
+<main class="man">
+<p class="nav"><a href="../index.html">返回索引</a></p>
 <h1>命令行</h1>
-<p class="sub"><code>tongtu</code> 是通途的命令行入口：给它一个 arXiv 编号，它下载论文源码、翻译成中文、编译出与原版排版相同的 PDF。日常只用 <code>tongtu run</code> 一条命令。其余命令配合它使用：<code>status</code> 查看一篇论文的各阶段状态，<code>stage</code> 单独重跑某个阶段，<code>validate</code> 校验一对译文，<code>doctor</code> 检查环境，<code>setup</code> 生成配置。七个阶段各自做什么见 <a href="pipeline.html">pipeline.html</a>，模型与服务商的配置见 <a href="model.html">model.html</a>。</p>
+<p class="lead"><code>tongtu</code> 是通途的命令行入口：给它一个 arXiv 编号，它下载论文源码、翻译成中文、编译出与原版排版相同的 PDF。日常只用 <code>tongtu run</code> 一条命令。其余命令配合它使用：<code>status</code> 查看一篇论文的各阶段状态，<code>stage</code> 单独重跑某个阶段，<code>validate</code> 校验一对译文，<code>doctor</code> 检查环境，<code>setup</code> 生成配置。七个阶段各自做什么见 <a href="../pipeline.html">pipeline.html</a>，模型与服务商的配置见 <a href="model.html">model.html</a>。</p>
 
 <h2>SYNOPSIS</h2>
 <pre><span class="k">tongtu run</span>      PAPER [--from STAGE] [--no-review] [OPTIONS]
@@ -30,10 +38,10 @@
 <tr><td>某阶段失败</td><td>停在出错的阶段，退出 1，终端输出原因与 manifest 路径。修好后再执行一次同样的命令，就从这个阶段接着跑，前面的阶段不重做。</td></tr>
 <tr><td>被打断</td><td>同上：再执行一次，从中断的阶段接着跑。</td></tr>
 <tr><td>七个阶段都已跑完</td><td>什么也不做，退出 0，提示用 <code>--from</code>。</td></tr>
-<tr><td>改了输入要重跑</td><td>加 <code>--from STAGE</code>，从该阶段起重跑，先删掉它及其下游的旧产物。改了什么就从哪个阶段起：src/ 里的源码 → precompile；<code>tongtu/data/environments.json</code> → mask；任一层术语表 → survey；<code>skill/translate/SKILL.md</code> → translate；<code>skill/review/</code> → review。tongtu 不检测输入是否变化，不给 <code>--from</code> 就沿用旧产物。</td></tr>
+<tr><td>改了输入要重跑</td><td>加 <code>--from STAGE</code>，从该阶段起重跑，先删掉它及其下游的旧产物。改了什么就从哪个阶段起：src/ 里的源码或 models.toml 的 <code>[fonts]</code> → precompile；<code>tongtu/data/environments.json</code> → mask；任一层术语表或分块参数 → survey；<code>skill/translate/SKILL.md</code> → translate；<code>skill/review/</code> → review。tongtu 不检测输入是否变化，不给 <code>--from</code> 就沿用旧产物。</td></tr>
 </table>
 <div class="ex"><p class="cap">从头到尾跑一篇。</p>
-<pre class="term"><span class="p">$ tongtu run 2412.19437</span>
+<div class="term"><span class="p">$ tongtu run 2412.19437</span>
 workdir /Users/zach/.local/share/tongtu/2412.19437
 
 <span class="h">  stage       status            summary                                     elapsed</span>
@@ -46,26 +54,26 @@ workdir /Users/zach/.local/share/tongtu/2412.19437
 <span class="ok">✓</span> review      ok                                                            0:11:40
 <span class="ok">✓</span> compile     ok                12 pages, baseline 12                       0:00:47
 <span class="p">$ echo $?</span>
-0</pre></div>
+0</div></div>
 <p><b>进度显示。</b>每个阶段运行时占一行进度行（只在终端是 tty 时刷新），结束后换成结果行。precompile、survey、review、compile 显示当前动作；translate 显示每个 chunk 的进度与已完成数、token 数、耗时、预计剩余时间。回退的 chunk 各输出一行持久 warning，保留在进度行上方，例如 <code>warning: c003 fell back to the English source after 2 attempts</code>。阶段模块不直接向终端打印，通过 <code>report</code> 回调把状态交给命令行层渲染。</p>
 <div class="ex"><p class="cap">translate 进行中的进度行，与它结束后留下的结果行。</p>
-<pre class="term">translate   <span class="ok">━━</span><span class="warn">━━</span><span class="run">──</span><span class="dim">──</span><span class="run">─</span><span class="dim">────────────────────────────────</span>  4/17    9.2k/80.4k tok   0:01:12  eta 0:04:30
+<div class="term">translate   <span class="ok">━━</span><span class="warn">━━</span><span class="run">──</span><span class="dim">──</span><span class="run">─</span><span class="dim">────────────────────────────────</span>  4/17    9.2k/80.4k tok   0:01:12  eta 0:04:30
     warning: c003 fell back to the English source after 2 attempts
 translate   <span class="ok">━━</span><span class="warn">━━</span><span class="ok">━━━━</span><span class="run">──</span><span class="ok">━━━</span><span class="run">─</span><span class="ok">━━━━━━━━━━━━━━━━━━━━━━━━━━</span>  13/17  61.0k/80.4k tok   0:04:50  eta 0:01:20
 <span class="ok">✓</span> translate   ok                17 chunks, 1 fallback                       0:06:12
-    warning: c003 fell back to the English source; the last attempt failed: control_sequences: \cite appears 3 times in source, 2 in translation</pre></div></dd>
+    warning: c003 fell back to the English source; the last attempt failed: control_sequences: \cite appears 3 times in source, 2 in translation</div></div></dd>
 
 <dt>stage STAGE PAPER</dt>
-<dd>只运行一个阶段，用于反复调整某一步，例如改了 translate 的 SKILL.md 后只看译文的变化，不重跑 review 与 compile。它不改动其他阶段的产物，之后要继续往下就用 <code>run</code>。上游产物不在时拒绝执行，退出 2。选项与 run 相同，但没有 <code>--from</code> 与 <code>--no-review</code>。不带参数运行 <code>tongtu stage</code>，按顺序列出七个阶段名。
+<dd>只运行一个阶段，用于反复调整某一步，例如改了 translate 的 SKILL.md 后只看译文的变化，不重跑 review 与 compile。它先删掉本阶段的旧产物再运行，不改动其他阶段的产物，之后要继续往下就用 <code>run</code>。上游产物不在时拒绝执行，退出 2。选项与 run 相同，但没有 <code>--from</code> 与 <code>--no-review</code>。不带参数运行 <code>tongtu stage</code>，按顺序列出七个阶段名。
 <div class="ex"><p class="cap">只跑 translate，本次换一个模型。</p>
-<pre class="term"><span class="p">$ tongtu stage translate 2412.19437 --ask-model opencode/gpt-5.6-luna --ask-effort low</span>
+<div class="term"><span class="p">$ tongtu stage translate 2412.19437 --ask-model opencode/gpt-5.6-luna --ask-effort low</span>
 <span class="h">  stage       status            summary                                     elapsed</span>
-<span class="ok">✓</span> translate   ok                17 chunks                                   0:04:31</pre></div></dd>
+<span class="ok">✓</span> translate   ok                17 chunks                                   0:04:31</div></div></dd>
 
 <dt>status PAPER</dt>
 <dd>查看一篇论文各阶段的状态：每个阶段一行，列出状态、产物是否存在、manifest 路径；manifest 的 message 与 warnings 列在该行下方。上次运行失败后想先了解原因再决定是否重跑，用它；更详细的记录在 <code>logs/</code>。只读，不改任何文件。
 <div class="ex"><p class="cap">compile 失败，查看原因。</p>
-<pre class="term"><span class="p">$ tongtu status 2512.02556</span>
+<div class="term"><span class="p">$ tongtu status 2512.02556</span>
 workdir /Users/zach/.local/share/tongtu/2512.02556
 
 <span class="h">stage       status            outputs  manifest</span>
@@ -79,23 +87,23 @@ translate   ok                present  build/manifests/translate.json
               c004 fell back to the English source; the last attempt failed: control_sequences: \cite appears 3 times in source, 2 in translation
 review      ok                present  build/manifests/review.json
 compile     compile_failed    absent   build/manifests/compile.json
-              47 pages against a baseline of 31 (ratio 1.52) falls outside [0.7, 1.3]</pre></div></dd>
+              47 pages against a baseline of 31 (ratio 1.52) falls outside [0.7, 1.3]</div></div></dd>
 
 <dt>validate SRC DST</dt>
 <dd>检查一份译文是否破坏了原文结构：给原文与译文两个文件，逐层输出 pass / fail 与差异（placeholders、control_sequences、braces_and_math、paragraph_count）。手工修改译文后用它确认；translate 与 review 内部运行的是同一套校验。
 <div class="ex"><p class="cap">逐层输出结果。</p>
-<pre class="term"><span class="p">$ tongtu validate build/chunks/c004.tex build/translated/c004.tex</span>
+<div class="term"><span class="p">$ tongtu validate build/chunks/c004.tex build/translated/c004.tex</span>
   [pass] placeholders
   [fail] control_sequences: \cite appears 3 times in source, 2 in translation; \emph appears 0 times in source, 1 in translation
   [pass] braces_and_math
   [pass] paragraph_count
 <span class="p">$ echo $?</span>
-1</pre></div></dd>
+1</div></div></dd>
 
 <dt>doctor</dt>
-<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体回退链、models.toml、<code>[roles]</code> 引用的服务商密钥与 agent 运行时可执行文件。安装环境后先运行它。工具链或字体缺失退出 1；配置与密钥的问题只报告，不影响退出码，最后一行说明从 survey 起的阶段不能运行。
+<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体（只看仓库 <code>fonts/</code> 下的两个霞鹜文楷文件，不检查用户的 <code>[fonts]</code> 配置）、models.toml、<code>[roles]</code> 引用的服务商密钥与 agent 运行时可执行文件（运行时条目引用的服务商一并检查）。安装环境后先运行它。工具链或字体缺失退出 1；配置与密钥的问题只报告，不影响退出码，最后一行说明从 survey 起的阶段不能运行。
 <div class="ex"><p class="cap">全部齐全：退出 0。</p>
-<pre class="term"><span class="p">$ tongtu doctor</span>
+<div class="term"><span class="p">$ tongtu doctor</span>
   [ok]      xelatex       compile engine (latexmk -xelatex)         /Library/TeX/texbin/xelatex
   [ok]      TeX Live      distribution year >= 2026                 XeTeX 3.141592653-2.6-0.999998 (TeX Live 2026)
   [ok]      latexmk       compile loop driver                       /Library/TeX/texbin/latexmk
@@ -104,17 +112,17 @@ compile     compile_failed    absent   build/manifests/compile.json
   [ok]      models.toml   providers, runtimes and roles             /Users/zach/.config/tongtu/models.toml
   [ok]      key deepseek  provider API key                          api_key in models.toml
   [ok]      runtime codex session runtime executable                /Users/zach/.local/bin/codex
-environment complete.</pre></div></dd>
+environment complete.</div></div></dd>
 
 <dt>setup [-i]</dt>
-<dd>第一次使用前运行一次，生成配置文件 <code>models.toml</code>（带注释的模板，已存在不覆盖，权限 0600）。<code>-i</code>：逐个询问是否启用模板里的服务商并输入 API key（不回显），API 直调类角色指向第一个启用的服务商；一个都没启用退出 2。不加 <code>-i</code> 就自己打开文件填写。
+<dd>第一次使用前运行一次，生成配置文件 <code>models.toml</code>（带注释的模板，已存在不覆盖，权限 0600）。<code>-i</code>：逐个询问是否启用模板里的服务商并输入 API key（不回显），API 直调类角色指向第一个启用的服务商，模型换成该服务商的默认模型；一个都没启用退出 2。不加 <code>-i</code> 就自己打开文件填写。
 <div class="ex"><p class="cap">第一次使用：写出配置、填入密钥。</p>
-<pre class="term"><span class="p">$ tongtu setup -i</span>
+<div class="term"><span class="p">$ tongtu setup -i</span>
 configure opencode? [y/N]: y
 API key for opencode:
 configure deepseek? [y/N]: n
 configure anthropic? [y/N]: n
-wrote /Users/zach/.config/tongtu/models.toml.</pre></div></dd>
+wrote /Users/zach/.config/tongtu/models.toml.</div></div></dd>
 </dl>
 
 <h2>OPTIONS <small>run 与 stage 共用；stage 不含 --from 与 --no-review</small></h2>
@@ -124,7 +132,7 @@ wrote /Users/zach/.config/tongtu/models.toml.</pre></div></dd>
 <dt>--work-model RUNTIME/MODEL，--work-effort LEVEL</dt><dd>本次换一个模型做 agent 工作：覆盖所有 agent 会话（work）类角色（Agent 模式的 translate、review、precompile_fix、compile_fix）。RUNTIME 是 <code>[runtime.*]</code> 的名字，例如 <code>codex/astra</code>。</dd>
 <dt>--glossary FILE</dt><dd>给这篇论文额外指定术语表，可多次给出，靠后的优先。与全局层、论文层术语表叠加。</dd>
 <dt>--no-terms</dt><dd>不让模型提议术语，只用自己给出的术语表。</dd>
-<dt>--no-review</dt><dd>只 <code>run</code> 有。跳过审校会话：不启动 agent 会话、不准备会话目录，translate 的译文原样复制到 <code>build/reviewed/</code> 进入 compile。</dd>
+<dt>--no-review</dt><dd>只 <code>run</code> 有。跳过审校会话，行为见 <a href="../pipeline.html#review">review 卡</a>。</dd>
 <dt>--jobs N</dt><dd>translate 同时翻译的 chunk 数，默认 4。</dd>
 <dt>--workdir DIR</dt><dd>把这篇论文的工作目录放到指定位置。默认 <code>$TONGTU_HOME/&lt;编号&gt;</code>，再默认 <code>~/.local/share/tongtu/&lt;编号&gt;</code>。</dd>
 </dl>
@@ -156,7 +164,7 @@ wrote /Users/zach/.config/tongtu/models.toml.</pre></div></dd>
 <h2>EXAMPLES <small>run 与 stage 在各种情况下的行为；输出为示意</small></h2>
 
 <div class="ex"><p class="cap">某阶段失败：停在该阶段，输出 message 与 manifest 路径，退出 1。</p>
-<pre class="term"><span class="p">$ tongtu run 2512.02556</span>
+<div class="term"><span class="p">$ tongtu run 2512.02556</span>
 workdir /Users/zach/.local/share/tongtu/2512.02556
 
 <span class="h">  stage       status            summary                                     elapsed</span>
@@ -170,46 +178,46 @@ workdir /Users/zach/.local/share/tongtu/2512.02556
     47 pages against a baseline of 31 (ratio 1.52) falls outside [0.7, 1.3]
     manifest  /Users/zach/.local/share/tongtu/2512.02556/build/manifests/compile.json
 <span class="p">$ echo $?</span>
-1</pre></div>
+1</div></div>
 
 <div class="ex"><p class="cap">不改任何输入再执行一次：从失败的阶段接着跑，上游产物不动。</p>
-<pre class="term"><span class="p">$ tongtu run 2512.02556</span>
+<div class="term"><span class="p">$ tongtu run 2512.02556</span>
 workdir /Users/zach/.local/share/tongtu/2512.02556
 resuming from compile (upstream outputs present)
 
 <span class="h">  stage       status            summary                                     elapsed</span>
 <span class="ok">✓</span> compile     ok                33 pages, baseline 31                       0:01:05
 <span class="p">$ echo $?</span>
-0</pre></div>
+0</div></div>
 
 <div class="ex"><p class="cap">改了术语表，从 survey 重跑：先删掉 survey 及其下游产物。</p>
-<pre class="term"><span class="p">$ tongtu run 2512.02556 --from survey --glossary ~/terms/moe.json</span>
+<div class="term"><span class="p">$ tongtu run 2512.02556 --from survey --glossary ~/terms/moe.json</span>
 workdir /Users/zach/.local/share/tongtu/2512.02556
 --from survey: removed survey and downstream outputs
 
 <span class="h">  stage       status            summary                                     elapsed</span>
 <span class="ok">✓</span> survey      ok                29 chunks, 46 terms                         0:00:13
-<span class="p">…</span></pre></div>
+<span class="p">…</span></div></div>
 
 <div class="ex"><p class="cap">七个阶段的产物都在：什么也不做。</p>
-<pre class="term"><span class="p">$ tongtu run 2412.19437</span>
+<div class="term"><span class="p">$ tongtu run 2412.19437</span>
 workdir /Users/zach/.local/share/tongtu/2412.19437
-all seven stage outputs are present; nothing to run. Use --from STAGE to redo.</pre></div>
+all seven stage outputs are present; nothing to run. Use --from STAGE to redo.</div></div>
 
 <div class="ex"><p class="cap">上游产物不在：退出 2，不写 manifest。</p>
-<pre class="term"><span class="p">$ tongtu stage compile 2512.02556</span>
+<div class="term"><span class="p">$ tongtu stage compile 2512.02556</span>
 upstream outputs absent: translate, review. Run tongtu run first, or tongtu run --from translate to redo.
 <span class="p">$ echo $?</span>
-2</pre></div>
+2</div></div>
 
 <div class="ex"><p class="cap">不带参数：列出阶段名。</p>
-<pre class="term"><span class="p">$ tongtu stage</span>
-fetch → precompile → mask → survey → translate → review → compile</pre></div>
+<div class="term"><span class="p">$ tongtu stage</span>
+fetch → precompile → mask → survey → translate → review → compile</div></div>
 
 <div class="ex"><p class="cap">在 work 会话里误运行：入口立刻退出 2。</p>
-<pre class="term"><span class="p">$ TONGTU_DISABLE=1 tongtu run 2412.19437</span>
-tongtu cannot run inside an agent session (TONGTU_DISABLE is set)</pre></div>
+<div class="term"><span class="p">$ TONGTU_DISABLE=1 tongtu run 2412.19437</span>
+tongtu cannot run inside an agent session (TONGTU_DISABLE is set)</div></div>
 
-</div>
+</main>
 </body>
 </html>

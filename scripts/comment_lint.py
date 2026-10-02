@@ -12,6 +12,7 @@ from pathlib import Path
 ROOTS = ("tongtu/", "tests/", "scripts/")
 DIRECTIVES = ("noqa", "type: ignore", "pragma: no cover")
 WHY = re.compile(r"why\(#\d+\): \S")
+SCRIPT_METADATA = re.compile(r"(?m)^# /// [a-zA-Z0-9-]+$\s(?:^#(?:| .*)$\s)+^# ///$")
 DOC_NODES = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 
 
@@ -27,8 +28,13 @@ def brief(text: str) -> str:
 def violations(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     found: list[tuple[int, str]] = []
+    metadata_lines = {
+        line
+        for block in SCRIPT_METADATA.finditer(text)
+        for line in range(text.count("\n", 0, block.start()) + 1, text.count("\n", 0, block.end()) + 2)
+    }
     for token in tokenize.generate_tokens(io.StringIO(text).readline):
-        if token.type != tokenize.COMMENT:
+        if token.type != tokenize.COMMENT or token.start[0] in metadata_lines:
             continue
         if token.start == (1, 0) and token.string.startswith("#!"):
             continue
