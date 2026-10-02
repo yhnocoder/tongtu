@@ -147,7 +147,7 @@ flowchart LR
   <header><span class="num">05</span><h2>镜像</h2></header>
   <ul>
     <li>三层不变：base（TeX；ca-certificates 已在这一层）、env（Python 依赖、字体，以及新加的 node 22、codex、claude-code、pi，CLI 版本用 ARG 固定）、runtime（<code>COPY</code> 加 <code>uv sync</code>）。设 <code>TONGTU_ISOLATED=1</code>。字体全部随包打包（11），镜像不再装 <code>fonts-noto-cjk</code>，也不做 fontconfig 注册。</li>
-    <li>镜像 tag 与分支：image.yml 只在 push main 与打 <code>v*</code> tag 时推送。<code>dev/remote</code> 上需要新的 env 层时手动触发 workflow_dispatch，会覆盖 <code>:env</code>；main 的代码不读 <code>TONGTU_ISOLATED</code>，也用不到新装的 CLI，所以覆盖不影响 main 上的 papers.yml。</li>
+    <li>镜像 tag 与分支：image.yml 只在 push main 与打 <code>v*</code> tag 时推送。</li>
     <li>runtime 阶段写成 <code>FROM ${ENV_IMAGE}</code>：CI 里指本文件的 env 阶段；本机 compose 里指 <code>ghcr.io/yhnocoder/tongtu:env</code>，BuildKit 只构建用得到的阶段，所以本机只构建 runtime 层。改动涉及 base 或 env 层时，本机拿不到新的 env，先用 image.yml 推 <code>:dev</code> 再测。</li>
     <li>不改为只装 wheel：仓库除去字体（env 层已单独复制）只有约 1MB，省不下体积。<code>.dockerignore</code> 补上 <code>raycast/node_modules</code>。</li>
     <li>server 与论文容器用同一个镜像，启动命令不同（<code>tongtu serve</code> 与 <code>tongtu run</code>）。</li>
