@@ -1,7 +1,7 @@
 name: image
 
 # 参考镜像的构建与发布。一份 Dockerfile，两个 target，同一个作业里依次出：
-#   env      环境层：TeX Live full + Python 依赖 + 字体，不含仓库代码。
+#   env      环境层：TeX Live full、Python 依赖、字体文件、node 22 与三个 agent CLI，不含仓库代码。
 #            CI 的编译层作业以它为 container 直接跑测试。
 #   runtime  完整镜像：env 加仓库代码、项目安装与构建期自检。Dockerfile 里写成
 #            `FROM ${ENV_IMAGE}`，CI 不传这个 ARG，取默认值即本文件的 env 阶段。
