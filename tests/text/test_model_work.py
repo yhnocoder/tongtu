@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tongtu import fonts
 from tongtu.model.work import StopReason, work
 from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
@@ -188,6 +189,14 @@ def test_session_environment_is_narrowed(configured: Path, monkeypatch: pytest.M
     work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert recorded["env"]["TONGTU_DISABLE"] == "1"
     assert_path_starts_with_the_base_interpreter(recorded, "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+
+
+def test_session_environment_carries_the_font_search_path(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    for variable in ("TTFONTS", "OPENTYPEFONTS"):
+        assert recorded["env"][variable] == f"{fonts.FONTS_DIR}//:"
 
 
 def test_session_environment_keeps_claude_code_remote_without_provider(

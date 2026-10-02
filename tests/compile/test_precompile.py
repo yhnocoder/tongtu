@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 import tongtu.model
-from tongtu import processes
+from tongtu import fonts, processes
 from tongtu.artifacts.precompile import PrecompileStatus
 from tongtu.model.config import FontsConfig
 from tongtu.model.work import StopReason, WorkOutcome
@@ -132,11 +133,12 @@ def test_pdflatex_leftovers_compile_after_adapt(tmp_path: Path, name: str) -> No
     if required and subprocess.run(["kpsewhich", *required], capture_output=True, check=False).returncode != 0:
         pytest.skip(f"{' '.join(required)} not installed")
     warnings: list[str] = []
-    injected, font_files = precompile._inject_cjk(source.encode("utf-8"), warnings, FontsConfig())
-    precompile._assemble_tree(tmp_path, injected, warnings, font_files)
+    injected = precompile._inject_cjk(source.encode("utf-8"), warnings, FontsConfig())
+    precompile._assemble_tree(tmp_path, injected)
     completed = subprocess.run(
         ["xelatex", "-interaction=nonstopmode", "-halt-on-error", precompile.FLAT_FILENAME],
         cwd=tmp_path,
+        env=fonts.environment(FontsConfig(), os.environ),
         capture_output=True,
         text=True,
         timeout=120,
