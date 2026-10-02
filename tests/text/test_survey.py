@@ -8,7 +8,7 @@ import pytest
 from tongtu.artifacts.mask import BlocksFile, CaptionKind, CaptionRecord
 from tongtu.artifacts.survey import BriefFile, DecidedBy, Part, SurveyManifest, SurveyStatus
 from tongtu.model.ask import AskOutcome, AskStatus
-from tongtu.model.config import ModelsConfig, ProviderConfig, RoleConfig
+from tongtu.model.config import ChunkingConfig, ModelsConfig, ProviderConfig, RoleConfig
 from tongtu.pipeline import outputs_present
 from tongtu.stages import mask, survey
 from tongtu.workdir import Workdir
@@ -71,7 +71,7 @@ def write_glossary(path: Path, content: object) -> Path:
 def role_config() -> ModelsConfig:
     return ModelsConfig(
         provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
-        roles={survey.ROLE: RoleConfig(model="m", effort="low", provider="p")},
+        roles={survey.ROLE: RoleConfig(model="p/m", effort="low")},
     )
 
 
@@ -209,7 +209,7 @@ def test_a_single_paragraph_over_split_above_gets_a_warning(tmp_path: Path) -> N
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK
     assert manifest.chunks_total == 1
-    assert any(str(survey.SPLIT_ABOVE) in warning for warning in manifest.warnings)
+    assert any(str(ChunkingConfig().chunk_tokens) in warning for warning in manifest.warnings)
 
 
 def test_small_chunks_do_not_merge_across_parts(tmp_path: Path) -> None:
@@ -217,7 +217,7 @@ def test_small_chunks_do_not_merge_across_parts(tmp_path: Path) -> None:
     survey.run(workdir)
     chunks = read_brief(workdir).chunks
     assert len({record.part for record in chunks}) == 3
-    assert all(record.tokens < survey.MERGE_BELOW for record in chunks)
+    assert all(record.tokens < ChunkingConfig().chunk_merge_tokens for record in chunks)
 
 
 ABSTRACT_BLOCKS = BlocksFile(
@@ -427,7 +427,7 @@ def test_model_proposal_lands_in_brief_with_survey_layer(tmp_path: Path, monkeyp
     monkeypatch.setattr(survey, "load_config", lambda: (role_config(), ""))
     monkeypatch.setattr(survey, "ask", fake_ask)
     workdir = make_workdir(tmp_path)
-    manifest = survey.run(workdir, ask_model="p/m", ask_effort="high")
+    manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.OK
     assert manifest.warnings == []
     brief = read_brief(workdir)
@@ -437,8 +437,8 @@ def test_model_proposal_lands_in_brief_with_survey_layer(tmp_path: Path, monkeyp
     assert [(entry.word, entry.decided_by) for entry in brief.do_not_translate] == [("softmax", DecidedBy.SURVEY)]
     assert seen["role"] == survey.ROLE
     assert seen["log_path"] == workdir.survey_terms_log
-    assert seen["model"] == "p/m"
-    assert seen["effort"] == "high"
+    assert "model" not in seen
+    assert "effort" not in seen
     assert seen["schema"] == survey.TERMS_SCHEMA
     assert SAMPLE in seen["messages"][0][1]
 
@@ -664,16 +664,14 @@ def test_a_user_translation_keeps_its_spacing(tmp_path: Path) -> None:
     assert [(entry.word, entry.translation) for entry in brief.terms] == [("mixed RL training", "混合RL训练")]
 
 
-@pytest.mark.parametrize("backend", ["provider", "runtime"])
-def test_translation_chunk_limits_control_survey(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str) -> None:
-    config = ModelsConfig(roles={"translate": RoleConfig(model="astra", effort="light", **{backend: "demo"})})
+def test_chunking_table_controls_survey(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = ModelsConfig()
     monkeypatch.setattr(survey, "load_config", lambda: (config, ""))
     text = "\\section{Test}\n\n" + "\n\n".join("A paragraph with enough text. " * 200 for _ in range(12))
     workdir = make_workdir(tmp_path, text)
     assert survey.run(workdir, no_terms=True).status is SurveyStatus.OK
     smaller = read_brief(workdir).chunks
-    config.roles["translate"].chunk_tokens = 20000
-    config.roles["translate"].chunk_merge_tokens = 12000
+    config.chunking = ChunkingConfig(chunk_tokens=20000, chunk_merge_tokens=12000)
     assert survey.run(workdir, no_terms=True).status is SurveyStatus.OK
     larger = read_brief(workdir).chunks
     assert len(larger) < len(smaller)

@@ -109,11 +109,9 @@ def wire_work(
         workdir: Path,
         *,
         trace_path: Path,
-        model: str | None = None,
-        effort: str | None = None,
         report=None,
     ):
-        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path, "model": model, "effort": effort})
+        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path})
         if report is not None:
             report("Bash: ls")
         if edit is not None:
@@ -488,7 +486,7 @@ def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.
     wire_expand(monkeypatch)
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     work_calls = wire_work(monkeypatch)
-    manifest = precompile.run(workdir, model_override="claude_code/claude-sonnet-5", effort="high")
+    manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "finished"
@@ -497,8 +495,6 @@ def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.
     assert work_calls[0]["role"] == "precompile_fix"
     assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "tex"
     assert work_calls[0]["trace_path"] == workdir.logs / "precompile-fix.jsonl"
-    assert work_calls[0]["model"] == "claude_code/claude-sonnet-5"
-    assert work_calls[0]["effort"] == "high"
 
 
 def test_fix_session_error_still_goes_to_verification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -670,13 +666,12 @@ def test_arxiv_1905_12322v3_missing_legacy_inputs(
         workdir.precompile_fix_log.write_text("one session\n")
 
     calls = wire_work(monkeypatch, stop_reason, edit=edit)
-    manifest = precompile.run(workdir, model_override="rt/model", effort="high")
+    manifest = precompile.run(workdir)
     tree = workdir.sandbox("tex")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None and manifest.fix_session.stop_reason == str(stop_reason)
     assert manifest.report is not None and manifest.report.pdf_bytes > 0
     assert len(calls) == 1
-    assert calls[0]["model"] == "rt/model" and calls[0]["effort"] == "high"
     assert expansions == [workdir.src, tree]
     assert latexmk == {"compile": 1, "clean": 2}
     assert (workdir.src / main_file).read_text() == source

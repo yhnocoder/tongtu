@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
 import subprocess
 import time
-import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -40,14 +38,8 @@ from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_prese
 from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest
-from .model.config import (
-    DEFAULT_ASK_MODEL,
-    MODELS_TEMPLATE,
-    FontsConfig,
-    ModelsConfig,
-    load_config,
-    provider_key,
-)
+from .model.config import CONFIG_TEMPLATE, FontsConfig, Target, load_config, provider_key, role_target
+from .model.runtimes import RUNTIMES
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
@@ -131,10 +123,6 @@ app = typer.Typer(
 class RunOptions:
     paper: PaperInput
     workdir: Workdir
-    ask_model: str | None
-    ask_effort: str | None
-    work_model: str | None
-    work_effort: str | None
     glossary: tuple[Path, ...]
     jobs: int
     no_terms: bool
@@ -250,9 +238,7 @@ def _fetch_entry(options: RunOptions, display: StageDisplay) -> Manifest:
 
 
 def _precompile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
-    return precompile.run(
-        options.workdir, model_override=options.work_model, effort=options.work_effort, report=display.action
-    )
+    return precompile.run(options.workdir, report=display.action)
 
 
 def _mask_entry(options: RunOptions, display: StageDisplay) -> Manifest:
@@ -264,8 +250,6 @@ def _survey_entry(options: RunOptions, display: StageDisplay) -> Manifest:
         options.workdir,
         glossary=options.glossary,
         no_terms=options.no_terms,
-        ask_model=options.ask_model,
-        ask_effort=options.ask_effort,
         report=display.action,
     )
 
@@ -274,10 +258,6 @@ def _translate_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return translate.run(
         options.workdir,
         jobs=options.jobs,
-        ask_model=options.ask_model,
-        ask_effort=options.ask_effort,
-        work_model=options.work_model,
-        work_effort=options.work_effort,
         report=display.line,
         progress=display.chunks,
     )
@@ -287,16 +267,12 @@ def _review_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return review.run(
         options.workdir,
         skip=options.no_review,
-        model_override=options.work_model,
-        effort=options.work_effort,
         report=display.action,
     )
 
 
 def _compile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
-    return compile.run(
-        options.workdir, model_override=options.work_model, effort=options.work_effort, report=display.action
-    )
+    return compile.run(options.workdir, report=display.action)
 
 
 STAGE_ENTRIES: dict[str, Callable[[RunOptions, StageDisplay], Manifest]] = {
@@ -320,34 +296,6 @@ FromOpt = Annotated[
             f"starts at the first stage whose outputs are absent. Stage order: {' → '.join(STAGES)}"
         ),
     ),
-]
-AskModelOpt = Annotated[
-    str | None,
-    typer.Option(
-        "--ask-model",
-        metavar="PROVIDER/MODEL",
-        help=(
-            "override every ask role involved in this run (survey_terms, API translate); "
-            "PROVIDER is a \\[provider.*] name in config.toml"
-        ),
-    ),
-]
-AskEffortOpt = Annotated[
-    str | None, typer.Option("--ask-effort", metavar="LEVEL", help="reasoning effort, overrides every ask role")
-]
-WorkModelOpt = Annotated[
-    str | None,
-    typer.Option(
-        "--work-model",
-        metavar="RUNTIME/MODEL",
-        help=(
-            "override every work role involved in this run (Agent translate, review, precompile_fix, compile_fix); "
-            "RUNTIME is a \\[runtime.*] name in config.toml"
-        ),
-    ),
-]
-WorkEffortOpt = Annotated[
-    str | None, typer.Option("--work-effort", metavar="LEVEL", help="reasoning effort, overrides every work role")
 ]
 GlossaryOpt = Annotated[
     list[Path] | None,
@@ -412,10 +360,6 @@ def _paper_workdir(paper: str, workdir: Path | None) -> tuple[PaperInput, Workdi
 def _options(
     paper: str,
     workdir: Path | None,
-    ask_model: str | None,
-    ask_effort: str | None,
-    work_model: str | None,
-    work_effort: str | None,
     glossary: list[Path] | None,
     jobs: int,
     no_terms: bool,
@@ -425,10 +369,6 @@ def _options(
     return RunOptions(
         paper=paper_input,
         workdir=paper_workdir,
-        ask_model=ask_model,
-        ask_effort=ask_effort,
-        work_model=work_model,
-        work_effort=work_effort,
         glossary=tuple(glossary or ()),
         jobs=jobs,
         no_terms=no_terms,
@@ -528,10 +468,6 @@ def _run_stages(start: str, options: RunOptions) -> typer.Exit:
 def run(
     paper: PaperArg,
     from_stage: FromOpt = None,
-    ask_model: AskModelOpt = None,
-    ask_effort: AskEffortOpt = None,
-    work_model: WorkModelOpt = None,
-    work_effort: WorkEffortOpt = None,
     glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
     jobs: JobsOpt = DEFAULT_JOBS,
@@ -540,9 +476,7 @@ def run(
     dev: DevOpt = False,
 ) -> None:
     _apply_dev(dev)
-    options = _options(
-        paper, workdir, ask_model, ask_effort, work_model, work_effort, glossary, jobs, no_terms, no_review
-    )
+    options = _options(paper, workdir, glossary, jobs, no_terms, no_review)
     console.print(f"workdir {options.workdir.path}")
     if from_stage is not None:
         clean_from(options.workdir, from_stage.value)
@@ -569,10 +503,6 @@ def stage(
     paper: Annotated[
         str | None, typer.Argument(metavar="PAPER", help="arXiv id / arXiv URL / local source directory")
     ] = None,
-    ask_model: AskModelOpt = None,
-    ask_effort: AskEffortOpt = None,
-    work_model: WorkModelOpt = None,
-    work_effort: WorkEffortOpt = None,
     glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
     jobs: JobsOpt = DEFAULT_JOBS,
@@ -585,7 +515,7 @@ def stage(
         return
     if paper is None:
         raise typer.BadParameter("missing argument PAPER (arXiv id / arXiv URL / local source directory)")
-    options = _options(paper, workdir, ask_model, ask_effort, work_model, work_effort, glossary, jobs, no_terms)
+    options = _options(paper, workdir, glossary, jobs, no_terms)
     missing = [
         upstream for upstream in STAGES[: STAGES.index(name.value)] if not outputs_present(options.workdir, upstream)
     ]
@@ -681,49 +611,35 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
     config, detail = load_config()
     if config is None:
         return [
-            (CONFIG_CHECK_NAME, "providers, runtimes and roles", False, detail),
+            (CONFIG_CHECK_NAME, "providers, chunking, fonts and roles", False, detail),
             ("keys", "provider API keys", False, "cannot check: config.toml is unreadable"),
             ("runtimes", "runtime executables", False, "cannot check: config.toml is unreadable"),
         ]
-    rows = [(CONFIG_CHECK_NAME, "providers, runtimes and roles", True, str(config_path()))]
-    runtimes = _roles_refer_to(config, "runtime")
-    providers = _roles_refer_to(config, "provider")
-    for name in runtimes:
-        runtime = config.runtime.get(name)
-        if runtime is not None and runtime.provider is not None and runtime.provider not in providers:
-            providers.append(runtime.provider)
-    for name in providers:
-        provider = config.provider.get(name)
-        if provider is None:
-            rows.append(
-                (
-                    f"key {name}",
-                    "provider referenced by a role",
-                    False,
-                    f"provider {name} is not declared in config.toml",
-                )
-            )
+    rows = [(CONFIG_CHECK_NAME, "providers, chunking, fonts and roles", True, str(config_path()))]
+    targets: dict[str, Target] = {}
+    for role in config.roles:
+        target, detail = role_target(config, role)
+        if target is None:
+            rows.append((f"role {role}", "role entry", False, detail))
             continue
-        key, detail = provider_key(name, provider)
-        rows.append((f"key {name}", "provider API key", key is not None, detail))
-    for name in runtimes:
-        runtime = config.runtime.get(name)
-        if runtime is None:
-            rows.append(
-                (
-                    f"runtime {name}",
-                    "runtime referenced by a role",
-                    False,
-                    f"runtime {name} is not declared in config.toml",
-                )
-            )
+        targets.setdefault(target.backend, target)
+    for backend, target in targets.items():
+        if not target.is_runtime:
+            key, detail = provider_key(backend, config.provider[backend])
+            rows.append((f"key {backend}", "provider API key", key is not None, detail))
             continue
-        rows.append((f"runtime {name}", "session runtime executable", *_check_executable(runtime.command[0])))
+        runtime = RUNTIMES[backend]
+        found, detail = _check_executable(runtime.executable)
+        rows.append((f"runtime {backend}", "agent runtime executable", found, detail))
+        for tool in runtime.needs_on_path:
+            rows.append((tool, f"needed by {backend}", *_check_executable(tool)))
+        if found:
+            rows.append((f"login {backend}", "runtime login", *runtime.login_check(target, os.environ)))
+        else:
+            rows.append(
+                (f"login {backend}", "runtime login", False, f"cannot check: {runtime.executable} is not in PATH")
+            )
     return rows
-
-
-def _roles_refer_to(config: ModelsConfig, field: str) -> list[str]:
-    return list(dict.fromkeys(name for entry in config.roles.values() if (name := getattr(entry, field))))
 
 
 def _check_executable(name: str) -> tuple[bool, str]:
@@ -764,55 +680,16 @@ def _check_fonts() -> tuple[bool, str]:
 
 
 @app.command()
-def setup(
-    interactive: Annotated[bool, typer.Option("-i", help="interactively pick providers and fill API keys")] = False,
-    dev: DevOpt = False,
-) -> None:
+def setup(dev: DevOpt = False) -> None:
     _apply_dev(dev)
     path = config_path()
     if path.exists():
         console.print(f"config file {path} already exists; not overwriting. Edit that file to change the config.")
         return
-    text = _interactive_models_toml() if interactive else MODELS_TEMPLATE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_text(CONFIG_TEMPLATE, encoding="utf-8")
     path.chmod(0o600)
     console.print(f"wrote {path}.")
-
-
-def _interactive_models_toml() -> str:
-    template = tomllib.loads(MODELS_TEMPLATE)
-    keys: dict[str, str] = {}
-    for name in template["provider"]:
-        if typer.confirm(f"configure {name}?", default=False):
-            keys[name] = typer.prompt(f"API key for {name}", hide_input=True)
-    if not keys:
-        console.print("no provider chosen. At least one is needed to call models; run tongtu setup -i again.")
-        raise typer.Exit(EXIT_USAGE)
-    ask_roles = [role for role, entry in template["roles"].items() if "provider" in entry]
-    return _fill_template(keys, ask_roles)
-
-
-def _fill_template(keys: dict[str, str], ask_roles: list[str]) -> str:
-    chosen = next(iter(keys))
-    section = ""
-    provider_name = ""
-    lines = []
-    for line in MODELS_TEMPLATE.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("["):
-            section = stripped.strip("[]")
-            if section.startswith("provider."):
-                provider_name = section.split(".")[1]
-        elif section.startswith("provider.") and stripped.startswith("api_key ") and provider_name in keys:
-            line = line.replace('""', json.dumps(keys[provider_name]), 1)
-        elif (
-            section == "roles" and stripped.split("=")[0].strip() in ask_roles and f'provider = "{chosen}"' not in line
-        ):
-            line = re.sub(r'provider = "[^"]*"', f'provider = "{chosen}"', line)
-            line = re.sub(r'model = "[^"]*"', f'model = "{DEFAULT_ASK_MODEL[chosen]}"', line)
-        lines.append(line)
-    return "\n".join(lines) + "\n"
 
 
 def main() -> None:

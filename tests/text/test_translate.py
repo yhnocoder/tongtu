@@ -33,7 +33,7 @@ MODEL = "p/m"
 def role_config() -> ModelsConfig:
     return ModelsConfig(
         provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
-        roles={translate.ROLE: RoleConfig(model="m", effort="low", provider="p")},
+        roles={translate.ROLE: RoleConfig(model="p/m", effort="low")},
     )
 
 
@@ -136,13 +136,24 @@ def test_a_chunk_translated_on_the_first_try(tmp_path: Path, monkeypatch: pytest
     assert manifest.warnings == []
 
 
-def test_the_command_line_overrides_reach_ask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_first_attempt_uses_the_configured_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = wire_ask(monkeypatch)
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1, ask_model="p/other", ask_effort="high")
-    assert calls[0]["model"] == "p/other"
-    assert calls[0]["effort"] == "high"
-    assert (manifest.model, manifest.effort) == (MODEL, "high")
+    manifest = translate.run(workdir, jobs=1)
+    assert "model" not in calls[0]
+    assert calls[0]["effort"] is None
+    assert (manifest.model, manifest.effort) == (MODEL, "low")
+
+
+def test_a_role_without_effort_records_an_empty_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = ModelsConfig(
+        provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
+        roles={translate.ROLE: RoleConfig(model="p/m")},
+    )
+    monkeypatch.setattr(translate, "load_config", lambda: (config, ""))
+    wire_ask(monkeypatch)
+    manifest = translate.run(make_workdir(tmp_path, ["Hello world.\n"]), jobs=1)
+    assert (manifest.model, manifest.effort) == (MODEL, "")
 
 
 def test_a_failed_check_is_retried_in_the_same_conversation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,6 +180,8 @@ def test_a_failed_check_is_retried_in_the_same_conversation(tmp_path: Path, monk
     assert "只输出译文本身" in retry
     assert calls[1]["log_path"] == workdir.logs / "translate-c000-2.json"
     assert calls[1]["system"] == calls[0]["system"]
+    assert calls[0]["effort"] is None
+    assert calls[1]["effort"] == translate.RETRY_EFFORT == "low"
     assert translated(workdir, "c000") == "你好 $x$ 世界。\n"
 
 
@@ -502,12 +515,7 @@ def test_report_absent_changes_nothing(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def agent_config() -> ModelsConfig:
-    from tongtu.model.config import RuntimeConfig
-
-    return ModelsConfig(
-        runtime={"codex": RuntimeConfig(skill_path=".codex/skills/{role}", command=["codex", "exec"])},
-        roles={translate.ROLE: RoleConfig(model="astra", effort="light", runtime="codex", timeout_seconds=60)},
-    )
+    return ModelsConfig(roles={translate.ROLE: RoleConfig(model="codex/m", effort="high", timeout_seconds=60)})
 
 
 def test_agent_translation_retries_against_original_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -530,15 +538,16 @@ def test_agent_translation_retries_against_original_source(tmp_path: Path, monke
 
     monkeypatch.setattr(translate, "work", run_agent)
     workdir = make_workdir(tmp_path, ["\nHello ⟦BLK-0⟧.\n"])
-    manifest = translate.run(workdir, jobs=1, work_model="codex/astra", work_effort="light")
+    manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
     assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
     assert manifest.chunks["c000"].attempts == 2
     assert manifest.model == "codex/gpt-6-astra"
-    assert manifest.effort == "low"
+    assert manifest.effort == "high"
     assert translated(workdir, "c000") == "\n你好 ⟦BLK-0⟧。\n"
-    assert calls[0]["model"] == "codex/astra"
-    assert calls[0]["effort"] == "light"
+    assert "model" not in calls[0]
+    assert calls[0]["effort"] is None
+    assert calls[1]["effort"] == translate.RETRY_EFFORT
     assert calls[0]["workdir"] != calls[1]["workdir"]
     assert calls[0]["trace_path"] == workdir.logs / "translate-c000-1.jsonl"
 
@@ -571,10 +580,9 @@ def test_agent_failure_falls_back_without_accepting_output(
     assert translated(workdir, "c000") == "Hello.\n"
 
 
-def test_translate_rejects_ambiguous_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = agent_config()
-    config.roles[translate.ROLE].provider = "p"
+def test_translate_rejects_an_undeclared_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = ModelsConfig(roles={translate.ROLE: RoleConfig(model="ghost/m")})
     monkeypatch.setattr(translate, "load_config", lambda: (config, ""))
     manifest = translate.run(make_workdir(tmp_path, ["Hello."]), jobs=1)
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert "exactly one" in manifest.message
+    assert "provider ghost" in manifest.message

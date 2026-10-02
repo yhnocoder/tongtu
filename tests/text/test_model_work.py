@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import shutil
 import sys
 from collections.abc import Callable
@@ -10,65 +9,36 @@ from pathlib import Path
 import pytest
 
 from tongtu import fonts
-from tongtu.model.work import StopReason, work
+from tongtu.model.work import PROMPT, StopReason, skill_path, work
 from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
 work_module = importlib.import_module("tongtu.model.work")
 
-EXECUTABLES = {"runner": "/fake/bin/runner", "other-runner": "/fake/bin/other-runner", "xelatex": "/tex/bin/xelatex"}
+EXECUTABLES = {
+    "codex": "/fake/bin/codex",
+    "claude": "/fake/bin/claude",
+    "pi": "/fake/node/bin/pi",
+    "node": "/fake/node/bin/node",
+    "xelatex": "/tex/bin/xelatex",
+}
 
 TABLE = """
-[runtime.demo]
-skill_path = ".agent/skills/{role}"
-events = "stream-json"
-command = ["runner", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}", "--allowedTools", "Read,Edit,Bash", "--settings", "{settings}"]
-settings = { sandbox = { enabled = true, network = { allowedDomains = [] } } }
-
-[runtime.other]
-skill_path = ".other/{role}"
-command = ["other-runner", "--model", "{model}", "--effort", "{effort}"]
-
-[provider.gateway]
-base_url = "https://gateway.example"
-api_key_env = "GATEWAY_KEY"
-
-[runtime.demo_gateway]
-provider = "gateway"
-skill_path = ".agent/skills/{role}"
-command = ["runner", "--model", "{model}", "--base-url", "{base_url}"]
-env = { API_BASE = "{base_url}", API_KEY = "{api_key}", MODEL = "{model}" }
-
-[runtime.temp_gateway]
-provider = "gateway"
-skill_path = ".agent/skills/{role}"
-command = ["runner", "--home", "{tmp_dir}"]
-env = { CODEX_HOME = "{tmp_dir}", API_KEY = "{api_key}" }
-
-[runtime.ghost_gateway]
-provider = "nowhere"
-skill_path = ".agent/skills/{role}"
-command = ["runner", "--base-url", "{base_url}"]
-
-[runtime.unbound_gateway]
-skill_path = ".agent/skills/{role}"
-command = ["runner", "--base-url", "{base_url}"]
-
-[runtime.bare_settings]
-skill_path = ".bare/{role}"
-command = ["runner", "--settings", "{settings}"]
+[provider.demo]
+base_url = "https://demo.example"
+api = "chat"
 
 [roles]
-smoke = { runtime = "demo", model = "m1", effort = "high", max_turns = 4, timeout_seconds = 60 }
-bare = { runtime = "demo", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
-lost = { runtime = "nowhere", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
-unsettled = { runtime = "bare_settings", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
-gated = { runtime = "demo_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
-homed = { runtime = "temp_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
-ghosted = { runtime = "ghost_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
-unbound = { runtime = "unbound_gateway", model = "m1", effort = "low", max_turns = 2, timeout_seconds = 30 }
-asker = { provider = "demo", model = "m1", effort = "low" }
-halfway = { runtime = "demo", model = "m1", effort = "low" }
+smoke = { model = "codex/m1", effort = "high", timeout_seconds = 60 }
+claude = { model = "claude-code/m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
+pi = { model = "pi/p/m1", effort = "low", timeout_seconds = 60 }
+bare_pi = { model = "pi", timeout_seconds = 60 }
+bare_codex = { model = "codex", timeout_seconds = 60 }
+asker = { model = "demo/m1", effort = "low" }
+halfway = { model = "claude-code/m1", effort = "low", timeout_seconds = 60 }
+untimed = { model = "codex/m1", effort = "low" }
 """
+
+ROLES = ("smoke", "claude", "pi", "bare_pi", "bare_codex", "halfway", "untimed")
 
 
 @pytest.fixture
@@ -78,12 +48,17 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
-    for role in ("smoke", "bare", "gated", "homed"):
+    for role in ROLES:
         (skill_root / role).mkdir(parents=True, exist_ok=True)
         (skill_root / role / "SKILL.md").write_text(f"{role} 的做法", encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
     monkeypatch.setattr(shutil, "which", lambda name: EXECUTABLES.get(name))
-    monkeypatch.delenv("TONGTU_NESTED_SANDBOX", raising=False)
+    login = tmp_path / "codex"
+    login.mkdir()
+    (login / "auth.json").write_text('{"test":true}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(login))
+    for variable in ("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(variable, raising=False)
     (tmp_path / "paper").mkdir()
     return tmp_path
 
@@ -112,6 +87,7 @@ def record_run(
             env=env,
             python_bin_entries=[entry.name for entry in python_bin.iterdir()],
             python3_target=(python_bin / "python3").resolve(),
+            codex_home_existed=Path(env["CODEX_HOME"]).is_dir() if "CODEX_HOME" in env else None,
         )
         if isinstance(outcome, Exception):
             raise outcome
@@ -126,7 +102,9 @@ def finished() -> ProcessOutcome:
     return ProcessOutcome(returncode=0, stdout=b"", stderr=b"", timed_out=False, duration_seconds=1.0)
 
 
-def test_finished_session_copies_skill_and_fills_command(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_finished_codex_session_copies_skill_and_builds_the_command(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
     workdir = configured / "paper"
@@ -134,47 +112,76 @@ def test_finished_session_copies_skill_and_fills_command(configured: Path, monke
     outcome = work("smoke", workdir, trace_path=trace_path)
     assert outcome.stop_reason == StopReason.FINISHED
     assert outcome.detail == ""
-    assert outcome.model == "demo/m1"
-    assert (workdir / ".agent" / "skills" / "smoke" / "SKILL.md").read_text(encoding="utf-8") == "smoke 的做法"
-    assert recorded["command"] == [
-        "/fake/bin/runner",
-        "--model",
-        "m1",
-        "--effort",
-        "high",
-        "--max-turns",
-        "4",
-        "--allowedTools",
-        "Read,Edit,Bash",
-        "--settings",
-        '{"sandbox":{"enabled":true,"network":{"allowedDomains":[]}}}',
-    ]
+    assert outcome.model == "codex/m1"
+    assert (workdir / ".codex" / "skills" / "smoke" / "SKILL.md").read_text(encoding="utf-8") == "smoke 的做法"
+    command = recorded["command"]
+    assert command[:3] == ["/fake/bin/codex", "exec", "--json"]
+    assert command[command.index("-m") + 1] == "m1"
+    assert 'model_reasoning_effort="high"' in command
     assert recorded["cwd"] == workdir
     assert recorded["timeout_seconds"] == 60
-    assert (
-        recorded["input_bytes"].decode("utf-8")
-        == "读 .agent/skills/smoke/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
-    )
+    assert recorded["input_bytes"].decode("utf-8") == PROMPT.format(skill_path=".codex/skills/smoke")
+    assert recorded["input_bytes"].decode("utf-8").startswith("读 .codex/skills/smoke/SKILL.md")
     assert trace_path.read_bytes() == b'{"type":"result"}\n'
 
 
-def test_settings_are_filled_as_json(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bare_codex_passes_no_model(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
-    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
-    filled = recorded["command"][recorded["command"].index("--settings") + 1]
-    assert json.loads(filled) == {"sandbox": {"enabled": True, "network": {"allowedDomains": []}}}
+    outcome = work("bare_codex", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert outcome.model == "codex"
+    assert "-m" not in recorded["command"]
+    assert not any("model_reasoning_effort" in part for part in recorded["command"])
 
 
-def test_nested_sandbox_variable_weakens_sandbox_settings(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_claude_session_builds_the_command(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
-    monkeypatch.setenv("TONGTU_NESTED_SANDBOX", "1")
-    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
-    filled = recorded["command"][recorded["command"].index("--settings") + 1]
-    assert json.loads(filled) == {
-        "sandbox": {"enabled": True, "network": {"allowedDomains": []}, "enableWeakerNestedSandbox": True}
-    }
+    workdir = configured / "paper"
+    outcome = work("claude", workdir, trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert outcome.model == "claude-code/m1"
+    command = recorded["command"]
+    assert command[:6] == ["/fake/bin/claude", "-p", "--model", "m1", "--effort", "low"]
+    assert command[command.index("--max-turns") + 1] == "4"
+    assert (workdir / ".claude" / "skills" / "claude" / "SKILL.md").is_file()
+    assert recorded["input_bytes"].decode("utf-8") == PROMPT.format(skill_path=".claude/skills/claude")
+
+
+def test_pi_session_puts_the_prompt_in_argv_and_node_on_path(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    workdir = configured / "paper"
+    outcome = work("pi", workdir, trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert outcome.model == "pi/p/m1"
+    command = recorded["command"]
+    assert command[:4] == ["/fake/node/bin/pi", "-p", "--mode", "json"]
+    assert command[command.index("--model") + 1] == "p/m1"
+    assert command[command.index("--thinking") + 1] == "low"
+    assert command[command.index("--skill") + 1] == str(workdir / ".pi" / "skills" / "pi")
+    assert command[-2:] == ["--", PROMPT.format(skill_path=".pi/skills/pi")]
+    assert recorded["input_bytes"] == b""
+    assert recorded["env"]["PATH"].split(":")[1:] == [
+        "/tex/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        "/fake/node/bin",
+    ]
+    assert (workdir / ".pi" / "skills" / "pi" / "SKILL.md").is_file()
+
+
+def test_bare_pi_passes_no_model(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    outcome = work("bare_pi", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert outcome.model == "pi"
+    assert "--model" not in recorded["command"]
+    assert "--thinking" not in recorded["command"]
 
 
 def assert_path_starts_with_the_base_interpreter(recorded: dict, rest: str) -> None:
@@ -201,27 +208,6 @@ def test_session_environment_carries_the_font_search_path(configured: Path, monk
         assert recorded["env"][variable] == f"{fonts.FONTS_DIR}//:"
 
 
-def test_session_environment_keeps_claude_code_remote_without_provider(
-    configured: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    recorded: dict = {}
-    record_run(monkeypatch, recorded, finished())
-    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
-    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert recorded["env"]["CLAUDE_CODE_REMOTE"] == "true"
-
-
-def test_session_environment_drops_claude_code_remote_with_provider(
-    configured: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    recorded: dict = {}
-    record_run(monkeypatch, recorded, finished())
-    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
-    monkeypatch.setenv("GATEWAY_KEY", "gateway-key")
-    work("gated", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert "CLAUDE_CODE_REMOTE" not in recorded["env"]
-
-
 def test_session_environment_without_tex(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
@@ -230,17 +216,68 @@ def test_session_environment_without_tex(configured: Path, monkeypatch: pytest.M
     assert_path_starts_with_the_base_interpreter(recorded, "/usr/bin:/bin:/usr/sbin:/sbin")
 
 
-def test_runtime_without_settings_table_is_error(configured: Path) -> None:
-    outcome = work("unsettled", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "settings" in outcome.detail
+def test_codex_session_uses_a_temporary_home_with_the_login_link(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_API_KEY", "must-not-inherit")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-inherit")
+    monkeypatch.setenv("OPENAI_BASE_URL", "must-not-inherit")
+    (configured / "codex" / "config.toml").write_text('sandbox_mode="danger-full-access"', encoding="utf-8")
+    seen: dict = {}
+
+    def run_session(*args: object, **kwargs: object) -> ProcessOutcome:
+        env = kwargs["env"]
+        home = Path(env["CODEX_HOME"])
+        seen["home"] = home
+        assert home != configured / "codex"
+        assert (home / "auth.json").resolve() == (configured / "codex" / "auth.json").resolve()
+        assert not (home / "config.toml").exists()
+        for variable in ("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"):
+            assert variable not in env
+        assert kwargs["input_bytes"] == b"read task.md"
+        scratch = Path(env["TMPDIR"])
+        assert scratch.is_dir()
+        assert scratch.parent == (configured / "paper").resolve()
+        assert env["TMP"] == env["TEMP"] == env["TMPDIR"]
+        return finished()
+
+    monkeypatch.setattr(work_module, "run_in_process_group", run_session)
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", prompt="read task.md")
+    assert outcome.stop_reason is StopReason.FINISHED
+    assert not seen["home"].exists()
+    assert (configured / "codex" / "auth.json").read_text(encoding="utf-8") == '{"test":true}'
+
+
+def test_codex_missing_login_does_not_start_session(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    monkeypatch.setenv("CODEX_HOME", str(configured / "missing-login"))
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason is StopReason.ERROR
+    assert "codex login" in outcome.detail
+    assert outcome.model == "codex/m1"
+    assert recorded == {}
+    assert not (configured / "trace.jsonl").exists()
+
+
+def test_claude_session_drops_anthropic_variables(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-inherit")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    work("claude", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert "ANTHROPIC_API_KEY" not in recorded["env"]
+    assert "CLAUDE_CODE_USE_BEDROCK" not in recorded["env"]
+    assert recorded["env"]["CLAUDE_CODE_REMOTE"] == "true"
+    assert recorded["codex_home_existed"] is True
 
 
 def test_skill_copy_keeps_files_already_in_the_destination(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
     workdir = configured / "paper"
-    destination = workdir / ".agent" / "skills" / "smoke"
+    destination = workdir / ".codex" / "skills" / "smoke"
     destination.mkdir(parents=True)
     (destination / "validate.py").write_text("现场先放好的工具", encoding="utf-8")
     work("smoke", workdir, trace_path=configured / "trace.jsonl")
@@ -257,7 +294,7 @@ def test_timeout_is_reported(configured: Path, monkeypatch: pytest.MonkeyPatch) 
     )
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.TIMEOUT
-    assert outcome.model == "demo/m1"
+    assert outcome.model == "codex/m1"
 
 
 def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,13 +316,72 @@ def test_non_zero_exit_is_error(configured: Path, monkeypatch: pytest.MonkeyPatc
     assert outcome.detail.endswith("运行时报错")
 
 
+CODEX_FAILED = '{"type":"turn.failed","error":{"message":"codex 报错"}}\n'.encode()
+
+CLAUDE_FAILED = '{"type":"result","subtype":"success","is_error":true,"result":"claude 报错"}\n'.encode()
+
+PI_FAILED = (
+    '{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"pi 报错"}}\n'.encode()
+)
+
+
+@pytest.mark.parametrize(
+    ("role", "lines", "detail"),
+    [
+        ("smoke", (b'{"type":"turn.started"}\n', CODEX_FAILED), "codex 报错"),
+        ("claude", (b'{"type":"system","subtype":"init"}\n', CLAUDE_FAILED), "claude 报错"),
+        ("pi", (b'{"type":"agent_start"}\n', PI_FAILED, b'{"type":"agent_end"}\n'), "error: pi 报错"),
+    ],
+)
+def test_a_failure_event_is_error_even_with_exit_zero(
+    configured: Path, monkeypatch: pytest.MonkeyPatch, role: str, lines: tuple[bytes, ...], detail: str
+) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished(), lines=lines)
+    trace_path = configured / "trace.jsonl"
+    outcome = work(role, configured / "paper", trace_path=trace_path)
+    assert outcome.stop_reason == StopReason.ERROR
+    assert outcome.detail == detail
+    assert trace_path.read_bytes() == b"".join(lines)
+
+
+def test_the_last_failure_event_wins(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    first = b'{"type":"turn.failed","error":{"message":"first"}}\n'
+    second = b'{"type":"turn.failed","error":{"message":"second"}}\n'
+    record_run(monkeypatch, recorded, finished(), lines=(first, second))
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert outcome.detail == "second"
+
+
+def test_a_success_result_with_exit_zero_is_finished(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(
+        monkeypatch,
+        recorded,
+        finished(),
+        lines=(b'{"type":"result","subtype":"success","is_error":false,"result":"done"}\n',),
+    )
+    outcome = work("claude", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+
+
 def test_runtime_not_on_path_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "PATH" in outcome.detail
-    assert "runner" in outcome.detail
-    assert outcome.model == "demo/m1"
+    assert "codex" in outcome.detail
+    assert outcome.model == "codex/m1"
+
+
+def test_pi_without_node_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "node" else EXECUTABLES.get(name))
+    outcome = work("pi", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "node is not in PATH" in outcome.detail
+    assert "runtime pi" in outcome.detail
 
 
 def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -293,7 +389,7 @@ def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.Mo
     record_run(monkeypatch, recorded, FileNotFoundError("现场不存在"))
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
-    assert "/fake/bin/runner" in outcome.detail
+    assert "/fake/bin/codex" in outcome.detail
 
 
 def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,51 +407,35 @@ def test_unknown_role_is_error(configured: Path) -> None:
     assert outcome.model == ""
 
 
-def test_role_without_runtime_is_error(configured: Path) -> None:
+def test_role_pointing_at_a_provider_is_error(configured: Path) -> None:
     outcome = work("asker", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
+    assert "provider demo" in outcome.detail
     assert "runtime" in outcome.detail
+    assert outcome.model == ""
 
 
-def test_role_without_session_limits_is_error(configured: Path) -> None:
+def test_role_without_timeout_is_error(configured: Path) -> None:
+    outcome = work("untimed", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "timeout_seconds" in outcome.detail
+    assert "max_turns" not in outcome.detail
+
+
+def test_claude_role_without_max_turns_is_error(configured: Path) -> None:
     outcome = work("halfway", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "max_turns" in outcome.detail
+    assert "timeout_seconds" not in outcome.detail
 
 
-def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_effort_argument_is_applied(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
-    workdir = configured / "paper"
-    outcome = work(
-        "smoke",
-        workdir,
-        trace_path=configured / "trace.jsonl",
-        model="other/m9",
-        effort="low",
-    )
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", effort="low")
     assert outcome.stop_reason == StopReason.FINISHED
-    assert outcome.model == "other/m9"
-    assert recorded["command"] == ["/fake/bin/other-runner", "--model", "m9", "--effort", "low"]
-    assert (workdir / ".other" / "smoke" / "SKILL.md").is_file()
-
-
-def test_model_override_without_slash_is_error(configured: Path) -> None:
-    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", model="m9")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "runtime/model" in outcome.detail
-
-
-def test_model_override_with_unknown_runtime_is_error(configured: Path) -> None:
-    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", model="ghost/m9")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "ghost" in outcome.detail
-
-
-def test_unknown_runtime_is_error(configured: Path) -> None:
-    outcome = work("lost", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "nowhere" in outcome.detail
+    assert 'model_reasoning_effort="low"' in recorded["command"]
+    assert 'model_reasoning_effort="high"' not in recorded["command"]
 
 
 def test_missing_skill_directory_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,73 +443,6 @@ def test_missing_skill_directory_is_error(configured: Path, monkeypatch: pytest.
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "skill" in outcome.detail
-
-
-def test_provider_fills_command_and_session_environment(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GATEWAY_KEY", "gateway-key")
-    recorded: dict = {}
-    record_run(monkeypatch, recorded, finished())
-    outcome = work("gated", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.FINISHED
-    assert recorded["command"] == ["/fake/bin/runner", "--model", "m1", "--base-url", "https://gateway.example"]
-    assert recorded["env"]["API_BASE"] == "https://gateway.example"
-    assert recorded["env"]["API_KEY"] == "gateway-key"
-    assert recorded["env"]["MODEL"] == "m1"
-    assert recorded["env"]["TONGTU_DISABLE"] == "1"
-    assert_path_starts_with_the_base_interpreter(recorded, "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin")
-
-
-def test_runtime_without_provider_adds_no_environment(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded: dict = {}
-    record_run(monkeypatch, recorded, finished())
-    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert "API_BASE" not in recorded["env"]
-    assert "API_KEY" not in recorded["env"]
-
-
-def test_runtime_provider_not_declared_is_error(configured: Path) -> None:
-    outcome = work("ghosted", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "nowhere" in outcome.detail
-
-
-def test_provider_without_key_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("GATEWAY_KEY", raising=False)
-    outcome = work("gated", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "GATEWAY_KEY" in outcome.detail
-
-
-def test_placeholder_without_provider_is_error(configured: Path) -> None:
-    outcome = work("unbound", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "provider" in outcome.detail
-
-
-def test_temporary_directory_is_filled_and_removed(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GATEWAY_KEY", "gateway-key")
-    seen: dict = {}
-
-    def fake_run(
-        command: list[str],
-        cwd: Path,
-        timeout_seconds: float,
-        *,
-        input_bytes: bytes,
-        env: dict[str, str],
-        on_stdout_line: Callable[[bytes], None],
-    ) -> ProcessOutcome:
-        seen.update(command=command, env=env, existed=Path(env["CODEX_HOME"]).is_dir())
-        return finished()
-
-    monkeypatch.setattr(work_module, "run_in_process_group", fake_run)
-    outcome = work("homed", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.FINISHED
-    tmp_dir = seen["env"]["CODEX_HOME"]
-    assert Path(tmp_dir).is_absolute()
-    assert seen["command"] == ["/fake/bin/runner", "--home", tmp_dir]
-    assert seen["existed"]
-    assert not Path(tmp_dir).exists()
 
 
 ACTION_LINE = (
@@ -442,79 +455,51 @@ def test_report_receives_parsed_actions(configured: Path, monkeypatch: pytest.Mo
     record_run(monkeypatch, recorded, finished(), lines=(ACTION_LINE, b'{"type":"result"}\n'))
     trace_path = configured / "trace.jsonl"
     actions: list[str] = []
-    outcome = work("smoke", configured / "paper", trace_path=trace_path, report=actions.append)
+    outcome = work("claude", configured / "paper", trace_path=trace_path, report=actions.append)
     assert outcome.stop_reason == StopReason.FINISHED
     assert actions == ["Bash: ls"]
     assert trace_path.read_bytes() == ACTION_LINE + b'{"type":"result"}\n'
 
 
-def test_report_without_events_field_stays_silent(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_report_receives_pi_actions(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
-    record_run(monkeypatch, recorded, finished(), lines=(ACTION_LINE,))
+    line = b'{"type":"tool_execution_start","toolName":"bash","args":{"command":"ls"}}\n'
+    record_run(monkeypatch, recorded, finished(), lines=(line, b"not json\n"))
     actions: list[str] = []
-    outcome = work(
-        "smoke", configured / "paper", trace_path=configured / "trace.jsonl", model="other/m9", report=actions.append
-    )
+    outcome = work("pi", configured / "paper", trace_path=configured / "trace.jsonl", report=actions.append)
     assert outcome.stop_reason == StopReason.FINISHED
-    assert actions == []
+    assert actions == ["bash: ls"]
 
 
 def test_without_report_the_trace_is_still_written(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished(), lines=(ACTION_LINE,))
     trace_path = configured / "trace.jsonl"
-    outcome = work("smoke", configured / "paper", trace_path=trace_path)
+    outcome = work("claude", configured / "paper", trace_path=trace_path)
     assert outcome.stop_reason == StopReason.FINISHED
     assert trace_path.read_bytes() == ACTION_LINE
 
 
-def test_codex_login_isolated_home_and_custom_prompt(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config, _ = work_module.load_config()
-    assert config is not None
-    runtime = config.runtime["demo"]
-    runtime.auth = "codex"
-    runtime.command = ["runner", "--model", "{model}"]
-    config.roles["smoke"].max_turns = None
-    monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
-    auth_home = configured / "login"
-    auth_home.mkdir()
-    (auth_home / "auth.json").write_text('{"test":true}')
-    (auth_home / "config.toml").write_text('sandbox_mode="danger-full-access"')
-    monkeypatch.setenv("CODEX_HOME", str(auth_home))
-    monkeypatch.setenv("CODEX_API_KEY", "must-not-inherit")
-    monkeypatch.setenv("OPENAI_API_KEY", "must-not-inherit")
-    homes: list[Path] = []
-
-    def run_session(*args: object, **kwargs: object) -> ProcessOutcome:
-        env = kwargs["env"]
-        home = Path(env["CODEX_HOME"])
-        homes.append(home)
-        assert home != auth_home
-        assert (home / "auth.json").resolve() == auth_home / "auth.json"
-        assert not (home / "config.toml").exists()
-        assert "CODEX_API_KEY" not in env
-        assert "OPENAI_API_KEY" not in env
-        assert kwargs["input_bytes"] == b"read task.md"
-        scratch = Path(env["TMPDIR"])
-        assert scratch.is_dir()
-        assert scratch.parent == (configured / "paper").resolve()
-        assert env["TMP"] == env["TEMP"] == env["TMPDIR"]
-        return finished()
-
-    monkeypatch.setattr(work_module, "run_in_process_group", run_session)
-    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl", prompt="read task.md")
-    assert outcome.stop_reason is StopReason.FINISHED
-    assert homes and not homes[0].exists()
-    assert (auth_home / "auth.json").read_text() == '{"test":true}'
+def test_skill_path_follows_the_runtime(configured: Path) -> None:
+    assert skill_path("smoke") == (".codex/skills/smoke", "")
+    assert skill_path("claude") == (".claude/skills/claude", "")
+    assert skill_path("pi") == (".pi/skills/pi", "")
 
 
-def test_codex_missing_login_does_not_start_session(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config, _ = work_module.load_config()
-    assert config is not None
-    config.runtime["demo"].auth = "codex"
-    monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
-    monkeypatch.setenv("CODEX_HOME", str(configured / "missing-login"))
-    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason is StopReason.ERROR
-    assert "codex login" in outcome.detail
-    assert not (configured / "trace.jsonl").exists()
+def test_skill_path_reports_a_provider_role(configured: Path) -> None:
+    path, detail = skill_path("asker")
+    assert path is None
+    assert "provider demo" in detail
+
+
+def test_skill_path_reports_an_unknown_role(configured: Path) -> None:
+    path, detail = skill_path("nobody")
+    assert path is None
+    assert "nobody" in detail
+
+
+def test_skill_path_reports_a_missing_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    path, detail = skill_path("smoke")
+    assert path is None
+    assert "tongtu setup" in detail

@@ -87,12 +87,10 @@ def fix(
     trace_path: Path,
     main_filename: str,
     warnings: list[str],
-    model_override: str | None,
-    effort: str | None,
     report: Callable[[str], None] | None = None,
 ) -> FixSession:
     started = time.monotonic()
-    outcome = model.work(role, tree, trace_path=trace_path, model=model_override, effort=effort, report=report)
+    outcome = model.work(role, tree, trace_path=trace_path, report=report)
     session = FixSession(
         stop_reason=str(outcome.stop_reason),
         model=outcome.model,
@@ -113,8 +111,6 @@ def compile_with_fix(
     main_filename: str,
     trace_path: Path,
     warnings: list[str],
-    model_override: str | None,
-    effort: str | None,
     report: Callable[[str, str], None],
     *,
     fix_session: FixSession | None = None,
@@ -148,8 +144,6 @@ def compile_with_fix(
         trace_path,
         main_filename,
         warnings,
-        model_override,
-        effort,
         report=lambda action: report("fix session", action),
     )
     warnings.extend(clean_tree(tree, main_filename))

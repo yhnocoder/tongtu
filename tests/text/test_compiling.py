@@ -133,8 +133,6 @@ def wire_work(monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=Non
         workdir: Path,
         *,
         trace_path: Path,
-        model: str | None = None,
-        effort: str | None = None,
         report=None,
     ):
         calls.append(
@@ -142,8 +140,6 @@ def wire_work(monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=Non
                 "role": role,
                 "workdir": workdir,
                 "trace_path": trace_path,
-                "model": model,
-                "effort": effort,
                 "report": report,
             }
         )
@@ -171,7 +167,7 @@ def test_fix_passes_the_role_and_tree(tmp_path: Path, monkeypatch: pytest.Monkey
     src, tree = make_tree(tmp_path)
     calls = wire_work(monkeypatch, StopReason.FINISHED)
     warnings: list[str] = []
-    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, "rt/m", "high")
+    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings)
     assert session.stop_reason == "finished"
     assert session.model == "rt/m1"
     assert session.duration_seconds >= 0
@@ -181,8 +177,6 @@ def test_fix_passes_the_role_and_tree(tmp_path: Path, monkeypatch: pytest.Monkey
             "role": "compile_fix",
             "workdir": tree,
             "trace_path": tmp_path / "trace.jsonl",
-            "model": "rt/m",
-            "effort": "high",
             "report": None,
         }
     ]
@@ -196,7 +190,7 @@ def test_fix_forwards_the_report_callback(tmp_path: Path, monkeypatch: pytest.Mo
     def report(action: str) -> None:
         return None
 
-    compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None, report=report)
+    compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, report=report)
     assert calls[0]["report"] is report
 
 
@@ -207,7 +201,7 @@ def test_fix_warns_on_error_and_timeout(
     src, tree = make_tree(tmp_path)
     wire_work(monkeypatch, stop_reason)
     warnings: list[str] = []
-    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, None, None)
+    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings)
     assert session.stop_reason == str(stop_reason)
     assert session.model == "rt/m1"
     assert len(warnings) == 1
@@ -232,8 +226,6 @@ def call_compile_with_fix(
         "zh.tex",
         tmp_path / "trace.jsonl",
         warnings,
-        None,
-        None,
         report or (lambda status, summary: None),
     )
 

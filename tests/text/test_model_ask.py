@@ -32,15 +32,18 @@ api_key = "written-key"
 api = "chat"
 
 [roles]
-chat_role = { provider = "demo", model = "chat-model", effort = "low" }
-responses_role = { provider = "demo", model = "responses-model", effort = "high" }
-messages_role = { provider = "demo", model = "messages-model", effort = "medium" }
-messages_xhigh_role = { provider = "demo", model = "messages-model", effort = "xhigh" }
-unknown_model_role = { provider = "demo", model = "other-model", effort = "low" }
-ghost_role = { provider = "ghost", model = "chat-model", effort = "low" }
-odd_role = { provider = "odd", model = "any-model", effort = "low" }
-inline_role = { provider = "inline", model = "chat-model", effort = "low" }
-work_role = { runtime = "claude_code", model = "m", effort = "low", max_turns = 4, timeout_seconds = 60 }
+chat_role = { model = "demo/chat-model", effort = "low" }
+responses_role = { model = "demo/responses-model", effort = "high" }
+messages_role = { model = "demo/messages-model", effort = "medium" }
+messages_xhigh_role = { model = "demo/messages-model", effort = "xhigh" }
+chat_plain_role = { model = "demo/chat-model" }
+responses_plain_role = { model = "demo/responses-model" }
+messages_plain_role = { model = "demo/messages-model" }
+unknown_model_role = { model = "demo/other-model", effort = "low" }
+ghost_role = { model = "ghost/chat-model", effort = "low" }
+odd_role = { model = "odd/any-model", effort = "low" }
+inline_role = { model = "inline/chat-model", effort = "low" }
+work_role = { model = "claude-code/m", effort = "low", max_turns = 4, timeout_seconds = 60 }
 """
 
 MESSAGES = [("user", "把下面这句话译成中文：Hello, world.")]
@@ -210,17 +213,10 @@ def test_messages_request_shape(configured: Path, monkeypatch: pytest.MonkeyPatc
     assert read_log(configured / "log.json")["finish_reason"] == "end_turn"
 
 
-def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_effort_argument_is_applied(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     monkeypatch.setattr(anthropic, "Anthropic", anthropic_stub(recorded, messages_response("你好")))
-    outcome = ask(
-        "chat_role",
-        "系统",
-        MESSAGES,
-        log_path=configured / "log.json",
-        model="demo/messages-model",
-        effort="low",
-    )
+    outcome = ask("messages_role", "系统", MESSAGES, log_path=configured / "log.json", effort="low")
     assert outcome.status == AskStatus.OK
     assert outcome.model == "demo/messages-model"
     assert recorded["model"] == "messages-model"
@@ -231,16 +227,38 @@ def test_model_and_effort_overrides_are_applied(configured: Path, monkeypatch: p
     assert record["effort"] == "low"
 
 
-def test_model_override_without_slash_is_error(configured: Path) -> None:
-    outcome = ask("chat_role", "", MESSAGES, log_path=configured / "log.json", model="chat-model")
-    assert outcome.status == AskStatus.ERROR
-    assert "provider/model" in outcome.detail
+def test_chat_without_effort_sends_no_reasoning_effort(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    monkeypatch.setattr(openai, "OpenAI", openai_stub(recorded, chat_response("你好")))
+    outcome = ask("chat_plain_role", "", MESSAGES, log_path=configured / "log.json")
+    assert outcome.status == AskStatus.OK
+    assert "reasoning_effort" not in recorded
+    assert read_log(configured / "log.json")["effort"] is None
 
 
-def test_model_override_with_unknown_provider_is_error(configured: Path) -> None:
-    outcome = ask("chat_role", "", MESSAGES, log_path=configured / "log.json", model="ghost/chat-model")
+def test_responses_without_effort_sends_no_reasoning(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    monkeypatch.setattr(openai, "OpenAI", openai_stub(recorded, responses_response("你好")))
+    outcome = ask("responses_plain_role", "", MESSAGES, log_path=configured / "log.json")
+    assert outcome.status == AskStatus.OK
+    assert "reasoning" not in recorded
+
+
+def test_messages_without_effort_sends_no_thinking(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    monkeypatch.setattr(anthropic, "Anthropic", anthropic_stub(recorded, messages_response("你好")))
+    outcome = ask("messages_plain_role", "", MESSAGES, log_path=configured / "log.json")
+    assert outcome.status == AskStatus.OK
+    assert "thinking" not in recorded
+    assert recorded["max_tokens"] == 32768
+
+
+def test_role_pointing_at_a_runtime_is_error(configured: Path) -> None:
+    outcome = ask("work_role", "", MESSAGES, log_path=configured / "log.json")
     assert outcome.status == AskStatus.ERROR
-    assert "ghost" in outcome.detail
+    assert "runtime claude-code" in outcome.detail
+    assert "[provider.*]" in outcome.detail
+    assert outcome.model == ""
 
 
 def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,12 +275,6 @@ def test_unknown_role_is_error(configured: Path) -> None:
     assert outcome.status == AskStatus.ERROR
     assert "nobody" in outcome.detail
     assert outcome.model == ""
-
-
-def test_role_without_provider_is_error(configured: Path) -> None:
-    outcome = ask("work_role", "", MESSAGES, log_path=configured / "log.json")
-    assert outcome.status == AskStatus.ERROR
-    assert "provider" in outcome.detail
 
 
 def test_unknown_provider_is_error(configured: Path) -> None:
