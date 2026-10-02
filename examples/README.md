@@ -32,7 +32,7 @@
 
 自造论文覆盖版式与语法，真实论文覆盖真实 e-print 的下载形态与源码杂质。以下八篇是
 各阶段重建过程中的固定试跑对象；按「真实 arXiv 论文不入库」的约定，源码不进仓库，
-用 `tongtu stage fetch <arxiv_id>` 按需拉取即可（工作目录默认在 `~/.local/share/tongtu/`，
+用 `tongtu stage fetch <arxiv_id>` 按需拉取即可（工作目录默认在 `~/.tongtu/papers/`，
 本就不在仓库内）：
 
 | arXiv id | 定位 |

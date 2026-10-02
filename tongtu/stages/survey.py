@@ -26,15 +26,13 @@ from ..artifacts.survey import (
     TermEntry,
 )
 from ..assets import asset_path
-from ..config import config_dir
+from ..config import GLOSSARY_FILENAME, glossary_path
 from ..manifests import describe_error, write_manifest
 from ..model.ask import ASK_TIMEOUT_SECONDS, AskStatus, ask
 from ..model.config import RoleTable, load_config, resolve_role
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "survey"
-
-GLOSSARY_FILENAME = "glossary.json"
 
 SKILL_FILENAME = "SKILL.md"
 
@@ -278,7 +276,7 @@ def _abstract(blocks: BlocksFile, masked: str) -> str | None:
 
 def _read_layers(paper_workdir: Workdir, glossary_paths: Sequence[Path]) -> list[tuple[list[Term], str | None]]:
     layers: list[tuple[Path, DecidedBy, bool]] = [
-        (config_dir() / GLOSSARY_FILENAME, DecidedBy.GLOBAL, False),
+        (glossary_path(), DecidedBy.GLOBAL, False),
         (paper_workdir.path / GLOSSARY_FILENAME, DecidedBy.PAPER, False),
         *[(path, DecidedBy.CLI, True) for path in glossary_paths],
     ]

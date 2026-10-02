@@ -6,7 +6,7 @@ name: papers
 #
 # ask 角色走 opencode（[provider.opencode]），work 角色走 DeepSeek 官方的 Anthropic 兼容端点
 # （[runtime.claude_code_deepseek]：Claude Code 二进制 + api.deepseek.com/anthropic）。secret 是
-# environment `llm` 里的 OPENCODE_API_KEY 与 DEEPSEEK_API_KEY。models.toml 由作业写：load_config
+# environment `llm` 里的 OPENCODE_API_KEY 与 DEEPSEEK_API_KEY。config.toml 由作业写：load_config
 # 没有内置回退，tongtu setup 也没有非交互路径。
 #
 # 隔离边界是容器 + 一次性 runner。Actions 的非特权容器不允许创建用户命名空间，bwrap 起不来
@@ -92,7 +92,6 @@ jobs:
       # runner 上下文在作业级 env 里不可用，配置目录与工作目录根改在这里导出。
       - name: Point config and work directories at the runner temp
         run: |
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
           echo "TONGTU_HOME=$RUNNER_TEMP/tongtu" >> "$GITHUB_ENV"
 
       # 镜像只管 TeX + Python 依赖 + 字体；agent 运行时在这里装。
@@ -104,10 +103,10 @@ jobs:
       # 镜像里的 venv 只有依赖，项目本体由 checkout 提供，这里装进去。
       - run: uv sync --frozen
 
-      - name: Write models.toml
+      - name: Write config.toml
         run: |
-          mkdir -p "$XDG_CONFIG_HOME/tongtu"
-          cat > "$XDG_CONFIG_HOME/tongtu/models.toml" <<'TOML'
+          mkdir -p "$TONGTU_HOME"
+          cat > "$TONGTU_HOME/config.toml" <<'TOML'
           [provider.opencode]
           base_url    = "https://opencode.ai/zen/go"
           api_key     = ""
@@ -179,10 +178,10 @@ jobs:
           start=$(date +%s)
           code=0
           uv run tongtu run "$target" "${args[@]}" || code=$?
-          mkdir -p "$TONGTU_HOME/$PAPER"
+          mkdir -p "$TONGTU_HOME/papers/$PAPER"
           printf '{"paper": "%s", "seconds": %d, "exit_code": %d}\n' "$PAPER" "$(( $(date +%s) - start ))" "$code" \
-            > "$TONGTU_HOME/$PAPER/ci.json"
-          cat "$TONGTU_HOME/$PAPER/ci.json"
+            > "$TONGTU_HOME/papers/$PAPER/ci.json"
+          cat "$TONGTU_HOME/papers/$PAPER/ci.json"
           exit "$code"
 
       # 只给一个目录，artifact 根就是论文目录本身，report 作业按 paper-<paper>/build/manifests 读。
@@ -190,7 +189,7 @@ jobs:
         if: always()
         with:
           name: paper-${{ matrix.paper }}
-          path: ${{ runner.temp }}/tongtu/${{ matrix.paper }}
+          path: ${{ runner.temp }}/tongtu/papers/${{ matrix.paper }}
           if-no-files-found: ignore
           retention-days: 14
 
@@ -198,7 +197,7 @@ jobs:
         if: always()
         with:
           name: pdf-${{ matrix.paper }}
-          path: ${{ runner.temp }}/tongtu/${{ matrix.paper }}/out/zh.pdf
+          path: ${{ runner.temp }}/tongtu/papers/${{ matrix.paper }}/out/zh.pdf
           if-no-files-found: ignore
           retention-days: 14
 

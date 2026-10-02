@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tongtu.config import config_path
 from tongtu.model.config import (
     DEFAULT_ASK_MODEL,
     MODELS_TEMPLATE,
@@ -15,7 +16,6 @@ from tongtu.model.config import (
     RoleTable,
     load_config,
     model_api,
-    models_path,
     provider_key,
     resolve_role,
     role_config,
@@ -50,9 +50,8 @@ review = { runtime = "claude_code", model = "sonnet", effort = "high", max_turns
 
 
 def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    path = tmp_path / "tongtu" / "models.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    path = tmp_path / "config.toml"
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -216,21 +215,21 @@ def test_unknown_events_value_fails_the_load(tmp_path: Path, monkeypatch: pytest
 
 
 def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="written", api_key_env="DEMO_KEY")
-    assert provider_key("demo", provider) == ("written", "api_key in models.toml")
+    assert provider_key("demo", provider) == ("written", "api_key in config.toml")
 
 
 def test_provider_key_falls_back_to_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="", api_key_env="DEMO_KEY")
     assert provider_key("demo", provider) == ("from-env", "environment variable DEMO_KEY")
 
 
 def test_provider_key_reports_both_sources_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key_env="DEMO_KEY")
     key, detail = provider_key("demo", provider)
@@ -240,20 +239,20 @@ def test_provider_key_reports_both_sources_absent(tmp_path: Path, monkeypatch: p
 
 
 def test_provider_key_reports_no_variable_declared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     provider = ProviderConfig(base_url="https://demo.example/v1")
     key, detail = provider_key("demo", provider)
     assert key is None
     assert "api_key_env" in detail
 
 
-def test_models_path_follows_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert models_path() == tmp_path / "tongtu" / "models.toml"
+def test_config_path_follows_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    assert config_path() == tmp_path / "config.toml"
 
 
 def test_load_config_reports_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     config, detail = load_config()
     assert config is None
     assert "tongtu setup" in detail

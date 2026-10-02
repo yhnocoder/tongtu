@@ -18,7 +18,7 @@ LOG_ERROR = "! Undefined control sequence.\nl.42 \\pdfoutput\nOutput written on 
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
 
 
 def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> list[list[str]]:

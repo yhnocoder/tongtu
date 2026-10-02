@@ -4,17 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from tongtu.workdir import WorkdirError, default_root, normalize_arxiv_id, resolve
+from tongtu.workdir import WorkdirError, normalize_arxiv_id, resolve
 
 
-def test_default_root_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_without_env_lands_under_default_home(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TONGTU_HOME", raising=False)
-    assert default_root() == Path("~/.local/share/tongtu").expanduser()
+    assert resolve("2002.05202") == Path("~/.tongtu/papers/2002.05202").expanduser()
 
 
 def test_home_env_overrides_default_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
-    assert resolve("2002.05202") == tmp_path / "2002.05202"
+    assert resolve("2002.05202") == tmp_path / "papers" / "2002.05202"
 
 
 def test_workdir_argument_wins_over_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

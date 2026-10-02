@@ -72,8 +72,8 @@ halfway = { runtime = "demo", model = "m1", effort = "low" }
 
 @pytest.fixture
 def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    path = tmp_path / "config" / "tongtu" / "models.toml"
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    path = tmp_path / "home" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
@@ -286,7 +286,7 @@ def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.Mo
 
 
 def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     outcome = work("smoke", tmp_path, trace_path=tmp_path / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "tongtu setup" in outcome.detail

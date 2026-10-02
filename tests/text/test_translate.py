@@ -272,13 +272,13 @@ def test_an_ask_error_then_a_failed_check_falls_back(tmp_path: Path, monkeypatch
 
 
 def test_a_resolution_error_falls_back_with_an_empty_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="读不到 models.toml"))
+    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="读不到 config.toml"))
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=1)
     assert manifest.status is TranslateStatus.OK
     record = manifest.chunks["c000"]
     assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.failures == ["读不到 models.toml"]
+    assert record.failures == ["读不到 config.toml"]
     assert manifest.model == ""
     assert manifest.warnings
 
@@ -367,11 +367,11 @@ def test_neighbours_take_three_paragraphs_from_each_side(tmp_path: Path, monkeyp
 
 
 def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 models.toml"))
+    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 config.toml"))
     workdir = make_workdir(tmp_path, ["Hello world.\n"])
     manifest = translate.run(workdir, jobs=2)
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert manifest.message == "读不到 models.toml"
+    assert manifest.message == "读不到 config.toml"
     assert (manifest.model, manifest.effort) == ("", "")
     assert manifest.chunks == {}
     assert manifest.jobs == 2
@@ -391,7 +391,7 @@ def test_an_unresolvable_role_calls_no_model(tmp_path: Path, monkeypatch: pytest
 def test_a_model_config_is_not_needed_when_every_chunk_is_skipped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 models.toml"))
+    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 config.toml"))
     workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n"])
     assert translate.run(workdir, jobs=1).status is TranslateStatus.OK
 

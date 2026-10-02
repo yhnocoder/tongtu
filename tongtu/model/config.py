@@ -4,15 +4,12 @@ import os
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from ..config import config_dir
+from ..config import config_path
 from .events import SUMMARIZERS
-
-MODELS_FILENAME = "models.toml"
 
 DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-pro", "deepseek": "deepseek-v4-pro", "anthropic": "claude-sonnet-5"}
 
@@ -85,12 +82,8 @@ class ModelsConfig(BaseModel):
     roles: dict[str, RoleConfig] = {}
 
 
-def models_path() -> Path:
-    return config_dir() / MODELS_FILENAME
-
-
 def load_config() -> tuple[ModelsConfig | None, str]:
-    path = models_path()
+    path = config_path()
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except OSError as error:
@@ -116,7 +109,7 @@ def load_config() -> tuple[ModelsConfig | None, str]:
 def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
     written = (provider.api_key or "").strip()
     if written:
-        return written, "api_key in models.toml"
+        return written, "api_key in config.toml"
     variable = (provider.api_key_env or "").strip()
     if variable:
         value = (os.environ.get(variable) or "").strip()
@@ -124,11 +117,11 @@ def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
             return value, f"environment variable {variable}"
     if variable:
         return None, (
-            f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+            f"no key for provider {name}. Write api_key under [provider.{name}] in {config_path()}, "
             f"or set the environment variable {variable}."
         )
     return None, (
-        f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+        f"no key for provider {name}. Write api_key under [provider.{name}] in {config_path()}, "
         f"or write api_key_env naming the environment variable that holds the key."
     )
 
@@ -136,7 +129,7 @@ def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
 def role_config(config: ModelsConfig, role: str) -> tuple[RoleConfig | None, str]:
     found = config.roles.get(role)
     if found is None:
-        return None, f"config file {models_path()} has no role {role} under [roles]; add one."
+        return None, f"config file {config_path()} has no role {role} under [roles]; add one."
     return found, ""
 
 
@@ -161,10 +154,10 @@ def resolve_role(
             )
         name, chosen = prefix, tail
     if name is None:
-        return None, f"role {role} has no {table} field; add it under [roles] in {models_path()}."
+        return None, f"role {role} has no {table} field; add it under [roles] in {config_path()}."
     if name not in declared:
         return None, (
-            f"config file {models_path()} does not declare {table} {name}; add it under [{table}.{name}]. "
+            f"config file {config_path()} does not declare {table} {name}; add it under [{table}.{name}]. "
             f"A model override prefix must also be a name under [{table}.*]."
         )
     resolved = ResolvedRole(
@@ -181,13 +174,13 @@ def model_api(config: ModelsConfig, provider: str, model: str) -> tuple[Api | No
     if entry is None:
         return (
             None,
-            f"config file {models_path()} does not declare provider {provider}; add it under [provider.{provider}].",
+            f"config file {config_path()} does not declare provider {provider}; add it under [provider.{provider}].",
         )
     api = entry.models.get(model) or entry.api
     if api is None:
         return None, (
             f"provider {provider} has no entry for model {model} in its models table and no api field, "
-            f"so its API kind is unknown. Add a models entry or a provider-wide api in {models_path()}."
+            f"so its API kind is unknown. Add a models entry or a provider-wide api in {config_path()}."
         )
     if api not in tuple(Api):
         return (

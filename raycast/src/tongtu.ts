@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 export const STAGES = ["fetch", "precompile", "mask", "survey", "translate", "review", "compile"] as const;
-export const ROOT = process.env.TONGTU_HOME || path.join(os.homedir(), ".local/share/tongtu");
+export const ROOT = path.join(process.env.TONGTU_HOME || path.join(os.homedir(), ".tongtu"), "papers");
 const CACHE = path.join(os.homedir(), ".cache/tongtu-raycast");
 const ARXIV_ID = /\d{4}\.\d{4,5}(v\d+)?/;
 const SESSION_LOGS: Record<string, string> = { precompile: "precompile-fix.jsonl", review: "review.jsonl", compile: "compile-fix.jsonl" };
