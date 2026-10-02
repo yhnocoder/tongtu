@@ -64,7 +64,7 @@ def test_attempt_compile_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert attempt.report.duration_seconds == 2.5
     assert attempt.log_path == tmp_path / "zh.log"
     assert attempt.pdf_name == "zh.pdf"
-    assert commands == [["latexmk", "-xelatex", "-interaction=nonstopmode", "zh.tex"]]
+    assert commands == [["latexmk", "-norc", "-xelatex", "-interaction=nonstopmode", "zh.tex"]]
 
 
 def test_attempt_compile_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,7 +96,7 @@ def test_clean_tree_reports_each_failure(tmp_path: Path, monkeypatch: pytest.Mon
     commands = wire_latexmk(monkeypatch, [spec])
     warnings = compiling.clean_tree(tmp_path, "zh.tex")
     assert len(warnings) == 1
-    assert commands == [["latexmk", "-C", "zh.tex"]]
+    assert commands == [["latexmk", "-norc", "-C", "zh.tex"]]
 
 
 def test_clean_tree_without_problems(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
