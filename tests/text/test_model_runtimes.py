@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,6 @@ from tongtu.model.runtimes import (
     RUNTIMES,
     SANDBOX_SETTINGS,
     Session,
-    isolated,
     write_credentials,
 )
 
@@ -77,7 +76,8 @@ def test_codex_argv_without_model_or_effort(tmp_path: Path) -> None:
     assert not any("model_reasoning_effort" in part for part in argv)
 
 
-def test_claude_argv_with_model_and_effort(tmp_path: Path) -> None:
+def test_claude_argv_with_model_and_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
     argv = RUNTIMES["claude-code"].argv(session(tmp_path, ".claude/skills/review"))
     assert argv[:5] == ["-p", "--model", "m1", "--effort", "low"]
     assert argv[argv.index("--max-turns") + 1] == "4"
@@ -86,10 +86,11 @@ def test_claude_argv_with_model_and_effort(tmp_path: Path) -> None:
     assert "--no-session-persistence" in argv
     assert argv[argv.index("--setting-sources") + 1] == ""
     assert "--strict-mcp-config" in argv
-    assert argv[argv.index("--allowedTools") + 1] == "Read,Edit,Write,Glob,Grep,Bash"
-    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert argv[argv.index("--allowedTools") + 1] == "Read,Edit,Write,Glob,Grep"
+    assert argv[argv.index("--permission-mode") + 1] == "auto"
     assert argv[argv.index("--disallowedTools") + 1] == "Edit(.claude/skills/**)"
-    assert json.loads(argv[argv.index("--settings") + 1]) == SANDBOX_SETTINGS
+    assert argv[-2] == "--settings"
+    assert json.loads(argv[-1]) == SANDBOX_SETTINGS
     assert SANDBOX_SETTINGS == {
         "sandbox": {
             "enabled": True,
@@ -100,6 +101,15 @@ def test_claude_argv_with_model_and_effort(tmp_path: Path) -> None:
         }
     }
     assert PROMPT not in argv
+
+
+def test_claude_argv_without_a_sandbox_off_darwin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    argv = RUNTIMES["claude-code"].argv(session(tmp_path, ".claude/skills/review"))
+    assert "--settings" not in argv
+    assert argv[-2:] == ["--disallowedTools", "Edit(.claude/skills/**)"]
+    assert argv[argv.index("--permission-mode") + 1] == "auto"
+    assert argv[argv.index("--allowedTools") + 1] == "Read,Edit,Write,Glob,Grep"
 
 
 def test_claude_argv_without_model_or_effort(tmp_path: Path) -> None:
@@ -347,16 +357,6 @@ def test_pi_login_check_without_a_default_provider_is_an_error(
     assert found is False
     assert "settings.json" in detail
     assert calls == []
-
-
-@pytest.mark.parametrize(("value", "expected"), [(None, False), ("", False), ("  ", False), ("1", True), ("0", True)])
-def test_isolated_is_true_for_any_non_blank_value(
-    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
-) -> None:
-    monkeypatch.delenv("TONGTU_ISOLATED", raising=False)
-    if value is not None:
-        monkeypatch.setenv("TONGTU_ISOLATED", value)
-    assert isolated(os.environ) is expected
 
 
 def test_write_credentials_writes_both_files_with_private_modes(tmp_path: Path) -> None:
