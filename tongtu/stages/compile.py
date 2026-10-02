@@ -38,20 +38,16 @@ COUNT_FIELDS: tuple[str, ...] = (
 def run(
     paper_workdir: Workdir,
     *,
-    model_override: str | None = None,
-    effort: str | None = None,
     report: Callable[[str, str], None] | None = None,
 ) -> CompileManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(paper_workdir, model_override, effort, report or (lambda status, summary: None))
+    manifest = _execute(paper_workdir, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def _execute(
-    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str, str], None]
-) -> CompileManifest:
+def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> CompileManifest:
     warnings: list[str] = []
     precompile_manifest = load_manifest(paper_workdir.manifest_path(PRECOMPILE_STAGE_NAME), PrecompileManifest)
     if precompile_manifest is None or precompile_manifest.report is None:
@@ -103,8 +99,6 @@ def _execute(
         zh_name,
         paper_workdir.compile_fix_log,
         warnings,
-        model_override,
-        effort,
         report,
     )
     if final is None or failure:

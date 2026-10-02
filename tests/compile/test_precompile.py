@@ -50,8 +50,6 @@ def test_arxiv_1905_12322v3_double_missing_inputs(
         tree: Path,
         *,
         trace_path: Path,
-        model: str | None = None,
-        effort: str | None = None,
         report=None,
     ) -> WorkOutcome:
         assert role == "precompile_fix"

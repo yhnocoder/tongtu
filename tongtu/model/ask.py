@@ -9,16 +9,7 @@ from pathlib import Path
 import anthropic
 import openai
 
-from .config import (
-    Api,
-    ModelsConfig,
-    ResolvedRole,
-    RoleTable,
-    load_config,
-    model_api,
-    provider_key,
-    resolve_role,
-)
+from .config import Api, ModelsConfig, Target, load_config, model_api, provider_key, role_target
 
 SCHEMA_NAME = "ask_response"
 
@@ -62,11 +53,10 @@ def ask(
     *,
     schema: dict | None = None,
     log_path: Path,
-    model: str | None = None,
     effort: str | None = None,
 ) -> AskOutcome:
     started = time.monotonic()
-    outcome, fields = _request(role, system, messages, schema, model, effort)
+    outcome, fields = _request(role, system, messages, schema, effort)
     record: dict[str, object] = {
         "provider": None,
         "model": None,
@@ -107,47 +97,46 @@ def _request(
     system: str,
     messages: list[tuple[str, str]],
     schema: dict | None,
-    model: str | None,
     effort: str | None,
 ) -> Reply:
     config, detail = load_config()
     if config is None:
         return _error(detail)
-    resolved, detail = resolve_role(config, role, RoleTable.PROVIDER, model, effort)
-    if resolved is None:
+    target, detail = role_target(config, role, effort)
+    if target is None:
         return _error(detail)
-    name = resolved.provider or ""
-    outcome, fields = _resolved_request(config, name, resolved, system, messages, schema)
-    return replace(outcome, model=f"{name}/{resolved.model}"), fields
+    if target.is_runtime:
+        return _error(f"role {role} points at runtime {target.backend}; ask needs a [provider.*] name.")
+    outcome, fields = _resolved_request(config, target, system, messages, schema)
+    return replace(outcome, model=str(target)), fields
 
 
 def _resolved_request(
     config: ModelsConfig,
-    name: str,
-    resolved: ResolvedRole,
+    target: Target,
     system: str,
     messages: list[tuple[str, str]],
     schema: dict | None,
 ) -> Reply:
-    api, detail = model_api(config, name, resolved.model)
+    api, detail = model_api(config, target.backend, target.model)
     if api is None:
         return _error(detail)
-    provider = config.provider[name]
-    fields: dict[str, object] = {"provider": name, "model": resolved.model, "effort": resolved.effort}
-    api_key, detail = provider_key(name, provider)
+    provider = config.provider[target.backend]
+    fields: dict[str, object] = {"provider": target.backend, "model": target.model, "effort": target.effort}
+    api_key, detail = provider_key(target.backend, provider)
     if api_key is None:
         return _error(detail, fields)
     try:
         if api is Api.MESSAGES:
             outcome, extra = _messages(
-                provider.base_url, api_key, resolved.model, resolved.effort, system, messages, schema
+                provider.base_url, api_key, target.model, target.effort, system, messages, schema
             )
         else:
             client = openai.OpenAI(
                 base_url=f"{provider.base_url}/v1", api_key=api_key, timeout=ASK_TIMEOUT_SECONDS, max_retries=1
             )
             caller = _responses if api is Api.RESPONSES else _chat
-            outcome, extra = caller(client, resolved.model, resolved.effort, system, messages, schema)
+            outcome, extra = caller(client, target.model, target.effort, system, messages, schema)
     except (openai.OpenAIError, anthropic.AnthropicError) as error:
         return _error(f"request failed ({type(error).__name__}: {error})"[:DETAIL_EXCERPT_CHARS], fields)
     return outcome, fields | extra
@@ -156,7 +145,7 @@ def _resolved_request(
 def _chat(
     client: openai.OpenAI,
     model: str,
-    effort: str,
+    effort: str | None,
     system: str,
     messages: list[tuple[str, str]],
     schema: dict | None,
@@ -184,15 +173,16 @@ def _chat(
 def _completion(
     client: openai.OpenAI,
     model: str,
-    effort: str,
+    effort: str | None,
     system: str,
     messages: list[tuple[str, str]],
     request_kwargs: dict[str, object],
 ) -> Reply:
+    if effort is not None:
+        request_kwargs = request_kwargs | {"reasoning_effort": effort}
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}] + [{"role": item[0], "content": item[1]} for item in messages],
-        reasoning_effort=effort,
         **request_kwargs,
     )
     choice = response.choices[0] if response.choices else None
@@ -211,7 +201,7 @@ def _completion(
 def _responses(
     client: openai.OpenAI,
     model: str,
-    effort: str,
+    effort: str | None,
     system: str,
     messages: list[tuple[str, str]],
     schema: dict | None,
@@ -222,7 +212,7 @@ def _responses(
         model=model,
         instructions=system,
         input=[{"role": item[0], "content": item[1]} for item in messages],
-        reasoning={"effort": effort},
+        **({} if effort is None else {"reasoning": {"effort": effort}}),
     )
     usage = None if response.usage is None else response.usage.model_dump(exclude_none=True)
     extra: dict[str, object] = {"finish_reason": response.status, "usage": usage}
@@ -238,15 +228,15 @@ def _messages(
     base_url: str,
     api_key: str,
     model: str,
-    effort: str,
+    effort: str | None,
     system: str,
     messages: list[tuple[str, str]],
     schema: dict | None,
 ) -> Reply:
     if schema is not None:
         return _schema_unsupported(Api.MESSAGES, model)
-    budget = THINKING_BUDGET_TOKENS.get(effort)
-    if budget is None:
+    budget = None if effort is None else THINKING_BUDGET_TOKENS.get(effort)
+    if effort is not None and budget is None:
         return _error(
             f"model {model} uses the messages API, which maps reasoning effort to a token budget; "
             f"the only levels are {', '.join(THINKING_BUDGET_TOKENS)}, but the config gives {effort}."
@@ -257,7 +247,7 @@ def _messages(
         max_tokens=MESSAGES_MAX_TOKENS,
         system=system,
         messages=[{"role": item[0], "content": item[1]} for item in messages],
-        thinking={"type": "enabled", "budget_tokens": budget},
+        **({} if budget is None else {"thinking": {"type": "enabled", "budget_tokens": budget}}),
     )
     usage = None if response.usage is None else response.usage.model_dump(exclude_none=True)
     extra: dict[str, object] = {"finish_reason": response.stop_reason, "usage": usage}

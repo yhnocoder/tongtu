@@ -3,7 +3,6 @@ from __future__ import annotations
 import shutil
 import stat
 import subprocess
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,7 @@ from tongtu import __version__, cli, validation
 from tongtu.artifacts.common import CompileReport, FixSession, Manifest
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.cli import RunOptions, app, main
-from tongtu.model.config import MODELS_TEMPLATE
+from tongtu.model.config import CONFIG_TEMPLATE
 from tongtu.pipeline import STAGES
 from tongtu.stages.translate import ChunkProgress, ChunkProgressState
 
@@ -38,31 +37,12 @@ base_url = "https://unused.example/v1"
 api_key_env = "UNUSED_KEY"
 api = "chat"
 
-[provider.behind_runtime]
-base_url = "https://behind.example"
-api_key = "behind-key"
-api = "chat"
-
-[runtime.demo_runtime]
-skill_path = ".agent/skills/{role}"
-command = ["runner", "-p"]
-
-[runtime.gateway_runtime]
-provider = "written"
-skill_path = ".agent/skills/{role}"
-command = ["runner", "-p"]
-
-[runtime.behind_runtime]
-provider = "behind_runtime"
-skill_path = ".agent/skills/{role}"
-command = ["runner", "-p"]
-
 [roles]
-translate = { provider = "demo", model = "m1", effort = "low" }
-survey_terms = { provider = "written", model = "m1", effort = "low" }
-review = { runtime = "demo_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
-precompile_fix = { runtime = "gateway_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
-compile_fix = { runtime = "behind_runtime", model = "m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
+translate = { model = "demo/m1", effort = "low" }
+survey_terms = { model = "written/m1", effort = "low" }
+review = { model = "codex/m1", effort = "low", timeout_seconds = 60 }
+precompile_fix = { model = "claude-code/m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
+compile_fix = { model = "pi/deepseek/m1", timeout_seconds = 60 }
 """
 
 
@@ -72,7 +52,20 @@ base_url = "https://demo.example/v1"
 api = "chat"
 
 [roles]
-translate = { provider = "demo", model = "m1", effort = "low" }
+translate = { model = "demo/m1", effort = "low" }
+"""
+
+
+BROKEN_ROLE_TABLE = """
+[provider.demo]
+base_url = "https://demo.example/v1"
+api_key = "demo-key"
+api = "chat"
+
+[roles]
+translate = { model = "demo/m1", effort = "low" }
+review = { model = "ghost/m1", effort = "low", timeout_seconds = 60 }
+compile_fix = { model = "demo", timeout_seconds = 60 }
 """
 
 
@@ -83,11 +76,20 @@ VERSION_2022 = "XeTeX 3.141592653-2.6-0.999994 (TeX Live 2022)\nkpathsea version
 VERSION_WITHOUT_YEAR = "XeTeX 3.141592653-2.6-0.999996 (MiKTeX 24.1)\n"
 
 
-def fake_xelatex_version(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
-    def run(command: list[str], capture_output: bool, text: bool, timeout: float) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(command, 0, output, "")
+def fake_xelatex_version(
+    monkeypatch: pytest.MonkeyPatch, output: str, login: dict[str, tuple[int, str, str]] | None = None
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command == [cli.XELATEX, "--version"]:
+            return subprocess.CompletedProcess(command, 0, output, "")
+        returncode, stdout, stderr = (login or {}).get(command[0], (0, f"{command[0]} logged in\n", ""))
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
 
     monkeypatch.setattr(cli.subprocess, "run", run)
+    return calls
 
 
 def squeeze(text: str) -> str:
@@ -114,7 +116,7 @@ def test_setup_writes_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     path = config_path(tmp_path, monkeypatch)
     result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
-    assert path.read_text(encoding="utf-8") == MODELS_TEMPLATE
+    assert path.read_text(encoding="utf-8") == CONFIG_TEMPLATE
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -127,38 +129,9 @@ def test_setup_does_not_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "notoverwriting" in squeeze(result.stdout)
 
 
-def test_setup_interactive_fills_first_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_setup_rejects_the_interactive_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup", "-i"], input="y\nzen-key\nn\nn\n")
-    assert result.exit_code == 0
-    written = tomllib.loads(path.read_text(encoding="utf-8"))
-    assert written["provider"]["opencode"]["api_key"] == "zen-key"
-    assert written["provider"]["opencode"]["api_key_env"] == "OPENCODE_API_KEY"
-    assert written["provider"]["anthropic"]["api_key"] == ""
-    assert written["roles"]["translate"]["runtime"] == "codex"
-    assert written["roles"]["translate"]["model"] == "astra"
-    assert written["roles"]["translate"]["effort"] == "light"
-    assert written["roles"]["survey_terms"]["provider"] == "opencode"
-    assert written["roles"]["review"]["runtime"] == "codex"
-    assert written["roles"]["review"]["model"] == "astra"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-
-
-def test_setup_interactive_points_ask_roles_at_second_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup", "-i"], input="n\nn\ny\nsk-key\n")
-    assert result.exit_code == 0
-    written = tomllib.loads(path.read_text(encoding="utf-8"))
-    assert written["provider"]["anthropic"]["api_key"] == "sk-key"
-    assert written["provider"]["opencode"]["api_key"] == ""
-    assert written["roles"]["translate"]["runtime"] == "codex"
-    assert written["roles"]["translate"]["model"] == "astra"
-    assert written["roles"]["translate"]["effort"] == "light"
-
-
-def test_setup_interactive_without_any_provider_exits_two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup", "-i"], input="n\nn\nn\n")
+    result = runner.invoke(app, ["setup", "-i"])
     assert result.exit_code == 2
     assert not path.exists()
 
@@ -233,23 +206,81 @@ def test_doctor_lists_only_referenced_providers(tmp_path: Path, monkeypatch: pyt
     output = squeeze(result.stdout)
     assert "environmentcomplete." in output
     assert "keydemo" in output
+    assert output.count("keywritten") == 1
     assert "keyunused" not in output
-    assert "runtimedemo_runtime" in output
     assert "environmentvariableDEMO_KEY" in output
     assert "api_keyinconfig.toml" in output
+    assert "providers,chunking,fontsandroles" in output
 
 
-def test_doctor_checks_the_provider_a_runtime_points_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_checks_each_referenced_runtime_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    for backend in ("codex", "claude-code", "pi"):
+        assert f"[ok]runtime{backend}" in output
+        assert f"[ok]login{backend}" in output
+    assert "[ok]node" in output
+    assert "neededbypi" in output
+    assert "/usr/bin/claude" in result.stdout
+    assert "/usr/bin/node" in result.stdout
+    assert "codexloggedin" in output
+    assert "loggedin" in output
+    assert "piloggedin" in output
+    assert ["codex", "login", "status"] in calls
+    assert ["claude", "auth", "status"] in calls
+    assert ["pi", "auth", "check", "--model", "deepseek/m1", "--no-refresh"] in calls
+    assert output.count("runtimecodex") == 1
+
+
+def test_doctor_reports_a_runtime_that_is_not_logged_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026, login={"codex": (1, "", "Not logged in\n")})
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "[missing]logincodex" in output
+    assert "Notloggedin" in output
+    assert "[ok]loginclaude-code" in output
+    assert "logincodexnotconfigured" in output
+
+
+def test_doctor_reports_a_runtime_missing_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: None if name in ("pi", "node") else f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "[missing]runtimepi" in output
+    assert "[missing]node" in output
+    assert "[missing]loginpi" in output
+    assert "cannotcheck:piisnotinPATH" in output
+    assert not any(command[0] == "pi" for command in calls)
+    assert "toolchainandfontscomplete" in output
+
+
+def test_doctor_reports_roles_that_do_not_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(BROKEN_ROLE_TABLE, encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "keybehind_runtime" in output
-    assert output.count("keywritten") == 1
-    assert "runtimegateway_runtime" in output
+    assert "[ok]keydemo" in output
+    assert "[missing]rolereview" in output
+    assert "providerghost" in output
+    assert "[missing]rolecompile_fix" in output
+    assert "backend/model" in output
+    assert "rolereview,rolecompile_fixnotconfigured" in output
 
 
 def test_doctor_reports_missing_key_without_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,7 +361,7 @@ def test_setup_dev_writes_under_the_dev_home(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
     result = runner.invoke(app, ["setup", "--dev"], env={"TONGTU_HOME": str(tmp_path / "home")})
     assert result.exit_code == 0
-    assert (tmp_path / "dev" / "config.toml").read_text(encoding="utf-8") == MODELS_TEMPLATE
+    assert (tmp_path / "dev" / "config.toml").read_text(encoding="utf-8") == CONFIG_TEMPLATE
     assert not (tmp_path / "home").exists()
 
 
@@ -436,14 +467,6 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
             "https://arxiv.org/abs/2002.05202",
             "--workdir",
             str(tmp_path / "paper"),
-            "--ask-model",
-            "opencode/deepseek-v4-flash",
-            "--ask-effort",
-            "low",
-            "--work-model",
-            "claude_code/claude-sonnet-5",
-            "--work-effort",
-            "high",
             "--glossary",
             "a.json",
             "--glossary",
@@ -458,15 +481,30 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
     options = captured[0]
     assert options.paper.arxiv_id == "2002.05202"
     assert options.workdir.path == tmp_path / "paper"
-    assert options.ask_model == "opencode/deepseek-v4-flash"
-    assert options.ask_effort == "low"
-    assert options.work_model == "claude_code/claude-sonnet-5"
-    assert options.work_effort == "high"
     assert options.glossary == (Path("a.json"), Path("b.json"))
     assert options.jobs == 9
     assert options.no_terms is True
     assert options.no_review is True
     assert all(entry is options for entry in captured)
+
+
+@pytest.mark.parametrize("option", ["--ask-model", "--ask-effort", "--work-model", "--work-effort"])
+def test_run_rejects_the_removed_model_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: str) -> None:
+    calls: list[str] = []
+    wire_entries(monkeypatch, calls)
+    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper"), option, "a/b"])
+    assert result.exit_code == 2
+    assert calls == []
+
+
+@pytest.mark.parametrize("option", ["--ask-model", "--work-model"])
+def test_stage_rejects_the_removed_model_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: str) -> None:
+    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    calls: list[str] = []
+    wire_entries(monkeypatch, calls)
+    result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path), option, "a/b"])
+    assert result.exit_code == 2
+    assert calls == []
 
 
 def test_run_rejects_an_invalid_paper_argument(tmp_path: Path) -> None:
@@ -753,31 +791,16 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
     )
 
 
-def test_compile_entry_passes_the_work_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_entry_passes_the_workdir_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict = {}
 
-    def fake_run(workdir, *, model_override, effort, report):
-        captured.update(workdir=workdir, model_override=model_override, effort=effort, report=report)
+    def fake_run(workdir, *, report):
+        captured.update(workdir=workdir, report=report)
         return CompileManifest(status=CompileStatus.OK)
 
     monkeypatch.setattr(cli.compile, "run", fake_run)
     workdir = write_outputs(tmp_path, *STAGES[:-1])
-    result = runner.invoke(
-        app,
-        [
-            "stage",
-            "compile",
-            "2002.05202",
-            "--workdir",
-            str(workdir.path),
-            "--work-model",
-            "rt/m",
-            "--work-effort",
-            "low",
-        ],
-    )
+    result = runner.invoke(app, ["stage", "compile", "2002.05202", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert captured["workdir"].path == workdir.path
-    assert captured["model_override"] == "rt/m"
-    assert captured["effort"] == "low"
     assert callable(captured["report"])

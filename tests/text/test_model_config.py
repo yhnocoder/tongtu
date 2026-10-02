@@ -7,19 +7,20 @@ import pytest
 
 from tongtu.config import config_path
 from tongtu.model.config import (
-    DEFAULT_ASK_MODEL,
-    MODELS_TEMPLATE,
+    CONFIG_TEMPLATE,
+    RUNTIME_NAMES,
     Api,
+    ChunkingConfig,
     FontFamily,
     FontsConfig,
     ModelsConfig,
     ProviderConfig,
-    RoleTable,
+    Target,
     load_config,
     model_api,
+    parse_target,
     provider_key,
-    resolve_role,
-    role_config,
+    role_target,
 )
 
 TABLE = """
@@ -40,13 +41,13 @@ base_url = "https://odd.example"
 api_key_env = "ODD_KEY"
 api = "grpc"
 
-[runtime.claude_code]
-skill_path = ".claude/skills/{role}"
-command = ["claude", "-p"]
-
 [roles]
-translate = { provider = "demo", model = "chat-model", effort = "low" }
-review = { runtime = "claude_code", model = "sonnet", effort = "high", max_turns = 8, timeout_seconds = 60 }
+translate = { model = "demo/chat-model", effort = "low" }
+review = { model = "claude-code/sonnet", effort = "high", max_turns = 8, timeout_seconds = 60 }
+compile_fix = { model = "pi", timeout_seconds = 60 }
+bare = { model = "demo/chat-model" }
+slashless = { model = "demo" }
+ghost = { model = "ghost/m" }
 """
 
 
@@ -57,22 +58,41 @@ def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> 
     return path
 
 
+def loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str = TABLE) -> ModelsConfig:
+    write_config(tmp_path, monkeypatch, text)
+    config, detail = load_config()
+    assert config is not None, detail
+    return config
+
+
 def test_template_parses_and_validates() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
-    assert set(config.provider) == {"opencode", "deepseek", "anthropic"}
-    assert set(config.runtime) == {"codex", "codex_opencode"}
+    config = ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE))
+    assert set(config.provider) == {"deepseek"}
     assert set(config.roles) == {"survey_terms", "translate", "review", "precompile_fix", "compile_fix"}
-    assert config.provider["opencode"].models["deepseek-v4-flash"] == Api.CHAT
+    assert config.chunking == ChunkingConfig(chunk_tokens=20000, chunk_merge_tokens=12000)
+    assert config.provider["deepseek"].base_url == "https://api.deepseek.com"
+    assert config.provider["deepseek"].api_key == ""
+    assert config.provider["deepseek"].api_key_env == "DEEPSEEK_API_KEY"
+    assert config.provider["deepseek"].api == "chat"
+    assert config.roles["survey_terms"].model == "deepseek/deepseek-flash"
     assert config.roles["review"].timeout_seconds == 3600
-    assert config.provider["opencode"].base_url == "https://opencode.ai/zen/go"
-    assert config.provider["anthropic"].base_url == "https://api.anthropic.com"
-    assert config.provider["opencode"].api_key == ""
-    assert config.provider["opencode"].api_key_env == "OPENCODE_API_KEY"
-    assert set(DEFAULT_ASK_MODEL) == set(config.provider)
+    for role in ("translate", "review", "precompile_fix", "compile_fix"):
+        assert (config.roles[role].model, config.roles[role].effort) == ("codex/gpt-6-astra", "low")
+        assert config.roles[role].timeout_seconds is not None
+        assert config.roles[role].max_turns is None
+
+
+def test_template_roles_resolve_to_targets() -> None:
+    config = ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE))
+    for role in config.roles:
+        target, detail = role_target(config, role)
+        assert target is not None, detail
+    assert role_target(config, "translate")[0] == Target("codex", "gpt-6-astra", "low")
+    assert role_target(config, "survey_terms")[0] == Target("deepseek", "deepseek-flash", "low")
 
 
 def test_template_fonts_match_defaults() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
+    config = ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE))
     assert config.fonts == FontsConfig()
     assert config.fonts.main == FontFamily(regular="LXGWWenKai-Light.ttf", bold="LXGWWenKai-Medium.ttf")
     assert config.fonts.sans == FontFamily(regular="SourceHanSansSC-Regular.otf", bold="SourceHanSansSC-Bold.otf")
@@ -86,25 +106,19 @@ def test_fonts_defaults_are_not_shared_between_instances() -> None:
 
 
 def test_fonts_table_reads_strings_and_family_tables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(
+    config = loaded(
         tmp_path,
         monkeypatch,
         TABLE + '\n[fonts]\nmain = "MyFont.ttf"\nsans = { regular = "~/fonts/Sans.otf", bold = "SansBold.otf" }\n'
         'mono = "Mono.ttc"\n',
     )
-    config, detail = load_config()
-    assert detail == ""
-    assert config is not None
     assert config.fonts.main == "MyFont.ttf"
     assert config.fonts.sans == FontFamily(regular="~/fonts/Sans.otf", bold="SansBold.otf")
     assert config.fonts.mono == "Mono.ttc"
 
 
 def test_fonts_table_family_without_bold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "MyFont.ttf" }\n')
-    config, detail = load_config()
-    assert detail == ""
-    assert config is not None
+    config = loaded(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "MyFont.ttf" }\n')
     assert config.fonts.main == FontFamily(regular="MyFont.ttf", bold=None)
 
 
@@ -164,127 +178,131 @@ def test_fonts_table_rejects_relative_paths_in_a_family(tmp_path: Path, monkeypa
 def test_fonts_table_accepts_home_and_absolute_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sans = tmp_path / "custom" / "Sans.otf"
     bold = tmp_path / "custom" / "SansBold.otf"
-    write_config(
+    config = loaded(
         tmp_path,
         monkeypatch,
         TABLE + f'\n[fonts]\nmain = "~/fonts/MyFont.ttf"\nsans = {{ regular = "{sans}", bold = "{bold}" }}\n',
     )
-    config, detail = load_config()
-    assert detail == ""
-    assert config is not None
     assert config.fonts.main == "~/fonts/MyFont.ttf"
     assert config.fonts.sans == FontFamily(regular=str(sans), bold=str(bold))
 
 
 def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
-    assert config.fonts == FontsConfig()
+    assert loaded(tmp_path, monkeypatch).fonts == FontsConfig()
 
 
-def preserved_claude_config() -> ModelsConfig:
-    start = MODELS_TEMPLATE.index("# [runtime.claude_code]")
-    end = MODELS_TEMPLATE.index("# Codex 登录会话", start)
-    uncommented = "\n".join(
-        line.removeprefix("# ") for line in MODELS_TEMPLATE[start:end].splitlines() if line.startswith("# ")
-    )
-    lines = []
-    for line in uncommented.splitlines():
-        if line.startswith(("[", "skill_path", "events", "command", "settings", "env", "provider", "           ")):
-            lines.append(line)
-    return ModelsConfig.model_validate(tomllib.loads("\n".join(lines)))
+def test_chunking_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert loaded(tmp_path, monkeypatch).chunking == ChunkingConfig(chunk_tokens=5000, chunk_merge_tokens=1500)
 
 
-def test_template_runtime_carries_sandbox_settings() -> None:
-    config = preserved_claude_config()
-    runtime = config.runtime["claude_code"]
-    assert runtime.settings == {
-        "sandbox": {
-            "enabled": True,
-            "autoAllowBashIfSandboxed": True,
-            "allowUnsandboxedCommands": False,
-            "failIfUnavailable": True,
-            "network": {"allowedDomains": []},
-        }
-    }
-    assert "--setting-sources" in runtime.command
-    assert "--strict-mcp-config" in runtime.command
-    assert "Edit(.claude/skills/**)" in runtime.command
-    assert "{settings}" in runtime.command
-    assert runtime.provider is None
-    assert runtime.env == {"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_BASE_URL": ""}
+def test_chunking_table_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(tmp_path, monkeypatch, TABLE + "\n[chunking]\nchunk_tokens = 9000\nchunk_merge_tokens = 100\n")
+    assert config.chunking == ChunkingConfig(chunk_tokens=9000, chunk_merge_tokens=100)
 
 
-def test_template_opencode_runtime_carries_provider_and_env() -> None:
-    config = preserved_claude_config()
-    runtime = config.runtime["claude_code_opencode"]
-    plain = config.runtime["claude_code"]
-    assert runtime.provider == "opencode"
-    assert runtime.command == plain.command
-    assert runtime.skill_path == plain.skill_path
-    assert runtime.settings == plain.settings
-    assert runtime.env == {
-        "ANTHROPIC_BASE_URL": "{base_url}",
-        "ANTHROPIC_API_KEY": "{api_key}",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "{model}",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "{model}",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "{model}",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "DISABLE_TELEMETRY": "1",
-    }
-
-
-def test_template_codex_runtime_carries_provider_and_env() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
-    runtime = config.runtime["codex_opencode"]
-    assert runtime.provider == "opencode"
-    assert runtime.skill_path == ".codex/skills/{role}"
-    assert runtime.command[0] == "codex"
-    assert "--ignore-user-config" in runtime.command
-    assert "--ignore-rules" in runtime.command
-    assert runtime.settings is None
-    assert runtime.env == {"OPENCODE_API_KEY": "{api_key}", "CODEX_HOME": "{tmp_dir}"}
-
-
-def test_template_runtimes_declare_events() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
-    assert config.runtime["codex"].events == "codex-json"
-    assert config.runtime["codex_opencode"].events == "codex-json"
-
-
-def test_events_field_defaults_to_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, detail = load_config()
-    assert detail == ""
-    assert config is not None
-    assert config.runtime["claude_code"].events is None
-
-
-def test_events_field_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(
-        tmp_path,
-        monkeypatch,
-        TABLE.replace('command = ["claude", "-p"]', 'command = ["claude", "-p"]\nevents = "stream-json"'),
-    )
-    config, detail = load_config()
-    assert detail == ""
-    assert config is not None
-    assert config.runtime["claude_code"].events == "stream-json"
-
-
-def test_unknown_events_value_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(
-        tmp_path,
-        monkeypatch,
-        TABLE.replace('command = ["claude", "-p"]', 'command = ["claude", "-p"]\nevents = "verbose-text"'),
-    )
+@pytest.mark.parametrize(
+    "limits", ["chunk_tokens = 0", "chunk_tokens = -1", "chunk_tokens = true", "chunk_merge_tokens = 6000"]
+)
+def test_invalid_chunk_limits_fail_config_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limits: str) -> None:
+    write_config(tmp_path, monkeypatch, "[chunking]\n" + limits + "\n")
     config, detail = load_config()
     assert config is None
-    assert "claude_code" in detail
-    assert "verbose-text" in detail
-    assert "codex-json" in detail
-    assert "stream-json" in detail
+    assert "chunk" in detail
+
+
+def test_runtime_table_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[runtime.codex]\ncommand = ["codex", "exec"]\n')
+    config, detail = load_config()
+    assert config is None
+    assert "runtime" in detail
+
+
+def test_old_role_fields_fail_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, '[roles]\ntranslate = { provider = "demo", model = "m", effort = "low" }\n')
+    config, detail = load_config()
+    assert config is None
+    assert "provider" in detail
+
+
+def test_provider_named_like_a_runtime_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[provider.pi]\nbase_url = "https://pi.example"\napi = "chat"\n')
+    config, detail = load_config()
+    assert config is None
+    assert "pi" in detail
+    assert "reserved for runtimes" in detail
+
+
+def test_runtime_names() -> None:
+    assert RUNTIME_NAMES == ("codex", "claude-code", "pi")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a/b/c", ("a", "b/c")),
+        ("pi/deepseek/deepseek-flash", ("pi", "deepseek/deepseek-flash")),
+        ("pi", ("pi", "")),
+        ("codex", ("codex", "")),
+        ("claude-code", ("claude-code", "")),
+        (" codex/gpt ", ("codex", "gpt")),
+        ("codex/", ("codex", "")),
+    ],
+)
+def test_parse_target_accepts(text: str, expected: tuple[str, str]) -> None:
+    assert parse_target(text) == (expected, "")
+
+
+@pytest.mark.parametrize("text", ["deepseek", "deepseek/", "/x", "", "  "])
+def test_parse_target_rejects(text: str) -> None:
+    parsed, detail = parse_target(text)
+    assert parsed is None
+    assert "backend/model" in detail
+
+
+def test_target_string_and_kind() -> None:
+    assert str(Target("codex", "gpt-6-astra", "low")) == "codex/gpt-6-astra"
+    assert str(Target("pi", "", None)) == "pi"
+    assert Target("pi", "", None).is_runtime
+    assert Target("claude-code", "opus", None).is_runtime
+    assert not Target("demo", "chat-model", None).is_runtime
+
+
+def test_role_target_reports_unknown_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(tmp_path, monkeypatch)
+    target, detail = role_target(config, "nobody")
+    assert target is None
+    assert "nobody" in detail
+    assert "[roles]" in detail
+
+
+def test_role_target_reports_unparsable_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(tmp_path, monkeypatch)
+    target, detail = role_target(config, "slashless")
+    assert target is None
+    assert "backend/model" in detail
+    assert "got demo" in detail
+
+
+def test_role_target_reports_undeclared_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(tmp_path, monkeypatch)
+    target, detail = role_target(config, "ghost")
+    assert target is None
+    assert "provider ghost" in detail
+    assert "[provider.ghost]" in detail
+
+
+def test_role_target_uses_the_role_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(tmp_path, monkeypatch)
+    assert role_target(config, "translate") == (Target("demo", "chat-model", "low"), "")
+    assert role_target(config, "review") == (Target("claude-code", "sonnet", "high"), "")
+    assert role_target(config, "compile_fix") == (Target("pi", "", None), "")
+    assert role_target(config, "bare") == (Target("demo", "chat-model", None), "")
+
+
+def test_role_target_effort_argument_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(tmp_path, monkeypatch)
+    assert role_target(config, "translate", "high") == (Target("demo", "chat-model", "high"), "")
+    assert role_target(config, "bare", "low") == (Target("demo", "chat-model", "low"), "")
 
 
 def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -338,137 +356,39 @@ def test_load_config_reports_broken_toml(tmp_path: Path, monkeypatch: pytest.Mon
     assert "TOML" in detail
 
 
-def test_load_config_reports_role_missing_field(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, '[roles]\ntranslate = { provider = "demo", effort = "low" }\n')
+def test_load_config_reports_role_missing_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, '[roles]\ntranslate = { effort = "low" }\n')
     config, detail = load_config()
     assert config is None
     assert "model" in detail
 
 
-def test_role_config_reports_unknown_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
-    entry, detail = role_config(config, "nobody")
-    assert entry is None
-    assert "nobody" in detail
-    assert role_config(config, "translate")[0] is config.roles["translate"]
-
-
 def test_model_api_reads_models_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
+    config = loaded(tmp_path, monkeypatch)
     assert model_api(config, "demo", "chat-model") == (Api.CHAT, "")
 
 
 def test_model_api_falls_back_to_provider_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
+    config = loaded(tmp_path, monkeypatch)
     assert model_api(config, "wide", "any-model") == (Api.MESSAGES, "")
 
 
 def test_model_api_reports_unknown_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
+    config = loaded(tmp_path, monkeypatch)
     api, detail = model_api(config, "demo", "other-model")
     assert api is None
     assert "other-model" in detail
 
 
 def test_model_api_reports_unknown_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
+    config = loaded(tmp_path, monkeypatch)
     api, detail = model_api(config, "ghost", "chat-model")
     assert api is None
     assert "ghost" in detail
 
 
 def test_model_api_rejects_unknown_api_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
+    config = loaded(tmp_path, monkeypatch)
     api, detail = model_api(config, "odd", "any-model")
     assert api is None
     assert "grpc" in detail
-
-
-def loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModelsConfig:
-    write_config(tmp_path, monkeypatch, TABLE)
-    config, _ = load_config()
-    assert config is not None
-    return config
-
-
-def test_resolve_role_uses_config_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = loaded(tmp_path, monkeypatch)
-    resolved, detail = resolve_role(config, "translate", RoleTable.PROVIDER)
-    assert detail == ""
-    assert resolved is not None
-    assert (resolved.provider, resolved.runtime, resolved.model, resolved.effort) == (
-        "demo",
-        None,
-        "chat-model",
-        "low",
-    )
-
-
-def test_resolve_role_applies_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = loaded(tmp_path, monkeypatch)
-    resolved, _ = resolve_role(config, "translate", RoleTable.PROVIDER, "wide/other-model", "high")
-    assert resolved is not None
-    assert (resolved.provider, resolved.model, resolved.effort) == ("wide", "other-model", "high")
-
-
-def test_resolve_role_reads_runtime_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = loaded(tmp_path, monkeypatch)
-    resolved, _ = resolve_role(config, "review", RoleTable.RUNTIME)
-    assert resolved is not None
-    assert (resolved.provider, resolved.runtime, resolved.model) == (None, "claude_code", "sonnet")
-
-
-def test_resolve_role_rejects_model_without_slash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = loaded(tmp_path, monkeypatch)
-    resolved, detail = resolve_role(config, "translate", RoleTable.PROVIDER, "chat-model")
-    assert resolved is None
-    assert "provider/model" in detail
-
-
-def test_resolve_role_rejects_unknown_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = loaded(tmp_path, monkeypatch)
-    resolved, detail = resolve_role(config, "review", RoleTable.RUNTIME, "demo/sonnet")
-    assert resolved is None
-    assert "runtime demo" in detail
-
-
-def test_codex_defaults_resolve_aliases_and_require_sandbox() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
-    resolved, detail = resolve_role(config, "translate", RoleTable.RUNTIME)
-    assert detail == ""
-    assert resolved is not None
-    assert (resolved.runtime, resolved.model, resolved.effort) == ("codex", "gpt-6-astra", "low")
-    runtime = config.runtime["codex"]
-    assert runtime.auth == "codex"
-    assert "workspace-write" in runtime.command
-    for setting in (
-        'approval_policy="never"',
-        "sandbox_workspace_write.network_access=false",
-        "sandbox_workspace_write.exclude_slash_tmp=true",
-        "sandbox_workspace_write.exclude_tmpdir_env_var=true",
-        "allow_login_shell=false",
-    ):
-        assert setting in runtime.command
-    assert config.roles["translate"].chunk_tokens == 20000
-
-
-@pytest.mark.parametrize(
-    "limits", ["chunk_tokens = 0", "chunk_tokens = -1", "chunk_tokens = true", "chunk_merge_tokens = 6000"]
-)
-def test_invalid_chunk_limits_fail_config_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limits: str) -> None:
-    write_config(tmp_path, monkeypatch, '[roles.translate]\nmodel="astra"\neffort="light"\n' + limits)
-    config, detail = load_config()
-    assert config is None
-    assert "chunk" in detail

@@ -21,7 +21,7 @@ from ..artifacts.translate import (
 from ..assets import asset_path
 from ..manifests import describe_error, write_manifest
 from ..model.ask import AskOutcome, AskStatus, ask
-from ..model.config import ResolvedRole, RoleTable, load_config, resolve_role
+from ..model.config import Target, load_config, role_target
 from ..model.work import StopReason, work
 from ..workdir import ENCODING, Workdir
 
@@ -90,24 +90,13 @@ def run(
     paper_workdir: Workdir,
     *,
     jobs: int,
-    ask_model: str | None = None,
-    ask_effort: str | None = None,
-    work_model: str | None = None,
-    work_effort: str | None = None,
     report: Report | None = None,
     progress: ProgressCallback | None = None,
 ) -> TranslateManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
     manifest = _execute(
-        paper_workdir,
-        jobs,
-        ask_model,
-        ask_effort,
-        work_model,
-        work_effort,
-        report or (lambda status, summary: None),
-        progress or (lambda chunks: None),
+        paper_workdir, jobs, report or (lambda status, summary: None), progress or (lambda chunks: None)
     )
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
@@ -116,10 +105,6 @@ def run(
 def _execute(
     paper_workdir: Workdir,
     jobs: int,
-    ask_model: str | None,
-    ask_effort: str | None,
-    work_model: str | None,
-    work_effort: str | None,
     report: Report,
     progress: ProgressCallback,
 ) -> TranslateManifest:
@@ -136,13 +121,13 @@ def _execute(
     pending = [record for record in brief.chunks if record.translatable_chars]
     effort = ""
     if pending:
-        resolved, detail = _resolve(ask_model, ask_effort, work_model, work_effort)
-        if resolved is None:
+        target, detail = _resolve()
+        if target is None:
             return TranslateManifest(
                 status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
             )
-        display = f"{resolved.runtime or resolved.provider}/{resolved.model}"
-        effort = resolved.effort
+        display = str(target)
+        effort = target.effort or ""
         report(
             STAGE_NAME,
             f"{display}, {len(brief.chunks)} chunks, {sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}",
@@ -171,13 +156,7 @@ def _execute(
             with lock:
                 states[context.id] = ChunkProgressState.RUNNING
                 publish()
-            outcome = _translate_until_valid(
-                context,
-                paper_workdir,
-                resolved,
-                work_model if resolved.runtime else ask_model,
-                work_effort if resolved.runtime else ask_effort,
-            )
+            outcome = _translate_until_valid(context, paper_workdir, target)
             with lock:
                 if outcome.status is ChunkTranslateStatus.FALLBACK:
                     states[context.id] = ChunkProgressState.WARNING
@@ -195,18 +174,11 @@ def _execute(
     return _finish(paper_workdir, contexts, outcomes, model, effort, prompt_version, jobs)
 
 
-def _resolve(
-    ask_model: str | None, ask_effort: str | None, work_model: str | None, work_effort: str | None
-) -> tuple[ResolvedRole | None, str]:
+def _resolve() -> tuple[Target | None, str]:
     config, detail = load_config()
     if config is None:
         return None, detail
-    entry = config.roles.get(ROLE)
-    if entry is not None and bool(entry.provider) == bool(entry.runtime):
-        return None, "roles.translate must select exactly one provider (API) or runtime (Agent)."
-    if entry is not None and entry.runtime:
-        return resolve_role(config, ROLE, RoleTable.RUNTIME, work_model, work_effort)
-    return resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
+    return role_target(config, ROLE)
 
 
 def _prompt_asset() -> tuple[str, str, str]:
@@ -287,26 +259,20 @@ def _paragraphs(text: str, *, tail: bool) -> str:
     return "\n\n".join(found[-NEIGHBOR_PARAGRAPHS:] if tail else found[:NEIGHBOR_PARAGRAPHS])
 
 
-def _translate_until_valid(
-    context: _Context,
-    paper_workdir: Workdir,
-    resolved: ResolvedRole,
-    model_override: str | None,
-    effort: str | None,
-) -> _Outcome:
+def _translate_until_valid(context: _Context, paper_workdir: Workdir, target: Target) -> _Outcome:
     messages: list[tuple[str, str]] = [("user", _task_message(context.body))]
     failures: list[str] = []
     model = ""
+    effort: str | None = None
     for attempts in (1, 2):
-        if resolved.runtime:
-            outcome = _agent_request(context, paper_workdir, messages, attempts, model_override, effort)
+        if target.is_runtime:
+            outcome = _agent_request(context, paper_workdir, messages, attempts, effort)
         else:
             outcome = ask(
                 role=ROLE,
                 system=context.system,
                 messages=messages,
                 log_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempts}.json",
-                model=model_override,
                 effort=effort,
             )
         model = outcome.model or model
@@ -348,7 +314,6 @@ def _agent_request(
     paper_workdir: Workdir,
     messages: list[tuple[str, str]],
     attempt: int,
-    model: str | None,
     effort: str | None,
 ) -> AskOutcome:
     site = paper_workdir.sandbox(STAGE_NAME) / context.id / str(attempt)
@@ -361,7 +326,6 @@ def _agent_request(
             role=ROLE,
             workdir=site,
             trace_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempt}.jsonl",
-            model=model,
             effort=effort,
             prompt=(
                 "读取 task.md，按其中的翻译规则、论文语境与对话完成翻译。"

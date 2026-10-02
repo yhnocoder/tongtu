@@ -80,20 +80,16 @@ XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 def run(
     paper_workdir: Workdir,
     *,
-    model_override: str | None = None,
-    effort: str | None = None,
     report: Callable[[str, str], None] | None = None,
 ) -> PrecompileManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(paper_workdir, model_override, effort, report or (lambda status, summary: None))
+    manifest = _execute(paper_workdir, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def _execute(
-    paper_workdir: Workdir, model_override: str | None, effort: str | None, report: Callable[[str, str], None]
-) -> PrecompileManifest:
+def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> PrecompileManifest:
     src = paper_workdir.src
     warnings: list[str] = []
     candidates = _scan_candidates(src, warnings)
@@ -127,8 +123,6 @@ def _execute(
             paper_workdir.precompile_fix_log,
             main_file,
             warnings,
-            model_override,
-            effort,
             report=lambda action: report("fix session", action),
         )
         src = tree
@@ -171,8 +165,6 @@ def _execute(
         FLAT_FILENAME,
         paper_workdir.precompile_fix_log,
         warnings,
-        model_override,
-        effort,
         report,
         fix_session=fix_session,
     )

@@ -29,7 +29,7 @@ from ..assets import asset_path
 from ..config import GLOSSARY_FILENAME, glossary_path
 from ..manifests import describe_error, write_manifest
 from ..model.ask import ASK_TIMEOUT_SECONDS, AskStatus, ask
-from ..model.config import RoleTable, load_config, resolve_role
+from ..model.config import load_config, role_target
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "survey"
@@ -39,10 +39,6 @@ SKILL_FILENAME = "SKILL.md"
 ROLE = "survey_terms"
 
 TOKEN_ENCODING_NAME = "o200k_base"
-
-SPLIT_ABOVE = 5000
-
-MERGE_BELOW = 1500
 
 WARNING_DETAIL_CHARS = 400
 
@@ -109,15 +105,11 @@ def run(
     *,
     glossary: tuple[Path, ...] = (),
     no_terms: bool = False,
-    ask_model: str | None = None,
-    ask_effort: str | None = None,
     report: Callable[[str, str], None] | None = None,
 ) -> SurveyManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(
-        paper_workdir, glossary, no_terms, ask_model, ask_effort, report or (lambda status, summary: None)
-    )
+    manifest = _execute(paper_workdir, glossary, no_terms, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -126,8 +118,6 @@ def _execute(
     paper_workdir: Workdir,
     glossary_paths: Sequence[Path],
     no_terms: bool,
-    ask_model: str | None,
-    ask_effort: str | None,
     report: Callable[[str, str], None],
 ) -> SurveyManifest:
     try:
@@ -142,9 +132,8 @@ def _execute(
     config, detail = load_config()
     if config is None:
         return SurveyManifest(status=SurveyStatus.CHUNK_FAILED, message=detail)
-    translation = config.roles.get("translate")
-    split_above = translation.chunk_tokens if translation else SPLIT_ABOVE
-    merge_below = translation.chunk_merge_tokens if translation else MERGE_BELOW
+    split_above = config.chunking.chunk_tokens
+    merge_below = config.chunking.chunk_merge_tokens
     try:
         encoder = tiktoken.get_encoding(TOKEN_ENCODING_NAME)
     except Exception as error:
@@ -173,7 +162,7 @@ def _execute(
             "in masked.tex; the brief carries abstract = null."
         )
     proposed, proposal_warnings = _propose(
-        paper_workdir, abstract, heading_tree, masked, document.encoder, no_terms, ask_model, ask_effort, report
+        paper_workdir, abstract, heading_tree, masked, document.encoder, no_terms, report
     )
     warnings.extend(proposal_warnings)
 
@@ -483,8 +472,6 @@ def _propose(
     masked: str,
     encoder: tiktoken.Encoding,
     no_terms: bool,
-    ask_model: str | None,
-    ask_effort: str | None,
     report: Callable[[str, str], None],
 ) -> tuple[list[Term], list[str]]:
     if no_terms:
@@ -496,8 +483,8 @@ def _propose(
         return [], []
     payload = _payload(abstract, heading_tree, masked)
     thousands = len(encoder.encode(payload, disallowed_special=())) / 1000
-    resolved, _detail = resolve_role(config, ROLE, RoleTable.PROVIDER, ask_model, ask_effort)
-    label = f"{resolved.provider}/{resolved.model}" if resolved is not None else ROLE
+    target, _detail = role_target(config, ROLE)
+    label = str(target) if target is not None else ROLE
     report("terms", f"{label}, ~{thousands:.1f}k tokens in, timeout {ASK_TIMEOUT_SECONDS}s")
     started = time.monotonic()
     outcome = ask(
@@ -506,8 +493,6 @@ def _propose(
         messages=[("user", payload)],
         schema=TERMS_SCHEMA,
         log_path=paper_workdir.survey_terms_log,
-        model=ask_model,
-        effort=ask_effort,
     )
     report(f"terms {outcome.status}", f"{time.monotonic() - started:.1f}s")
     if outcome.status is AskStatus.ERROR:
@@ -675,9 +660,7 @@ class _Depth:
 
 
 class _Document:
-    def __init__(
-        self, text: str, encoder: tiktoken.Encoding, *, split_above: int = SPLIT_ABOVE, merge_below: int = MERGE_BELOW
-    ) -> None:
+    def __init__(self, text: str, encoder: tiktoken.Encoding, *, split_above: int, merge_below: int) -> None:
         self.text = text
         self.encoder = encoder
         self.split_above = split_above

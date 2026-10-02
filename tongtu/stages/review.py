@@ -9,8 +9,7 @@ from .. import chunks, pipeline, validation
 from ..artifacts.common import FixSession
 from ..artifacts.review import ReviewManifest, ReviewStatus
 from ..manifests import describe_error, timeout_warning, write_manifest
-from ..model.config import RoleTable, load_config, resolve_role
-from ..model.work import StopReason, work
+from ..model.work import StopReason, skill_path, work
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "review"
@@ -28,13 +27,11 @@ def run(
     paper_workdir: Workdir,
     *,
     skip: bool = False,
-    model_override: str | None = None,
-    effort: str | None = None,
     report: Callable[[str, str], None] | None = None,
 ) -> ReviewManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(paper_workdir, skip, model_override, effort, report or (lambda status, summary: None))
+    manifest = _execute(paper_workdir, skip, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
@@ -42,8 +39,6 @@ def run(
 def _execute(
     paper_workdir: Workdir,
     skip: bool,
-    model_override: str | None,
-    effort: str | None,
     report: Callable[[str, str], None],
 ) -> ReviewManifest:
     chunk_ids = sorted(path.stem for path in paper_workdir.chunks.glob("*.tex"))
@@ -60,12 +55,12 @@ def _execute(
         _write_reviewed(paper_workdir, sources, translated)
         return ReviewManifest(status=ReviewStatus.OK, message=SKIPPED_MESSAGE)
 
-    skill_path, detail = _skill_path(model_override, effort)
-    if skill_path is None:
+    skill_dir, detail = skill_path(ROLE)
+    if skill_dir is None:
         return _failed(detail)
 
     try:
-        _stage_site(paper_workdir, sources, translated, skill_path)
+        _stage_site(paper_workdir, sources, translated, skill_dir)
     except OSError as error:
         return _failed(describe_error(error))
 
@@ -75,8 +70,6 @@ def _execute(
         ROLE,
         _site(paper_workdir),
         trace_path=paper_workdir.review_log,
-        model=model_override,
-        effort=effort,
         report=lambda action: report("review session", action),
     )
     session = FixSession(
@@ -96,16 +89,6 @@ def _execute(
 
 def _failed(message: str) -> ReviewManifest:
     return ReviewManifest(status=ReviewStatus.REVIEW_FAILED, message=message)
-
-
-def _skill_path(model_override: str | None, effort: str | None) -> tuple[str | None, str]:
-    config, detail = load_config()
-    if config is None:
-        return None, detail
-    resolved, detail = resolve_role(config, ROLE, RoleTable.RUNTIME, model_override, effort)
-    if resolved is None:
-        return None, detail
-    return config.runtime[resolved.runtime or ""].skill_path.format(role=ROLE), ""
 
 
 def _stage_site(paper_workdir: Workdir, sources: dict[str, str], translated: dict[str, str], skill_path: str) -> None:

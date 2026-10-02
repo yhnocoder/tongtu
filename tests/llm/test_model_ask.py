@@ -19,9 +19,9 @@ api_key_env = "OPENCODE_API_KEY"
 "qwen3.7-plus" = "messages"
 
 [roles]
-chat_role = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
-responses_role = { provider = "opencode", model = "gpt-5.6-luna", effort = "low" }
-messages_role = { provider = "opencode", model = "qwen3.7-plus", effort = "low" }
+chat_role = { model = "opencode/deepseek-v4-flash", effort = "low" }
+responses_role = { model = "opencode/gpt-5.6-luna", effort = "low" }
+messages_role = { model = "opencode/qwen3.7-plus", effort = "low" }
 """
 
 

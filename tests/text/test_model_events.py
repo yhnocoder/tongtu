@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import json
 
-from tongtu.model.events import SUMMARIZERS, summarize_codex_json, summarize_stream_json, summarizer
+from tongtu.model.events import (
+    CLAUDE_TOOL_ARGUMENTS,
+    PI_TOOL_ARGUMENTS,
+    parse_event,
+    summarize_codex_json,
+    summarize_pi_json,
+    summarize_stream_json,
+)
 
 
 def stream_line(*blocks: dict) -> bytes:
@@ -13,8 +20,10 @@ def tool_use(name: str, arguments: dict) -> dict:
     return {"type": "tool_use", "id": "toolu_01", "name": name, "input": arguments}
 
 
-def test_registry_holds_both_formats() -> None:
-    assert set(SUMMARIZERS) == {"stream-json", "codex-json"}
+def test_argument_tables_share_one_shape() -> None:
+    assert all(isinstance(key, str) and isinstance(value, str) for key, value in CLAUDE_TOOL_ARGUMENTS.items())
+    assert all(isinstance(key, str) and isinstance(value, str) for key, value in PI_TOOL_ARGUMENTS.items())
+    assert set(PI_TOOL_ARGUMENTS) == {"read", "bash", "edit", "write", "grep", "find", "ls"}
 
 
 def test_stream_json_bash_shows_the_command() -> None:
@@ -62,19 +71,9 @@ def test_stream_json_other_event_types_are_not_actions() -> None:
         assert summarize_stream_json(event) is None
 
 
-def test_codex_json_exec_command_begin_shows_the_command() -> None:
+def test_codex_json_old_protocol_lines_are_not_actions() -> None:
     event = {"id": "0", "msg": {"type": "exec_command_begin", "command": ["bash", "-lc", "latexmk flat.tex"]}}
-    assert summarize_codex_json(event) == "exec: bash -lc latexmk flat.tex"
-
-
-def test_codex_json_patch_apply_begin_shows_the_files() -> None:
-    event = {"id": "1", "msg": {"type": "patch_apply_begin", "changes": {"flat.tex": {"update": {}}}}}
-    assert summarize_codex_json(event) == "patch: flat.tex"
-
-
-def test_codex_json_other_msg_types_are_not_actions() -> None:
-    for kind in ("agent_message", "token_count", "task_started"):
-        assert summarize_codex_json({"id": "2", "msg": {"type": kind}}) is None
+    assert summarize_codex_json(event) is None
 
 
 def test_codex_json_item_command_execution_shows_the_command() -> None:
@@ -94,22 +93,58 @@ def test_codex_json_item_agent_message_is_not_an_action() -> None:
     assert summarize_codex_json({"type": "item.completed", "item": {"type": "agent_message", "text": "好了"}}) is None
 
 
-def test_summarizer_without_events_is_absent() -> None:
-    assert summarizer(None) is None
+def test_parse_event_skips_lines_that_are_not_json_objects() -> None:
+    assert parse_event(b"not json at all\n") is None
+    assert parse_event(b'["a", "b"]\n') is None
+    assert parse_event(b"\xff\xfe\n") is None
+    assert parse_event(b"") is None
 
 
-def test_summarizer_skips_lines_that_are_not_json_objects() -> None:
-    summarize = summarizer("stream-json")
-    assert summarize is not None
-    assert summarize(b"not json at all\n") is None
-    assert summarize(b'["a", "b"]\n') is None
-    assert summarize(b"\xff\xfe\n") is None
+def test_parse_event_returns_the_object() -> None:
+    event = parse_event(stream_line(tool_use("Bash", {"command": "ls"})) + b"\n")
+    assert event is not None
+    assert summarize_stream_json(event) == "Bash: ls"
 
 
-def test_summarizer_parses_a_stream_json_line() -> None:
-    summarize = summarizer("stream-json")
-    assert summarize is not None
-    assert summarize(stream_line(tool_use("Bash", {"command": "ls"})) + b"\n") == "Bash: ls"
+def pi_tool(name: str, arguments: object) -> dict:
+    return {"type": "tool_execution_start", "toolCallId": "call_1", "toolName": name, "args": arguments}
+
+
+def test_pi_json_bash_shows_the_command() -> None:
+    assert (
+        summarize_pi_json(pi_tool("bash", {"command": "latexmk -xelatex flat.tex"}))
+        == "bash: latexmk -xelatex flat.tex"
+    )
+
+
+def test_pi_json_file_tools_show_the_path() -> None:
+    for name in ("read", "edit", "write"):
+        assert summarize_pi_json(pi_tool(name, {"path": "flat.tex", "content": "x"})) == f"{name}: flat.tex"
+
+
+def test_pi_json_search_tools_show_the_pattern_or_path() -> None:
+    assert summarize_pi_json(pi_tool("grep", {"pattern": "usepackage", "path": "."})) == "grep: usepackage"
+    assert summarize_pi_json(pi_tool("find", {"pattern": "**/*.tex"})) == "find: **/*.tex"
+    assert summarize_pi_json(pi_tool("ls", {"path": "figures"})) == "ls: figures"
+
+
+def test_pi_json_unknown_tool_or_missing_argument_shows_the_name_only() -> None:
+    assert summarize_pi_json(pi_tool("ls", {})) == "ls"
+    assert summarize_pi_json(pi_tool("custom", {"x": 1})) == "custom"
+    assert summarize_pi_json(pi_tool("bash", "not a dict")) == "bash"
+
+
+def test_pi_json_newlines_collapse_to_one_line() -> None:
+    assert summarize_pi_json(pi_tool("bash", {"command": "ls\n  -la"})) == "bash: ls -la"
+
+
+def test_pi_json_other_event_types_are_not_actions() -> None:
+    for event in (
+        {"type": "tool_execution_end", "toolName": "bash"},
+        {"type": "message_end", "message": {"stopReason": "stop"}},
+        {"type": "tool_execution_start"},
+    ):
+        assert summarize_pi_json(event) is None
 
 
 def test_codex_actions_are_not_repeated_at_completion() -> None:

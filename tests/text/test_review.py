@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -10,13 +11,15 @@ import pytest
 from tongtu import validation
 from tongtu.artifacts.review import ReviewManifest, ReviewStatus
 from tongtu.manifests import timeout_warning
-from tongtu.model.config import ModelsConfig, RoleConfig, RuntimeConfig
+from tongtu.model.config import ModelsConfig, RoleConfig
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.stages import review
 from tongtu.workdir import Workdir
 
-SKILL_PATH = ".agent/skills/review"
+work_module = importlib.import_module("tongtu.model.work")
+
+SKILL_PATH = ".codex/skills/review"
 
 BRIEF = '{"chunks": []}\n'
 
@@ -30,18 +33,7 @@ BROKEN = "\\section{引言}\n\n我们训练了一个 $n$ 层的网络。\n\n⟦B
 
 
 def models_config() -> ModelsConfig:
-    return ModelsConfig(
-        runtime={"demo": RuntimeConfig(skill_path=".agent/skills/{role}", command=["runner"])},
-        roles={
-            review.ROLE: RoleConfig(
-                model="m1",
-                effort="high",
-                runtime="demo",
-                max_turns=4,
-                timeout_seconds=60,
-            )
-        },
-    )
+    return ModelsConfig(roles={review.ROLE: RoleConfig(model="codex/m1", effort="high", timeout_seconds=60)})
 
 
 def forbidden_work(*args: object, **kwargs: object) -> WorkOutcome:
@@ -50,7 +42,7 @@ def forbidden_work(*args: object, **kwargs: object) -> WorkOutcome:
 
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(review, "load_config", lambda: (models_config(), ""))
+    monkeypatch.setattr(work_module, "load_config", lambda: (models_config(), ""))
     monkeypatch.setattr(review, "work", forbidden_work)
 
 
@@ -68,16 +60,14 @@ def wire_work(
         workdir: Path,
         *,
         trace_path: Path,
-        model: str | None = None,
-        effort: str | None = None,
         report: Callable[[str], None] | None = None,
     ) -> WorkOutcome:
-        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path, "model": model, "effort": effort})
+        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path})
         if report is not None:
             report("Bash: ls")
         if edit is not None:
             edit(workdir)
-        return WorkOutcome(stop_reason=stop_reason, detail=detail, model="demo/m1")
+        return WorkOutcome(stop_reason=stop_reason, detail=detail, model="codex/m1")
 
     monkeypatch.setattr(review, "work", fake_work)
     return calls
@@ -129,7 +119,7 @@ def test_a_session_that_changes_nothing_is_ok(tmp_path: Path, monkeypatch: pytes
     assert manifest.reverted == []
     assert manifest.warnings == []
     assert manifest.session.stop_reason == "finished"
-    assert manifest.session.model == "demo/m1"
+    assert manifest.session.model == "codex/m1"
     assert reviewed(workdir, "c000").read_text(encoding="utf-8") == TRANSLATION
     assert outputs_present(workdir, "review")
     assert calls[0]["role"] == review.ROLE
@@ -146,7 +136,7 @@ def test_the_site_holds_only_the_isolated_inputs(tmp_path: Path, monkeypatch: py
     assert (site / "chunks" / "c000.tex").stat().st_mode & 0o777 == 0o444
     assert in_site(workdir, "c000").read_text(encoding="utf-8") == TRANSLATION
     assert (site / "brief.json").read_text(encoding="utf-8") == BRIEF
-    assert sorted(path.name for path in site.iterdir()) == [".agent", "brief.json", "chunks", "reviewed"]
+    assert sorted(path.name for path in site.iterdir()) == [".codex", "brief.json", "chunks", "reviewed"]
 
 
 def test_a_valid_revision_is_recorded_and_copied_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -201,7 +191,7 @@ def test_a_session_error_fails_the_stage(tmp_path: Path, monkeypatch: pytest.Mon
     assert manifest == read_manifest(workdir)
     assert manifest.message == "运行时不在 PATH 里"
     assert manifest.session.stop_reason == "error"
-    assert manifest.session.model == "demo/m1"
+    assert manifest.session.model == "codex/m1"
     assert manifest.changed == []
     assert not (workdir.reviewed).exists()
     assert not outputs_present(workdir, "review")
@@ -274,14 +264,23 @@ def test_skip_copies_the_translation_without_a_session(tmp_path: Path) -> None:
     assert outputs_present(workdir, "review")
 
 
-def test_a_role_pointing_at_an_unknown_runtime_fails_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = ModelsConfig(roles={review.ROLE: RoleConfig(model="m1", effort="high", runtime="nowhere")})
-    monkeypatch.setattr(review, "load_config", lambda: (config, ""))
+def test_a_role_pointing_at_a_provider_fails_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = ModelsConfig(roles={review.ROLE: RoleConfig(model="nowhere/m1", effort="high")})
+    monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
     workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
     manifest = review.run(workdir)
     assert manifest.status is ReviewStatus.REVIEW_FAILED
     assert manifest.session is None
     assert "nowhere" in manifest.message
+
+
+def test_the_skill_directory_follows_the_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = ModelsConfig(roles={review.ROLE: RoleConfig(model="pi", timeout_seconds=60)})
+    monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
+    wire_work(monkeypatch)
+    workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
+    assert review.run(workdir).status is ReviewStatus.OK
+    assert (site_path(workdir) / ".pi" / "skills" / "review" / review.VALIDATE_FILENAME).is_file()
 
 
 def run_validate_script(site: Path, source: Path, translation: Path) -> int:

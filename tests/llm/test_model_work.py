@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from tongtu.model.config import Target
+from tongtu.model.runtimes import RUNTIMES
 from tongtu.model.work import StopReason, work
 
 pytestmark = pytest.mark.llm
@@ -13,54 +16,12 @@ pytestmark = pytest.mark.llm
 work_module = importlib.import_module("tongtu.model.work")
 
 TABLE = """
-[provider.opencode]
-base_url = "https://opencode.ai/zen/go"
-api_key_env = "OPENCODE_API_KEY"
-
-[provider.opencode.models]
-"deepseek-v4-flash" = "chat"
-
-[runtime.claude_code]
-skill_path = ".claude/skills/{role}"
-command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
-           "--output-format", "stream-json", "--verbose",
-           "--setting-sources", "", "--strict-mcp-config",
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
-           "--disallowedTools", "Edit(.claude/skills/**)",
-           "--settings", "{settings}"]
-settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
-
-[runtime.claude_code_opencode]
-provider = "opencode"
-skill_path = ".claude/skills/{role}"
-command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--max-turns", "{max_turns}",
-           "--output-format", "stream-json", "--verbose",
-           "--setting-sources", "", "--strict-mcp-config",
-           "--allowedTools", "Read,Edit,Write,Glob,Grep,Bash", "--permission-mode", "acceptEdits",
-           "--disallowedTools", "Edit(.claude/skills/**)",
-           "--settings", "{settings}"]
-settings = { sandbox = { enabled = true, autoAllowBashIfSandboxed = true, allowUnsandboxedCommands = false, failIfUnavailable = true, network = { allowedDomains = [] } } }
-env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_API_KEY = "{api_key}", ANTHROPIC_DEFAULT_HAIKU_MODEL = "{model}", ANTHROPIC_DEFAULT_SONNET_MODEL = "{model}", ANTHROPIC_DEFAULT_OPUS_MODEL = "{model}", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1", DISABLE_TELEMETRY = "1" }
-
-[runtime.codex_opencode]
-provider   = "opencode"
-skill_path = ".codex/skills/{role}"
-command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-           "-s", "workspace-write", "-c", 'approval_policy="never"',
-           "-m", "{model}", "-c", 'model_reasoning_effort="{effort}"',
-           "-c", 'model_provider="opencode"', "-c", 'model_providers.opencode.name="opencode"',
-           "-c", 'model_providers.opencode.base_url="{base_url}/v1"',
-           "-c", 'model_providers.opencode.env_key="OPENCODE_API_KEY"',
-           "-c", 'model_providers.opencode.wire_api="responses"']
-env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
-
 [roles]
-smoke = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300 }
-sandbox_probe = { runtime = "claude_code", model = "claude-haiku-4-5-20251001", effort = "low", max_turns = 8, timeout_seconds = 300 }
-smoke_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 5, timeout_seconds = 300 }
-sandbox_probe_opencode = { runtime = "claude_code_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 8, timeout_seconds = 300 }
-smoke_codex = { runtime = "codex_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 5, timeout_seconds = 300 }
-sandbox_probe_codex = { runtime = "codex_opencode", model = "deepseek-v4-flash", effort = "low", max_turns = 8, timeout_seconds = 300 }
+smoke_codex = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 300 }
+smoke_claude = { model = "claude-code/claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300 }
+smoke_pi = { model = "pi", timeout_seconds = 300 }
+sandbox_probe_codex = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 300 }
+sandbox_probe_claude = { model = "claude-code/claude-haiku-4-5-20251001", effort = "low", max_turns = 8, timeout_seconds = 300 }
 """
 
 SMOKE_SKILL = """---
@@ -79,8 +40,19 @@ description: 在现场外与现场内各建一个文件
 用 shell 依次执行三条命令：`touch ../outside.txt`、`touch "$HOME/tongtu-sandbox-probe.txt"`、`touch inside.txt`；前面的失败也继续执行后面的；三条都跑过就结束，不做别的。
 """
 
+TARGETS = {
+    "codex": Target("codex", "gpt-6-astra", "low"),
+    "claude-code": Target("claude-code", "claude-haiku-4-5-20251001", "low"),
+    "pi": Target("pi", "", None),
+}
 
 HOME_PROBE = Path.home() / "tongtu-sandbox-probe.txt"
+
+
+def require_login(name: str) -> None:
+    ok, detail = RUNTIMES[name].login_check(TARGETS[name], os.environ)
+    if not ok:
+        pytest.skip(f"{name} 没有登录：{detail}")
 
 
 def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, skill: str) -> None:
@@ -113,7 +85,7 @@ def bash_results(trace_path: Path, needle: str) -> list[dict]:
 
 
 def codex_home_state() -> tuple[bool, list[tuple[str, float]]]:
-    home = Path.home() / ".codex"
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     if not home.is_dir():
         return False, []
     return True, sorted((str(path), path.stat().st_mtime) for path in home.rglob("*"))
@@ -125,25 +97,41 @@ def print_trace_lines(trace_path: Path, needle: str) -> None:
             print(f"写文件的事件： {line}")
 
 
+def run_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str) -> None:
+    prepared(tmp_path, monkeypatch, role, SMOKE_SKILL)
+    workdir = tmp_path / "paper"
+    workdir.mkdir()
+    trace_path = tmp_path / "logs" / f"{role}.jsonl"
+    outcome = work(role, workdir, trace_path=trace_path)
+    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
+    assert "hello" in (workdir / "hello.txt").read_text(encoding="utf-8").strip().lower()
+    assert trace_path.stat().st_size > 0
+    print(f"trace： {trace_path} ")
+    print(f"现场： {workdir} ")
+
+
+def test_work_runs_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    require_login("codex")
+    run_smoke(tmp_path, monkeypatch, "smoke_codex")
+
+
 def test_work_runs_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    prepared(tmp_path, monkeypatch, "smoke", SMOKE_SKILL)
-    workdir = tmp_path / "paper"
-    workdir.mkdir()
-    trace_path = tmp_path / "logs" / "smoke.jsonl"
-    outcome = work("smoke", workdir, trace_path=trace_path)
-    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
-    assert "hello" in (workdir / "hello.txt").read_text(encoding="utf-8").strip().lower()
-    assert trace_path.stat().st_size > 0
-    print(f"trace： {trace_path} ")
-    print(f"现场： {workdir} ")
+    require_login("claude-code")
+    run_smoke(tmp_path, monkeypatch, "smoke_claude")
 
 
-def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    prepared(tmp_path, monkeypatch, "sandbox_probe", PROBE_SKILL)
+def test_work_runs_pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    require_login("pi")
+    run_smoke(tmp_path, monkeypatch, "smoke_pi")
+
+
+def test_claude_code_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    require_login("claude-code")
+    prepared(tmp_path, monkeypatch, "sandbox_probe_claude", PROBE_SKILL)
     workdir = tmp_path / "probe" / "paper"
     workdir.mkdir(parents=True)
-    trace_path = tmp_path / "logs" / "sandbox_probe.jsonl"
-    outcome = work("sandbox_probe", workdir, trace_path=trace_path)
+    trace_path = tmp_path / "logs" / "sandbox_probe_claude.jsonl"
+    outcome = work("sandbox_probe_claude", workdir, trace_path=trace_path)
     print(f"trace： {trace_path} ")
     print(f"现场： {workdir} ")
     print(f"越界写的 tool_result： {[block.get('content') for block in bash_results(trace_path, 'outside.txt')]}")
@@ -157,56 +145,8 @@ def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: py
     assert not HOME_PROBE.exists()
 
 
-@pytest.mark.usefixtures("opencode_env")
-def test_work_runs_claude_code_on_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    prepared(tmp_path, monkeypatch, "smoke_opencode", SMOKE_SKILL)
-    workdir = tmp_path / "paper"
-    workdir.mkdir()
-    trace_path = tmp_path / "logs" / "smoke_opencode.jsonl"
-    outcome = work("smoke_opencode", workdir, trace_path=trace_path)
-    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
-    assert "hello" in (workdir / "hello.txt").read_text(encoding="utf-8").strip().lower()
-    assert trace_path.stat().st_size > 0
-    print(f"trace： {trace_path} ")
-    print(f"现场： {workdir} ")
-
-
-@pytest.mark.usefixtures("opencode_env")
-def test_opencode_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    prepared(tmp_path, monkeypatch, "sandbox_probe_opencode", PROBE_SKILL)
-    workdir = tmp_path / "probe" / "paper"
-    workdir.mkdir(parents=True)
-    trace_path = tmp_path / "logs" / "sandbox_probe_opencode.jsonl"
-    outcome = work("sandbox_probe_opencode", workdir, trace_path=trace_path)
-    print(f"trace： {trace_path} ")
-    print(f"现场： {workdir} ")
-    print(f"越界写的 tool_result： {[block.get('content') for block in bash_results(trace_path, 'outside.txt')]}")
-    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
-    assert (workdir / "inside.txt").exists()
-    inside_touches = bash_results(trace_path, "inside.txt")
-    assert any(not block.get("is_error") for block in inside_touches), (
-        "inside.txt 不是经一次成功的 Bash 调用建出的，说明沙箱没有起来"
-    )
-    assert not (workdir.parent / "outside.txt").exists()
-    assert not HOME_PROBE.exists()
-
-
-@pytest.mark.usefixtures("opencode_env")
-def test_work_runs_codex_on_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    prepared(tmp_path, monkeypatch, "smoke_codex", SMOKE_SKILL)
-    workdir = tmp_path / "paper"
-    workdir.mkdir()
-    trace_path = tmp_path / "logs" / "smoke_codex.jsonl"
-    outcome = work("smoke_codex", workdir, trace_path=trace_path)
-    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
-    assert "hello" in (workdir / "hello.txt").read_text(encoding="utf-8").strip().lower()
-    assert trace_path.stat().st_size > 0
-    print(f"trace： {trace_path} ")
-    print(f"现场： {workdir} ")
-
-
-@pytest.mark.usefixtures("opencode_env")
 def test_codex_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    require_login("codex")
     prepared(tmp_path, monkeypatch, "sandbox_probe_codex", PROBE_SKILL)
     workdir = tmp_path / "probe" / "paper"
     workdir.mkdir(parents=True)
@@ -218,24 +158,14 @@ def test_codex_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypat
     print_trace_lines(trace_path, "touch")
     assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
     assert (workdir / "inside.txt").exists()
+    assert not (workdir.parent / "outside.txt").exists()
     assert not HOME_PROBE.exists()
     assert codex_home_state() == before
 
 
-def test_codex_login_sandbox_enforces_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import os
-    import shutil
-
-    from tongtu.model.config import MODELS_TEMPLATE
-
-    auth_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    if not shutil.which("codex") or not (auth_home / "auth.json").is_file():
-        pytest.skip("requires Codex CLI with a file-backed login")
-    prepared(tmp_path, monkeypatch, "sandbox_probe", SMOKE_SKILL)
-    (tmp_path / "home/config.toml").write_text(
-        MODELS_TEMPLATE
-        + '\n[roles.sandbox_probe]\nruntime="codex"\nmodel="astra"\neffort="light"\ntimeout_seconds=240\n'
-    )
+def test_codex_sandbox_enforces_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    require_login("codex")
+    prepared(tmp_path, monkeypatch, "sandbox_probe_codex", SMOKE_SKILL)
     site = tmp_path / "site"
     site.mkdir()
     (site / "escape").symlink_to(tmp_path, target_is_directory=True)
@@ -245,7 +175,7 @@ def test_codex_login_sandbox_enforces_boundaries(tmp_path: Path, monkeypatch: py
         "outside": "../outside.txt",
         "symlink": "escape/escaped.txt",
         "tmp": str(outside_tmp),
-        "skill": ".codex/skills/sandbox_probe/SKILL.md",
+        "skill": ".codex/skills/sandbox_probe_codex/SKILL.md",
     }
     script = (
         "import json, pathlib, socket\n"
@@ -264,7 +194,7 @@ def test_codex_login_sandbox_enforces_boundaries(tmp_path: Path, monkeypatch: py
     )
     (site / "probe.py").write_text(script)
     outcome = work(
-        "sandbox_probe",
+        "sandbox_probe_codex",
         site,
         trace_path=tmp_path / "trace.jsonl",
         prompt=(

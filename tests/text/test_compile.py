@@ -155,11 +155,9 @@ def wire_work(
         workdir: Path,
         *,
         trace_path: Path,
-        model: str | None = None,
-        effort: str | None = None,
         report=None,
     ):
-        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path, "model": model, "effort": effort})
+        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path})
         (trace_path).write_text("{}\n", encoding="utf-8")
         if report is not None:
             report("Bash: ls")
@@ -337,7 +335,7 @@ def test_fix_session_then_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
         path.write_text(path.read_text(encoding="utf-8").replace("第二段。", "第二段。%"), encoding="utf-8")
 
     work_calls = wire_work(monkeypatch, edit=edit)
-    manifest = compile.run(workdir, model_override="claude_code/claude-sonnet-5", effort="high")
+    manifest = compile.run(workdir)
     assert manifest.status is CompileStatus.OK
     assert manifest == read_manifest(workdir)
     assert manifest.fix_session is not None
@@ -348,8 +346,6 @@ def test_fix_session_then_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
     assert work_calls[0]["role"] == "compile_fix"
     assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "tex"
     assert work_calls[0]["trace_path"] == workdir.logs / "compile-fix.jsonl"
-    assert work_calls[0]["model"] == "claude_code/claude-sonnet-5"
-    assert work_calls[0]["effort"] == "high"
     assert "第二段。%" in (workdir.build / "zh.tex").read_text(encoding="utf-8")
     assert outputs_present(workdir, "compile")
 
