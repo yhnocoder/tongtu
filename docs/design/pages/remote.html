@@ -63,7 +63,7 @@ td:first-child { white-space: nowrap; }
 <body>
 <main>
 <header style="display:flex;flex-direction:column;gap:10px">
-  <p class="meta">设计草案 第 8 版 · 2026-10-02 · 未改代码 · 依据见「容器化运行调研」，命令行见「远程运行命令」</p>
+  <p class="meta">设计草案 第 9 版 · 2026-10-02 · 未改代码 · 依据见「容器化运行调研」，命令行见「远程运行命令」</p>
   <h1>通途远程运行设计</h1>
   <p class="lead">服务器上常驻一个 tongtu server，为每篇论文启动一个容器运行整条流水线；打 tag 后自动部署。Mac 上原生开发，用 release 版 tongtu 与 Raycast 翻译论文，用同一份 compose 在本机起 server 做上云前的测试。同时合并配置与数据目录、打包全部字体、重做模型调用层。</p>
 </header>
@@ -146,7 +146,8 @@ flowchart LR
 <section class="sheet">
   <header><span class="num">05</span><h2>镜像</h2></header>
   <ul>
-    <li>三层不变：base（TeX）、env（Python 依赖、字体，以及新加的 node 22、ca-certificates、codex、claude-code、pi，CLI 版本用 ARG 固定）、runtime（<code>COPY</code> 加 <code>uv sync</code>）。设 <code>TONGTU_ISOLATED=1</code>。</li>
+    <li>三层不变：base（TeX；ca-certificates 已在这一层）、env（Python 依赖、字体，以及新加的 node 22、codex、claude-code、pi，CLI 版本用 ARG 固定）、runtime（<code>COPY</code> 加 <code>uv sync</code>）。设 <code>TONGTU_ISOLATED=1</code>。字体全部随包打包（11），镜像不再装 <code>fonts-noto-cjk</code>，也不做 fontconfig 注册。</li>
+    <li>镜像 tag 与分支：image.yml 只在 push main 与打 <code>v*</code> tag 时推送。<code>dev/remote</code> 上需要新的 env 层时手动触发 workflow_dispatch，会覆盖 <code>:env</code>；main 的代码不读 <code>TONGTU_ISOLATED</code>，也用不到新装的 CLI，所以覆盖不影响 main 上的 papers.yml。</li>
     <li>runtime 阶段写成 <code>FROM ${ENV_IMAGE}</code>：CI 里指本文件的 env 阶段；本机 compose 里指 <code>ghcr.io/yhnocoder/tongtu:env</code>，BuildKit 只构建用得到的阶段，所以本机只构建 runtime 层。改动涉及 base 或 env 层时，本机拿不到新的 env，先用 image.yml 推 <code>:dev</code> 再测。</li>
     <li>不改为只装 wheel：仓库除去字体（env 层已单独复制）只有约 1MB，省不下体积。<code>.dockerignore</code> 补上 <code>raycast/node_modules</code>。</li>
     <li>server 与论文容器用同一个镜像，启动命令不同（<code>tongtu serve</code> 与 <code>tongtu run</code>）。</li>
@@ -254,23 +255,29 @@ chunk_tokens       = 20000
 chunk_merge_tokens = 12000
 
 [roles]                                # model = "后端/模型"，只在第一个 / 处切分
-survey_terms = { model = "deepseek/deepseek-v4-flash", effort = "low" }
+survey_terms = { model = "deepseek/deepseek-flash", effort = "low" }
 translate    = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 1800 }
 review       = { model = "claude-code/claude-opus-5", effort = "medium", timeout_seconds = 3600, max_turns = 300 }
 compile_fix  = { model = "pi/deepseek/deepseek-flash", timeout_seconds = 1800 }</code></pre>
   <div class="tbl"><table>
     <tr><th></th><th>原生（Mac）</th><th>隔离环境</th><th>失败判定（实测）</th></tr>
-    <tr><td>codex</td><td>临时 CODEX_HOME、<code>workspace-write</code></td><td><code>danger-full-access</code></td><td>退出码非 0，或 <code>turn.failed</code></td></tr>
+    <tr><td>codex</td><td>临时 CODEX_HOME（隔离用户 <code>~/.codex</code> 里的配置、插件与会话记录）、<code>workspace-write</code></td><td><code>danger-full-access</code>；直接用 HOME 下的 <code>~/.codex</code>，那里只有启动时写出的派生 auth.json</td><td>退出码非 0，或 <code>turn.failed</code></td></tr>
     <tr><td>claude-code</td><td>Seatbelt 沙箱；从环境删除 <code>ANTHROPIC_*</code> 等变量，确保走订阅</td><td><code>bypassPermissions</code>，不开沙箱，不改环境变量（云端实测直接 <code>claude -p</code> 即可）</td><td>result 的 <code>is_error</code></td></tr>
     <tr><td>pi</td><td>允许，无沙箱</td><td>同原生</td><td><code>stopReason</code> 为 error 或 aborted；退出码恒为 0</td></tr>
   </table></div>
   <p class="sub">pi 在所有环境都加隔离参数 <code>-ne -ns -np -nc -na --offline --no-session --skill</code>。三种运行时写在 <code>tongtu/model/runtimes.py</code>，配置里没有命令模板。删除别名与 <code>setup -i</code>，旧配置不兼容。effort 不写不传。隔离环境下启动时把凭据环境变量写进 HOME。tongtu 调用 latexmk 一律加 <code>-norc</code>。</p>
+  <ul>
+    <li><code>model</code> 只写后端名（<code>codex</code>、<code>claude-code</code>、<code>pi</code>）时不传模型参数，用运行时自己的默认模型；服务商必须写 <code>服务商/模型</code>。</li>
+    <li>这个阶段命令行删除 <code>--ask-model</code>、<code>--ask-effort</code>、<code>--work-model</code>、<code>--work-effort</code>，模型与强度只在 <code>config.toml</code> 里配置。</li>
+    <li>CI（papers.yml）没有 Claude 订阅与 Codex 登录，work 角色用 <code>pi</code> 加 DeepSeek。</li>
+  </ul>
 </section>
 
 <section class="sheet">
   <header><span class="num">11</span><h2>字体</h2></header>
   <ul>
     <li>打包全部中文字体：现有的霞鹜文楷 Light 与 Medium，加一套开源黑体（如思源黑体 SC）作无衬线字体，总计不到 100MB。任何环境生成的 PDF 用同一套字体。</li>
+    <li><code>[fonts]</code> 有 <code>main</code>、<code>bold</code>、<code>sans</code>、<code>sans_bold</code>、<code>mono</code> 五个键，只接受字体文件名或文件路径，不接受系统字体名与回退列表。</li>
     <li><code>zh.tex</code> 只按文件名引用字体，不写路径，不按机器挑选系统字体，不建软链接。编译时 tongtu 把包内字体目录经 <code>TTFONTS</code>、<code>OPENTYPEFONTS</code> 交给 XeTeX（本机已用最小 xeCJK 文档验证），修复会话的环境里也设置它们。</li>
     <li>论文目录因此可以在 Mac、服务器、容器之间直接搬动。</li>
   </ul>
@@ -305,9 +312,9 @@ flowchart LR
     <tr><th>Task</th><th>内容</th><th>验证</th></tr>
     <tr><td>T1</td><td>目录布局、<code>config.toml</code>、<code>--dev</code>、doctor 提示旧路径</td><td>text 测试；你本机跑一篇</td></tr>
     <tr><td>T2</td><td>打包黑体，<code>zh.tex</code> 只写文件名，<code>TTFONTS</code>/<code>OPENTYPEFONTS</code></td><td>compile 测试；把论文目录搬到另一路径后能继续编译</td></tr>
-    <tr><td>T3</td><td>模型层重构、三种运行时、<code>TONGTU_ISOLATED</code>、凭据环境变量写进 HOME、失败判定</td><td>text 测试；你本机与云端各跑一篇</td></tr>
+    <tr><td>T3</td><td>分两步：T3a 模型层重构、三种运行时、失败判定、删除四个模型覆盖选项；T3b <code>TONGTU_ISOLATED</code>、凭据环境变量写进 HOME</td><td>text 测试；你本机跑一篇；云端用 claude-code 与 pi 跑一篇；codex 的隔离环境在 T7 部署后到服务器上手动测</td></tr>
     <tr><td>T4</td><td>latexmk 加 <code>-norc</code>，skill 补一句</td><td>text 测试</td></tr>
-    <tr><td>T5</td><td>env 层加 node、三个 CLI、ca-certificates；runtime 阶段 <code>FROM ${ENV_IMAGE}</code>；<code>.dockerignore</code></td><td>image.yml</td></tr>
+    <tr><td>T5</td><td>env 层加 node、三个 CLI；删除 <code>fonts-noto-cjk</code> 与 fontconfig 注册；runtime 阶段 <code>FROM ${ENV_IMAGE}</code>；<code>.dockerignore</code></td><td>image.yml</td></tr>
     <tr><td>T6</td><td><code>run.log</code>、<code>run.pid</code>、四个状态、<code>status --json --since</code>、原生 <code>logs -f</code></td><td>text 测试；你本机跑一篇</td></tr>
     <tr><td>T7</td><td><code>tongtu serve</code>、REST、启动器、派生凭据、codex 按需刷新</td><td>text 测试；容器里起 server 用 curl 跑一篇</td></tr>
     <tr><td>T8</td><td><code>--on</code>、<code>hosts.toml</code>、跟随与自动下载、<code>pull</code>、<code>stop</code></td><td>你在 Mac 上对服务器跑一篇，合盖后再接上</td></tr>
@@ -327,6 +334,27 @@ flowchart LR
     <li>T11：<code>compose.yml</code> 同时写 <code>build</code> 与 <code>image</code> 时，服务器上 <code>up -d --no-build</code> 直接使用 pull 下来的镜像。</li>
     <li>T3：pi 在隔离参数下是否还需要 <code>settings.json</code>；需要的话一起经环境变量传入。</li>
   </ul>
+</section>
+
+<section class="sheet">
+  <header><span class="num">15</span><h2>已实测</h2></header>
+  <p class="sub">2026-10-01 到 10-02 在本机 Mac（arm64）与服务器 remote_vps 上实测，实验产生的容器、镜像、临时文件都已清理。</p>
+  <div class="tbl"><table>
+    <tr><th>主题</th><th>结果</th><th>用在</th></tr>
+    <tr><td>服务器环境</td><td>Ubuntu 24.04.5，x86_64，Docker 29.8.1，docker compose v5.5.1，root，4 核 7GB 内存，可用磁盘 44G；80、443 已被其他服务占用。Mac 上 docker compose v5.1.2</td><td>06</td></tr>
+    <tr><td>容器里的内层沙箱</td><td>服务器开启了 <code>apparmor_restrict_unprivileged_userns=1</code>：claude-code 的 bwrap 起不来；codex 的沙箱要 root 加 unconfined 才能用。两者沙箱起不来时都静默失败：退出码 0，但 Bash 工具不可用</td><td>10：隔离环境关闭内层沙箱</td></tr>
+    <tr><td>失败判定</td><td>pi 失败时退出码仍为 0，要看事件流 <code>message_end</code> 的 <code>stopReason</code> 是否为 error 或 aborted；claude-code 看 result 的 <code>is_error</code>，失败时 <code>subtype</code> 仍为 success，不能用它；codex 看 <code>turn.failed</code> 或退出码 1</td><td>10</td></tr>
+    <tr><td>claude-code 凭据</td><td><code>claude setup-token</code> 生成的 <code>CLAUDE_CODE_OAUTH_TOKEN</code> 一年有效、只能调用模型；在容器里以非 root 运行，或 root 下设 <code>IS_SANDBOX=1</code>，可以正常完成会话（本机与服务器各一次）。Claude 云端环境里直接 <code>claude -p</code> 即可（用户实测）</td><td>08、10</td></tr>
+    <tr><td>codex 凭据</td><td>派生 auth.json（access token 照抄、refresh token 置空）在容器里可以正常完成会话，宿主 auth.json 的哈希前后不变。access token 约 10 天有效；0.159.3 只在 401 或过期时刷新，不看 <code>last_refresh</code>。测试用的镜像里没有 ca-certificates 时连不上</td><td>05、06、08</td></tr>
+    <tr><td>pi</td><td>用 deepseek-flash 在容器里完成真实会话。<code>~/.pi/agent</code> 整个只读挂载时不能运行，pi 要在里面建锁目录；只读挂载单个 auth.json 可以运行</td><td>08、10</td></tr>
+    <tr><td>refresh token</td><td>只能用一次；多方共用同一份凭据各自刷新，会让其他共用方被登出</td><td>06：只有一个 server 刷新</td></tr>
+    <tr><td>bind 挂载</td><td>单文件 bind 挂载时，写临时文件再 rename 会报 EBUSY；宿主上 rename 后，容器里仍读到旧 inode。<code>-v</code> 挂载不存在的路径会自动建空目录</td><td>08：凭据走环境变量，一律 <code>--mount</code></td></tr>
+    <tr><td>Rosetta</td><td>Mac 上跑 x86_64 镜像，编译慢 1.3 到 1.6 倍，每篇多几秒。镜像压缩后 2.69GB，解压后 8.56GB</td><td>05</td></tr>
+    <tr><td>latexmkrc</td><td>TeX 默认 <code>shell_escape=p</code>（受限）；<code>latexmk -norc</code> 跳过论文目录里的 .latexmkrc；arXiv 的 AutoTeX 不读 latexmkrc；本机 24 篇论文里没有一篇带 latexmkrc</td><td>10：<code>-norc</code></td></tr>
+    <tr><td>字体搜索路径</td><td>最小 xeCJK 文档只写字体文件名时，不设变量报找不到字体；设 <code>TTFONTS="&lt;字体目录&gt;//:"</code> 后 xelatex 退出 0，xdvipdfmx 同样找到文件。<code>.otf</code> 对应 <code>OPENTYPEFONTS</code></td><td>11</td></tr>
+    <tr><td>Cloudflare Tunnel</td><td>东京节点（NRT）：50MB 下载约 5.3MB/s，同一服务器经 ssh 约 4MB/s；小请求首字节 0.4 到 0.7 秒；免费版上传上限 100MB；100 秒无数据返回 524</td><td>06、07</td></tr>
+    <tr><td>ghcr 镜像</td><td>公开，已有 tag：dev、env、0.1.0、0.1、latest。pyproject 已用 force-include 把 fonts 与 skill 打进 wheel 的 <code>tongtu/data/</code></td><td>05</td></tr>
+  </table></div>
 </section>
 </main>
 </body>
