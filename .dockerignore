@@ -24,3 +24,6 @@ auth.json
 # `.claude/` 含本机的 Claude Code 设置，其 `worktrees/` 下还有整个仓库的工作副本（本机实测
 # 196MB）。上面的 `ci/` 只匹配上下文根下的同名目录，匹配不到 `.claude/worktrees/ci`。
 .claude/
+
+# Raycast 插件的依赖目录不进构建上下文
+raycast/node_modules/
