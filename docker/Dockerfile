@@ -44,12 +44,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# perl         —— tlmgr / latexmk / latexpand / epstopdf 都是 perl 脚本
-# zstd         —— 解 release 里的 TeX Live 分片
-# fontconfig   —— xelatex 与 xdvipdfmx 链接 libfontconfig
-# ghostscript  —— epstopdf 的后端，EPS/PS 链缺它就断
-# poppler-utils / imagemagick —— 图片格式转换，供修复会话与将来的图处理使用
-# git          —— 修复会话在编译树里干活时常要它
+# perl：tlmgr / latexmk / latexpand / epstopdf 都是 perl 脚本
+# zstd：解 release 里的 TeX Live 分片
+# fontconfig：xelatex 与 xdvipdfmx 链接 libfontconfig
+# ghostscript：epstopdf 的后端，EPS/PS 链缺它就断
+# poppler-utils / imagemagick：图片格式转换，供修复会话与将来的图处理使用
+# git：修复会话在编译树里干活时常要它
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -106,7 +106,7 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv-instal
     && uv python install "${PYTHON_VERSION}" \
     && uv python find "${PYTHON_VERSION}"
 
-# =========================================================== 环境层（随 uv.lock 与 fonts/ 变）
+# =========================================================== 环境层（随 uv.lock、fonts/ 与 node、CLI 版本变）
 FROM base AS env
 
 WORKDIR /opt/tongtu
@@ -131,7 +131,10 @@ RUN mkdir -p /tmp/node \
     && grep " node-v${NODE_VERSION}-linux-x64.tar.gz\$" SHASUMS256.txt > node.sha256 \
     && sed -i 's# node-v.*# node.tar.gz#' node.sha256 \
     && sha256sum -c node.sha256 \
-    && tar -xzf node.tar.gz -C /usr/local --strip-components=1 --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md \
+    && tar -xzf node.tar.gz -C /usr/local --strip-components=1 \
+         --exclude="node-v${NODE_VERSION}-linux-x64/CHANGELOG.md" \
+         --exclude="node-v${NODE_VERSION}-linux-x64/LICENSE" \
+         --exclude="node-v${NODE_VERSION}-linux-x64/README.md" \
     && cd / \
     && rm -rf /tmp/node \
     && node --version \
