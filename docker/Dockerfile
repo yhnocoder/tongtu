@@ -154,10 +154,8 @@ RUN npm install -g --no-fund --no-audit \
     && pi --version
 
 # 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/papers/<arxiv_id>，宿主挂进来即可续跑。
-# TONGTU_ISOLATED=1 放在 env 层：papers.yml 以 :env 为 container 时同样处于隔离环境，与云端一致。
 ENV PATH="/opt/tongtu/.venv/bin:${PATH}" \
-    TONGTU_HOME=/work \
-    TONGTU_ISOLATED=1
+    TONGTU_HOME=/work
 
 # =========================================================== 代码层（每次改码重跑）
 FROM ${ENV_IMAGE} AS runtime

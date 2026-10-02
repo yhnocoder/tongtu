@@ -88,12 +88,13 @@ docker run --rm -it -v "$HOME/.tongtu:/work" \
 ### agent 运行时在镜像里
 
 env 层装了 node 22 与 codex、claude-code、pi 三个 CLI，版本见 `Dockerfile` 的
-`NODE_VERSION`、`CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`PI_VERSION` 四个 ARG。镜像设
-`TONGTU_ISOLATED=1`，tongtu 按隔离环境的参数启动运行时（`remote.html` 第 10 节）。
+`NODE_VERSION`、`CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`PI_VERSION` 四个 ARG。镜像不设
+环境开关，运行时参数与原生相同，只有 claude-code 的沙箱按平台决定，Linux 上不开
+（`remote.html` 第 02、10 节）。
 
 凭据不进镜像，经环境变量传入容器：`CLAUDE_CODE_OAUTH_TOKEN`、`TONGTU_CODEX_AUTH`、
 `TONGTU_PI_AUTH`（`remote.html` 第 08 节）。`CLAUDE_CODE_OAUTH_TOKEN` 由 claude 自己读取；
-tongtu 启动时把后两者分别写到 `~/.codex/auth.json` 与 `~/.pi/agent/auth.json`。
+tongtu 启动时发现后两者，就分别写到 `~/.codex/auth.json` 与 `~/.pi/agent/auth.json`，没设的不写。
 
 ## 已知取舍
 
