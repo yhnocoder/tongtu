@@ -16,7 +16,7 @@ from ..config import config_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
 from .config import ModelsConfig, Target, load_config, role_target
 from .events import parse_event
-from .runtimes import RUNTIMES, Runtime, Session
+from .runtimes import RUNTIMES, Runtime, Session, interpreter_dir
 
 SKILL_ROOT = asset_path("skill")
 
@@ -51,16 +51,9 @@ def work(
     report: Callable[[str], None] | None = None,
     prompt: str | None = None,
 ) -> WorkOutcome:
-    config, detail = load_config()
-    if config is None:
+    config, target, detail = _runtime_target(role, effort)
+    if config is None or target is None:
         return _error(detail)
-    target, detail = role_target(config, role, effort)
-    if target is None:
-        return _error(detail)
-    if not target.is_runtime:
-        return _error(
-            f"role {role} points at provider {target.backend}; work needs a runtime (codex, claude-code or pi)."
-        )
     outcome = _launch(config, target, role, workdir, trace_path, report, prompt)
     return replace(outcome, model=str(target))
 
@@ -84,9 +77,9 @@ def _launch(
     executable = shutil.which(runtime.executable)
     if executable is None:
         return _error(f"runtime {runtime.name} is not in PATH; its command is {runtime.executable}.")
-    for tool in runtime.needs_on_path:
-        if shutil.which(tool) is None:
-            return _error(f"{tool} is not in PATH; runtime {runtime.name} needs it.")
+    script_interpreter, detail = interpreter_dir(executable)
+    if detail:
+        return _error(f"runtime {runtime.name} cannot start: {detail}")
 
     skill_path = runtime.skill_dir.format(role=role)
     source = SKILL_ROOT / role
@@ -114,7 +107,7 @@ def _launch(
             tmp_dir=Path(tmp_dir),
             prompt=prompt or PROMPT.format(skill_path=skill_path),
         )
-        environment, detail = runtime.prepare_env(_session_env(python_bin, runtime), session)
+        environment, detail = runtime.prepare_env(_session_env(python_bin, script_interpreter), session)
         if detail:
             return _error(detail)
         trace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,18 +141,26 @@ def _launch(
 
 
 def skill_path(role: str) -> tuple[str | None, str]:
-    config, detail = load_config()
-    if config is None:
-        return None, detail
-    target, detail = role_target(config, role)
+    _config, target, detail = _runtime_target(role)
     if target is None:
         return None, detail
+    return RUNTIMES[target.backend].skill_dir.format(role=role), ""
+
+
+def _runtime_target(role: str, effort: str | None = None) -> tuple[ModelsConfig | None, Target | None, str]:
+    config, detail = load_config()
+    if config is None:
+        return None, None, detail
+    target, detail = role_target(config, role, effort)
+    if target is None:
+        return None, None, detail
     if not target.is_runtime:
         return (
             None,
+            None,
             f"role {role} points at provider {target.backend}; work needs a runtime (codex, claude-code or pi).",
         )
-    return RUNTIMES[target.backend].skill_dir.format(role=role), ""
+    return config, target, ""
 
 
 def _error(detail: str) -> WorkOutcome:
@@ -188,12 +189,10 @@ def _trace_line(
     return handle
 
 
-def _session_env(python_bin: Path, runtime: Runtime) -> dict[str, str]:
+def _session_env(python_bin: Path, script_interpreter: Path | None) -> dict[str, str]:
     tex = shutil.which(TEX_EXECUTABLE)
     entries = [str(python_bin)] + ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
-    for tool in runtime.needs_on_path:
-        found = shutil.which(tool)
-        if found is not None and str(Path(found).parent) not in entries:
-            entries.append(str(Path(found).parent))
+    if script_interpreter is not None and str(script_interpreter) not in entries:
+        entries.append(str(script_interpreter))
     environment = fonts.environment(fonts.configured(), os.environ)
     return environment | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}

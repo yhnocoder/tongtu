@@ -224,10 +224,7 @@ def test_doctor_checks_each_referenced_runtime_once(tmp_path: Path, monkeypatch:
     for backend in ("codex", "claude-code", "pi"):
         assert f"[ok]runtime{backend}" in output
         assert f"[ok]login{backend}" in output
-    assert "[ok]node" in output
-    assert "neededbypi" in output
     assert "/usr/bin/claude" in result.stdout
-    assert "/usr/bin/node" in result.stdout
     assert "codexloggedin" in output
     assert "loggedin" in output
     assert "piloggedin" in output
@@ -254,17 +251,36 @@ def test_doctor_reports_a_runtime_that_is_not_logged_in(tmp_path: Path, monkeypa
 def test_doctor_reports_a_runtime_missing_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.setenv("DEMO_KEY", "demo-key")
-    monkeypatch.setattr(shutil, "which", lambda name: None if name in ("pi", "node") else f"/usr/bin/{name}")
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "pi" else f"/usr/bin/{name}")
     calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
     assert "[missing]runtimepi" in output
-    assert "[missing]node" in output
     assert "[missing]loginpi" in output
-    assert "cannotcheck:piisnotinPATH" in output
+    assert "cannotcheck:picannotstart" in output
     assert not any(command[0] == "pi" for command in calls)
     assert "toolchainandfontscomplete" in output
+
+
+def test_doctor_reports_a_script_runtime_whose_interpreter_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    codex = tmp_path / "npm" / "codex"
+    codex.parent.mkdir()
+    codex.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    paths = {"codex": str(codex), "node": None}
+    monkeypatch.setattr(shutil, "which", lambda name: paths.get(name, f"/usr/bin/{name}"))
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "[missing]runtimecodex" in output
+    assert "isascriptfornode,whichisnotinPATH." in output
+    assert "[missing]logincodex" in output
+    assert not any(command[0] == "codex" for command in calls)
 
 
 def test_doctor_reports_roles_that_do_not_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
