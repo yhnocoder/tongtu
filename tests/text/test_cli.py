@@ -94,14 +94,18 @@ def squeeze(text: str) -> str:
     return "".join(text.split())
 
 
+@pytest.fixture(autouse=True)
+def no_legacy_directories(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "legacy_dirs_present", lambda: [])
+
+
 def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    return tmp_path / "tongtu" / "models.toml"
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    return tmp_path / "config.toml"
 
 
 def written_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = config_path(tmp_path, monkeypatch)
-    path.parent.mkdir(parents=True)
     path.write_text(TABLE, encoding="utf-8")
     return path
 
@@ -116,7 +120,6 @@ def test_setup_writes_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
 def test_setup_does_not_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    path.parent.mkdir(parents=True)
     path.write_text("手改过的配置\n", encoding="utf-8")
     result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
@@ -233,7 +236,7 @@ def test_doctor_lists_only_referenced_providers(tmp_path: Path, monkeypatch: pyt
     assert "keyunused" not in output
     assert "runtimedemo_runtime" in output
     assert "environmentvariableDEMO_KEY" in output
-    assert "api_keyinmodels.toml" in output
+    assert "api_keyinconfig.toml" in output
 
 
 def test_doctor_checks_the_provider_a_runtime_points_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,13 +266,55 @@ def test_doctor_reports_missing_key_without_failing(tmp_path: Path, monkeypatch:
 
 def test_doctor_keeps_table_names_in_the_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    path.parent.mkdir(parents=True)
     path.write_text(KEYLESS_TABLE, encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "[provider.demo]" in result.stdout
+
+
+def note_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if line.lstrip().startswith("note")]
+
+
+def test_doctor_notes_legacy_directories_without_changing_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    legacy = [tmp_path / "legacy-config" / "tongtu", tmp_path / "legacy-share" / "tongtu"]
+    monkeypatch.setattr(cli, "legacy_dirs_present", lambda: legacy)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    notes = note_lines(result.stdout)
+    assert len(notes) == 2
+    assert all(
+        f"directory {path} exists" in line and f"under {tmp_path} (config.toml" in line
+        for path, line in zip(legacy, notes, strict=True)
+    )
+    assert "environmentcomplete." in squeeze(result.stdout)
+
+
+def test_doctor_without_legacy_directories_prints_no_note(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    monkeypatch.setattr(cli, "legacy_dirs_present", lambda: [])
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert note_lines(result.stdout) == []
+
+
+def test_setup_dev_writes_under_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
+    result = runner.invoke(app, ["setup", "--dev"], env={"TONGTU_HOME": str(tmp_path / "home")})
+    assert result.exit_code == 0
+    assert (tmp_path / "dev" / "config.toml").read_text(encoding="utf-8") == MODELS_TEMPLATE
+    assert not (tmp_path / "home").exists()
 
 
 def test_setup_keeps_the_path_on_one_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -522,7 +567,23 @@ def test_link_and_id_resolve_to_the_same_workdir(tmp_path: Path, monkeypatch: py
         assert result.exit_code == 0
         first_lines.append(result.stdout.splitlines()[0])
     assert first_lines[0] == first_lines[1]
-    assert str(tmp_path / "2002.05202") in first_lines[0]
+    assert str(tmp_path / "papers" / "2002.05202") in first_lines[0]
+
+
+def test_status_dev_uses_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
+    result = runner.invoke(app, ["status", "2002.05202", "--dev"], env={"TONGTU_HOME": None})
+    assert result.exit_code == 0
+    assert str(tmp_path / "dev" / "papers" / "2002.05202") in result.stdout.splitlines()[0]
+
+
+def test_dev_wins_over_tongtu_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
+    result = runner.invoke(app, ["status", "2002.05202", "--dev"], env={"TONGTU_HOME": str(tmp_path / "home")})
+    assert result.exit_code == 0
+    first_line = result.stdout.splitlines()[0]
+    assert str(tmp_path / "dev" / "papers" / "2002.05202") in first_line
+    assert str(tmp_path / "home") not in first_line
 
 
 @pytest.fixture

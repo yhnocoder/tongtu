@@ -77,7 +77,7 @@ def role_config() -> ModelsConfig:
 
 @pytest.fixture(autouse=True)
 def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(survey, "load_config", lambda: (ModelsConfig(), ""))
     monkeypatch.setattr(survey, "ask", _forbidden_ask)
 
@@ -334,7 +334,7 @@ def test_four_layers_override_by_word(tmp_path: Path, monkeypatch: pytest.Monkey
         ),
     )
     write_glossary(
-        Path(str(tmp_path / "config")) / "tongtu" / survey.GLOSSARY_FILENAME,
+        tmp_path / "home" / "glossary.json",
         {"terms": {"LLM": "全局译法", "Transformer": "全局变换器", "softmax": "全局软最大"}, "style": "全局风格"},
     )
     write_glossary(
@@ -357,9 +357,7 @@ def test_four_layers_override_by_word(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 def test_do_not_translate_overrides_across_sections(tmp_path: Path) -> None:
-    write_glossary(
-        Path(str(tmp_path / "config")) / "tongtu" / survey.GLOSSARY_FILENAME, {"terms": {"LLM": "大语言模型"}}
-    )
+    write_glossary(tmp_path / "home" / "glossary.json", {"terms": {"LLM": "大语言模型"}})
     cli_path = write_glossary(tmp_path / "cli.json", {"do_not_translate": ["llm"]})
     workdir = make_workdir(tmp_path)
     survey.run(workdir, glossary=(cli_path,))
@@ -369,7 +367,7 @@ def test_do_not_translate_overrides_across_sections(tmp_path: Path) -> None:
 
 
 def test_blank_style_at_the_highest_layer_clears_it(tmp_path: Path) -> None:
-    write_glossary(Path(str(tmp_path / "config")) / "tongtu" / survey.GLOSSARY_FILENAME, {"style": "全局风格"})
+    write_glossary(tmp_path / "home" / "glossary.json", {"style": "全局风格"})
     cli_path = write_glossary(tmp_path / "cli.json", {"style": "   "})
     workdir = make_workdir(tmp_path)
     survey.run(workdir, glossary=(cli_path,))
@@ -481,11 +479,11 @@ def test_a_reply_off_schema_degrades_to_an_empty_proposal(tmp_path: Path, monkey
 
 
 def test_unreadable_model_config_fails_before_chunking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(survey, "load_config", lambda: (None, "读不到 models.toml"))
+    monkeypatch.setattr(survey, "load_config", lambda: (None, "读不到 config.toml"))
     workdir = make_workdir(tmp_path)
     manifest = survey.run(workdir)
     assert manifest.status is SurveyStatus.CHUNK_FAILED
-    assert "读不到 models.toml" in manifest.message
+    assert "读不到 config.toml" in manifest.message
 
 
 def test_no_terms_skips_the_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -575,9 +573,7 @@ def test_a_plural_and_its_singular_from_the_model_keep_do_not_translate(
 
 
 def test_a_higher_layer_overrides_a_lower_layer_plural(tmp_path: Path) -> None:
-    write_glossary(
-        Path(str(tmp_path / "config")) / "tongtu" / survey.GLOSSARY_FILENAME, {"terms": {"LLMs": "全局译法"}}
-    )
+    write_glossary(tmp_path / "home" / "glossary.json", {"terms": {"LLMs": "全局译法"}})
     cli_path = write_glossary(tmp_path / "cli.json", {"terms": {"LLM": "命令行译法"}})
     workdir = make_workdir(tmp_path, COMPOUND)
     manifest = survey.run(workdir, glossary=(cli_path,))
@@ -601,7 +597,7 @@ def test_a_compound_translation_keeping_the_untranslated_word_survives(tmp_path:
 
 
 def test_two_user_layers_in_conflict_keep_both_entries(tmp_path: Path) -> None:
-    write_glossary(Path(str(tmp_path / "config")) / "tongtu" / survey.GLOSSARY_FILENAME, {"do_not_translate": ["RL"]})
+    write_glossary(tmp_path / "home" / "glossary.json", {"do_not_translate": ["RL"]})
     cli_path = write_glossary(tmp_path / "cli.json", {"terms": {"mixed RL training": "混合强化学习训练"}})
     workdir = make_workdir(tmp_path, COMPOUND)
     manifest = survey.run(workdir, glossary=(cli_path,))

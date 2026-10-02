@@ -5,9 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_ROOT = Path("~/.local/share/tongtu")
-
-HOME_ENV = "TONGTU_HOME"
+from .config import papers_dir
 
 AREAS: tuple[str, ...] = ("src", "build", "out", "logs")
 
@@ -29,14 +27,6 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
     return raw.replace("/", "_")
 
 
-def default_root(env: Mapping[str, str] | None = None) -> Path:
-    environ = os.environ if env is None else env
-    home = (environ.get(HOME_ENV) or "").strip()
-    if home:
-        return Path(home).expanduser()
-    return DEFAULT_ROOT.expanduser()
-
-
 def resolve(
     arxiv_id: str | None = None,
     workdir: str | os.PathLike[str] | None = None,
@@ -46,7 +36,7 @@ def resolve(
         return Path(workdir).expanduser().absolute()
     if arxiv_id is None:
         raise WorkdirError("either an arXiv id or --workdir is required")
-    return (default_root(env) / normalize_arxiv_id(arxiv_id)).absolute()
+    return (papers_dir(env) / normalize_arxiv_id(arxiv_id)).absolute()
 
 
 @dataclass(frozen=True)

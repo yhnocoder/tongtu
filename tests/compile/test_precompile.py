@@ -22,7 +22,7 @@ pytestmark = pytest.mark.compile
 def test_arxiv_1905_12322v3_double_missing_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repair_all: bool
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
     workdir = Workdir(tmp_path / "1905.12322v3")
     workdir.create()
     source = (

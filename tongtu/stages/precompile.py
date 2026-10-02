@@ -425,7 +425,7 @@ def _xecjk_block(fonts: FontsConfig, warnings: list[str], font_files: list[Path]
     bold_is_default = fonts.bold == DEFAULT_FONTS.bold
     if bold is not None and not bold_is_default and all(_pair_bold(bold, False, font) is None for font in main):
         warnings.append(
-            "the bold font in models.toml matches no main candidate in kind "
+            "the bold font in config.toml matches no main candidate in kind "
             "(file pairs with file, font name with font name); bold is ignored"
         )
         bold = None
@@ -455,7 +455,7 @@ def _resolve_chain(
         if resolved.is_file:
             if index < len(candidates) - 1:
                 warnings.append(
-                    f"the {slot} candidate {candidate} in models.toml is a font file and always "
+                    f"the {slot} candidate {candidate} in config.toml is a font file and always "
                     "available; candidates after it are never used"
                 )
             break
@@ -485,11 +485,11 @@ def _resolve_font(slot: str, value: str, warnings: list[str], font_files: list[P
         if path.is_file():
             font_files.append(path)
             return ResolvedFont(path.name, True)
-        warnings.append(f"the {slot} font file {value} in models.toml does not exist; skipped")
+        warnings.append(f"the {slot} font file {value} in config.toml does not exist; skipped")
         return None
     if (FONTS_DIR / value).is_file():
         return ResolvedFont(value, True)
-    warnings.append(f"the {slot} font file {value} in models.toml is not under {FONTS_DIR}; skipped")
+    warnings.append(f"the {slot} font file {value} in config.toml is not under {FONTS_DIR}; skipped")
     return None
 
 
