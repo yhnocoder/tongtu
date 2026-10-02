@@ -309,6 +309,23 @@ def test_doctor_without_legacy_directories_prints_no_note(tmp_path: Path, monkey
     assert note_lines(result.stdout) == []
 
 
+def test_doctor_does_not_ask_to_delete_a_legacy_directory_in_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    monkeypatch.setattr(cli, "legacy_dirs_present", lambda: [tmp_path])
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    notes = note_lines(result.stdout)
+    assert len(notes) == 1
+    assert f"points at the legacy directory {tmp_path}" in notes[0]
+    assert "delete it" not in notes[0]
+    assert "environmentcomplete." in squeeze(result.stdout)
+
+
 def test_setup_dev_writes_under_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
     result = runner.invoke(app, ["setup", "--dev"], env={"TONGTU_HOME": str(tmp_path / "home")})

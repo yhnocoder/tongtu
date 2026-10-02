@@ -48,7 +48,7 @@ isolation: worktree
 
 ## 权限
 
-可以联网（下载 arXiv 论文、调用模型、启动 agent 运行时），可以读写 `~/.tongtu-dev/`。不安装系统工具，不修改 `~/` 下的配置，不在本机 docker build 镜像；Dockerfile 的改动由 image.yml 验证。
+可以联网（下载 arXiv 论文、调用模型、启动 agent 运行时），可以读写 `~/.tongtu-dev/papers/`，可以读 `~/.tongtu-dev/config.toml` 与 `~/.tongtu-dev/glossary.json`，不修改它们。不安装系统工具，不修改 `~/` 下的配置，不在本机 docker build 镜像；Dockerfile 的改动由 image.yml 验证。
 
 ## 报告
 

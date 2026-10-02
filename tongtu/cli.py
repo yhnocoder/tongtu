@@ -636,11 +636,18 @@ def doctor(dev: DevOpt = False) -> None:
     _apply_dev(dev)
     absent_toolchain = _print_doctor_rows(_toolchain_rows())
     absent_config = _print_doctor_rows(_config_rows())
+    home = home_dir()
     for path in legacy_dirs_present():
-        console.print(
-            f"  {'note':<10}legacy directory {path} exists and is no longer read; move its contents under "
-            f"{home_dir()} (config.toml, glossary.json, papers/<id>/) and delete it"
-        )
+        if path.resolve() == home.resolve():
+            console.print(
+                f"  {'note':<10}TONGTU_HOME points at the legacy directory {path}; papers now go to "
+                f"{path}/papers/<id>/ and the config is read from {path}/config.toml"
+            )
+        else:
+            console.print(
+                f"  {'note':<10}legacy directory {path} exists and is no longer read; move its contents under "
+                f"{home} (config.toml, glossary.json, papers/<id>/) and delete it"
+            )
     if absent_toolchain:
         console.print(f"environment incomplete: {', '.join(absent_toolchain)}")
         raise typer.Exit(EXIT_FAILURE)
