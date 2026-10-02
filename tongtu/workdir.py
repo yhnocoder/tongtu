@@ -123,7 +123,7 @@ class Workdir:
 
     @property
     def zh_pdf(self) -> Path:
-        return self.out / "zh.pdf"
+        return self.out / f"{self.path.name}.zh.pdf"
 
     @property
     def compile_fix_log(self) -> Path:

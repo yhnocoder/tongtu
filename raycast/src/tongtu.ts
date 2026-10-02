@@ -157,7 +157,7 @@ function inspect(id: string, pgid: number | null): Paper {
     ...meta,
     id,
     dir,
-    pdf: path.join(dir, "out/zh.pdf"),
+    pdf: path.join(dir, "out", `${path.basename(dir)}.zh.pdf`),
     pgid,
     status: pgid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial",
     stage,

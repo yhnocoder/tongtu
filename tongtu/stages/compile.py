@@ -113,7 +113,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
 
     paper_workdir.zh_tex.write_text(zh_final, encoding=ENCODING)
     paper_workdir.out.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(tree / paper_workdir.zh_pdf.name, paper_workdir.zh_pdf)
+    shutil.copyfile(tree / final.pdf_name, paper_workdir.zh_pdf)
     warnings.extend(compiling.clean_tree(tree, zh_name))
     return CompileManifest(
         status=CompileStatus.OK,

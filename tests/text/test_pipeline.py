@@ -12,7 +12,7 @@ OUTPUT_FILES: dict[str, tuple[str, ...]] = {
     "survey": ("build/brief.json", "build/chunks/c000.tex"),
     "translate": ("build/translated/c000.tex",),
     "review": ("build/reviewed/c000.tex",),
-    "compile": ("build/zh.tex", "out/zh.pdf"),
+    "compile": ("build/zh.tex", "out/paper.zh.pdf"),
 }
 
 SIDE_FILES: dict[str, tuple[str, ...]] = {
