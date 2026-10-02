@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -12,6 +14,8 @@ from tongtu.model.runtimes import (
     RUNTIMES,
     SANDBOX_SETTINGS,
     Session,
+    isolated,
+    write_credentials,
 )
 
 PROMPT = "读 skill 按它做"
@@ -343,3 +347,45 @@ def test_pi_login_check_without_a_default_provider_is_an_error(
     assert found is False
     assert "settings.json" in detail
     assert calls == []
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, False), ("", False), ("  ", False), ("1", True), ("0", True)])
+def test_isolated_is_true_for_any_non_blank_value(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
+) -> None:
+    monkeypatch.delenv("TONGTU_ISOLATED", raising=False)
+    if value is not None:
+        monkeypatch.setenv("TONGTU_ISOLATED", value)
+    assert isolated(os.environ) is expected
+
+
+def test_write_credentials_writes_both_files_with_private_modes(tmp_path: Path) -> None:
+    env = {"TONGTU_CODEX_AUTH": '{"tokens":{}}', "TONGTU_PI_AUTH": '{"deepseek":{}}', "PATH": "/usr/bin"}
+    written = write_credentials(env, tmp_path)
+    codex = tmp_path / ".codex" / "auth.json"
+    pi = tmp_path / ".pi" / "agent" / "auth.json"
+    assert written == [codex, pi]
+    assert codex.read_text(encoding="utf-8") == '{"tokens":{}}'
+    assert pi.read_text(encoding="utf-8") == '{"deepseek":{}}'
+    for path in (codex, pi):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+
+
+def test_write_credentials_writes_only_the_variables_that_are_set(tmp_path: Path) -> None:
+    written = write_credentials({"TONGTU_PI_AUTH": "{}"}, tmp_path)
+    assert written == [tmp_path / ".pi" / "agent" / "auth.json"]
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_write_credentials_without_variables_writes_nothing(tmp_path: Path) -> None:
+    assert write_credentials({"TONGTU_CODEX_AUTH": "", "PATH": "/usr/bin"}, tmp_path) == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_write_credentials_overwrites_an_existing_file(tmp_path: Path) -> None:
+    codex = tmp_path / ".codex" / "auth.json"
+    codex.parent.mkdir()
+    codex.write_text("old", encoding="utf-8")
+    write_credentials({"TONGTU_CODEX_AUTH": "new"}, tmp_path)
+    assert codex.read_text(encoding="utf-8") == "new"

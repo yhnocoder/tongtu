@@ -380,6 +380,57 @@ def test_entry_point_refuses_to_run_inside_a_session(monkeypatch: pytest.MonkeyP
     assert raised.value.code == 2
 
 
+def entry_point_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TONGTU_DISABLE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_CODEX_AUTH", '{"tokens":{}}')
+    monkeypatch.delenv("TONGTU_PI_AUTH", raising=False)
+    monkeypatch.setattr(cli, "app", lambda: None)
+
+
+def test_entry_point_writes_credentials_when_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    entry_point_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("TONGTU_ISOLATED", "1")
+    main()
+    codex = tmp_path / ".codex" / "auth.json"
+    assert codex.read_text(encoding="utf-8") == '{"tokens":{}}'
+    assert stat.S_IMODE(codex.stat().st_mode) == 0o600
+    assert not (tmp_path / ".pi").exists()
+
+
+def test_entry_point_exits_two_when_credentials_cannot_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry_point_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("TONGTU_ISOLATED", "1")
+    (tmp_path / ".codex").write_text("not a directory", encoding="utf-8")
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
+
+
+def test_entry_point_writes_nothing_when_native(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    entry_point_environment(tmp_path, monkeypatch)
+    monkeypatch.delenv("TONGTU_ISOLATED", raising=False)
+    main()
+    assert not (tmp_path / ".codex").exists()
+
+
+@pytest.mark.parametrize(("value", "shown"), [(None, "native"), ("1", "isolated")])
+def test_doctor_shows_the_environment_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str | None, shown: str
+) -> None:
+    config_path(tmp_path, monkeypatch)
+    monkeypatch.delenv("TONGTU_ISOLATED", raising=False)
+    if value is not None:
+        monkeypatch.setenv("TONGTU_ISOLATED", value)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert f"[ok]environmentnativeorisolated(TONGTU_ISOLATED){shown}" in squeeze(result.stdout)
+
+
 def wire_entries(
     monkeypatch: pytest.MonkeyPatch,
     calls: list[str],

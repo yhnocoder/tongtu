@@ -13,6 +13,17 @@ from .events import summarize_codex_json, summarize_pi_json, summarize_stream_js
 
 LOGIN_CHECK_TIMEOUT_SECONDS = 30
 
+ISOLATED_ENV = "TONGTU_ISOLATED"
+
+CREDENTIAL_FILES: tuple[tuple[str, str], ...] = (
+    ("TONGTU_CODEX_AUTH", ".codex/auth.json"),
+    ("TONGTU_PI_AUTH", ".pi/agent/auth.json"),
+)
+
+CREDENTIAL_DIR_MODE = 0o700
+
+CREDENTIAL_FILE_MODE = 0o600
+
 CODEX_ENV_VARIABLES: tuple[str, ...] = ("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL")
 
 CLAUDE_ENV_PREFIXES: tuple[str, ...] = ("ANTHROPIC_", "CLAUDE_CODE_USE_")
@@ -58,6 +69,25 @@ class Runtime:
     summarize: Callable[[dict], str | None]
     failure: Callable[[dict], str | None]
     login_check: Callable[[Target, Mapping[str, str]], tuple[bool, str]]
+
+
+def isolated(env: Mapping[str, str]) -> bool:
+    return bool((env.get(ISOLATED_ENV) or "").strip())
+
+
+def write_credentials(env: Mapping[str, str], home: Path) -> list[Path]:
+    written: list[Path] = []
+    for variable, relative in CREDENTIAL_FILES:
+        content = env.get(variable)
+        if not content:
+            continue
+        path = home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(CREDENTIAL_DIR_MODE)
+        path.write_text(content, encoding="utf-8")
+        path.chmod(CREDENTIAL_FILE_MODE)
+        written.append(path)
+    return written
 
 
 def _run_login_check(command: list[str], env: Mapping[str, str]) -> tuple[bool, str]:
