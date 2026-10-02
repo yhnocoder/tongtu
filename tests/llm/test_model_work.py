@@ -84,8 +84,8 @@ HOME_PROBE = Path.home() / "tongtu-sandbox-probe.txt"
 
 
 def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, skill: str) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    config = tmp_path / "config" / "tongtu" / "models.toml"
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    config = tmp_path / "home" / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
@@ -232,7 +232,7 @@ def test_codex_login_sandbox_enforces_boundaries(tmp_path: Path, monkeypatch: py
     if not shutil.which("codex") or not (auth_home / "auth.json").is_file():
         pytest.skip("requires Codex CLI with a file-backed login")
     prepared(tmp_path, monkeypatch, "sandbox_probe", SMOKE_SKILL)
-    (tmp_path / "config/tongtu/models.toml").write_text(
+    (tmp_path / "home/config.toml").write_text(
         MODELS_TEMPLATE
         + '\n[roles.sandbox_probe]\nruntime="codex"\nmodel="astra"\neffort="light"\ntimeout_seconds=240\n'
     )

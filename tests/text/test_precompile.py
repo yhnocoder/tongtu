@@ -37,11 +37,11 @@ Output written on flat.xdv (0 pages, 8 bytes).
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
 
 
-def write_models_toml(tmp_path: Path, text: str) -> None:
-    path = tmp_path / "config" / "tongtu" / "models.toml"
+def write_config_toml(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "home" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
@@ -251,7 +251,7 @@ def test_injects_xecjk_after_documentclass(tmp_path: Path, monkeypatch: pytest.M
     assert "LXGWWenKai-Light.ttf" in output
 
 
-def test_injects_default_fonts_without_models_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_injects_default_fonts_without_config_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -305,7 +305,7 @@ def test_sans_chain_keeps_tex_probing_without_fc_list(tmp_path: Path, monkeypatc
 
 
 def test_fonts_config_switches_to_system_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -316,7 +316,7 @@ def test_fonts_config_switches_to_system_font(tmp_path: Path, monkeypatch: pytes
 
 
 def test_fonts_config_system_bold_pairs_with_system_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Source Han Serif SC"\nbold = "Source Han Serif SC Bold"\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = "Source Han Serif SC"\nbold = "Source Han Serif SC Bold"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -324,7 +324,7 @@ def test_fonts_config_system_bold_pairs_with_system_main(tmp_path: Path, monkeyp
 
 
 def test_fonts_config_switches_to_repo_font_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -336,7 +336,7 @@ def test_fonts_config_external_file_is_linked_into_tree(tmp_path: Path, monkeypa
     font_path = tmp_path / "custom" / "MyFont.otf"
     font_path.parent.mkdir(parents=True)
     font_path.write_bytes(b"font-bytes")
-    write_models_toml(tmp_path, f'[fonts]\nmain = "{font_path}"\n')
+    write_config_toml(tmp_path, f'[fonts]\nmain = "{font_path}"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -348,7 +348,7 @@ def test_fonts_config_external_file_is_linked_into_tree(tmp_path: Path, monkeypa
 
 
 def test_fonts_config_missing_file_falls_back_to_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Ghost.ttf"\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = "Ghost.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -360,7 +360,7 @@ def test_fonts_config_missing_file_falls_back_to_default(tmp_path: Path, monkeyp
 def test_fonts_config_bold_kind_mismatch_is_ignored_with_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\nbold = "LXGWWenKai-Light.ttf"\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\nbold = "LXGWWenKai-Light.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -369,7 +369,7 @@ def test_fonts_config_bold_kind_mismatch_is_ignored_with_warning(
 
 
 def test_fonts_config_list_builds_fallback_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = ["Source Han Serif SC", "Noto Serif CJK SC"]\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = ["Source Han Serif SC", "Noto Serif CJK SC"]\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -392,7 +392,7 @@ def test_fonts_config_list_builds_fallback_chain(tmp_path: Path, monkeypatch: py
 
 
 def test_fonts_config_list_ends_at_file_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = ["Noto Serif CJK SC", "LXGWWenKai-Medium.ttf", "Unreached"]\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = ["Noto Serif CJK SC", "LXGWWenKai-Medium.ttf", "Unreached"]\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -406,7 +406,7 @@ def test_fonts_config_list_ends_at_file_candidate(tmp_path: Path, monkeypatch: p
 
 
 def test_fonts_config_list_skips_missing_file_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = ["Ghost.ttf", "Noto Serif CJK SC"]\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = ["Ghost.ttf", "Noto Serif CJK SC"]\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
@@ -416,7 +416,7 @@ def test_fonts_config_list_skips_missing_file_candidate(tmp_path: Path, monkeypa
 
 
 def test_fonts_config_overrides_sans_and_mono(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nsans = "Noto Sans CJK SC"\nmono = "LXGWWenKai-Medium.ttf"\n')
+    write_config_toml(tmp_path, '[fonts]\nsans = "Noto Sans CJK SC"\nmono = "LXGWWenKai-Medium.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")

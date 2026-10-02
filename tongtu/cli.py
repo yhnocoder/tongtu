@@ -37,6 +37,7 @@ from .artifacts.precompile import PrecompileManifest
 from .artifacts.survey import SurveyManifest
 from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
 from .assets import asset_path
+from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present
 from .console import console, error_console
 from .manifests import describe_error, load_manifest
 from .model.config import (
@@ -45,7 +46,6 @@ from .model.config import (
     FontsConfig,
     ModelsConfig,
     load_config,
-    models_path,
     provider_key,
 )
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
@@ -112,7 +112,7 @@ TEXLIVE_CHECK_NAME = "TeX Live"
 TEXLIVE_YEAR_PATTERN = re.compile(r"\(TeX Live (\d{4})\)")
 
 FONT_CHECK_NAME = "CJK fonts"
-CONFIG_CHECK_NAME = "models.toml"
+CONFIG_CHECK_NAME = "config.toml"
 
 FONTS_DIR = asset_path("fonts")
 
@@ -328,7 +328,7 @@ AskModelOpt = Annotated[
         metavar="PROVIDER/MODEL",
         help=(
             "override every ask role involved in this run (survey_terms, API translate); "
-            "PROVIDER is a \\[provider.*] name in models.toml"
+            "PROVIDER is a \\[provider.*] name in config.toml"
         ),
     ),
 ]
@@ -342,7 +342,7 @@ WorkModelOpt = Annotated[
         metavar="RUNTIME/MODEL",
         help=(
             "override every work role involved in this run (Agent translate, review, precompile_fix, compile_fix); "
-            "RUNTIME is a \\[runtime.*] name in models.toml"
+            "RUNTIME is a \\[runtime.*] name in config.toml"
         ),
     ),
 ]
@@ -358,7 +358,7 @@ WorkdirOpt = Annotated[
     typer.Option(
         "--workdir",
         metavar="DIR",
-        help="paper working directory (default $TONGTU_HOME/<id>, then ~/.local/share/tongtu/<id>)",
+        help="paper working directory (default $TONGTU_HOME/papers/<id>, $TONGTU_HOME defaults to ~/.tongtu)",
     ),
 ]
 JobsOpt = Annotated[int, typer.Option("--jobs", min=1, metavar="N", help="translate concurrency")]
@@ -368,6 +368,9 @@ NoTermsOpt = Annotated[
 ]
 NoReviewOpt = Annotated[
     bool, typer.Option("--no-review", help="skip the review session; the translation enters compile unchanged")
+]
+DevOpt = Annotated[
+    bool, typer.Option("--dev", help="use ~/.tongtu-dev as TONGTU_HOME (config.toml, glossary.json and papers/)")
 ]
 
 
@@ -384,6 +387,11 @@ def _root(
     ] = False,
 ) -> None:
     return None
+
+
+def _apply_dev(dev: bool) -> None:
+    if dev:
+        os.environ[HOME_ENV] = str(DEV_HOME.expanduser())
 
 
 def _workdir_name(paper_input: PaperInput) -> str:
@@ -529,7 +537,9 @@ def run(
     jobs: JobsOpt = DEFAULT_JOBS,
     no_terms: NoTermsOpt = False,
     no_review: NoReviewOpt = False,
+    dev: DevOpt = False,
 ) -> None:
+    _apply_dev(dev)
     options = _options(
         paper, workdir, ask_model, ask_effort, work_model, work_effort, glossary, jobs, no_terms, no_review
     )
@@ -567,7 +577,9 @@ def stage(
     workdir: WorkdirOpt = None,
     jobs: JobsOpt = DEFAULT_JOBS,
     no_terms: NoTermsOpt = False,
+    dev: DevOpt = False,
 ) -> None:
+    _apply_dev(dev)
     if name is None:
         console.print(" → ".join(STAGES))
         return
@@ -589,7 +601,8 @@ def stage(
 
 
 @app.command()
-def status(paper: PaperArg, workdir: WorkdirOpt = None) -> None:
+def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False) -> None:
+    _apply_dev(dev)
     _paper_input, paper_workdir = _paper_workdir(paper, workdir)
     console.print(f"workdir {paper_workdir.path}")
     console.print("")
@@ -619,9 +632,22 @@ def validate(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(dev: DevOpt = False) -> None:
+    _apply_dev(dev)
     absent_toolchain = _print_doctor_rows(_toolchain_rows())
     absent_config = _print_doctor_rows(_config_rows())
+    home = home_dir()
+    for path in legacy_dirs_present():
+        if path.resolve() == home.resolve():
+            console.print(
+                f"  {'note':<10}TONGTU_HOME points at the legacy directory {path}; papers now go to "
+                f"{path}/papers/<id>/ and the config is read from {path}/config.toml"
+            )
+        else:
+            console.print(
+                f"  {'note':<10}legacy directory {path} exists and is no longer read; move its contents under "
+                f"{home} (config.toml, glossary.json, papers/<id>/) and delete it"
+            )
     if absent_toolchain:
         console.print(f"environment incomplete: {', '.join(absent_toolchain)}")
         raise typer.Exit(EXIT_FAILURE)
@@ -656,10 +682,10 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
     if config is None:
         return [
             (CONFIG_CHECK_NAME, "providers, runtimes and roles", False, detail),
-            ("keys", "provider API keys", False, "cannot check: models.toml is unreadable"),
-            ("runtimes", "runtime executables", False, "cannot check: models.toml is unreadable"),
+            ("keys", "provider API keys", False, "cannot check: config.toml is unreadable"),
+            ("runtimes", "runtime executables", False, "cannot check: config.toml is unreadable"),
         ]
-    rows = [(CONFIG_CHECK_NAME, "providers, runtimes and roles", True, str(models_path()))]
+    rows = [(CONFIG_CHECK_NAME, "providers, runtimes and roles", True, str(config_path()))]
     runtimes = _roles_refer_to(config, "runtime")
     providers = _roles_refer_to(config, "provider")
     for name in runtimes:
@@ -674,7 +700,7 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
                     f"key {name}",
                     "provider referenced by a role",
                     False,
-                    f"provider {name} is not declared in models.toml",
+                    f"provider {name} is not declared in config.toml",
                 )
             )
             continue
@@ -688,7 +714,7 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
                     f"runtime {name}",
                     "runtime referenced by a role",
                     False,
-                    f"runtime {name} is not declared in models.toml",
+                    f"runtime {name} is not declared in config.toml",
                 )
             )
             continue
@@ -740,8 +766,10 @@ def _check_fonts() -> tuple[bool, str]:
 @app.command()
 def setup(
     interactive: Annotated[bool, typer.Option("-i", help="interactively pick providers and fill API keys")] = False,
+    dev: DevOpt = False,
 ) -> None:
-    path = models_path()
+    _apply_dev(dev)
+    path = config_path()
     if path.exists():
         console.print(f"config file {path} already exists; not overwriting. Edit that file to change the config.")
         return

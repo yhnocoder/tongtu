@@ -22,6 +22,6 @@ def opencode_key() -> str | None:
 def opencode_env(monkeypatch: pytest.MonkeyPatch) -> str:
     key = opencode_key()
     if not key:
-        pytest.skip("没有 OPENCODE_API_KEY，models.toml 里也没写 opencode 的密钥")
+        pytest.skip("没有 OPENCODE_API_KEY，config.toml 里也没写 opencode 的密钥")
     monkeypatch.setenv("OPENCODE_API_KEY", key)
     return key
