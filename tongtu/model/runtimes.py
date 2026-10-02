@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,8 +13,6 @@ from .config import Target
 from .events import summarize_codex_json, summarize_pi_json, summarize_stream_json
 
 LOGIN_CHECK_TIMEOUT_SECONDS = 30
-
-ISOLATED_ENV = "TONGTU_ISOLATED"
 
 CREDENTIAL_FILES: tuple[tuple[str, str], ...] = (
     ("TONGTU_CODEX_AUTH", ".codex/auth.json"),
@@ -28,7 +27,9 @@ CODEX_ENV_VARIABLES: tuple[str, ...] = ("CODEX_API_KEY", "OPENAI_API_KEY", "OPEN
 
 CLAUDE_ENV_PREFIXES: tuple[str, ...] = ("ANTHROPIC_", "CLAUDE_CODE_USE_")
 
-CLAUDE_TOOLS = "Read,Edit,Write,Glob,Grep,Bash"
+CLAUDE_TOOLS = "Read,Edit,Write,Glob,Grep"
+
+CLAUDE_SANDBOX_PLATFORM = "darwin"
 
 PI_TOOLS = "read,bash,edit,write,grep,find,ls"
 
@@ -69,10 +70,6 @@ class Runtime:
     summarize: Callable[[dict], str | None]
     failure: Callable[[dict], str | None]
     login_check: Callable[[Target, Mapping[str, str]], tuple[bool, str]]
-
-
-def isolated(env: Mapping[str, str]) -> bool:
-    return bool((env.get(ISOLATED_ENV) or "").strip())
 
 
 def write_credentials(env: Mapping[str, str], home: Path) -> list[Path]:
@@ -167,7 +164,7 @@ def _claude_argv(session: Session) -> list[str]:
         argv += ["--model", session.model]
     if session.effort:
         argv += ["--effort", session.effort]
-    return argv + [
+    argv += [
         "--max-turns",
         str(session.max_turns),
         "--output-format",
@@ -180,12 +177,13 @@ def _claude_argv(session: Session) -> list[str]:
         "--allowedTools",
         CLAUDE_TOOLS,
         "--permission-mode",
-        "acceptEdits",
+        "auto",
         "--disallowedTools",
         "Edit(.claude/skills/**)",
-        "--settings",
-        json.dumps(SANDBOX_SETTINGS, separators=(",", ":")),
     ]
+    if sys.platform == CLAUDE_SANDBOX_PLATFORM:
+        argv += ["--settings", json.dumps(SANDBOX_SETTINGS, separators=(",", ":"))]
+    return argv
 
 
 def _without_claude_variables(env: Mapping[str, str]) -> dict[str, str]:

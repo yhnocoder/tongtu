@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -126,6 +127,8 @@ def test_work_runs_pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_claude_code_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if sys.platform != "darwin":
+        pytest.skip("claude-code 只在 darwin 上开沙箱")
     require_login("claude-code")
     prepared(tmp_path, monkeypatch, "sandbox_probe_claude", PROBE_SKILL)
     workdir = tmp_path / "probe" / "paper"
