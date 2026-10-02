@@ -74,9 +74,23 @@ td code { white-space: nowrap; }
 </style>
 </head>
 <body>
+<style>
+.term { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: #1f1e1d; color: #e8e5dc; padding: 14px 16px; border-radius: 8px; overflow-x: auto; white-space: pre; }
+.term .p { color: #f0a988; }
+.term .h { color: #a29f96; }
+.term .ok { color: #9fd49f; }
+.term .bad { color: #f08a7a; }
+.term .dim { color: #8a877f; }
+dl { margin: 0; display: flex; flex-direction: column; gap: 14px; }
+dt { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+dd { margin: 4px 0 0 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ex { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cap { font-size: 13.5px; color: var(--muted); }
+td code { white-space: nowrap; }
+</style>
 <main>
 <header style="display:flex;flex-direction:column;gap:10px">
-  <p class="meta">设计草案 第 5 版 · 2026-10-02 · 配合「通途远程运行设计」第 8 版</p>
+  <p class="meta">设计草案 第 6 版 · 2026-10-02 · 配合「通途远程运行设计」第 9 版</p>
   <h1>远程运行命令</h1>
   <p class="lead">命令行只有两条路径：本机原生运行，或调用某个 server 的 REST 接口（前缀 <code>/v1</code>）。示例输出为示意。没有 <code>hosts.toml</code> 时，命令行与现在相同。</p>
 </header>
@@ -127,8 +141,9 @@ tongtu logs    PAPER [-f] [--on WHERE] [--dev]
 tongtu stop    PAPER [--on WHERE] [--dev]
 tongtu pull    PAPER [--on WHERE] [--dev]
 tongtu doctor  [--on WHERE] [--dev]
+tongtu setup   [--dev]
 tongtu serve                                                  只在 server 容器里运行</code></pre>
-  <p class="sub">新增命令：<code>logs</code>、<code>stop</code>、<code>pull</code>、<code>serve</code>。新增选项：<code>--on</code>、<code>--dev</code>、<code>--json</code>、<code>--since</code>、<code>-f</code>。<code>status</code> 的 PAPER 改为可选。</p>
+  <p class="sub">现有选项里的 <code>--ask-model</code>、<code>--ask-effort</code>、<code>--work-model</code>、<code>--work-effort</code> 这个阶段删除，模型只在 <code>config.toml</code> 里配置；<code>setup</code> 的 <code>-i</code> 删除。新增命令：<code>logs</code>、<code>stop</code>、<code>pull</code>、<code>serve</code>。新增选项：<code>--on</code>、<code>--dev</code>、<code>--json</code>、<code>--since</code>、<code>-f</code>。<code>status</code> 的 PAPER 改为可选。</p>
 </section>
 
 <section class="sheet">
