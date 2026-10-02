@@ -38,7 +38,7 @@ from .artifacts.survey import SurveyManifest
 from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
 from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present
 from .console import console, error_console
-from .fonts import FONTS_DIR
+from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest
 from .model.config import (
     DEFAULT_ASK_MODEL,
@@ -115,7 +115,7 @@ FONT_CHECK_NAME = "CJK fonts"
 CONFIG_CHECK_NAME = "config.toml"
 
 REQUIRED_FONT_FILENAMES: tuple[str, ...] = tuple(
-    str(name) for name in (FontsConfig().main, FontsConfig().bold, FontsConfig().sans, FontsConfig().sans_bold)
+    name for family in (FontsConfig().main, FontsConfig().sans) for name in family_files(family) if name
 )
 
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)

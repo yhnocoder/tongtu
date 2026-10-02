@@ -9,10 +9,10 @@ from .. import compiling, fonts, pipeline, preamble, processes
 from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..conditionals import strip_dead_branches
-from ..fonts import FONT_FILE_SUFFIXES, FONTS_DIR
+from ..fonts import FONT_FILE_SUFFIXES, FONTS_DIR, family_files
 from ..manifests import describe_error, write_manifest
 from ..masking import ENVIRONMENTS_TABLE_PATH, MaskError, parse_environment_table
-from ..model.config import FontsConfig
+from ..model.config import FontFamily, FontsConfig
 from ..workdir import Workdir
 
 STAGE_NAME = "precompile"
@@ -57,10 +57,16 @@ PACKAGE_RE = re.compile(rb"\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{(
 
 DOCUMENTCLASS_RE = re.compile(rb"\\(?:documentclass|documentstyle)\s*(\[[^\]]*\])?\s*\{([^}]*)\}")
 
-XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
+FAKE_BOLD_FACTOR = 2
+
+XECJK_HEAD = (
+    rb"""% ---- injected by tongtu (precompile) ----
 \PassOptionsToPackage{no-math}{fontspec}
-\usepackage{xeCJK}
+\usepackage[AutoFakeBold="""
+    + str(FAKE_BOLD_FACTOR).encode("ascii")
+    + rb"""]{xeCJK}
 """
+)
 
 DEFAULT_FONTS = FontsConfig()
 
@@ -392,30 +398,34 @@ def _adapt_preamble(output: bytes, warnings: list[str]) -> bytes:
 
 
 def _xecjk_block(fonts: FontsConfig, warnings: list[str]) -> bytes:
-    main = _resolve_font("main", fonts.main, warnings) or DEFAULT_FONTS.main
-    bold = _paired_bold(main, fonts.bold, DEFAULT_FONTS.main, DEFAULT_FONTS.bold, "bold", warnings)
-    sans = _resolve_font("sans", fonts.sans, warnings) or DEFAULT_FONTS.sans
-    sans_bold = _paired_bold(sans, fonts.sans_bold, DEFAULT_FONTS.sans, DEFAULT_FONTS.sans_bold, "sans_bold", warnings)
-    mono = (_resolve_font("mono", fonts.mono, warnings) if fonts.mono else None) or main
+    main_regular, main_bold = _resolve_family("main", fonts.main, DEFAULT_FONTS.main, warnings)
+    sans_regular, sans_bold = _resolve_family("sans", fonts.sans, DEFAULT_FONTS.sans, warnings)
+    mono = (_resolve_font("mono", fonts.mono, warnings) if fonts.mono else None) or main_regular
     return b"".join(
         (
             XECJK_HEAD,
-            _font_command(rb"\setCJKmainfont", main, bold) + b"\n",
-            _font_command(rb"\setCJKsansfont", sans, sans_bold) + b"\n",
+            _font_command(rb"\setCJKmainfont", main_regular, main_bold) + b"\n",
+            _font_command(rb"\setCJKsansfont", sans_regular, sans_bold) + b"\n",
             _font_command(rb"\setCJKmonofont", mono, None) + b"\n",
             XECJK_TAIL,
         )
     )
 
 
-def _paired_bold(
-    regular: str, bold: str | None, default_regular: str, default_bold: str | None, slot: str, warnings: list[str]
-) -> str | None:
-    if not bold:
-        return None
-    if bold == default_bold and regular != default_regular:
-        return None
-    return _resolve_font(slot, bold, warnings)
+def _resolve_family(
+    slot: str, family: str | FontFamily, default: str | FontFamily, warnings: list[str]
+) -> tuple[str, str | None]:
+    regular, bold = family_files(family)
+    regular_slot = slot if isinstance(family, str) else f"{slot}.regular"
+    resolved_regular = _resolve_font(regular_slot, regular, warnings)
+    resolved_bold = _resolve_font(f"{slot}.bold", bold, warnings) if bold else None
+    if resolved_regular is not None and (bold is None or resolved_bold is not None):
+        return resolved_regular, resolved_bold
+    default_regular, default_bold = family_files(default)
+    warnings.append(
+        f"the {slot} font family in config.toml is not usable; the bundled {default_regular} family is used instead"
+    )
+    return default_regular, default_bold
 
 
 def _resolve_font(slot: str, value: str, warnings: list[str]) -> str | None:

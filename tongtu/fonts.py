@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from .assets import asset_path
-from .model.config import FontsConfig, load_config
+from .model.config import FontFamily, FontsConfig, load_config
 
 FONTS_DIR = asset_path("fonts")
 
@@ -20,9 +20,15 @@ def configured() -> FontsConfig:
     return config.fonts
 
 
+def family_files(family: str | FontFamily) -> tuple[str, str | None]:
+    if isinstance(family, str):
+        return family, None
+    return family.regular, family.bold or None
+
+
 def search_directories(fonts: FontsConfig) -> list[Path]:
     directories = [FONTS_DIR]
-    for value in (fonts.main, fonts.bold, fonts.sans, fonts.sans_bold, fonts.mono):
+    for value in (*family_files(fonts.main), *family_files(fonts.sans), fonts.mono):
         path = Path(value).expanduser() if value else None
         if path is not None and len(path.parts) > 1:
             directories.append(path.parent)
