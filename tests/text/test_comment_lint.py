@@ -55,3 +55,9 @@ def test_in_scope_filters_path_and_suffix() -> None:
 def test_why_with_issue_number_is_allowed(tmp_path: Path) -> None:
     path = write(tmp_path, "x = 1  # why(#140): 删掉会让 xelatex 报错\ny = 2  # why: 缺 issue 编号\n")
     assert violations(path) == [f"{path}:2: 注释: # why: 缺 issue 编号"]
+
+
+def test_inline_script_metadata_is_allowed(tmp_path: Path) -> None:
+    source = '# /// script\n# dependencies = ["playwright"]\n# ///\nx = 1  # 说明\n'
+    path = write(tmp_path, source)
+    assert violations(path) == [f"{path}:4: 注释: # 说明"]

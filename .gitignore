@@ -1,5 +1,4 @@
 .DS_Store
-docs/design/index.html
 .env*
 credentials.json
 auth.json

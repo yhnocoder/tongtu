@@ -48,9 +48,8 @@ MESSAGES = [("user", "把下面这句话译成中文：Hello, world.")]
 
 @pytest.fixture
 def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    path = tmp_path / "tongtu" / "models.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    path = tmp_path / "config.toml"
     path.write_text(TABLE, encoding="utf-8")
     monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setenv("ODD_KEY", "odd-key")
@@ -245,7 +244,7 @@ def test_model_override_with_unknown_provider_is_error(configured: Path) -> None
 
 
 def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     outcome = ask("chat_role", "", MESSAGES, log_path=tmp_path / "log.json")
     assert outcome.status == AskStatus.ERROR
     assert "tongtu setup" in outcome.detail

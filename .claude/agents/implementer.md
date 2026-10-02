@@ -44,11 +44,11 @@ isolation: worktree
 - 断言产物文件与 manifest 字段，不断言日志文本。
 - 替换外部调用只用 monkeypatch，替换对象是 `tongtu.model.ask`、`tongtu.model.work`、`subprocess.run`。不写 Fake 类。
 - 可能同时有多个 agent 在做不同的 Task，测试要隔离：论文目录建在 `tmp_path` 下，不占用固定端口，不读写全局配置或用户目录，测试之间可以并行。
-- 不在仓库里创建论文目录。需要跑真实论文时，工作目录放在 `~/.local/share/tongtu/` 下。
+- 不在仓库里创建论文目录。需要跑真实论文时一律加 `--dev`，论文目录在 `~/.tongtu-dev/papers/`（由 `TONGTU_HOME` 决定）。
 
 ## 权限
 
-可以联网（下载 arXiv 论文、调用模型、启动 agent 运行时），可以读写 `~/.local/share/tongtu/`。不安装系统工具，不修改 `~/` 下的配置，不在本机 docker build 镜像；Dockerfile 的改动由 image.yml 验证。
+可以联网（下载 arXiv 论文、调用模型、启动 agent 运行时），可以读写 `~/.tongtu-dev/papers/`，可以读 `~/.tongtu-dev/config.toml` 与 `~/.tongtu-dev/glossary.json`，不修改它们。不安装系统工具，不修改 `~/` 下的配置，不在本机 docker build 镜像；Dockerfile 的改动由 image.yml 验证。
 
 ## 报告
 

@@ -5,17 +5,18 @@ from pathlib import Path
 
 import pytest
 
+from tongtu.config import config_path
 from tongtu.model.config import (
     DEFAULT_ASK_MODEL,
     MODELS_TEMPLATE,
     Api,
+    FontFamily,
     FontsConfig,
     ModelsConfig,
     ProviderConfig,
     RoleTable,
     load_config,
     model_api,
-    models_path,
     provider_key,
     resolve_role,
     role_config,
@@ -50,9 +51,8 @@ review = { runtime = "claude_code", model = "sonnet", effort = "high", max_turns
 
 
 def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    path = tmp_path / "tongtu" / "models.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    path = tmp_path / "config.toml"
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -74,34 +74,106 @@ def test_template_parses_and_validates() -> None:
 def test_template_fonts_match_defaults() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
     assert config.fonts == FontsConfig()
-    assert config.fonts.main == "LXGWWenKai-Light.ttf"
-    assert config.fonts.bold == "LXGWWenKai-Medium.ttf"
-    assert config.fonts.sans is None
+    assert config.fonts.main == FontFamily(regular="LXGWWenKai-Light.ttf", bold="LXGWWenKai-Medium.ttf")
+    assert config.fonts.sans == FontFamily(regular="SourceHanSansSC-Regular.otf", bold="SourceHanSansSC-Bold.otf")
     assert config.fonts.mono is None
 
 
-def test_fonts_table_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "Noto Serif CJK SC"\nbold = ""\n')
+def test_fonts_defaults_are_not_shared_between_instances() -> None:
+    first, second = FontsConfig(), FontsConfig()
+    assert first.main == second.main
+    assert first.main is not second.main
+
+
+def test_fonts_table_reads_strings_and_family_tables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE + '\n[fonts]\nmain = "MyFont.ttf"\nsans = { regular = "~/fonts/Sans.otf", bold = "SansBold.otf" }\n'
+        'mono = "Mono.ttc"\n',
+    )
     config, detail = load_config()
     assert detail == ""
     assert config is not None
-    assert config.fonts.main == "Noto Serif CJK SC"
-    assert config.fonts.bold == ""
-    assert config.fonts.sans is None
+    assert config.fonts.main == "MyFont.ttf"
+    assert config.fonts.sans == FontFamily(regular="~/fonts/Sans.otf", bold="SansBold.otf")
+    assert config.fonts.mono == "Mono.ttc"
 
 
-def test_fonts_table_accepts_fallback_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fonts_table_family_without_bold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "MyFont.ttf" }\n')
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.fonts.main == FontFamily(regular="MyFont.ttf", bold=None)
+
+
+def test_fonts_table_rejects_old_bold_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nbold = "LXGWWenKai-Medium.ttf"\nsans_bold = "Bold.otf"\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.bold" in detail
+    assert "fonts.sans_bold" in detail
+
+
+def test_fonts_table_rejects_unknown_family_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "R.ttf", italic = "I.ttf" }\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.main" in detail
+    assert "italic" in detail
+
+
+def test_fonts_table_rejects_family_without_regular(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { bold = "B.otf" }\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.sans" in detail
+    assert "regular" in detail
+
+
+def test_fonts_table_rejects_fallback_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config(
         tmp_path,
         monkeypatch,
         TABLE + '\n[fonts]\nmain = ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]\nsans = ["Noto Sans CJK SC"]\n',
     )
     config, detail = load_config()
+    assert config is None
+    assert "fonts.main" in detail
+    assert "fonts.sans" in detail
+
+
+def test_fonts_table_rejects_relative_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "myfonts/MyFont.ttf"\nmono = "fonts/Mono.otf"\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.main" in detail
+    assert "fonts.mono" in detail
+    assert "font path myfonts/MyFont.ttf must be absolute or start with ~" in detail
+
+
+def test_fonts_table_rejects_relative_paths_in_a_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { regular = "Sans.otf", bold = "fonts/Bold.otf" }\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.sans" in detail
+    assert "font path fonts/Bold.otf must be absolute or start with ~" in detail
+
+
+def test_fonts_table_accepts_home_and_absolute_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sans = tmp_path / "custom" / "Sans.otf"
+    bold = tmp_path / "custom" / "SansBold.otf"
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE + f'\n[fonts]\nmain = "~/fonts/MyFont.ttf"\nsans = {{ regular = "{sans}", bold = "{bold}" }}\n',
+    )
+    config, detail = load_config()
     assert detail == ""
     assert config is not None
-    assert config.fonts.main == ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]
-    assert config.fonts.sans == ["Noto Sans CJK SC"]
-    assert config.fonts.mono is None
+    assert config.fonts.main == "~/fonts/MyFont.ttf"
+    assert config.fonts.sans == FontFamily(regular=str(sans), bold=str(bold))
 
 
 def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -216,21 +288,21 @@ def test_unknown_events_value_fails_the_load(tmp_path: Path, monkeypatch: pytest
 
 
 def test_provider_key_prefers_written_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="written", api_key_env="DEMO_KEY")
-    assert provider_key("demo", provider) == ("written", "api_key in models.toml")
+    assert provider_key("demo", provider) == ("written", "api_key in config.toml")
 
 
 def test_provider_key_falls_back_to_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "from-env")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key="", api_key_env="DEMO_KEY")
     assert provider_key("demo", provider) == ("from-env", "environment variable DEMO_KEY")
 
 
 def test_provider_key_reports_both_sources_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     monkeypatch.setenv("DEMO_KEY", "")
     provider = ProviderConfig(base_url="https://demo.example/v1", api_key_env="DEMO_KEY")
     key, detail = provider_key("demo", provider)
@@ -240,20 +312,20 @@ def test_provider_key_reports_both_sources_absent(tmp_path: Path, monkeypatch: p
 
 
 def test_provider_key_reports_no_variable_declared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     provider = ProviderConfig(base_url="https://demo.example/v1")
     key, detail = provider_key("demo", provider)
     assert key is None
     assert "api_key_env" in detail
 
 
-def test_models_path_follows_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert models_path() == tmp_path / "tongtu" / "models.toml"
+def test_config_path_follows_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    assert config_path() == tmp_path / "config.toml"
 
 
 def test_load_config_reports_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     config, detail = load_config()
     assert config is None
     assert "tongtu setup" in detail

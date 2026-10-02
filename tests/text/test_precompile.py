@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +8,7 @@ import pytest
 import tongtu.model
 from tongtu import processes
 from tongtu.artifacts.precompile import PrecompileStatus
+from tongtu.model.config import load_config
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.processes import ProcessOutcome
@@ -37,11 +37,11 @@ Output written on flat.xdv (0 pages, 8 bytes).
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
 
 
-def write_models_toml(tmp_path: Path, text: str) -> None:
-    path = tmp_path / "config" / "tongtu" / "models.toml"
+def write_config_toml(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "home" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
@@ -124,24 +124,9 @@ def wire_work(
     return calls
 
 
-def wire_fc_list(monkeypatch: pytest.MonkeyPatch, installed: set[str] | None) -> list[str]:
-    asked: list[str] = []
-
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if installed is None:
-            raise FileNotFoundError("fc-list")
-        name = command[1].removeprefix(":family=")
-        asked.append(name)
-        return subprocess.CompletedProcess(command, 0, stdout=name.encode() if name in installed else b"", stderr=b"")
-
-    monkeypatch.setattr(subprocess, "run", run)
-    return asked
-
-
 def run_ok_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]) -> tuple[Workdir, dict]:
     workdir = make_workdir(tmp_path, files)
     wire_expand(monkeypatch)
-    wire_fc_list(monkeypatch, None)
     calls = wire_latexmk(monkeypatch, [{}])
     return workdir, calls
 
@@ -232,10 +217,7 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert (tree / "main.tex").is_file()
     assert not (tree / "flat.pdf").exists()
     assert workdir.precompile_pdf.read_bytes().startswith(b"%PDF")
-    for name in ("LXGWWenKai-Light.ttf", "LXGWWenKai-Medium.ttf"):
-        link = tree / "fonts" / name
-        assert link.is_symlink()
-        assert link.read_bytes()[:4] == b"\x00\x01\x00\x00"
+    assert not (tree / "fonts").exists()
     assert not (workdir.build / "fonts").exists()
     written = json.loads(workdir.manifest_path("precompile").read_text(encoding="utf-8"))
     assert written["status"] == "ok"
@@ -246,184 +228,197 @@ def test_injects_xecjk_after_documentclass(tmp_path: Path, monkeypatch: pytest.M
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     precompile.run(workdir)
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert output.index("\\documentclass") < output.index("\\usepackage{xeCJK}") < output.index("\\begin{document}")
+    assert (
+        output.index("\\documentclass")
+        < output.index("\\usepackage[AutoFakeBold=2]{xeCJK}")
+        < output.index("\\begin{document}")
+    )
     assert "% ---- injected by tongtu (precompile) ----" in output
     assert "LXGWWenKai-Light.ttf" in output
 
 
-def test_injects_default_fonts_without_models_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\setCJKmainfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}" in output
-    assert "\\IfFontExistsTF{Hiragino Sans GB}" in output
-    assert "\\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Light.ttf}" in output
+DEFAULT_MAIN_LINE = "\\setCJKmainfont[BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}"
+
+DEFAULT_SANS_LINE = "\\setCJKsansfont[BoldFont=SourceHanSansSC-Bold.otf]{SourceHanSansSC-Regular.otf}"
 
 
-SANS_FILE_FALLBACK = "\\setCJKsansfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}"
+def injected_output(workdir: Workdir) -> str:
+    return (workdir.build / "precompile.tex").read_text(encoding="utf-8")
 
 
-def test_sans_chain_takes_the_first_installed_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    asked = wire_fc_list(monkeypatch, {"Hiragino Sans GB", "Noto Sans CJK SC"})
-    precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\setCJKsansfont{Hiragino Sans GB}\n" in output
-    assert "\\IfFontExistsTF" not in output
-    assert asked == ["Hiragino Sans GB"]
+def fallback_warnings(warnings: list[str], slot: str) -> list[str]:
+    return [line for line in warnings if f"the {slot} font family" in line and "used instead" in line]
 
 
-def test_sans_chain_falls_to_the_second_installed_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    wire_fc_list(monkeypatch, {"Noto Sans CJK SC"})
-    precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\setCJKsansfont{Noto Sans CJK SC}\n" in output
-    assert "Hiragino" not in output
-    assert "\\IfFontExistsTF" not in output
-
-
-def test_sans_chain_falls_to_the_bundled_file_when_nothing_is_installed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    wire_fc_list(monkeypatch, set())
-    precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert SANS_FILE_FALLBACK in output
-    assert "Hiragino" not in output
-    assert "\\IfFontExistsTF" not in output
-
-
-def test_sans_chain_keeps_tex_probing_without_fc_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\IfFontExistsTF{Hiragino Sans GB}" in output
-    assert "\\IfFontExistsTF{Noto Sans CJK SC}" in output
-    assert SANS_FILE_FALLBACK in output
-
-
-def test_fonts_config_switches_to_system_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\n')
+def test_injects_default_fonts_without_config_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    output = injected_output(workdir)
+    assert "\\usepackage[AutoFakeBold=2]{xeCJK}\n" in output
+    assert f"{DEFAULT_MAIN_LINE}\n{DEFAULT_SANS_LINE}\n\\setCJKmonofont{{LXGWWenKai-Light.ttf}}\n" in output
+    for leftover in ("Path=", "IfFontExistsTF", "Hiragino"):
+        assert leftover not in output
+    assert not any("config.toml" in line for line in manifest.warnings)
+
+
+def test_fonts_config_rejects_system_font_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\nsans = "Noto Sans CJK SC"\n')
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    manifest = precompile.run(workdir)
+    output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
-    assert "\\setCJKmainfont{Noto Serif CJK SC}" in output
-    assert "\\setCJKmonofont{Noto Serif CJK SC}" in output
-    assert not any("bold" in line for line in manifest.warnings)
+    assert DEFAULT_MAIN_LINE in output
+    assert DEFAULT_SANS_LINE in output
+    assert "Noto" not in output
+    rejected = [line for line in manifest.warnings if "not a font file" in line]
+    assert len(rejected) == 2
+    assert any("main font Noto Serif CJK SC" in line for line in rejected)
+    assert any("sans font Noto Sans CJK SC" in line for line in rejected)
+    assert len(fallback_warnings(manifest.warnings, "main")) == 1
+    assert len(fallback_warnings(manifest.warnings, "sans")) == 1
 
 
-def test_fonts_config_system_bold_pairs_with_system_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Source Han Serif SC"\nbold = "Source Han Serif SC Bold"\n')
+def test_fonts_config_string_family_has_no_bold_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\setCJKmainfont[BoldFont=Source Han Serif SC Bold]{Source Han Serif SC}" in output
+    manifest = precompile.run(workdir)
+    output = injected_output(workdir)
+    assert "\\setCJKmainfont{LXGWWenKai-Medium.ttf}\n" in output
+    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert DEFAULT_SANS_LINE in output
+    assert not any("config.toml" in line for line in manifest.warnings)
 
 
-def test_fonts_config_switches_to_repo_font_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\n')
+def test_fonts_config_family_table_sets_bold_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config_toml(
+        tmp_path, '[fonts]\nmain = { regular = "LXGWWenKai-Medium.ttf", bold = "LXGWWenKai-Light.ttf" }\n'
+    )
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\setCJKmainfont[Path={fonts/}]{LXGWWenKai-Medium.ttf}" in output
-    assert "\\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Medium.ttf}" in output
+    manifest = precompile.run(workdir)
+    output = injected_output(workdir)
+    assert "\\setCJKmainfont[BoldFont=LXGWWenKai-Light.ttf]{LXGWWenKai-Medium.ttf}\n" in output
+    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert not any("config.toml" in line for line in manifest.warnings)
 
 
-def test_fonts_config_external_file_is_linked_into_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fonts_config_external_file_is_referenced_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     font_path = tmp_path / "custom" / "MyFont.otf"
     font_path.parent.mkdir(parents=True)
     font_path.write_bytes(b"font-bytes")
-    write_models_toml(tmp_path, f'[fonts]\nmain = "{font_path}"\n')
+    write_config_toml(tmp_path, f'[fonts]\nmain = "{font_path}"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
-    assert "\\setCJKmainfont[Path={fonts/}]{MyFont.otf}" in output
-    link = workdir.build / "sandbox" / "tex" / "fonts" / "MyFont.otf"
-    assert link.is_symlink()
-    assert link.read_bytes() == b"font-bytes"
+    assert "\\setCJKmainfont{MyFont.otf}\n" in output
+    assert str(font_path.parent) not in output
+    assert not (workdir.build / "sandbox" / "tex" / "fonts").exists()
 
 
-def test_fonts_config_missing_file_falls_back_to_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Ghost.ttf"\n')
-    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert manifest.status is PrecompileStatus.OK
-    assert "\\setCJKmainfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}" in output
-    assert any("Ghost.ttf" in line for line in manifest.warnings)
-
-
-def test_fonts_config_bold_kind_mismatch_is_ignored_with_warning(
+def test_fonts_config_family_with_missing_regular_falls_back_as_a_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\nbold = "LXGWWenKai-Light.ttf"\n')
+    write_config_toml(tmp_path, '[fonts]\nmain = { regular = "Ghost.ttf", bold = "LXGWWenKai-Medium.ttf" }\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\setCJKmainfont{Noto Serif CJK SC}" in output
-    assert any("bold is ignored" in line for line in manifest.warnings)
-
-
-def test_fonts_config_list_builds_fallback_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = ["Source Han Serif SC", "Noto Serif CJK SC"]\n')
-    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
+    output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
-    expected = (
-        "\\IfFontExistsTF{Source Han Serif SC}\n"
-        "  {\\setCJKmainfont{Source Han Serif SC}}\n"
-        "  {\\IfFontExistsTF{Noto Serif CJK SC}\n"
-        "    {\\setCJKmainfont{Noto Serif CJK SC}}\n"
-        "    {\\setCJKmainfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}}}\n"
-    )
-    assert expected in output
-    assert (
-        "\\IfFontExistsTF{Source Han Serif SC}\n"
-        "  {\\setCJKmonofont{Source Han Serif SC}}\n"
-        "  {\\IfFontExistsTF{Noto Serif CJK SC}\n"
-        "    {\\setCJKmonofont{Noto Serif CJK SC}}\n"
-        "    {\\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Light.ttf}}}\n"
-    ) in output
+    assert DEFAULT_MAIN_LINE in output
+    assert output.count("LXGWWenKai-Medium.ttf") == 1
+    assert any("main.regular font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
+    assert len(fallback_warnings(manifest.warnings, "main")) == 1
 
 
-def test_fonts_config_list_ends_at_file_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = ["Noto Serif CJK SC", "LXGWWenKai-Medium.ttf", "Unreached"]\n')
+def test_fonts_config_family_with_missing_bold_falls_back_as_a_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_config_toml(tmp_path, '[fonts]\nmain = { regular = "LXGWWenKai-Medium.ttf", bold = "Ghost.ttf" }\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert (
-        "\\IfFontExistsTF{Noto Serif CJK SC}\n"
-        "  {\\setCJKmainfont{Noto Serif CJK SC}}\n"
-        "  {\\setCJKmainfont[Path={fonts/}]{LXGWWenKai-Medium.ttf}}\n"
-    ) in output
-    assert "Unreached" not in output
-    assert any("never used" in line for line in manifest.warnings)
+    output = injected_output(workdir)
+    assert DEFAULT_MAIN_LINE in output
+    assert "\\setCJKmainfont{LXGWWenKai-Medium.ttf}" not in output
+    assert "\\setCJKmonofont{LXGWWenKai-Light.ttf}\n" in output
+    assert any("main.bold font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
+    assert len(fallback_warnings(manifest.warnings, "main")) == 1
 
 
-def test_fonts_config_list_skips_missing_file_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nmain = ["Ghost.ttf", "Noto Serif CJK SC"]\n')
+def test_fonts_config_family_with_both_files_missing_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_config_toml(tmp_path, '[fonts]\nsans = { regular = "Ghost.otf", bold = "Ghost-Bold.otf" }\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "Ghost.ttf" not in output
-    assert "\\setCJKmainfont{Noto Serif CJK SC}" in output
-    assert any("Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
+    output = injected_output(workdir)
+    assert DEFAULT_SANS_LINE in output
+    assert "Ghost" not in output
+    assert any("sans.regular font file Ghost.otf" in line for line in manifest.warnings)
+    assert any("sans.bold font file Ghost-Bold.otf" in line for line in manifest.warnings)
+    assert len(fallback_warnings(manifest.warnings, "sans")) == 1
+
+
+def test_fonts_config_missing_string_file_falls_back_to_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_config_toml(tmp_path, '[fonts]\nmain = "Ghost.ttf"\nsans = "Ghost.otf"\n')
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    manifest = precompile.run(workdir)
+    output = injected_output(workdir)
+    assert manifest.status is PrecompileStatus.OK
+    assert DEFAULT_MAIN_LINE in output
+    assert DEFAULT_SANS_LINE in output
+    assert any("main font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
+    assert any("sans font file Ghost.otf" in line and "skipped" in line for line in manifest.warnings)
+    assert len(fallback_warnings(manifest.warnings, "main")) == 1
+    assert len(fallback_warnings(manifest.warnings, "sans")) == 1
+
+
+def test_fonts_config_list_is_rejected_and_defaults_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config_toml(tmp_path, '[fonts]\nmain = ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]\n')
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    config, detail = load_config()
+    assert config is None
+    assert "main" in detail
+    manifest = precompile.run(workdir)
+    output = injected_output(workdir)
+    assert manifest.status is PrecompileStatus.OK
+    assert DEFAULT_MAIN_LINE in output
+    assert DEFAULT_SANS_LINE in output
+
+
+def test_fonts_config_old_bold_key_is_rejected_and_defaults_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_config_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\nbold = "LXGWWenKai-Light.ttf"\n')
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.bold" in detail
+    manifest = precompile.run(workdir)
+    output = injected_output(workdir)
+    assert manifest.status is PrecompileStatus.OK
+    assert DEFAULT_MAIN_LINE in output
 
 
 def test_fonts_config_overrides_sans_and_mono(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_models_toml(tmp_path, '[fonts]\nsans = "Noto Sans CJK SC"\nmono = "LXGWWenKai-Medium.ttf"\n')
+    write_config_toml(tmp_path, '[fonts]\nsans = "LXGWWenKai-Medium.ttf"\nmono = "LXGWWenKai-Medium.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     precompile.run(workdir)
-    output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
-    assert "\\setCJKsansfont{Noto Sans CJK SC}" in output
-    assert "\\IfFontExistsTF" not in output
-    assert "\\setCJKmonofont[Path={fonts/}]{LXGWWenKai-Medium.ttf}" in output
-    assert "\\setCJKmainfont[Path={fonts/},BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}" in output
+    output = injected_output(workdir)
+    assert "\\setCJKsansfont{LXGWWenKai-Medium.ttf}\n" in output
+    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert DEFAULT_MAIN_LINE in output
+    assert "SourceHanSansSC" not in output
+
+
+def test_fonts_config_missing_mono_falls_back_to_main_regular(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\nmono = "Ghost.ttf"\n')
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
+    manifest = precompile.run(workdir)
+    output = injected_output(workdir)
+    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert any("mono font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
+    assert fallback_warnings(manifest.warnings, "main") == []
 
 
 def test_inject_passes_through_existing_xecjk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -462,7 +457,7 @@ def test_inject_replaces_cjkutf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert "\\end{CJK*}" not in output
     assert "\\CJKfamily" not in output
     assert "\\usepackage{amsmath}" in output
-    assert "\\usepackage{xeCJK}" in output
+    assert "\\usepackage[AutoFakeBold=2]{xeCJK}" in output
     assert "正文保留。" in output
     assert any("CJKutf8" in line for line in manifest.warnings)
 
@@ -661,7 +656,6 @@ def test_arxiv_1905_12322v3_missing_legacy_inputs(
         {main_file: source, str(Path(main_file).with_suffix(".bbl")): "Bibliography content\n", "local.sty": "old"},
     )
     expansions = wire_missing_inputs(monkeypatch)
-    wire_fc_list(monkeypatch, None)
     latexmk = wire_latexmk(monkeypatch, [{}])
 
     def edit(tree: Path) -> None:
@@ -691,7 +685,7 @@ def test_arxiv_1905_12322v3_missing_legacy_inputs(
     assert not (tree / "macros_new.tex").exists() and not (tree / "new_cmds.tex").exists()
     output = workdir.precompile_tex.read_text()
     assert "Hello world." in output and "Bibliography content" in output
-    assert "\\usepackage{xeCJK}" in output
+    assert "\\usepackage[AutoFakeBold=2]{xeCJK}" in output
     assert "incomplete expansion" not in output
     assert outputs_present(workdir, "precompile")
     assert workdir.precompile_fix_log.read_text() == "one session\n"
@@ -704,7 +698,6 @@ def test_missing_input_path_repair_inlines_body(tmp_path: Path, monkeypatch: pyt
     source = PLAIN_PAPER.replace("Hello world.", "\\include{wrong/body}")
     workdir = make_workdir(tmp_path, {"main.tex": source, "sections/body.tex": "Essential body content."})
     wire_missing_inputs(monkeypatch)
-    wire_fc_list(monkeypatch, None)
     wire_latexmk(monkeypatch, [{}])
 
     def edit(tree: Path) -> None:
@@ -758,7 +751,6 @@ def test_expansion_fix_does_not_start_second_compile_session(
     source = missing_input_paper()
     workdir = make_workdir(tmp_path, {"main.tex": source})
     wire_missing_inputs(monkeypatch)
-    wire_fc_list(monkeypatch, None)
     latexmk = wire_latexmk(monkeypatch, [spec])
 
     def edit(tree: Path) -> None:

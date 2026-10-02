@@ -4,15 +4,40 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-CONFIG_ROOT_ENV = "XDG_CONFIG_HOME"
-DEFAULT_CONFIG_ROOT = Path("~/.config")
+HOME_ENV = "TONGTU_HOME"
 
-CONFIG_DIRNAME = "tongtu"
+DEFAULT_HOME = Path("~/.tongtu")
+
+DEV_HOME = Path("~/.tongtu-dev")
+
+CONFIG_FILENAME = "config.toml"
+
+GLOSSARY_FILENAME = "glossary.json"
+
+PAPERS_DIRNAME = "papers"
+
+LEGACY_DIRS: tuple[Path, ...] = (Path("~/.config/tongtu"), Path("~/.local/share/tongtu"))
 
 
-def config_dir(env: Mapping[str, str] | None = None) -> Path:
+def home_dir(env: Mapping[str, str] | None = None) -> Path:
     environ = os.environ if env is None else env
-    root = (environ.get(CONFIG_ROOT_ENV) or "").strip()
-    if root:
-        return Path(root).expanduser() / CONFIG_DIRNAME
-    return DEFAULT_CONFIG_ROOT.expanduser() / CONFIG_DIRNAME
+    home = (environ.get(HOME_ENV) or "").strip()
+    if home:
+        return Path(home).expanduser()
+    return DEFAULT_HOME.expanduser()
+
+
+def config_path(env: Mapping[str, str] | None = None) -> Path:
+    return home_dir(env) / CONFIG_FILENAME
+
+
+def glossary_path(env: Mapping[str, str] | None = None) -> Path:
+    return home_dir(env) / GLOSSARY_FILENAME
+
+
+def papers_dir(env: Mapping[str, str] | None = None) -> Path:
+    return home_dir(env) / PAPERS_DIRNAME
+
+
+def legacy_dirs_present() -> list[Path]:
+    return [path.expanduser() for path in LEGACY_DIRS if path.expanduser().exists()]

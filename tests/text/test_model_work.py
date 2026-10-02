@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tongtu import fonts
 from tongtu.model.work import StopReason, work
 from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
@@ -72,8 +73,8 @@ halfway = { runtime = "demo", model = "m1", effort = "low" }
 
 @pytest.fixture
 def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    path = tmp_path / "config" / "tongtu" / "models.toml"
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    path = tmp_path / "home" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
@@ -190,6 +191,16 @@ def test_session_environment_is_narrowed(configured: Path, monkeypatch: pytest.M
     assert_path_starts_with_the_base_interpreter(recorded, "/tex/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
 
+def test_session_environment_carries_the_font_search_path(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TTFONTS", raising=False)
+    monkeypatch.delenv("OPENTYPEFONTS", raising=False)
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    for variable in ("TTFONTS", "OPENTYPEFONTS"):
+        assert recorded["env"][variable] == f"{fonts.FONTS_DIR}//:"
+
+
 def test_session_environment_keeps_claude_code_remote_without_provider(
     configured: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -286,7 +297,7 @@ def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.Mo
 
 
 def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     outcome = work("smoke", tmp_path, trace_path=tmp_path / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "tongtu setup" in outcome.detail

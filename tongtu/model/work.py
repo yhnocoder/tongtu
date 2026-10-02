@@ -11,7 +11,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
+from .. import fonts
 from ..assets import asset_path
+from ..config import config_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
 from .config import (
     ModelsConfig,
@@ -20,7 +22,6 @@ from .config import (
     RoleTable,
     RuntimeConfig,
     load_config,
-    models_path,
     provider_key,
     resolve_role,
 )
@@ -87,7 +88,7 @@ def _launch(
         required.append("max_turns")
     absent = [name for name in required if getattr(entry, name) is None]
     if absent:
-        return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {models_path()}.")
+        return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {config_path()}.")
     skill_path = runtime.skill_path.format(role=role)
 
     base_url: str | None = None
@@ -97,7 +98,7 @@ def _launch(
         if provider is None:
             return _error(
                 f"runtime {name} declares provider {runtime.provider}, which is not configured;"
-                f" add it under [provider.{runtime.provider}] in {models_path()}."
+                f" add it under [provider.{runtime.provider}] in {config_path()}."
             )
         api_key, detail = provider_key(runtime.provider, provider)
         if api_key is None:
@@ -195,7 +196,7 @@ def _trace_line(
 def _session_env(provider_backed: bool, python_bin: Path) -> dict[str, str]:
     tex = shutil.which(TEX_EXECUTABLE)
     entries = [str(python_bin)] + ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
-    environment = dict(os.environ)
+    environment = fonts.environment(fonts.configured(), os.environ)
     if provider_backed:
         environment.pop("CLAUDE_CODE_REMOTE", None)
     return environment | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}
@@ -221,12 +222,12 @@ def _build_invocation(
     if runtime.settings is None and any("{settings}" in item for item in runtime.command):
         return None, (
             f"the command template of runtime {name} needs settings, but [runtime.{name}] has no settings table."
-            f" Add it in {models_path()}."
+            f" Add it in {config_path()}."
         )
     if base_url is None and any("{base_url}" in item or "{api_key}" in item for item in templates):
         return None, (
             f"the command template or env table of runtime {name} needs {{base_url}} and {{api_key}},"
-            f" but [runtime.{name}] has no provider field. Add it in {models_path()}."
+            f" but [runtime.{name}] has no provider field. Add it in {config_path()}."
         )
     values = {
         "{model}": resolved.model,

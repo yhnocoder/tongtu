@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模型调用层</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/lxgwwenkaiscreen.css">
+<link rel="stylesheet" href="../style.css">
+<script defer src="../math.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-chtml.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/line-highlight/prism-line-highlight.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/diff-highlight/prism-diff-highlight.min.js"></script>
+<script defer src="../code.js"></script>
+</head>
+<body>
+<main>
+<p class="nav"><a href="../index.html">返回索引</a></p>
+<h1>模型调用层</h1>
+<p class="lead"><code>tongtu/model/</code>。流水线里每一处调用模型都经过这一层，只有两个函数：<code>ask</code> 做单次问答（survey 提议术语、translate 的 API 模式逐 chunk 翻译），<code>work</code> 在一棵目录树里启动一次 agent 会话（precompile / compile 的修复、review、translate 的 Agent 模式）。服务商、运行时与各角色的默认模型都在 <code>models.toml</code>。各阶段见 <a href="../pipeline.html">pipeline.html</a>，命令行见 <a href="cli.html">cli.html</a>。</p>
+
+<div class="panel">
+<div class="cols">
+<div>
+<span class="label">ask：单次问答，无状态</span>
+<pre>ask(role, system, messages, *, schema=None, log_path, model=None, effort=None) -> AskOutcome
+  role:     "translate" | "survey_terms" | …   <span class="c"># 角色名，在 models.toml 的 [roles] 查到服务商 / 模型 / 强度</span>
+  system:   系统提示词
+  messages: [(role, content), …]               <span class="c"># 第一次只有一条 user；重试续上 assistant + user</span>
+  schema:   JSON Schema，要结构化输出时给            <span class="c"># 只有 chat 接口支持；另两个接口给了 schema 以 error 返回</span>
+  model:    "服务商/模型"，None 用角色配置          <span class="c"># --ask-model 的原字符串；effort 同理，None 用角色配置</span>
+  → AskOutcome(status: "ok"|"error", text, detail, model)   <span class="c"># model = 实际解析的「服务商/模型」；解析失败时为空串</span></pre>
+<span class="label">三种接口，各用官方 SDK</span>
+<dl class="io">
+<dt><code>chat</code></dt><dd>OpenAI chat/completions：<code>openai</code> SDK；system → system message；强度 → <code>reasoning_effort</code>；schema → <code>response_format</code></dd>
+<dt><code>responses</code></dt><dd>OpenAI responses：<code>openai</code> SDK；system → <code>instructions</code>；强度 → <code>reasoning.effort</code></dd>
+<dt><code>messages</code></dt><dd>Anthropic Messages：<code>anthropic</code> SDK；system → <code>system</code>；强度 → <code>thinking.budget_tokens</code> 档位表（low 1024 / medium 2048 / high 4096）；<code>max_tokens</code> 32768</dd>
+</dl>
+<p class="fine">每次调用把请求要素、正文、usage、耗时写成一个 JSON 日志到 <code>log_path</code>；失败以返回值表示，不抛异常，写日志失败也算 error。SDK 超时 300 秒（<code>ASK_TIMEOUT_SECONDS</code>），自动重试 1 次。<code>chat</code> 接口的 schema 被服务端以 <code>response_format</code> 拒绝时，退回 <code>json_object</code> 并把 schema 写进 system，日志记 <code>json_object_fallback</code>；<code>messages</code> 接口的强度只认 low / medium / high，其余以 error 返回。</p>
+</div>
+<div>
+<span class="label">work：在一棵目录树里启动一次多轮会话</span>
+<pre>work(role, workdir, *, trace_path, model=None, effort=None, report=None, prompt=None) -> WorkOutcome
+  role:     "precompile_fix" | "compile_fix" | "review" | "translate"
+  workdir:  会话的 cwd，也是工具可写的范围；读取不受限制
+  model:    "运行时/模型"，None 用角色配置          <span class="c"># --work-model 的原字符串；effort 同理</span>
+  report:   每解析出一条动作调一次，参数是一行文本    <span class="c"># None 不回报；见下「运行时 = 一条命令模板」</span>
+  prompt:   会话的任务说明，None 用默认 prompt         <span class="c"># translate 的 Agent 模式用它指定输入与输出文件</span>
+  → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail, model)   <span class="c"># model = 实际解析的「运行时/模型」；解析失败时为空串</span></pre>
+<p><b>work 默认从角色 skill 文件读取任务</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进会话目录，位置由运行时条目的 <code>skill_path</code> 决定（例如 Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>），拷贝用 <code>dirs_exist_ok</code> 叠加，不清空目的地。然后启动会话，默认 prompt 是「读 skill，按它做；会话目录是当前目录这棵树」，调用方可以用 <code>prompt</code> 参数覆盖。skill 目录里除了 SKILL.md 还放 agent 要用的工具：review 阶段把 <code>tongtu/validation.py</code>（只依赖标准库，带 <code>main</code>）以 <code>validate.py</code> 拷进会话目录的 skill 目录，agent 运行的是这个文件，不是 <code>tongtu</code>。</p>
+<p><code>roles.translate</code> 写 <code>provider</code>（API 模式，经 ask）或 <code>runtime</code>（Agent 模式，经 work）二者之一；两种模式的流程见 <a href="../pipeline.html#translate">translate 卡</a>。分块配置 <code>chunk_tokens</code> / <code>chunk_merge_tokens</code> 也写在 <code>roles.translate</code>，对两种模式通用，由 survey 读取，见 <a href="../pipeline.html#survey">survey 卡</a>。</p>
+</div>
+</div>
+</div>
+
+<div class="panel">
+<span class="label">运行时 = 一条命令模板</span>
+<p>Claude Code 与 Codex 的 headless 模式都是「cwd + stdin 进 prompt + 几个参数 + 退出码」，差别只在命令行怎么拼和 skill 放在哪里，因此命令写在配置里。<code>work</code> 的步骤：拷 skill → 拼命令 → 在新进程组里运行 → 超时杀掉整个进程组 → stdout 逐行写入 trace → 按退出码与是否超时给出 stop_reason。<code>timeout_seconds</code> 必填；<code>max_turns</code> 只在命令模板引用 <code>{max_turns}</code> 时必填。</p>
+<p><b>默认运行时是 <code>codex</code></b>，模型 <code>astra</code>、强度 <code>light</code>，调用时解析为 <code>gpt-6-astra</code>、<code>low</code>；这两个别名由 <code>resolve_role</code> 替换，对所有角色生效，ask 与 work 都解析。codex 条目保证：写范围限定在会话目录与 work 在其中建的会话临时目录（TMPDIR 指向它，会话结束后删除），断网，不用登录 shell；Codex 没有 <code>max_turns</code>，只用 <code>timeout_seconds</code> 限时。<code>runtime.auth = "codex"</code> 时 work 建一个独立的临时 CODEX_HOME，只链接已有的 <code>auth.json</code>，不加载用户配置、rules、插件与自动 skills 指令；需要先执行 <code>codex login</code>；认证文件不进会话目录与日志。</p>
+<p><b>进度行显示当前动作</b>：运行时条目可写 <code>events</code> 声明 stdout 事件流的格式（<code>stream-json</code> / <code>codex-json</code>），work 写 trace 的同时逐行解析出当前动作（工具名加首要参数，例如 <code>Bash: latexmk -xelatex flat.tex</code>），经 <code>report</code> 回调交给调用方。不写 <code>events</code> 或某行解析不出就不回报；<code>events</code> 取了未知值在加载配置时报错。解析只用于显示，不影响会话。</p>
+<p>一个运行时条目对应一个「工具 × 服务商」组合：条目可选写 <code>provider</code> 指向 <code>[provider.*]</code>，<code>work</code> 据此把 <code>{base_url}</code> 与 <code>{api_key}</code> 填进命令模板与 <code>env</code> 表。密钥经 <code>env</code> 表进入子进程环境，不出现在命令行参数里。</p>
+<p><b><code>stop_reason</code> 不含 <code>budget_exhausted</code></b>：调用方总是自己复验结果，轮数耗尽与其他错误的处理方式相同。<code>max_turns</code> 仍作为参数传给运行时，不从结果里读回。</p>
+</div>
+
+<div class="panel">
+<span class="label">models.toml（配置目录）</span>
+<p>完整模板在 <code>tongtu/model/config.py</code>，由 <code>tongtu setup</code> 写出。下面是说明格式用的最小示例。</p>
+<pre><code class="language-toml"># 服务商：一个 API 前缀 + 一个密钥 + 哪个模型走哪种接口（api 取 chat / responses / messages）
+[provider.opencode]
+base_url    = "https://opencode.ai/zen/go"   # 接口前缀的根，chat / responses / messages 都在它下面的 /v1/...
+api_key     = ""                  # 直接写密钥，或留空改用下面的环境变量
+api_key_env = "OPENCODE_API_KEY"
+
+[provider.opencode.models]
+"deepseek-v4-pro" = "chat"
+"deepseek-v4-flash" = "chat"
+"gpt-5.6-luna" = "responses"
+"qwen3.8-max" = "messages"
+
+[provider.anthropic]
+base_url    = "https://api.anthropic.com"
+api_key     = ""
+api_key_env = "ANTHROPIC_API_KEY"
+api         = "messages"          # 整个服务商一种接口时不必逐模型列
+
+# 会话运行时：一条命令模板，{model} {effort} {max_turns} {tmp_dir} 由 work 填入；{tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删
+[runtime.codex]
+auth       = "codex"                     # 用 codex login 的登录凭据
+skill_path = ".codex/skills/{role}"      # skill 目录拷到会话目录的哪里
+events     = "codex-json"                # stdout 事件流的格式，进度行据此解析当前动作；不写则不解析
+command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+           "-s", "workspace-write", "-c", 'approval_policy="never"', …,
+           "-m", "{model}", "-c", 'model_reasoning_effort="{effort}"']
+
+# 中文字体，字段含义与取值见 pipeline.html 的 fonts 卡
+[fonts]
+main = "LXGWWenKai-Light.ttf"
+
+# 角色：翻译写 runtime（Agent）或 provider（API），恰好一个；分块量对两者通用
+[roles]
+survey_terms   = { provider = "opencode", model = "deepseek-v4-flash", effort = "low" }
+translate      = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 1800, chunk_tokens = 20000, chunk_merge_tokens = 12000 }
+review         = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 3600 }
+precompile_fix = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 1800 }
+compile_fix    = { runtime = "codex", model = "astra", effort = "light", timeout_seconds = 1800 }</code></pre>
+<p class="fine">命令行 <code>--ask-model</code> / <code>--ask-effort</code> 覆盖全部 API 直调（ask）类角色，<code>--work-model</code> / <code>--work-effort</code> 覆盖全部 agent 会话（work）类角色；没有 <code>tongtu config</code> 子命令，文件手动修改。密钥写在服务商条目的 <code>api_key</code>（文件 0600），留空则用 <code>api_key_env</code> 指定的环境变量。<code>tongtu doctor</code> 只检查 <code>[roles]</code> 引用到的服务商与运行时，以及这些运行时条目引用的服务商。</p>
+</div>
+
+<div class="panel">
+<span class="label">会话的约束</span>
+<ol class="rules">
+<li><b>Bash 不做前缀放行</b>：沙箱内的命令一律放行，沙箱不可用时会话直接失败，角色级放行清单起不了作用。正确性由调用方在会话目录外重跑校验。Claude Code 运行时另外经 <code>--disallowedTools</code> 禁止编辑 skill 目录，agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它；默认的 Codex 运行时没有这条限制，会话目录整体可写，validate.py 被改也不影响判定，因为校验在会话目录外重跑。</li>
+<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 都能执行任意代码，前缀放行拦不住，只能靠沙箱把写范围限制在会话目录、断网。嵌套容器（例如云端会话）里设环境变量 <code>TONGTU_NESTED_SANDBOX=1</code>，work 给带 sandbox 表的运行时合入 <code>enableWeakerNestedSandbox = true</code>。</li>
+<li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻以退出码 2 退出。它只给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过；有意绕过需要写会话目录之外的工作目录根、需要出网，第 2 条会让它在第一个阶段失败。</li>
+<li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin 与系统 bin），最前面加一个只含 <code>python3</code> 符号链接的目录，指向 tongtu 自身的基础解释器（<code>sys.base_prefix</code>）。只链接这一个文件，不把基础解释器的 bin 目录放进 PATH，会话就拿不到装在那里的 <code>tongtu</code>。</li>
+</ol>
+<p class="fine">运行时只认 Claude Code 与 Codex。Codex 不用 <code>.codex/rules</code> 做放行，因为 <code>decision="allow"</code> 的规则会在沙箱外执行；只靠沙箱 <code>-s workspace-write -c approval_policy="never"</code> 把写范围限制在会话目录。opencode 作为运行时没有沙箱，在它有沙箱之前不作为运行时。</p>
+</div>
+</main>
+</body>
+</html>

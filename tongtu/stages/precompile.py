@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import os
 import re
 import shutil
-import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .. import compiling, pipeline, preamble, processes
+from .. import compiling, fonts, pipeline, preamble, processes
 from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
-from ..assets import asset_path
 from ..conditionals import strip_dead_branches
+from ..fonts import FONT_FILE_SUFFIXES, FONTS_DIR, family_files
 from ..manifests import describe_error, write_manifest
 from ..masking import ENVIRONMENTS_TABLE_PATH, MaskError, parse_environment_table
-from ..model.config import FontsConfig, load_config
+from ..model.config import FontFamily, FontsConfig
 from ..workdir import Workdir
 
 STAGE_NAME = "precompile"
@@ -25,10 +22,6 @@ ROLE = "precompile_fix"
 FLAT_FILENAME = "flat.tex"
 
 TREE_NAME = "tex"
-
-FONTS_DIRNAME = "fonts"
-
-FONTS_DIR = asset_path(FONTS_DIRNAME)
 
 LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--empty-comments", "--fatal")
 
@@ -64,30 +57,24 @@ PACKAGE_RE = re.compile(rb"\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{(
 
 DOCUMENTCLASS_RE = re.compile(rb"\\(?:documentclass|documentstyle)\s*(\[[^\]]*\])?\s*\{([^}]*)\}")
 
-FONT_FILE_SUFFIXES = (".ttf", ".otf", ".ttc")
+FAKE_BOLD_FACTOR = 2
 
-XECJK_HEAD = rb"""% ---- injected by tongtu (precompile) ----
+XECJK_HEAD = (
+    rb"""% ---- injected by tongtu (precompile) ----
 \PassOptionsToPackage{no-math}{fontspec}
-\usepackage{xeCJK}
+\usepackage[AutoFakeBold="""
+    + str(FAKE_BOLD_FACTOR).encode("ascii")
+    + rb"""]{xeCJK}
 """
+)
 
 DEFAULT_FONTS = FontsConfig()
-
-DEFAULT_SANS_CHAIN = ["Hiragino Sans GB", "Noto Sans CJK SC"]
-
-FC_LIST_TIMEOUT_SECONDS = 5
 
 XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 \XeTeXlinebreakskip = 0pt plus 1pt
 \linespread{1.4}
 % ---- end tongtu (precompile) ----
 """
-
-
-@dataclass(frozen=True)
-class ResolvedFont:
-    name: str
-    is_file: bool
 
 
 def run(
@@ -173,10 +160,10 @@ def _execute(
             "after expansion; those files were not expanded"
         )
 
-    injected, font_files = _inject_cjk(expanded, warnings, _fonts_config())
+    injected = _inject_cjk(expanded, warnings, fonts.configured())
     if fix_session is None:
         warnings.extend(compiling.copy_src_tree(src, tree, FLAT_FILENAME))
-    _assemble_tree(tree, injected, warnings, font_files)
+    _assemble_tree(tree, injected)
 
     final, fix_session, failure = compiling.compile_with_fix(
         ROLE,
@@ -381,7 +368,7 @@ def _code_before_comment(line: bytes) -> bytes:
     return line
 
 
-def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> tuple[bytes, list[Path]]:
+def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> bytes:
     source = _adapt_preamble(source, warnings)
     lines = source.splitlines(keepends=True)
     document_index = _line_index_of(lines, BEGIN_DOCUMENT_MARKER)
@@ -389,7 +376,7 @@ def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> tuple
     packages = _preamble_packages(lines[:preamble_end])
     documentclass, class_end_index = _find_documentclass(lines, preamble_end)
     if packages & CJK_PACKAGES or documentclass in CTEX_CLASSES:
-        return source, []
+        return source
     if class_end_index is None:
         warnings.append(
             "no \\documentclass outside comments in the expansion; "
@@ -398,9 +385,7 @@ def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> tuple
         insert_at = 0
     else:
         insert_at = class_end_index + 1
-    font_files: list[Path] = []
-    block = _xecjk_block(fonts, warnings, font_files)
-    return b"".join(lines[:insert_at]) + block + b"".join(lines[insert_at:]), font_files
+    return b"".join(lines[:insert_at]) + _xecjk_block(fonts, warnings) + b"".join(lines[insert_at:])
 
 
 def _adapt_preamble(output: bytes, warnings: list[str]) -> bytes:
@@ -412,134 +397,60 @@ def _adapt_preamble(output: bytes, warnings: list[str]) -> bytes:
     return preamble.adapt(text, warnings).encode("utf-8")
 
 
-def _fonts_config() -> FontsConfig:
-    config, _ = load_config()
-    if config is None:
-        return FontsConfig()
-    return config.fonts
-
-
-def _xecjk_block(fonts: FontsConfig, warnings: list[str], font_files: list[Path]) -> bytes:
-    main = _resolve_chain("main", fonts.main, warnings, font_files) or [ResolvedFont(str(DEFAULT_FONTS.main), True)]
-    bold = _resolve_font("bold", fonts.bold, warnings, font_files) if fonts.bold else None
-    bold_is_default = fonts.bold == DEFAULT_FONTS.bold
-    if bold is not None and not bold_is_default and all(_pair_bold(bold, False, font) is None for font in main):
-        warnings.append(
-            "the bold font in models.toml matches no main candidate in kind "
-            "(file pairs with file, font name with font name); bold is ignored"
+def _xecjk_block(fonts: FontsConfig, warnings: list[str]) -> bytes:
+    main_regular, main_bold = _resolve_family("main", fonts.main, DEFAULT_FONTS.main, warnings)
+    sans_regular, sans_bold = _resolve_family("sans", fonts.sans, DEFAULT_FONTS.sans, warnings)
+    mono = (_resolve_font("mono", fonts.mono, warnings) if fonts.mono else None) or main_regular
+    return b"".join(
+        (
+            XECJK_HEAD,
+            _font_command(rb"\setCJKmainfont", main_regular, main_bold) + b"\n",
+            _font_command(rb"\setCJKsansfont", sans_regular, sans_bold) + b"\n",
+            _font_command(rb"\setCJKmonofont", mono, None) + b"\n",
+            XECJK_TAIL,
         )
-        bold = None
-    default_file = ResolvedFont(str(DEFAULT_FONTS.main), True)
-    sans = _resolve_chain("sans", fonts.sans or DEFAULT_SANS_CHAIN, warnings, font_files) or [default_file]
-    mono = _resolve_chain("mono", fonts.mono, warnings, font_files) if fonts.mono else []
-    parts = [XECJK_HEAD, _chain_lines(rb"\setCJKmainfont", main, bold, bold_is_default)]
-    parts.append(_chain_lines(rb"\setCJKsansfont", sans, ResolvedFont(str(DEFAULT_FONTS.bold), True), True))
-    parts.append(_chain_lines(rb"\setCJKmonofont", mono or main, None, False))
-    parts.append(XECJK_TAIL)
-    return b"".join(parts)
-
-
-def _resolve_chain(
-    slot: str, value: str | list[str], warnings: list[str], font_files: list[Path]
-) -> list[ResolvedFont]:
-    candidates = value if isinstance(value, list) else [value]
-    chain: list[ResolvedFont] = []
-    for index, candidate in enumerate(candidates):
-        resolved = _resolve_font(slot, candidate, warnings, font_files)
-        if resolved is None:
-            continue
-        installed = None if resolved.is_file else _font_installed(resolved.name)
-        if installed is False:
-            continue
-        chain.append(resolved)
-        if resolved.is_file:
-            if index < len(candidates) - 1:
-                warnings.append(
-                    f"the {slot} candidate {candidate} in models.toml is a font file and always "
-                    "available; candidates after it are never used"
-                )
-            break
-        if installed:
-            break
-    return chain
-
-
-def _font_installed(name: str) -> bool | None:
-    try:
-        outcome = subprocess.run(
-            ["fc-list", f":family={name}", "family"],
-            capture_output=True,
-            timeout=FC_LIST_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return bool(outcome.stdout.strip())
-
-
-def _resolve_font(slot: str, value: str, warnings: list[str], font_files: list[Path]) -> ResolvedFont | None:
-    if not value.lower().endswith(FONT_FILE_SUFFIXES):
-        return ResolvedFont(value, False)
-    path = Path(value).expanduser()
-    if len(path.parts) > 1:
-        if path.is_file():
-            font_files.append(path)
-            return ResolvedFont(path.name, True)
-        warnings.append(f"the {slot} font file {value} in models.toml does not exist; skipped")
-        return None
-    if (FONTS_DIR / value).is_file():
-        return ResolvedFont(value, True)
-    warnings.append(f"the {slot} font file {value} in models.toml is not under {FONTS_DIR}; skipped")
-    return None
-
-
-def _pair_bold(bold: ResolvedFont | None, bold_is_default: bool, font: ResolvedFont) -> ResolvedFont | None:
-    if bold is None or bold.is_file != font.is_file:
-        return None
-    if bold_is_default and font.name != DEFAULT_FONTS.main:
-        return None
-    return bold
-
-
-def _chain_lines(command: bytes, chain: list[ResolvedFont], bold: ResolvedFont | None, bold_is_default: bool) -> bytes:
-    if len(chain) > 1 and not chain[-1].is_file:
-        chain = [*chain, ResolvedFont(str(DEFAULT_FONTS.main), True)]
-    return _fallback_chain(command, chain, bold, bold_is_default, 0) + b"\n"
-
-
-def _fallback_chain(
-    command: bytes, chain: list[ResolvedFont], bold: ResolvedFont | None, bold_is_default: bool, depth: int
-) -> bytes:
-    font = chain[0]
-    setter = _font_command(command, font, _pair_bold(bold, bold_is_default, font))
-    if len(chain) == 1:
-        return setter
-    indent = b"  " * (depth + 1)
-    rest = _fallback_chain(command, chain[1:], bold, bold_is_default, depth + 1)
-    return (
-        b"\\IfFontExistsTF{"
-        + font.name.encode("utf-8")
-        + b"}\n"
-        + indent
-        + b"{"
-        + setter
-        + b"}\n"
-        + indent
-        + b"{"
-        + rest
-        + b"}"
     )
 
 
-def _font_command(command: bytes, font: ResolvedFont, bold: ResolvedFont | None) -> bytes:
-    options: list[bytes] = []
-    if font.is_file:
-        options.append(b"Path={fonts/}")
+def _resolve_family(
+    slot: str, family: str | FontFamily, default: str | FontFamily, warnings: list[str]
+) -> tuple[str, str | None]:
+    regular, bold = family_files(family)
+    regular_slot = slot if isinstance(family, str) else f"{slot}.regular"
+    resolved_regular = _resolve_font(regular_slot, regular, warnings)
+    resolved_bold = _resolve_font(f"{slot}.bold", bold, warnings) if bold else None
+    if resolved_regular is not None and (bold is None or resolved_bold is not None):
+        return resolved_regular, resolved_bold
+    default_regular, default_bold = family_files(default)
+    warnings.append(
+        f"the {slot} font family in config.toml is not usable; the bundled {default_regular} family is used instead"
+    )
+    return default_regular, default_bold
+
+
+def _resolve_font(slot: str, value: str, warnings: list[str]) -> str | None:
+    if not value.lower().endswith(FONT_FILE_SUFFIXES):
+        warnings.append(
+            f"the {slot} font {value} in config.toml is not a font file (.ttf / .otf / .ttc); "
+            "system font names are not accepted; skipped"
+        )
+        return None
+    path = Path(value).expanduser()
+    if len(path.parts) > 1:
+        if path.is_file():
+            return path.name
+        warnings.append(f"the {slot} font file {value} in config.toml does not exist; skipped")
+        return None
+    if (FONTS_DIR / value).is_file():
+        return value
+    warnings.append(f"the {slot} font file {value} in config.toml is not under {FONTS_DIR}; skipped")
+    return None
+
+
+def _font_command(command: bytes, name: str, bold: str | None) -> bytes:
     if bold is not None:
-        options.append(b"BoldFont=" + bold.name.encode("utf-8"))
-    if options:
-        return command + b"[" + b",".join(options) + b"]{" + font.name.encode("utf-8") + b"}"
-    return command + b"{" + font.name.encode("utf-8") + b"}"
+        return command + b"[BoldFont=" + bold.encode("utf-8") + b"]{" + name.encode("utf-8") + b"}"
+    return command + b"{" + name.encode("utf-8") + b"}"
 
 
 def _line_index_of(lines: list[bytes], marker: bytes) -> int | None:
@@ -584,18 +495,5 @@ def _brace_balance_end(lines: list[bytes], start: int, preamble_end: int) -> int
     return start
 
 
-def _assemble_tree(tree: Path, flat: bytes, warnings: list[str], font_files: list[Path]) -> None:
+def _assemble_tree(tree: Path, flat: bytes) -> None:
     (tree / FLAT_FILENAME).write_bytes(flat)
-    if FONTS_DIR.is_dir():
-        repo_fonts = sorted(path for path in FONTS_DIR.iterdir() if path.is_file())
-    else:
-        repo_fonts = []
-        warnings.append(
-            f"repository font directory {FONTS_DIR} does not exist; the injected xeCJK setup will not find the fonts"
-        )
-    fonts_dir = tree / FONTS_DIRNAME
-    fonts_dir.mkdir(exist_ok=True)
-    for path in (*repo_fonts, *font_files):
-        link = fonts_dir / path.name
-        link.unlink(missing_ok=True)
-        os.symlink(path.absolute(), link)

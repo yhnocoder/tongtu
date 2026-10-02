@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import model, processes, texlog
+from . import fonts, model, processes, texlog
 from .artifacts.common import CompileReport, FixSession
 from .manifests import describe_error, timeout_warning
 from .model.work import StopReason
@@ -17,9 +18,9 @@ CLEAN_TIMEOUT_SECONDS = 60
 
 ERROR_LINE_LIMIT = 5
 
-LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-xelatex", "-interaction=nonstopmode")
+LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-xelatex", "-interaction=nonstopmode")
 
-LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-C")
+LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-C")
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,12 @@ def copy_src_tree(src: Path, tree: Path, main_filename: str) -> list[str]:
 
 
 def attempt_compile(tree: Path, main_filename: str) -> CompileAttempt:
-    outcome = processes.run_in_process_group([*LATEXMK_COMMAND, main_filename], tree, COMPILE_TIMEOUT_SECONDS)
+    outcome = processes.run_in_process_group(
+        [*LATEXMK_COMMAND, main_filename],
+        tree,
+        COMPILE_TIMEOUT_SECONDS,
+        env=fonts.environment(fonts.configured(), os.environ),
+    )
     log_path = tree / Path(main_filename).with_suffix(".log").name
     log_text = texlog.read_log(log_path)
     pdf_path = log_path.with_suffix(".pdf")

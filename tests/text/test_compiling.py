@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 import tongtu.model
-from tongtu import compiling, processes
+from tongtu import compiling, fonts, processes
 from tongtu.artifacts.common import FixSession
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.processes import ProcessOutcome
@@ -18,15 +19,21 @@ LOG_ERROR = "! Undefined control sequence.\nl.42 \\pdfoutput\nOutput written on 
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
 
 
-def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> list[list[str]]:
+def wire_latexmk(
+    monkeypatch: pytest.MonkeyPatch, specs: list[dict]
+) -> tuple[list[list[str]], list[dict[str, str] | None]]:
     commands: list[list[str]] = []
+    environments: list[dict[str, str] | None] = []
     compile_calls = {"n": 0}
 
-    def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
+    def run(
+        command: list[str], cwd: Path, timeout: float, *, env: dict[str, str] | None = None, **kwargs: object
+    ) -> ProcessOutcome:
         commands.append(command)
+        environments.append(env)
         main = Path(command[-1])
         spec = specs[min(compile_calls["n"], len(specs) - 1)]
         if "-C" in command:
@@ -52,11 +59,11 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> list[lis
         )
 
     monkeypatch.setattr(processes, "run_in_process_group", run)
-    return commands
+    return commands, environments
 
 
 def test_attempt_compile_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = wire_latexmk(monkeypatch, [{}])
+    commands, _ = wire_latexmk(monkeypatch, [{}])
     attempt = compiling.attempt_compile(tmp_path, "zh.tex")
     assert attempt.passed
     assert attempt.report.pages == 7
@@ -64,7 +71,21 @@ def test_attempt_compile_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert attempt.report.duration_seconds == 2.5
     assert attempt.log_path == tmp_path / "zh.log"
     assert attempt.pdf_name == "zh.pdf"
-    assert commands == [["latexmk", "-xelatex", "-interaction=nonstopmode", "zh.tex"]]
+    assert commands == [["latexmk", "-norc", "-xelatex", "-interaction=nonstopmode", "zh.tex"]]
+
+
+def test_attempt_compile_passes_the_font_search_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TTFONTS", raising=False)
+    monkeypatch.delenv("OPENTYPEFONTS", raising=False)
+    _, environments = wire_latexmk(monkeypatch, [{}])
+    compiling.attempt_compile(tmp_path, "zh.tex")
+    compiling.clean_tree(tmp_path, "zh.tex")
+    compile_env, clean_env = environments
+    assert compile_env is not None
+    for variable in ("TTFONTS", "OPENTYPEFONTS"):
+        assert compile_env[variable] == f"{fonts.FONTS_DIR}//:"
+    assert compile_env["PATH"] == os.environ["PATH"]
+    assert clean_env is None
 
 
 def test_attempt_compile_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,10 +114,10 @@ def test_attempt_compile_without_pdf(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 @pytest.mark.parametrize("spec", [{"clean_error": True}, {"clean_timeout": True}, {"clean_returncode": 3}])
 def test_clean_tree_reports_each_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spec: dict) -> None:
-    commands = wire_latexmk(monkeypatch, [spec])
+    commands, _ = wire_latexmk(monkeypatch, [spec])
     warnings = compiling.clean_tree(tmp_path, "zh.tex")
     assert len(warnings) == 1
-    assert commands == [["latexmk", "-C", "zh.tex"]]
+    assert commands == [["latexmk", "-norc", "-C", "zh.tex"]]
 
 
 def test_clean_tree_without_problems(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -218,7 +239,7 @@ def call_compile_with_fix(
 
 
 def test_compile_with_fix_passes_without_a_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = wire_latexmk(monkeypatch, [{}])
+    commands, _ = wire_latexmk(monkeypatch, [{}])
     warnings: list[str] = []
     events: list[tuple[str, str]] = []
     attempt, session, failure = call_compile_with_fix(
@@ -249,7 +270,7 @@ def test_compile_with_fix_first_timeout_skips_the_fix_session(tmp_path: Path, mo
 
 
 def test_compile_with_fix_fix_then_verify_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
+    commands, _ = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     calls = wire_work(monkeypatch, StopReason.FINISHED)
     warnings: list[str] = []
     events: list[tuple[str, str]] = []

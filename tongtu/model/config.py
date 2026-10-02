@@ -7,12 +7,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from ..config import config_dir
+from ..config import config_path
 from .events import SUMMARIZERS
-
-MODELS_FILENAME = "models.toml"
 
 DEFAULT_ASK_MODEL = {"opencode": "deepseek-v4-pro", "deepseek": "deepseek-v4-pro", "anthropic": "claude-sonnet-5"}
 
@@ -54,11 +52,46 @@ class RuntimeConfig(BaseModel):
     auth: Literal["codex"] | None = None
 
 
+def _validated_font_path(value: str | None) -> str | None:
+    path = Path(value).expanduser() if value else None
+    if path is not None and len(path.parts) > 1 and not path.is_absolute():
+        raise ValueError(f"font path {value} must be absolute or start with ~")
+    return value
+
+
+class FontFamily(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    regular: str
+    bold: str | None = None
+
+    @field_validator("regular", "bold")
+    @classmethod
+    def absolute_font_path(cls, value: str | None) -> str | None:
+        return _validated_font_path(value)
+
+
+def _default_main() -> FontFamily:
+    return FontFamily(regular="LXGWWenKai-Light.ttf", bold="LXGWWenKai-Medium.ttf")
+
+
+def _default_sans() -> FontFamily:
+    return FontFamily(regular="SourceHanSansSC-Regular.otf", bold="SourceHanSansSC-Bold.otf")
+
+
 class FontsConfig(BaseModel):
-    main: str | list[str] = "LXGWWenKai-Light.ttf"
-    bold: str | None = "LXGWWenKai-Medium.ttf"
-    sans: str | list[str] | None = None
-    mono: str | list[str] | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    main: str | FontFamily = Field(default_factory=_default_main)
+    sans: str | FontFamily = Field(default_factory=_default_sans)
+    mono: str | None = None
+
+    @field_validator("main", "sans", "mono")
+    @classmethod
+    def absolute_font_path(cls, value: str | FontFamily | None) -> str | FontFamily | None:
+        if isinstance(value, str):
+            return _validated_font_path(value)
+        return value
 
 
 class RoleConfig(BaseModel):
@@ -85,12 +118,8 @@ class ModelsConfig(BaseModel):
     roles: dict[str, RoleConfig] = {}
 
 
-def models_path() -> Path:
-    return config_dir() / MODELS_FILENAME
-
-
 def load_config() -> tuple[ModelsConfig | None, str]:
-    path = models_path()
+    path = config_path()
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except OSError as error:
@@ -116,7 +145,7 @@ def load_config() -> tuple[ModelsConfig | None, str]:
 def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
     written = (provider.api_key or "").strip()
     if written:
-        return written, "api_key in models.toml"
+        return written, "api_key in config.toml"
     variable = (provider.api_key_env or "").strip()
     if variable:
         value = (os.environ.get(variable) or "").strip()
@@ -124,11 +153,11 @@ def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
             return value, f"environment variable {variable}"
     if variable:
         return None, (
-            f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+            f"no key for provider {name}. Write api_key under [provider.{name}] in {config_path()}, "
             f"or set the environment variable {variable}."
         )
     return None, (
-        f"no key for provider {name}. Write api_key under [provider.{name}] in {models_path()}, "
+        f"no key for provider {name}. Write api_key under [provider.{name}] in {config_path()}, "
         f"or write api_key_env naming the environment variable that holds the key."
     )
 
@@ -136,7 +165,7 @@ def provider_key(name: str, provider: ProviderConfig) -> tuple[str | None, str]:
 def role_config(config: ModelsConfig, role: str) -> tuple[RoleConfig | None, str]:
     found = config.roles.get(role)
     if found is None:
-        return None, f"config file {models_path()} has no role {role} under [roles]; add one."
+        return None, f"config file {config_path()} has no role {role} under [roles]; add one."
     return found, ""
 
 
@@ -161,10 +190,10 @@ def resolve_role(
             )
         name, chosen = prefix, tail
     if name is None:
-        return None, f"role {role} has no {table} field; add it under [roles] in {models_path()}."
+        return None, f"role {role} has no {table} field; add it under [roles] in {config_path()}."
     if name not in declared:
         return None, (
-            f"config file {models_path()} does not declare {table} {name}; add it under [{table}.{name}]. "
+            f"config file {config_path()} does not declare {table} {name}; add it under [{table}.{name}]. "
             f"A model override prefix must also be a name under [{table}.*]."
         )
     resolved = ResolvedRole(
@@ -181,13 +210,13 @@ def model_api(config: ModelsConfig, provider: str, model: str) -> tuple[Api | No
     if entry is None:
         return (
             None,
-            f"config file {models_path()} does not declare provider {provider}; add it under [provider.{provider}].",
+            f"config file {config_path()} does not declare provider {provider}; add it under [provider.{provider}].",
         )
     api = entry.models.get(model) or entry.api
     if api is None:
         return None, (
             f"provider {provider} has no entry for model {model} in its models table and no api field, "
-            f"so its API kind is unknown. Add a models entry or a provider-wide api in {models_path()}."
+            f"so its API kind is unknown. Add a models entry or a provider-wide api in {config_path()}."
         )
     if api not in tuple(Api):
         return (
@@ -309,16 +338,14 @@ env = { OPENCODE_API_KEY = "{api_key}", CODEX_HOME = "{tmp_dir}" }
 # wire_api 只接受 responses，所以这个条目只能跑 opencode 的 responses 端点支持的模型：gpt-5.6-luna、grok-4.5、muse-spark-1.2-contributor、deepseek-v4-flash
 # codex 须是原生二进制（brew cask 装的）：npm 装的是 node 启动脚本，work 把子进程 PATH 收成 TeX + 系统 bin 后找不到 node，退出码 127
 
-# 中文字体：main 正文、bold 粗体、sans 无衬线、mono 等宽；改这里即可切换译文 PDF 的字体
-# 取值两类：字体文件（.ttf / .otf / .ttc——仓库 fonts/ 里的文件名，或一个文件路径，可用 ~）、系统字体名（如 "Noto Serif CJK SC"）
-# main / sans / mono 还可写成列表按序回退（同 CSS 的 font-family）：系统字体存在就用，不存在试下一个；
-# 文件候选必然可用，它之后的候选不会被用到；候选全是系统字体名时，末尾自动补默认的霞鹜文楷兜底
-# 例：main = ["Source Han Serif SC", "Noto Serif CJK SC", "LXGWWenKai-Light.ttf"]
-# bold 要与候选同类（同为文件或同为字体名）才配对生效，默认的 bold 只与默认的 main 配对
-# sans 不写则按平台探测（Hiragino Sans GB → Noto Sans CJK SC → 霞鹜文楷）；mono 不写则用 main
+# 中文字体：main 正文、sans 无衬线、mono 等宽（不写则用 main 的常规字体）；改这里即可切换译文 PDF 的字体
+# main 与 sans 写一族字体：只写一个文件表示这一族只有常规字形，粗体由 xeCJK 伪粗体生成；写成 { regular = …, bold = … } 同时给出粗体
+# 文件写仓库 fonts/ 里的文件名，或绝对路径、以 ~ 开头的路径；编译时由 TTFONTS / OPENTYPEFONTS 把这些目录交给 XeTeX
+# 不接受系统字体名：zh.tex 只写文件名，论文目录才能在不同机器之间搬动
+# 一族里有文件找不到时，这一族整体改用自带的字体，并在 precompile 的 manifest 里给出警告
 [fonts]
-main = "LXGWWenKai-Light.ttf"
-bold = "LXGWWenKai-Medium.ttf"
+main = { regular = "LXGWWenKai-Light.ttf", bold = "LXGWWenKai-Medium.ttf" }
+sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.otf" }
 
 # 角色：翻译选择 runtime（Agent）或 provider（API），恰好一个；分块量对两者通用
 [roles]

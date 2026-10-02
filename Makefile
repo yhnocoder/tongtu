@@ -11,5 +11,4 @@ install-hooks:
 	uv run pre-commit install
 
 design:
-	python3 scripts/build_design_docs.py
-	open docs/design/index.html
+	uv run scripts/check_design.py
