@@ -64,6 +64,14 @@ def test_environment_prepends_to_existing_variables(tmp_path: Path) -> None:
     config = FontsConfig(main=str(custom / "Main.ttf"))
     base = {"TTFONTS": "/x//:", "OPENTYPEFONTS": "/y//:"}
     environment = fonts.environment(config, base)
-    assert environment["TTFONTS"] == f"{fonts.FONTS_DIR}//:{custom}//:/x//:"
-    assert environment["OPENTYPEFONTS"] == f"{fonts.FONTS_DIR}//:{custom}//:/y//:"
+    assert environment["TTFONTS"] == f"{fonts.FONTS_DIR}//:{custom}:/x//:"
+    assert environment["OPENTYPEFONTS"] == f"{fonts.FONTS_DIR}//:{custom}:/y//:"
     assert base == {"TTFONTS": "/x//:", "OPENTYPEFONTS": "/y//:"}
+
+
+def test_environment_does_not_recurse_into_configured_directories(tmp_path: Path) -> None:
+    (tmp_path / "fonts").mkdir()
+    config = FontsConfig(main=str(tmp_path / "fonts" / "Main.ttf"), bold=str(tmp_path / "Bold.ttf"))
+    environment = fonts.environment(config, {})
+    assert environment["TTFONTS"] == f"{fonts.FONTS_DIR}//:{tmp_path / 'fonts'}:{tmp_path}:"
+    assert environment["TTFONTS"].count("//") == 1

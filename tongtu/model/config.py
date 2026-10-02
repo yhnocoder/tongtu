@@ -4,9 +4,10 @@ import os
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..config import config_path
 from .events import SUMMARIZERS
@@ -57,6 +58,14 @@ class FontsConfig(BaseModel):
     sans: str = "SourceHanSansSC-Regular.otf"
     sans_bold: str | None = "SourceHanSansSC-Bold.otf"
     mono: str | None = None
+
+    @field_validator("main", "bold", "sans", "sans_bold", "mono")
+    @classmethod
+    def absolute_font_path(cls, value: str | None) -> str | None:
+        path = Path(value).expanduser() if value else None
+        if path is not None and len(path.parts) > 1 and not path.is_absolute():
+            raise ValueError(f"font path {value} must be absolute or start with ~")
+        return value
 
 
 class RoleConfig(BaseModel):

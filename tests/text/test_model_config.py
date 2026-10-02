@@ -108,6 +108,25 @@ def test_fonts_table_rejects_fallback_lists(tmp_path: Path, monkeypatch: pytest.
     assert "fonts.sans" in detail
 
 
+def test_fonts_table_rejects_relative_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "myfonts/MyFont.ttf"\nmono = "fonts/Mono.otf"\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.main" in detail
+    assert "fonts.mono" in detail
+    assert "font path myfonts/MyFont.ttf must be absolute or start with ~" in detail
+
+
+def test_fonts_table_accepts_home_and_absolute_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sans = tmp_path / "custom" / "Sans.otf"
+    write_config(tmp_path, monkeypatch, TABLE + f'\n[fonts]\nmain = "~/fonts/MyFont.ttf"\nsans = "{sans}"\n')
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.fonts.main == "~/fonts/MyFont.ttf"
+    assert config.fonts.sans == str(sans)
+
+
 def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config(tmp_path, monkeypatch, TABLE)
     config, _ = load_config()

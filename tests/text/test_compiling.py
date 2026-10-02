@@ -75,6 +75,8 @@ def test_attempt_compile_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def test_attempt_compile_passes_the_font_search_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TTFONTS", raising=False)
+    monkeypatch.delenv("OPENTYPEFONTS", raising=False)
     _, environments = wire_latexmk(monkeypatch, [{}])
     compiling.attempt_compile(tmp_path, "zh.tex")
     compiling.clean_tree(tmp_path, "zh.tex")

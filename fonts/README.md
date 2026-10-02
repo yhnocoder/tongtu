@@ -17,7 +17,8 @@ precompile 注入的 xeCJK 块只写字体文件名，不写路径；tongtu 启�
 ### 霞鹜文楷
 
 [霞鹜文楷 LXGW WenKai](https://github.com/lxgw/LxgwWenKai) v1.522（2026-03-17），
-**SIL Open Font License 1.1**（<https://openfontlicense.org>），可自由随仓库分发。
+**SIL Open Font License 1.1**（<https://openfontlicense.org>），可自由随仓库分发，
+许可证全文见本目录的 `LICENSE-LXGWWenKai.txt`（取自该仓库 tag v1.522 的 `OFL.txt`）。
 
 字体名表内的版权声明：
 
@@ -34,5 +35,6 @@ precompile 注入的 xeCJK 块只写字体文件名，不写路径；tongtu 启�
 
 > © 2014-2025 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
 
-OFL 的分发要求（保留版权与许可声明、不单独售卖、衍生字体不得使用保留字体名）
-由本文件、`LICENSE-SourceHanSans.txt` 与字体文件内嵌的 name 表条目共同满足；本仓库不修改字体二进制。
+OFL 的分发要求（每份拷贝附带许可证本身、保留版权与许可声明、不单独售卖、衍生字体不得使用保留字体名）
+由本文件、`LICENSE-LXGWWenKai.txt`、`LICENSE-SourceHanSans.txt` 与字体文件内嵌的 name 表条目共同满足；
+本仓库不修改字体二进制。

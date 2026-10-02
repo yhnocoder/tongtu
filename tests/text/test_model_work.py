@@ -192,6 +192,8 @@ def test_session_environment_is_narrowed(configured: Path, monkeypatch: pytest.M
 
 
 def test_session_environment_carries_the_font_search_path(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TTFONTS", raising=False)
+    monkeypatch.delenv("OPENTYPEFONTS", raising=False)
     recorded: dict = {}
     record_run(monkeypatch, recorded, finished())
     work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")

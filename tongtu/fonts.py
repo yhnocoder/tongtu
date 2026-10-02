@@ -30,7 +30,10 @@ def search_directories(fonts: FontsConfig) -> list[Path]:
 
 
 def environment(fonts: FontsConfig, base: Mapping[str, str]) -> dict[str, str]:
-    search_path = ":".join(f"{directory}//" for directory in search_directories(fonts))
+    entries = [
+        f"{directory}//" if directory == FONTS_DIR else str(directory) for directory in search_directories(fonts)
+    ]
+    search_path = ":".join(entries)
     merged = dict(base)
     for variable in SEARCH_VARIABLES:
         merged[variable] = f"{search_path}:{base.get(variable, '')}"
