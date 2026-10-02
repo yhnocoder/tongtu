@@ -39,7 +39,7 @@ from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest
 from .model.config import CONFIG_TEMPLATE, FontsConfig, Target, load_config, provider_key, role_target
-from .model.runtimes import RUNTIMES, write_credentials
+from .model.runtimes import RUNTIMES, interpreter_dir, write_credentials
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
@@ -630,14 +630,15 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
             continue
         runtime = RUNTIMES[backend]
         found, detail = _check_executable(runtime.executable)
+        if found:
+            _interpreter, missing = interpreter_dir(detail)
+            found, detail = (False, missing) if missing else (True, detail)
         rows.append((f"runtime {backend}", "agent runtime executable", found, detail))
-        for tool in runtime.needs_on_path:
-            rows.append((tool, f"needed by {backend}", *_check_executable(tool)))
         if found:
             rows.append((f"login {backend}", "runtime login", *runtime.login_check(target, os.environ)))
         else:
             rows.append(
-                (f"login {backend}", "runtime login", False, f"cannot check: {runtime.executable} is not in PATH")
+                (f"login {backend}", "runtime login", False, f"cannot check: {runtime.executable} cannot start")
             )
     return rows
 

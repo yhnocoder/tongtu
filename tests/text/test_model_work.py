@@ -17,7 +17,7 @@ work_module = importlib.import_module("tongtu.model.work")
 EXECUTABLES = {
     "codex": "/fake/bin/codex",
     "claude": "/fake/bin/claude",
-    "pi": "/fake/node/bin/pi",
+    "pi": "/fake/npm/bin/pi",
     "node": "/fake/node/bin/node",
     "xelatex": "/tex/bin/xelatex",
 }
@@ -52,6 +52,10 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (skill_root / role).mkdir(parents=True, exist_ok=True)
         (skill_root / role / "SKILL.md").write_text(f"{role} 的做法", encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
+    pi_script = tmp_path / "npm" / "bin" / "pi"
+    pi_script.parent.mkdir(parents=True)
+    pi_script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    monkeypatch.setitem(EXECUTABLES, "pi", str(pi_script))
     monkeypatch.setattr(shutil, "which", lambda name: EXECUTABLES.get(name))
     login = tmp_path / "codex"
     login.mkdir()
@@ -157,7 +161,7 @@ def test_pi_session_puts_the_prompt_in_argv_and_node_on_path(configured: Path, m
     assert outcome.stop_reason == StopReason.FINISHED
     assert outcome.model == "pi/p/m1"
     command = recorded["command"]
-    assert command[:4] == ["/fake/node/bin/pi", "-p", "--mode", "json"]
+    assert command[:4] == [EXECUTABLES["pi"], "-p", "--mode", "json"]
     assert command[command.index("--model") + 1] == "p/m1"
     assert command[command.index("--thinking") + 1] == "low"
     assert command[command.index("--skill") + 1] == str(workdir / ".pi" / "skills" / "pi")
@@ -380,8 +384,28 @@ def test_pi_without_node_is_error(configured: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(shutil, "which", lambda name: None if name == "node" else EXECUTABLES.get(name))
     outcome = work("pi", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
-    assert "node is not in PATH" in outcome.detail
-    assert "runtime pi" in outcome.detail
+    assert "is a script for node, which is not in PATH" in outcome.detail
+    assert "runtime pi cannot start" in outcome.detail
+
+
+def test_codex_installed_by_npm_gets_node_on_path(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    codex_script = configured / "npm" / "bin" / "codex"
+    codex_script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    monkeypatch.setitem(EXECUTABLES, "codex", str(codex_script))
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.FINISHED
+    entries = recorded["env"]["PATH"].split(":")
+    assert entries[-1] == "/fake/node/bin"
+    assert str(codex_script.parent) not in entries
+
+
+def test_native_codex_adds_nothing_to_path(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, finished())
+    work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert recorded["env"]["PATH"].split(":")[1:] == ["/tex/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
 
 def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:

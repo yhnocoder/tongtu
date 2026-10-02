@@ -14,6 +14,7 @@ from tongtu.model.runtimes import (
     RUNTIMES,
     SANDBOX_SETTINGS,
     Session,
+    interpreter_dir,
     write_credentials,
 )
 
@@ -42,8 +43,6 @@ def test_runtime_table_lists_the_three_names() -> None:
     assert RUNTIMES["codex"].skill_dir == ".codex/skills/{role}"
     assert RUNTIMES["claude-code"].skill_dir == ".claude/skills/{role}"
     assert RUNTIMES["pi"].skill_dir == ".pi/skills/{role}"
-    assert RUNTIMES["pi"].needs_on_path == ("node",)
-    assert RUNTIMES["codex"].needs_on_path == RUNTIMES["claude-code"].needs_on_path == ()
     assert [runtime.needs_max_turns for runtime in RUNTIMES.values()] == [False, True, False]
     assert [runtime.prompt_in_argv for runtime in RUNTIMES.values()] == [False, False, True]
 
@@ -391,3 +390,38 @@ def test_write_credentials_overwrites_an_existing_file(tmp_path: Path) -> None:
     write_credentials({"TONGTU_CODEX_AUTH": "new"}, tmp_path)
     assert codex.read_text(encoding="utf-8") == "new"
     assert stat.S_IMODE(codex.stat().st_mode) == 0o600
+
+
+def script(tmp_path: Path, first_line: bytes) -> str:
+    path = tmp_path / "cli"
+    path.write_bytes(first_line + b"\nconsole.log(1)\n")
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "first_line",
+    [b"#!/usr/bin/env node", b"#!/usr/bin/env -S node --no-warnings", b"#! /usr/bin/env node"],
+)
+def test_interpreter_dir_finds_node_through_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_line: bytes
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: "/opt/node/bin/node" if name == "node" else None)
+    assert interpreter_dir(script(tmp_path, first_line)) == (Path("/opt/node/bin"), "")
+
+
+def test_interpreter_dir_accepts_an_absolute_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: name if name == "/opt/node/bin/node" else None)
+    assert interpreter_dir(script(tmp_path, b"#!/opt/node/bin/node")) == (Path("/opt/node/bin"), "")
+
+
+def test_interpreter_dir_reports_a_missing_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    path = script(tmp_path, b"#!/usr/bin/env node")
+    assert interpreter_dir(path) == (None, f"{path} is a script for node, which is not in PATH.")
+
+
+def test_interpreter_dir_ignores_binaries_and_unreadable_files(tmp_path: Path) -> None:
+    binary = tmp_path / "codex"
+    binary.write_bytes(b"\x7fELF\x02\x01")
+    assert interpreter_dir(str(binary)) == (None, "")
+    assert interpreter_dir(str(tmp_path / "absent")) == (None, "")
