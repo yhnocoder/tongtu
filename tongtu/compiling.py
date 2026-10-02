@@ -17,9 +17,9 @@ CLEAN_TIMEOUT_SECONDS = 60
 
 ERROR_LINE_LIMIT = 5
 
-LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-xelatex", "-interaction=nonstopmode")
+LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-xelatex", "-interaction=nonstopmode")
 
-LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-C")
+LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-C")
 
 
 @dataclass(frozen=True)
