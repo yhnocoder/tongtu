@@ -39,7 +39,7 @@ from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest
 from .model.config import CONFIG_TEMPLATE, FontsConfig, Target, load_config, provider_key, role_target
-from .model.runtimes import RUNTIMES
+from .model.runtimes import RUNTIMES, isolated, write_credentials
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
@@ -598,7 +598,9 @@ def _print_doctor_rows(rows: list[tuple[str, str, bool, str]]) -> list[str]:
 
 
 def _toolchain_rows() -> list[tuple[str, str, bool, str]]:
-    rows: list[tuple[str, str, bool, str]] = []
+    rows: list[tuple[str, str, bool, str]] = [
+        ("environment", "native or isolated (TONGTU_ISOLATED)", True, "isolated" if isolated(os.environ) else "native")
+    ]
     for name, purpose in TOOLCHAIN_CHECKS:
         rows.append((name, purpose, *_check_executable(name)))
         if name == XELATEX:
@@ -696,6 +698,12 @@ def main() -> None:
     if os.environ.get("TONGTU_DISABLE"):
         error_console.print("tongtu cannot run inside an agent session (TONGTU_DISABLE is set)")
         raise SystemExit(EXIT_USAGE)
+    if isolated(os.environ):
+        try:
+            write_credentials(os.environ, Path.home())
+        except OSError as error:
+            error_console.print(f"cannot write runtime credentials under {Path.home()} ({describe_error(error)})")
+            raise SystemExit(EXIT_USAGE) from None
     app()
 
 
