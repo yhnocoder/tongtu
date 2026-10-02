@@ -89,8 +89,9 @@ docker run --rm -it -v "$HOME/.tongtu:/work" \
 
 env 层装了 node 22 与 codex、claude-code、pi 三个 CLI，版本见 `Dockerfile` 的
 `NODE_VERSION`、`CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`PI_VERSION` 四个 ARG。镜像不设
-环境开关，运行时参数与原生相同，只有 claude-code 的沙箱按平台决定，Linux 上不开
-（`remote.html` 第 02、10 节）。
+环境开关。claude-code 与 pi 的参数与 Claude 云端相同，Linux 上 claude-code 不开沙箱；codex
+在论文容器里改用 `danger-full-access`，由启动器传入的信号决定，属于 T7，在此之前不要在容器里
+用 codex（`remote.html` 第 02、10 节）。
 
 凭据不进镜像，经环境变量传入容器：`CLAUDE_CODE_OAUTH_TOKEN`、`TONGTU_CODEX_AUTH`、
 `TONGTU_PI_AUTH`（`remote.html` 第 08 节）。`CLAUDE_CODE_OAUTH_TOKEN` 由 claude 自己读取；
