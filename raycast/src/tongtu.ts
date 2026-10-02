@@ -108,6 +108,13 @@ function mtime(file: string): number {
   }
 }
 
+function pdfPath(dir: string): string {
+  const pdf = path.join(dir, "out", `${path.basename(dir)}.zh.pdf`);
+  const legacy = path.join(dir, "out", "zh.pdf");
+  // why(#119): 改名前编译的论文只有 out/zh.pdf
+  return !fs.existsSync(pdf) && fs.existsSync(legacy) ? legacy : pdf;
+}
+
 function translateProgress(dir: string): [number, number] | null {
   const brief = read(path.join(dir, "build/brief.json"));
   if (!brief) return null;
@@ -157,7 +164,7 @@ function inspect(id: string, pgid: number | null): Paper {
     ...meta,
     id,
     dir,
-    pdf: path.join(dir, "out", `${path.basename(dir)}.zh.pdf`),
+    pdf: pdfPath(dir),
     pgid,
     status: pgid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial",
     stage,
