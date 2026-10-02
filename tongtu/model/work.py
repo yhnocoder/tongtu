@@ -11,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
+from .. import fonts
 from ..assets import asset_path
 from ..config import config_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
@@ -195,7 +196,7 @@ def _trace_line(
 def _session_env(provider_backed: bool, python_bin: Path) -> dict[str, str]:
     tex = shutil.which(TEX_EXECUTABLE)
     entries = [str(python_bin)] + ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
-    environment = dict(os.environ)
+    environment = fonts.environment(fonts.configured(), os.environ)
     if provider_backed:
         environment.pop("CLAUDE_CODE_REMOTE", None)
     return environment | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}

@@ -39,9 +39,9 @@ path = "tongtu/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["tongtu"]
 
-# 随仓库分发的资产打进 wheel 的 `tongtu/data/`：中文字体（霞鹜文楷 Light/Medium，
-# OFL-1.1，缺它则中文全是豆腐）与 prompt 资产（`skill/`，每个介入点一个标准 Skill
-# 目录）。消费方随对应阶段重建接回。
+# 随仓库分发的资产打进 wheel 的 `tongtu/data/`：中文字体（`fonts/`：霞鹜文楷 Light/Medium、
+# 思源黑体 SC Regular/Bold，均为 OFL-1.1，两份许可证全文一并打包；缺它则中文全是豆腐）
+# 与 prompt 资产（`skill/`，每个介入点一个标准 Skill 目录）。消费方随对应阶段重建接回。
 [tool.hatch.build.targets.wheel.force-include]
 "fonts" = "tongtu/data/fonts"
 "skill" = "tongtu/data/skill"

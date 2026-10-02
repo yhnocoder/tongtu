@@ -92,17 +92,30 @@ def check(browser, root, html, out):
     return rel, errors
 
 
+def launch(playwright, choice):
+    if choice == "chrome":
+        return playwright.chromium.launch(channel="chrome")
+    if choice == "chromium":
+        return playwright.chromium.launch()
+    return playwright.chromium.launch(executable_path=Path(choice).expanduser())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("root", nargs="?", default="docs/design", type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument(
+        "--browser",
+        default="chrome",
+        help="chrome (default), chromium (the browser bundled with Playwright), or a path to a browser executable",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
     out = args.out or Path(tempfile.mkdtemp())
     out.mkdir(parents=True, exist_ok=True)
     failed = False
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chrome")
+        browser = launch(p, args.browser)
         for html in sorted(root.rglob("*.html")):
             rel, errors = check(browser, root, html, out)
             print(f"{'FAIL' if errors else 'PASS'} {rel}")

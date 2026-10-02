@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 import tongtu.model
-from tongtu import processes
+from tongtu import fonts, processes
 from tongtu.artifacts.precompile import PrecompileStatus
 from tongtu.model.config import FontsConfig
 from tongtu.model.work import StopReason, WorkOutcome
@@ -79,7 +80,7 @@ def test_arxiv_1905_12322v3_double_missing_inputs(
         assert workdir.precompile_pdf.read_bytes().startswith(b"%PDF")
         output = workdir.precompile_tex.read_text()
         assert "Preserved body" in output and "Preserved reference" in output
-        assert "\\usepackage{xeCJK}" in output
+        assert "\\usepackage[AutoFakeBold=2]{xeCJK}" in output
         assert outputs_present(workdir, "precompile")
     else:
         assert manifest.status is PrecompileStatus.EXPAND_FAILED
@@ -126,21 +127,46 @@ PDFLATEX_LEFTOVERS = {
 }
 
 
+FAKE_BOLD_PAPER = (
+    "\\documentclass{article}\n\\begin{document}\n\\section{中文标题}\n正文 \\textbf{中文粗体}\n\\end{document}\n"
+)
+
+
+def xelatex_flat(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["xelatex", "-interaction=nonstopmode", "-halt-on-error", precompile.FLAT_FILENAME],
+        cwd=tmp_path,
+        env=fonts.environment(FontsConfig(), os.environ),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
 @pytest.mark.parametrize("name", sorted(PDFLATEX_LEFTOVERS))
 def test_pdflatex_leftovers_compile_after_adapt(tmp_path: Path, name: str) -> None:
     source, required = PDFLATEX_LEFTOVERS[name]
     if required and subprocess.run(["kpsewhich", *required], capture_output=True, check=False).returncode != 0:
         pytest.skip(f"{' '.join(required)} not installed")
     warnings: list[str] = []
-    injected, font_files = precompile._inject_cjk(source.encode("utf-8"), warnings, FontsConfig())
-    precompile._assemble_tree(tmp_path, injected, warnings, font_files)
-    completed = subprocess.run(
-        ["xelatex", "-interaction=nonstopmode", "-halt-on-error", precompile.FLAT_FILENAME],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    injected = precompile._inject_cjk(source.encode("utf-8"), warnings, FontsConfig())
+    precompile._assemble_tree(tmp_path, injected)
+    completed = xelatex_flat(tmp_path)
     assert completed.returncode == 0, completed.stdout[-2000:]
+    assert (tmp_path / "flat.pdf").stat().st_size > 0
+
+
+def test_fake_bold_without_a_bold_file_compiles_without_undefined_shapes(tmp_path: Path) -> None:
+    warnings: list[str] = []
+    config = FontsConfig(main="LXGWWenKai-Light.ttf")
+    injected = precompile._inject_cjk(FAKE_BOLD_PAPER.encode("utf-8"), warnings, config)
+    assert warnings == []
+    assert b"\\usepackage[AutoFakeBold=2]{xeCJK}\n" in injected
+    assert b"\\setCJKmainfont{LXGWWenKai-Light.ttf}\n" in injected
+    precompile._assemble_tree(tmp_path, injected)
+    completed = xelatex_flat(tmp_path)
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    log = (tmp_path / "flat.log").read_text(encoding="utf-8", errors="replace")
+    assert not [line for line in log.splitlines() if "Font shape" in line and "undefined" in line]
     assert (tmp_path / "flat.pdf").stat().st_size > 0

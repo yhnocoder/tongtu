@@ -104,7 +104,7 @@ Validate 由用户执行：跑整篇论文，读中文 PDF。主 agent 给出从
 
 章节按读者会问的问题划分。上面列的几类内容写在相关章节里，和它们解释的机制放在一起，不单独成章；常量不在文末另做汇总。
 
-文件组织：`index.html` 是索引；`style.css` 是共用样式，组件写法见 `pages/_template.html`，项目新增的组件追加在 `style.css` 末尾；项目文档放在 `pages/`，新文档复制 `_template.html` 开始。`pipeline.html` 暂留根目录，使用 `legacy.css`，等迁移完成后移入 `pages/`。改动 `docs/design/` 后运行 `uv run scripts/check_design.py`，脚本截取桌面、375px、深色三种截图并报告机械性错误，布局仍然要看截图。
+文件组织：`index.html` 是索引；`style.css` 是共用样式，组件写法见 `pages/_template.html`，项目新增的组件追加在 `style.css` 末尾；项目文档放在 `pages/`，新文档复制 `_template.html` 开始。`pipeline.html` 暂留根目录，使用 `legacy.css`，等迁移完成后移入 `pages/`。改动 `docs/design/` 后运行 `uv run scripts/check_design.py`，脚本截取桌面、375px、深色三种截图并报告机械性错误，布局仍然要看截图。脚本默认用 Chrome；没有 Chrome 的环境加 `--browser chromium`（Playwright 自带的 Chromium）或 `--browser <浏览器可执行文件路径>`。
 
 ### Intro Doc
 

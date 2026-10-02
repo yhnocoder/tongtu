@@ -36,9 +36,9 @@ from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
 from .artifacts.survey import SurveyManifest
 from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
-from .assets import asset_path
 from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present
 from .console import console, error_console
+from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest
 from .model.config import (
     DEFAULT_ASK_MODEL,
@@ -114,9 +114,9 @@ TEXLIVE_YEAR_PATTERN = re.compile(r"\(TeX Live (\d{4})\)")
 FONT_CHECK_NAME = "CJK fonts"
 CONFIG_CHECK_NAME = "config.toml"
 
-FONTS_DIR = asset_path("fonts")
-
-REQUIRED_FONT_FILENAMES: tuple[str, ...] = (str(FontsConfig().main), str(FontsConfig().bold))
+REQUIRED_FONT_FILENAMES: tuple[str, ...] = tuple(
+    name for family in (FontsConfig().main, FontsConfig().sans) for name in family_files(family) if name
+)
 
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
 
@@ -673,7 +673,7 @@ def _toolchain_rows() -> list[tuple[str, str, bool, str]]:
         rows.append((name, purpose, *_check_executable(name)))
         if name == XELATEX:
             rows.append((TEXLIVE_CHECK_NAME, f"distribution year >= {MIN_TEXLIVE_YEAR}", *_check_texlive()))
-    rows.append((FONT_CHECK_NAME, "font fallback chain (LXGW WenKai bundled)", *_check_fonts()))
+    rows.append((FONT_CHECK_NAME, "bundled font files (LXGW WenKai, Source Han Sans SC)", *_check_fonts()))
     return rows
 
 

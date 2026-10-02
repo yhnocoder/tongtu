@@ -10,6 +10,7 @@ from tongtu.model.config import (
     DEFAULT_ASK_MODEL,
     MODELS_TEMPLATE,
     Api,
+    FontFamily,
     FontsConfig,
     ModelsConfig,
     ProviderConfig,
@@ -73,34 +74,106 @@ def test_template_parses_and_validates() -> None:
 def test_template_fonts_match_defaults() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(MODELS_TEMPLATE))
     assert config.fonts == FontsConfig()
-    assert config.fonts.main == "LXGWWenKai-Light.ttf"
-    assert config.fonts.bold == "LXGWWenKai-Medium.ttf"
-    assert config.fonts.sans is None
+    assert config.fonts.main == FontFamily(regular="LXGWWenKai-Light.ttf", bold="LXGWWenKai-Medium.ttf")
+    assert config.fonts.sans == FontFamily(regular="SourceHanSansSC-Regular.otf", bold="SourceHanSansSC-Bold.otf")
     assert config.fonts.mono is None
 
 
-def test_fonts_table_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "Noto Serif CJK SC"\nbold = ""\n')
+def test_fonts_defaults_are_not_shared_between_instances() -> None:
+    first, second = FontsConfig(), FontsConfig()
+    assert first.main == second.main
+    assert first.main is not second.main
+
+
+def test_fonts_table_reads_strings_and_family_tables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE + '\n[fonts]\nmain = "MyFont.ttf"\nsans = { regular = "~/fonts/Sans.otf", bold = "SansBold.otf" }\n'
+        'mono = "Mono.ttc"\n',
+    )
     config, detail = load_config()
     assert detail == ""
     assert config is not None
-    assert config.fonts.main == "Noto Serif CJK SC"
-    assert config.fonts.bold == ""
-    assert config.fonts.sans is None
+    assert config.fonts.main == "MyFont.ttf"
+    assert config.fonts.sans == FontFamily(regular="~/fonts/Sans.otf", bold="SansBold.otf")
+    assert config.fonts.mono == "Mono.ttc"
 
 
-def test_fonts_table_accepts_fallback_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fonts_table_family_without_bold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "MyFont.ttf" }\n')
+    config, detail = load_config()
+    assert detail == ""
+    assert config is not None
+    assert config.fonts.main == FontFamily(regular="MyFont.ttf", bold=None)
+
+
+def test_fonts_table_rejects_old_bold_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nbold = "LXGWWenKai-Medium.ttf"\nsans_bold = "Bold.otf"\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.bold" in detail
+    assert "fonts.sans_bold" in detail
+
+
+def test_fonts_table_rejects_unknown_family_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "R.ttf", italic = "I.ttf" }\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.main" in detail
+    assert "italic" in detail
+
+
+def test_fonts_table_rejects_family_without_regular(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { bold = "B.otf" }\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.sans" in detail
+    assert "regular" in detail
+
+
+def test_fonts_table_rejects_fallback_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config(
         tmp_path,
         monkeypatch,
         TABLE + '\n[fonts]\nmain = ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]\nsans = ["Noto Sans CJK SC"]\n',
     )
     config, detail = load_config()
+    assert config is None
+    assert "fonts.main" in detail
+    assert "fonts.sans" in detail
+
+
+def test_fonts_table_rejects_relative_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "myfonts/MyFont.ttf"\nmono = "fonts/Mono.otf"\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.main" in detail
+    assert "fonts.mono" in detail
+    assert "font path myfonts/MyFont.ttf must be absolute or start with ~" in detail
+
+
+def test_fonts_table_rejects_relative_paths_in_a_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { regular = "Sans.otf", bold = "fonts/Bold.otf" }\n')
+    config, detail = load_config()
+    assert config is None
+    assert "fonts.sans" in detail
+    assert "font path fonts/Bold.otf must be absolute or start with ~" in detail
+
+
+def test_fonts_table_accepts_home_and_absolute_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sans = tmp_path / "custom" / "Sans.otf"
+    bold = tmp_path / "custom" / "SansBold.otf"
+    write_config(
+        tmp_path,
+        monkeypatch,
+        TABLE + f'\n[fonts]\nmain = "~/fonts/MyFont.ttf"\nsans = {{ regular = "{sans}", bold = "{bold}" }}\n',
+    )
+    config, detail = load_config()
     assert detail == ""
     assert config is not None
-    assert config.fonts.main == ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]
-    assert config.fonts.sans == ["Noto Sans CJK SC"]
-    assert config.fonts.mono is None
+    assert config.fonts.main == "~/fonts/MyFont.ttf"
+    assert config.fonts.sans == FontFamily(regular=str(sans), bold=str(bold))
 
 
 def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
