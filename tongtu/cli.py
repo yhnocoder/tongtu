@@ -631,8 +631,9 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
         runtime = RUNTIMES[backend]
         found, detail = _check_executable(runtime.executable)
         if found:
-            _interpreter, missing = interpreter_dir(detail)
-            found, detail = (False, missing) if missing else (True, detail)
+            _, missing = interpreter_dir(detail)
+            if missing:
+                found, detail = False, missing
         rows.append((f"runtime {backend}", "agent runtime executable", found, detail))
         if found:
             rows.append((f"login {backend}", "runtime login", *runtime.login_check(target, os.environ)))
