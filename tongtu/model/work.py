@@ -158,7 +158,7 @@ def _runtime_target(role: str, effort: str | None = None) -> tuple[ModelsConfig 
         return (
             None,
             None,
-            (f"role {role} points at provider {target.backend}; work needs a runtime (codex, claude-code or pi)."),
+            f"role {role} points at provider {target.backend}; work needs a runtime (codex, claude-code or pi).",
         )
     return config, target, ""
 
