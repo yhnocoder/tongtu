@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -13,6 +14,8 @@ from .config import Target
 from .events import summarize_codex_json, summarize_pi_json, summarize_stream_json
 
 LOGIN_CHECK_TIMEOUT_SECONDS = 30
+
+SHEBANG_READ_BYTES = 256
 
 CREDENTIAL_FILES: tuple[tuple[str, str], ...] = (
     ("TONGTU_CODEX_AUTH", ".codex/auth.json"),
@@ -62,7 +65,6 @@ class Runtime:
     name: str
     executable: str
     skill_dir: str
-    needs_on_path: tuple[str, ...]
     needs_max_turns: bool
     prompt_in_argv: bool
     argv: Callable[[Session], list[str]]
@@ -85,6 +87,27 @@ def write_credentials(env: Mapping[str, str], home: Path) -> list[Path]:
         path.chmod(CREDENTIAL_FILE_MODE)
         written.append(path)
     return written
+
+
+def interpreter_dir(executable: str) -> tuple[Path | None, str]:
+    try:
+        with open(executable, "rb") as handle:
+            head = handle.read(SHEBANG_READ_BYTES)
+    except OSError:
+        return None, ""
+    if not head.startswith(b"#!"):
+        return None, ""
+    words = head[2:].partition(b"\n")[0].decode("utf-8", "replace").split()
+    if not words:
+        return None, ""
+    if Path(words[0]).name == "env":
+        name = next((word for word in words[1:] if not word.startswith("-")), "")
+    else:
+        name = words[0]
+    found = shutil.which(name) if name else None
+    if found is None:
+        return None, f"{executable} is a script for {name or words[0]}, which is not in PATH."
+    return Path(found).parent, ""
 
 
 def _run_login_check(command: list[str], env: Mapping[str, str]) -> tuple[bool, str]:
@@ -261,7 +284,6 @@ RUNTIMES: dict[str, Runtime] = {
         name="codex",
         executable="codex",
         skill_dir=".codex/skills/{role}",
-        needs_on_path=(),
         needs_max_turns=False,
         prompt_in_argv=False,
         argv=_codex_argv,
@@ -274,7 +296,6 @@ RUNTIMES: dict[str, Runtime] = {
         name="claude-code",
         executable="claude",
         skill_dir=".claude/skills/{role}",
-        needs_on_path=(),
         needs_max_turns=True,
         prompt_in_argv=False,
         argv=_claude_argv,
@@ -287,7 +308,6 @@ RUNTIMES: dict[str, Runtime] = {
         name="pi",
         executable="pi",
         skill_dir=".pi/skills/{role}",
-        needs_on_path=("node",),
         needs_max_turns=False,
         prompt_in_argv=True,
         argv=_pi_argv,
