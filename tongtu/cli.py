@@ -39,7 +39,7 @@ from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest
 from .model.config import CONFIG_TEMPLATE, FontsConfig, Target, load_config, provider_key, role_target
-from .model.runtimes import RUNTIMES, interpreter_dir, write_credentials
+from .model.runtimes import RUNTIMES, session_path_dirs, write_credentials
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
@@ -631,7 +631,7 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
         runtime = RUNTIMES[backend]
         found, detail = _check_executable(runtime.executable)
         if found:
-            _, missing = interpreter_dir(detail)
+            _, missing = session_path_dirs(runtime, detail)
             if missing:
                 found, detail = False, missing
         rows.append((f"runtime {backend}", "agent runtime executable", found, detail))
