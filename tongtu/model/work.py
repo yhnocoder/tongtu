@@ -16,7 +16,7 @@ from ..config import config_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
 from .config import ModelsConfig, Target, load_config, role_target
 from .events import parse_event
-from .runtimes import RUNTIMES, Runtime, Session, interpreter_dir
+from .runtimes import RUNTIMES, Runtime, Session, session_path_dirs
 
 SKILL_ROOT = asset_path("skill")
 
@@ -77,7 +77,7 @@ def _launch(
     executable = shutil.which(runtime.executable)
     if executable is None:
         return _error(f"runtime {runtime.name} is not in PATH; its command is {runtime.executable}.")
-    script_interpreter, detail = interpreter_dir(executable)
+    extra_dirs, detail = session_path_dirs(runtime, executable)
     if detail:
         return _error(f"runtime {runtime.name} cannot start: {detail}")
 
@@ -107,7 +107,7 @@ def _launch(
             tmp_dir=Path(tmp_dir),
             prompt=prompt or PROMPT.format(skill_path=skill_path),
         )
-        environment, detail = runtime.prepare_env(_session_env(python_bin, script_interpreter), session)
+        environment, detail = runtime.prepare_env(_session_env(python_bin, extra_dirs), session)
         if detail:
             return _error(detail)
         trace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,10 +189,11 @@ def _trace_line(
     return handle
 
 
-def _session_env(python_bin: Path, script_interpreter: Path | None) -> dict[str, str]:
+def _session_env(python_bin: Path, extra_dirs: list[Path]) -> dict[str, str]:
     tex = shutil.which(TEX_EXECUTABLE)
     entries = [str(python_bin)] + ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
-    if script_interpreter is not None and str(script_interpreter) not in entries:
-        entries.append(str(script_interpreter))
+    for directory in extra_dirs:
+        if str(directory) not in entries:
+            entries.append(str(directory))
     environment = fonts.environment(fonts.configured(), os.environ)
     return environment | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}

@@ -283,6 +283,24 @@ def test_doctor_reports_a_script_runtime_whose_interpreter_is_missing(
     assert not any(command[0] == "codex" for command in calls)
 
 
+def test_doctor_reports_missing_node_behind_a_shell_wrapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text('[roles]\nreview = { model = "pi", timeout_seconds = 60 }\n', encoding="utf-8")
+    pi = tmp_path / "local" / "pi"
+    pi.parent.mkdir()
+    pi.write_text('#!/bin/sh\nexec node "$HOME/.pi/app/cli.js" "$@"\n', encoding="utf-8")
+    paths = {"pi": str(pi), "/bin/sh": "/bin/sh", "node": None}
+    monkeypatch.setattr(shutil, "which", lambda name: paths.get(name, f"/usr/bin/{name}"))
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "[missing]runtimepi" in output
+    assert "needsnode,whichisnotinPATH." in output
+    assert "[missing]loginpi" in output
+    assert not any(command[0] == "pi" for command in calls)
+
+
 def test_doctor_reports_roles_that_do_not_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
     path.write_text(BROKEN_ROLE_TABLE, encoding="utf-8")
