@@ -65,6 +65,7 @@ class Runtime:
     name: str
     executable: str
     skill_dir: str
+    needs_on_path: tuple[str, ...]
     needs_max_turns: bool
     prompt_in_argv: bool
     argv: Callable[[Session], list[str]]
@@ -87,6 +88,19 @@ def write_credentials(env: Mapping[str, str], home: Path) -> list[Path]:
         path.chmod(CREDENTIAL_FILE_MODE)
         written.append(path)
     return written
+
+
+def session_path_dirs(runtime: Runtime, executable: str) -> tuple[list[Path], str]:
+    interpreter, detail = interpreter_dir(executable)
+    if detail:
+        return [], detail
+    dirs = [interpreter] if interpreter is not None else []
+    for tool in runtime.needs_on_path:
+        found = shutil.which(tool)
+        if found is None:
+            return [], f"{tool} is not in PATH; runtime {runtime.name} needs it."
+        dirs.append(Path(found).parent)
+    return dirs, ""
 
 
 def interpreter_dir(executable: str) -> tuple[Path | None, str]:
@@ -284,6 +298,7 @@ RUNTIMES: dict[str, Runtime] = {
         name="codex",
         executable="codex",
         skill_dir=".codex/skills/{role}",
+        needs_on_path=(),
         needs_max_turns=False,
         prompt_in_argv=False,
         argv=_codex_argv,
@@ -296,6 +311,7 @@ RUNTIMES: dict[str, Runtime] = {
         name="claude-code",
         executable="claude",
         skill_dir=".claude/skills/{role}",
+        needs_on_path=(),
         needs_max_turns=True,
         prompt_in_argv=False,
         argv=_claude_argv,
@@ -308,6 +324,7 @@ RUNTIMES: dict[str, Runtime] = {
         name="pi",
         executable="pi",
         skill_dir=".pi/skills/{role}",
+        needs_on_path=("node",),
         needs_max_turns=False,
         prompt_in_argv=True,
         argv=_pi_argv,
