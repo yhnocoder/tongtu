@@ -400,6 +400,7 @@ def test_pi_behind_a_shell_wrapper_still_gets_node_on_path(configured: Path, mon
     assert outcome.stop_reason == StopReason.FINISHED
     entries = recorded["env"]["PATH"].split(":")
     assert entries[-1] == "/fake/node/bin"
+    assert entries.count("/bin") == 1
     assert str(pi_wrapper.parent) not in entries
 
 
@@ -409,9 +410,10 @@ def test_pi_behind_a_shell_wrapper_without_node_is_error(configured: Path, monke
     pi_wrapper.write_text('#!/bin/sh\nexec node "$HOME/.pi/app/cli.js" "$@"\n', encoding="utf-8")
     paths = {"pi": str(pi_wrapper), "/bin/sh": "/bin/sh", "xelatex": EXECUTABLES["xelatex"]}
     monkeypatch.setattr(shutil, "which", lambda name: paths.get(name))
+    record_run(monkeypatch, {}, finished())
     outcome = work("pi", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
-    assert outcome.detail == "runtime pi cannot start: node is not in PATH; runtime pi needs it."
+    assert outcome.detail == f"runtime pi cannot start: {pi_wrapper} needs node, which is not in PATH."
 
 
 def test_codex_installed_by_npm_gets_node_on_path(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
