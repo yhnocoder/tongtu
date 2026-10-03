@@ -296,7 +296,7 @@ def test_doctor_reports_missing_node_behind_a_shell_wrapper(tmp_path: Path, monk
     assert result.exit_code == 0
     output = squeeze(result.stdout)
     assert "[missing]runtimepi" in output
-    assert "nodeisnotinPATH;runtimepineedsit." in output
+    assert "needsnode,whichisnotinPATH." in output
     assert "[missing]loginpi" in output
     assert not any(command[0] == "pi" for command in calls)
 

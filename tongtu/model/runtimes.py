@@ -98,7 +98,7 @@ def session_path_dirs(runtime: Runtime, executable: str) -> tuple[list[Path], st
     for tool in runtime.needs_on_path:
         found = shutil.which(tool)
         if found is None:
-            return [], f"{tool} is not in PATH; runtime {runtime.name} needs it."
+            return [], f"{executable} needs {tool}, which is not in PATH."
         dirs.append(Path(found).parent)
     return dirs, ""
 
