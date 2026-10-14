@@ -87,15 +87,14 @@ docker run --rm -it -v "$HOME/.tongtu:/work" \
 
 ### agent 运行时在镜像里
 
-env 层装了 node 22 与 codex、claude-code、pi 三个 CLI，版本见 `Dockerfile` 的
-`NODE_VERSION`、`CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`PI_VERSION` 四个 ARG。镜像不设
-环境开关。claude-code 与 pi 的参数与 Claude 云端相同，Linux 上 claude-code 不开沙箱；codex
-在论文容器里改用 `danger-full-access`，由启动器传入的信号决定，属于 T7，在此之前不要在容器里
-用 codex（`remote.html` 第 02、10 节）。
+env 层装了 node 22、codex、claude-code、pi 三个 CLI 与 agentrun，版本见 `Dockerfile` 的
+`NODE_VERSION`、`CODEX_VERSION`、`CLAUDE_CODE_VERSION`、`PI_VERSION`、`AGENTRUN_VERSION` 五个 ARG。
+tongtu 经 agentrun 启动三个运行时。镜像设 `AGENTRUN_SANDBOX=off`：默认权限的容器起不来 bwrap，
+容器本身是隔离边界，codex 随之用 `danger-full-access`（`remote.html` 第 02、10 节）。
 
-凭据不进镜像，经环境变量传入容器：`CLAUDE_CODE_OAUTH_TOKEN`、`TONGTU_CODEX_AUTH`、
-`TONGTU_PI_AUTH`（`remote.html` 第 08 节）。`CLAUDE_CODE_OAUTH_TOKEN` 由 claude 自己读取；
-tongtu 启动时发现后两者，就分别写到 `~/.codex/auth.json` 与 `~/.pi/agent/auth.json`，没设的不写。
+凭据不进镜像，经环境变量传入容器：`CLAUDE_CODE_OAUTH_TOKEN`、`AGENTRUN_CODEX_AUTH`、
+`AGENTRUN_PI_AUTH`（`remote.html` 第 08 节）。`CLAUDE_CODE_OAUTH_TOKEN` 由 claude 自己读取；
+后两者由 agentrun 在每次启动会话前写到 codex 与 pi 的登录文件，并从会话环境里删掉。
 
 ## 已知取舍
 

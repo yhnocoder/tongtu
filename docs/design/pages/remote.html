@@ -89,11 +89,11 @@ td:first-child { white-space: nowrap; }
   <header><span class="num">02</span><h2>运行环境</h2></header>
   <div class="tbl"><table>
     <tr><th>环境</th><th>隔离边界</th><th>可用运行时</th><th>凭据来自</th></tr>
-    <tr><td>Mac 原生</td><td>codex 与 claude-code 自带的沙箱（Seatbelt）；pi 没有</td><td>三种</td><td>Mac 上的常规登录</td></tr>
+    <tr><td>Mac 原生</td><td>agentrun 的沙箱：claude-code 与 pi 用 Seatbelt，codex 用它自己的沙箱</td><td>三种</td><td>Mac 上的常规登录</td></tr>
     <tr><td>论文容器（Mac 测试 server 或服务器）</td><td>容器</td><td>三种</td><td>从所在机器的登录派生</td></tr>
-    <tr><td>Claude 云端</td><td>整台一次性虚拟机</td><td>claude-code、pi</td><td>会话自带的 Claude 登录；DeepSeek 的 key 在环境变量里</td></tr>
+    <tr><td>Claude 云端</td><td>整台一次性虚拟机，加上 agentrun 的沙箱：claude-code 与 pi 用 bubblewrap，codex 用它自己的沙箱</td><td>claude-code、pi</td><td>会话自带的 Claude 登录；DeepSeek 的 key 在环境变量里</td></tr>
   </table></div>
-  <p>tongtu 不判断自己在哪个环境里，没有环境开关。原生与云端的运行时参数相同，只有 claude-code 的沙箱按平台决定：darwin 用 Seatbelt，其他平台不开；codex 在论文容器里的参数见 10，属于 T7。凭据按环境变量有无写入（见 08）。云端环境是原生 Linux，不用 Docker；setup 脚本只需装 TeX Live、tongtu 与需要的 CLI，字体随包走，不再装 <code>fonts-noto-cjk</code>、bubblewrap、socat。</p>
+  <p>tongtu 不判断自己在哪个环境里，没有环境开关。三种运行时都经 agentrun 启动，参数在所有环境相同；沙箱由 agentrun 按平台选择，论文容器里由镜像设 <code>AGENTRUN_SANDBOX=off</code> 关掉（见 10）。凭据按环境变量有无写入（见 08）。云端环境是原生 Linux，不用 Docker；setup 脚本装 TeX Live、tongtu、agentrun 与需要的 CLI，另装 bubblewrap 与 socat，agentrun 在 Linux 上的沙箱需要它们。字体随包走，不装 <code>fonts-noto-cjk</code>。</p>
 </section>
 
 <section class="sheet">
@@ -216,13 +216,13 @@ ssh remote_vps docker exec -it -w /root/.tongtu/papers/ID tongtu-server bash  # 
     <tr><td>配置</td><td><code>config.toml</code>、<code>glossary.json</code> 原样只读挂入</td><td>服务商 key 本来就要给 ask 用；tongtu 的 token 在 <code>hosts.toml</code>，不挂</td></tr>
     <tr><td>挂载方式</td><td>一律 <code>--mount type=bind</code></td><td>路径不存在时报错，<code>-v</code> 会悄悄建空目录</td></tr>
     <tr><td>HOME</td><td>tmpfs</td><td>CLI 的缓存与凭据文件不落到宿主</td></tr>
-    <tr><td>凭据</td><td>全部经环境变量传入：<code>CLAUDE_CODE_OAUTH_TOKEN</code>、<code>TONGTU_CODEX_AUTH</code>、<code>TONGTU_PI_AUTH</code></td><td>单文件挂载实测有 EBUSY 与读到旧内容的问题；宿主上不留临时文件</td></tr>
+    <tr><td>凭据</td><td>全部经环境变量传入：<code>CLAUDE_CODE_OAUTH_TOKEN</code>、<code>AGENTRUN_CODEX_AUTH</code>、<code>AGENTRUN_PI_AUTH</code></td><td>单文件挂载实测有 EBUSY 与读到旧内容的问题；宿主上不留临时文件</td></tr>
   </table></div>
   <div class="tbl"><table>
     <tr><th>运行时</th><th>容器里得到</th></tr>
     <tr><td>claude-code</td><td><code>claude-code-token</code> 的内容。只能调模型，一年有效，可吊销</td></tr>
-    <tr><td>codex</td><td>派生 auth.json：access token 照抄，refresh token 为空。tongtu 启动时发现 <code>TONGTU_CODEX_AUTH</code> 就写到 <code>~/.codex/auth.json</code>，没设就不写</td></tr>
-    <tr><td>pi</td><td>主 <code>auth.json</code> 的内容。tongtu 启动时发现 <code>TONGTU_PI_AUTH</code> 就写到 <code>~/.pi/agent/auth.json</code>。pi 要在这里建锁目录、写模型缓存，都落在 tmpfs</td></tr>
+    <tr><td>codex</td><td>派生 auth.json：access token 照抄，refresh token 为空。agentrun 启动会话前发现 <code>AGENTRUN_CODEX_AUTH</code> 就写到 <code>~/.codex/auth.json</code>，没设就不写</td></tr>
+    <tr><td>pi</td><td>主 <code>auth.json</code> 的内容。agentrun 启动会话前发现 <code>AGENTRUN_PI_AUTH</code> 就写到 <code>~/.pi/agent/auth.json</code>。pi 要在这里建锁目录、写模型缓存，都落在 tmpfs</td></tr>
   </table></div>
   <p class="sub">主凭据不进论文容器。环境变量在宿主上用 <code>docker inspect</code> 能看到，宿主本来就在可信边界内。</p>
 </section>
@@ -260,12 +260,12 @@ translate    = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 
 review       = { model = "claude-code/claude-opus-5", effort = "medium", timeout_seconds = 3600, max_turns = 300 }
 compile_fix  = { model = "pi/deepseek/deepseek-flash", timeout_seconds = 1800 }</code></pre>
   <div class="tbl"><table>
-    <tr><th></th><th>原生（Mac）</th><th>Claude 云端</th><th>论文容器</th><th>失败判定（实测）</th></tr>
-    <tr><td>codex</td><td>临时 CODEX_HOME（隔离用户 <code>~/.codex</code> 里的配置、插件与会话记录）软链 <code>~/.codex/auth.json</code>、<code>workspace-write</code></td><td>不跑</td><td>沙箱起不来（15），用 <code>danger-full-access</code>，容器充当边界；由启动器传入容器内信号决定，属于 T7</td><td>退出码非 0，或 <code>turn.failed</code></td></tr>
-    <tr><td>claude-code</td><td>权限模式 <code>auto</code>，Bash 不预先放行、逐条经分类器；Seatbelt 沙箱；从环境删除 <code>ANTHROPIC_*</code>、<code>CLAUDE_CODE_USE_*</code>，确保走订阅</td><td>同原生；非 darwin 不传 <code>--settings</code>，没有沙箱</td><td>同云端</td><td>result 的 <code>is_error</code></td></tr>
-    <tr><td>pi</td><td>允许，无沙箱</td><td>同原生</td><td>同原生</td><td><code>stopReason</code> 为 error 或 aborted；退出码恒为 0</td></tr>
+    <tr><th>环境</th><th>agentrun 的沙箱</th><th>由谁决定</th></tr>
+    <tr><td>原生（Mac）</td><td>claude-code 与 pi 用 Seatbelt，codex 用 <code>workspace-write</code></td><td>agentrun 的默认值</td></tr>
+    <tr><td>Claude 云端</td><td>claude-code 与 pi 用 bubblewrap，codex 用 <code>workspace-write</code></td><td>agentrun 的默认值；setup 脚本要装 bubblewrap 与 socat</td></tr>
+    <tr><td>论文容器</td><td>关闭，codex 用 <code>danger-full-access</code>，容器充当边界（沙箱起不来，见 15）</td><td>镜像的 <code>AGENTRUN_SANDBOX=off</code></td></tr>
   </table></div>
-  <p class="sub">pi 在所有环境都加隔离参数 <code>-ne -ns -np -nc -na --offline --no-session --skill</code>。三种运行时写在 <code>tongtu/model/runtimes.py</code>，配置里没有命令模板。删除别名与 <code>setup -i</code>，旧配置不兼容。effort 不写不传。tongtu 启动时把 <code>TONGTU_CODEX_AUTH</code>、<code>TONGTU_PI_AUTH</code> 的内容写到 HOME 下对应的 auth.json（目录 0700、文件 0600，覆盖已有文件），没设的不写，写失败退出 2；原生环境不设这两个变量。claude-code 的沙箱默认关闭，由 <code>--settings</code> 打开，所以不传就是没有沙箱。tongtu 调用 latexmk 一律加 <code>-norc</code>。</p>
+  <p class="sub">work 对三种运行时用同一条命令：<code>agentrun &lt;运行时&gt; --cwd &lt;会话目录&gt; --format jsonl --timeout &lt;timeout_seconds 向上取整&gt; --path &lt;python3 链接目录&gt; --raw &lt;trace&gt;</code>，提示词经标准输入传入；有 model、effort 时加 <code>--model</code>、<code>--effort</code>，claude-code 另加 <code>--max-turns</code>。沙箱、命令断网、隔离用户配置、凭据写入、环境变量清理与失败判定都由 agentrun 负责。work 只读 agentrun 的事件流：<code>tool</code> 事件的 summary 作为进度行，最后一个 <code>end</code> 事件的 status 为 finished 时 stop_reason 为 finished，为 timeout 时为 timeout，其余为 error，detail 取 end 的 detail；没有 end 事件时为 error，detail 取标准错误的结尾。trace 文件是运行时的原始输出。skill 拷到会话目录的 <code>.skills/&lt;role&gt;/</code>，与运行时无关。effort 不写不传。tongtu 调用 latexmk 一律加 <code>-norc</code>。</p>
   <ul>
     <li><code>model</code> 只写后端名（<code>codex</code>、<code>claude-code</code>、<code>pi</code>）时不传模型参数，用运行时自己的默认模型；服务商必须写 <code>服务商/模型</code>。</li>
     <li>这个阶段命令行删除 <code>--ask-model</code>、<code>--ask-effort</code>、<code>--work-model</code>、<code>--work-effort</code>，模型与强度只在 <code>config.toml</code> 里配置。</li>
@@ -287,7 +287,7 @@ compile_fix  = { model = "pi/deepseek/deepseek-flash", timeout_seconds = 1800 }<
 <section class="sheet">
   <header><span class="num">12</span><h2>安全取舍</h2></header>
   <ul>
-    <li>论文容器与云端虚拟机是边界，Mac 原生靠运行时自己的沙箱与 claude-code 的 <code>auto</code> 权限模式。agent 能联网，能读到这次运行的派生凭据与服务商 key。最坏情况是这些凭据被滥用，宿主、主凭据与其他论文不受影响。</li>
+    <li>论文容器与云端虚拟机是边界；Mac 原生与云端另有 agentrun 的沙箱，agent 只能写会话目录与会话临时目录，运行的命令不能联网。论文容器里 agent 能联网，能读到这次运行的派生凭据与服务商 key。最坏情况是这些凭据被滥用，宿主、主凭据与其他论文不受影响。</li>
     <li>token 一律明文存文件：每种凭据只存一份，文件 0600、目录 0700，不进日志；进论文容器的只有派生或能力受限的凭据。</li>
     <li>server 挂 docker.sock，接口必须认证。服务器上只经 Cloudflare Tunnel 暴露，Mac 上只监听 127.0.0.1。</li>
     <li>部署密钥只能执行 <code>deploy.sh</code>，泄漏后最多被用来部署一个已经公开的 tag。</li>

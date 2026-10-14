@@ -29,7 +29,7 @@ class ProcessOutcome:
 def run_in_process_group(
     command: list[str],
     cwd: Path,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     *,
     input_bytes: bytes | None = None,
     env: Mapping[str, str] | None = None,

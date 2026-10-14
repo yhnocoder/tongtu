@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -39,7 +40,7 @@ from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest
 from .model.config import CONFIG_TEMPLATE, FontsConfig, Target, load_config, provider_key, role_target
-from .model.runtimes import RUNTIMES, session_path_dirs, write_credentials
+from .model.work import AGENTRUN_EXECUTABLE
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
@@ -628,20 +629,33 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
             key, detail = provider_key(backend, config.provider[backend])
             rows.append((f"key {backend}", "provider API key", key is not None, detail))
             continue
-        runtime = RUNTIMES[backend]
-        found, detail = _check_executable(runtime.executable)
-        if found:
-            _, missing = session_path_dirs(runtime, detail)
-            if missing:
-                found, detail = False, missing
-        rows.append((f"runtime {backend}", "agent runtime executable", found, detail))
-        if found:
-            rows.append((f"login {backend}", "runtime login", *runtime.login_check(target, os.environ)))
-        else:
-            rows.append(
-                (f"login {backend}", "runtime login", False, f"cannot check: {runtime.executable} cannot start")
-            )
+        rows += _runtime_rows(target)
     return rows
+
+
+def _runtime_rows(target: Target) -> list[tuple[str, str, bool, str]]:
+    found, detail = _check_executable(AGENTRUN_EXECUTABLE)
+    if not found:
+        return [(target.backend, "agentrun, which starts every runtime", False, detail)]
+    command = [detail, "doctor", target.backend, "--json"] + (["--model", target.model] if target.model else [])
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True)
+    except OSError as error:
+        return [(target.backend, "agentrun doctor", False, describe_error(error))]
+    try:
+        checks = json.loads(completed.stdout)
+    except ValueError:
+        stderr = completed.stderr.strip()[:OUTPUT_EXCERPT_CHARS]
+        return [(target.backend, "agentrun doctor", False, stderr or "agentrun doctor printed no JSON")]
+    return [
+        (
+            target.backend,
+            f"agentrun doctor: {check['check']}",
+            check["status"] != "fail",
+            check["detail"] if check["status"] != "skip" else f"skipped: {check['detail']}",
+        )
+        for check in checks
+    ]
 
 
 def _check_executable(name: str) -> tuple[bool, str]:
@@ -698,11 +712,6 @@ def main() -> None:
     if os.environ.get("TONGTU_DISABLE"):
         error_console.print("tongtu cannot run inside an agent session (TONGTU_DISABLE is set)")
         raise SystemExit(EXIT_USAGE)
-    try:
-        write_credentials(os.environ, Path.home())
-    except OSError as error:
-        error_console.print(f"cannot write runtime credentials under {Path.home()} ({describe_error(error)})")
-        raise SystemExit(EXIT_USAGE) from None
     app()
 
 
