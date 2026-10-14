@@ -231,10 +231,10 @@ def test_doctor_checks_each_referenced_runtime_once_through_agentrun(
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    for backend in ("codex", "claude-code", "pi"):
-        assert f"[ok]{backend}agentrundoctor:executable/usr/bin/{backend}" in output
-        assert f"[ok]{backend}agentrundoctor:login{backend}loggedin" in output
-        assert f"[ok]{backend}agentrundoctor:networkskipped:--networknone" in output
+    for backend, name in (("codex", "codex/m1"), ("claude-code", "claude-code/m1"), ("pi", "pi/deepseek/m1")):
+        assert f"[ok]{name}agentrundoctor:executable/usr/bin/{backend}" in output
+        assert f"[ok]{name}agentrundoctor:login{backend}loggedin" in output
+        assert f"[ok]{name}agentrundoctor:networkskipped:--networknone" in output
     assert ["/usr/bin/agentrun", "doctor", "pi", "--json", "--model", "deepseek/m1"] in calls
     assert sum(1 for command in calls if command[1:3] == ["doctor", "codex"]) == 1
 
@@ -247,9 +247,9 @@ def test_doctor_reports_a_failed_agentrun_check(tmp_path: Path, monkeypatch: pyt
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "[missing]codexagentrundoctor:logincodexloginfilenotfound" in output
-    assert "[ok]claude-codeagentrundoctor:login" in output
-    assert "codexnotconfigured" in output
+    assert "[missing]codex/m1agentrundoctor:logincodexloginfilenotfound" in output
+    assert "[ok]claude-code/m1agentrundoctor:login" in output
+    assert "codex/m1notconfigured" in output
 
 
 def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,7 +260,7 @@ def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: 
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "[missing]piagentrun,whichstartseveryruntimeagentrunnotfoundinPATH" in output
+    assert "[missing]pi/deepseek/m1agentrun,whichstartseveryruntimeagentrunnotfoundinPATH" in output
     assert calls == [[cli.XELATEX, "--version"]]
     assert "toolchainandfontscomplete" in output
 
@@ -834,3 +834,23 @@ def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, m
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "[missing]piagentrundoctoragentrundoctorprintednochecklist" in squeeze(result.stdout)
+
+
+def test_doctor_checks_each_runtime_and_model_pair_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(
+        "[roles]\n"
+        'review = { model = "pi/a/m1", timeout_seconds = 60 }\n'
+        'compile_fix = { model = "pi/a/m1", timeout_seconds = 60 }\n'
+        'precompile_fix = { model = "pi/b/m2", timeout_seconds = 60 }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    doctor_calls = [command[1:] for command in calls if command[1:2] == ["doctor"]]
+    assert doctor_calls == [
+        ["doctor", "pi", "--json", "--model", "a/m1"],
+        ["doctor", "pi", "--json", "--model", "b/m2"],
+    ]

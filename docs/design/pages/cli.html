@@ -101,7 +101,7 @@ compile     compile_failed    absent   build/manifests/compile.json
 1</div></div></dd>
 
 <dt>doctor</dt>
-<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体（只看仓库 <code>fonts/</code> 下的两个霞鹜文楷文件，不检查用户的 <code>[fonts]</code> 配置）、models.toml、<code>[roles]</code> 引用的服务商密钥与 agent 运行时可执行文件（运行时条目引用的服务商一并检查）。安装环境后先运行它。工具链或字体缺失退出 1；配置与密钥的问题只报告，不影响退出码，最后一行说明从 survey 起的阶段不能运行。
+<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体（只看仓库 <code>fonts/</code> 下的两个霞鹜文楷文件，不检查用户的 <code>[fonts]</code> 配置）、config.toml、<code>[roles]</code> 引用的服务商密钥，以及引用的每个运行时与模型组合：对每个组合运行一次 <code>agentrun doctor &lt;运行时&gt; --json [--model 模型]</code>，把它的 executable、login、sandbox、network 四项各列一行，skip 记为 ok。安装环境后先运行它。工具链或字体缺失退出 1；配置与密钥的问题只报告，不影响退出码，最后一行说明从 survey 起的阶段不能运行。
 <div class="ex"><p class="cap">全部齐全：退出 0。</p>
 <div class="term"><span class="p">$ tongtu doctor</span>
   [ok]      xelatex       compile engine (latexmk -xelatex)         /Library/TeX/texbin/xelatex
@@ -109,9 +109,12 @@ compile     compile_failed    absent   build/manifests/compile.json
   [ok]      latexmk       compile loop driver                       /Library/TeX/texbin/latexmk
   [ok]      latexpand     flattens multi-file sources               /Library/TeX/texbin/latexpand
   [ok]      CJK fonts     font fallback chain (LXGW WenKai bundled) /Users/zach/Projects/wenshu-ws/tongtu/fonts
-  [ok]      models.toml   providers, runtimes and roles             /Users/zach/.config/tongtu/models.toml
-  [ok]      key deepseek  provider API key                          api_key in models.toml
-  [ok]      runtime codex session runtime executable                /Users/zach/.local/bin/codex
+  [ok]      config.toml   providers, chunking, fonts and roles      /Users/zach/.tongtu/config.toml
+  [ok]      key deepseek  provider API key                          environment variable DEEPSEEK_API_KEY
+  [ok]      claude-code   agentrun doctor: executable               /Users/zach/.local/bin/claude
+  [ok]      claude-code   agentrun doctor: login                    oauth_token
+  [ok]      claude-code   agentrun doctor: sandbox                  seatbelt: wrote inside, blocked outside
+  [ok]      claude-code   agentrun doctor: network                  skipped: --network none
 environment complete.</div></div></dd>
 
 <dt>setup [-i]</dt>

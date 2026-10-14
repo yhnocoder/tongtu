@@ -124,9 +124,10 @@ def test_codex_session_copies_skill_and_runs_agentrun(configured: Path, monkeypa
     assert option(command, "--effort") == "high"
     assert "--max-turns" not in command
     assert recorded["cwd"] == workdir
-    assert recorded["timeout_seconds"] is None
+    assert "--no-subagents" in command
+    assert recorded["timeout_seconds"] == 60 + work_module.AGENTRUN_GRACE_SECONDS
     assert recorded["input_bytes"].decode("utf-8") == PROMPT.format(skill_path=".skills/smoke")
-    assert trace_path.parent.is_dir()
+    assert (configured / "logs" / "smoke.events.jsonl").read_bytes() == end_line("finished")
 
 
 def test_claude_session_passes_max_turns_and_rounds_the_timeout_up(
@@ -305,6 +306,9 @@ def test_the_command_passes_agentrun_dry_run(configured: Path, monkeypatch: pyte
     agentrun = real_which("agentrun")
     if agentrun is None:
         pytest.skip("PATH 里没有 agentrun")
+    runtime = {"smoke": "codex", "claude": "claude"}.get(role, "pi")
+    if real_which(runtime) is None:
+        pytest.skip(f"PATH 里没有 {runtime}")
     monkeypatch.setattr(shutil, "which", lambda name: agentrun if name == "agentrun" else real_which(name))
     codex_home = configured / "codex"
     codex_home.mkdir()
@@ -326,3 +330,19 @@ def test_the_command_passes_agentrun_dry_run(configured: Path, monkeypatch: pyte
     monkeypatch.setattr(work_module, "run_in_process_group", dry_run)
     work(role, configured / "paper", trace_path=configured / "trace.jsonl")
     assert checked["returncode"] == 0, checked["stderr"]
+
+
+def test_events_file_holds_every_agentrun_line(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lines = (b'{"type":"start"}\n', tool_line("Read: a.tex"), end_line("finished"))
+    record_run(monkeypatch, {}, exited(), lines)
+    trace_path = configured / "logs" / "compile_fix.jsonl"
+    work("smoke", configured / "paper", trace_path=trace_path)
+    assert work_module.events_path(trace_path).read_bytes() == b"".join(lines)
+
+
+def test_agentrun_killed_after_the_grace_period_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    killed = ProcessOutcome(returncode=-9, stdout=b"", stderr=b"", timed_out=True, duration_seconds=180.0)
+    record_run(monkeypatch, {}, killed, ())
+    outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
+    assert outcome.stop_reason == StopReason.ERROR
+    assert "did not stop within" in outcome.detail

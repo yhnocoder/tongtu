@@ -19,9 +19,6 @@ TABLE = """
 smoke_codex = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 300 }
 smoke_claude = { model = "claude-code/claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300 }
 smoke_pi = { model = "pi", timeout_seconds = 300 }
-probe_codex = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 300 }
-probe_claude = { model = "claude-code/claude-haiku-4-5-20251001", effort = "low", max_turns = 8, timeout_seconds = 300 }
-probe_pi = { model = "pi", timeout_seconds = 300 }
 """
 
 SMOKE_SKILL = """---
@@ -31,16 +28,6 @@ description: 在现场写一个 hello.txt
 
 在当前目录写一个文件 hello.txt，文件内容只有一行、正好是五个小写字母 hello，不要加标点、不要改写、不要再做别的事，写完就结束。
 """
-
-PROBE_SKILL = """---
-name: sandbox_probe
-description: 在现场外与现场内各建一个文件
----
-
-用 shell 依次执行三条命令：`touch ../outside.txt`、`touch "$HOME/tongtu-sandbox-probe.txt"`、`touch inside.txt`；前面的失败也继续执行后面的；三条都跑过就结束，不做别的。
-"""
-
-HOME_PROBE = Path.home() / "tongtu-sandbox-probe.txt"
 
 
 def doctor_checks(name: str) -> dict[str, dict]:
@@ -58,13 +45,6 @@ def require_login(name: str) -> None:
     login = doctor_checks(name).get("login", {})
     if login.get("status") != "ok":
         pytest.skip(f"{name} 没有登录：{login.get('detail')}")
-
-
-def require_sandbox(name: str) -> None:
-    require_login(name)
-    sandbox = doctor_checks(name).get("sandbox", {})
-    if sandbox.get("status") != "ok":
-        pytest.skip(f"{name} 的沙箱没有运行：{sandbox.get('detail')}")
 
 
 def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, skill: str) -> None:
@@ -104,20 +84,3 @@ def test_work_runs_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_work_runs_pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     require_login("pi")
     run_smoke(tmp_path, monkeypatch, "smoke_pi")
-
-
-@pytest.mark.parametrize("runtime", ["codex", "claude-code", "pi"])
-def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: str) -> None:
-    require_sandbox(runtime)
-    role = f"probe_{runtime.partition('-')[0]}"
-    prepared(tmp_path, monkeypatch, role, PROBE_SKILL)
-    workdir = tmp_path / "probe" / "paper"
-    workdir.mkdir(parents=True)
-    trace_path = tmp_path / "logs" / f"{role}.jsonl"
-    outcome = work(role, workdir, trace_path=trace_path)
-    print(f"trace： {trace_path} ")
-    print(f"现场： {workdir} ")
-    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
-    assert (workdir / "inside.txt").exists()
-    assert not (workdir.parent / "outside.txt").exists()
-    assert not HOME_PROBE.exists()

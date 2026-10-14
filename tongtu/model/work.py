@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import IO
 
 from .. import fonts
 from ..assets import asset_path
@@ -26,6 +27,10 @@ PROMPT = "读 {skill_path}/SKILL.md，按它做；现场是当前目录这棵树
 AGENTRUN_EXECUTABLE = "agentrun"
 
 MAX_TURNS_RUNTIME = "claude-code"
+
+AGENTRUN_GRACE_SECONDS = 120
+
+EVENTS_SUFFIX = ".events.jsonl"
 
 PYTHON_EXECUTABLE = "python3"
 
@@ -108,6 +113,7 @@ def _launch(
             str(python_bin),
             "--raw",
             str(trace_path),
+            "--no-subagents",
         ]
         if target.model:
             command += ["--model", target.model]
@@ -119,18 +125,23 @@ def _launch(
         ends: list[dict] = []
         try:
             trace_path.parent.mkdir(parents=True, exist_ok=True)
-            outcome = run_in_process_group(
-                command,
-                workdir,
-                None,
-                input_bytes=(prompt or PROMPT.format(skill_path=skill_path)).encode("utf-8"),
-                env=environment,
-                on_stdout_line=_event_line(report, ends),
-            )
+            with events_path(trace_path).open("wb") as events_file:
+                outcome = run_in_process_group(
+                    command,
+                    workdir,
+                    entry.timeout_seconds + AGENTRUN_GRACE_SECONDS,
+                    input_bytes=(prompt or PROMPT.format(skill_path=skill_path)).encode("utf-8"),
+                    env=environment,
+                    on_stdout_line=_event_line(events_file, report, ends),
+                )
         except OSError as error:
             return _error(
                 f"failed to launch {executable} ({type(error).__name__}: {error}). Check that the working directory {workdir} exists."
             )
+    if outcome.timed_out:
+        return _error(
+            f"{executable} did not stop within {AGENTRUN_GRACE_SECONDS} seconds after its own timeout; tongtu killed it."
+        )
     if not ends:
         stderr = outcome.stderr_text.strip()[-OUTPUT_EXCERPT_CHARS:]
         return _error(
@@ -146,6 +157,10 @@ def _launch(
 
 def skill_dir(role: str) -> str:
     return SKILL_DIR.format(role=role)
+
+
+def events_path(trace_path: Path) -> Path:
+    return trace_path.with_name(trace_path.name.removesuffix(".jsonl") + EVENTS_SUFFIX)
 
 
 def _runtime_target(role: str, effort: str | None = None) -> tuple[ModelsConfig | None, Target | None, str]:
@@ -168,8 +183,12 @@ def _error(detail: str) -> WorkOutcome:
     return WorkOutcome(stop_reason=StopReason.ERROR, detail=detail)
 
 
-def _event_line(report: Callable[[str], None] | None, ends: list[dict]) -> Callable[[bytes], None]:
+def _event_line(
+    events_file: IO[bytes], report: Callable[[str], None] | None, ends: list[dict]
+) -> Callable[[bytes], None]:
     def handle(line: bytes) -> None:
+        events_file.write(line)
+        events_file.flush()
         try:
             event = json.loads(line)
         except ValueError:

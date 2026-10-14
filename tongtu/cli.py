@@ -617,17 +617,17 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
             ("runtimes", "runtime executables", False, "cannot check: config.toml is unreadable"),
         ]
     rows = [(CONFIG_CHECK_NAME, "providers, chunking, fonts and roles", True, str(config_path()))]
-    targets: dict[str, Target] = {}
+    targets: dict[tuple[str, str], Target] = {}
     for role in config.roles:
         target, detail = role_target(config, role)
         if target is None:
             rows.append((f"role {role}", "role entry", False, detail))
             continue
-        targets.setdefault(target.backend, target)
-    for backend, target in targets.items():
+        targets.setdefault((target.backend, target.model if target.is_runtime else ""), target)
+    for target in targets.values():
         if not target.is_runtime:
-            key, detail = provider_key(backend, config.provider[backend])
-            rows.append((f"key {backend}", "provider API key", key is not None, detail))
+            key, detail = provider_key(target.backend, config.provider[target.backend])
+            rows.append((f"key {target.backend}", "provider API key", key is not None, detail))
             continue
         rows += _runtime_rows(target)
     return rows
@@ -636,17 +636,17 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
 def _runtime_rows(target: Target) -> list[tuple[str, str, bool, str]]:
     found, detail = _check_executable(AGENTRUN_EXECUTABLE)
     if not found:
-        return [(target.backend, "agentrun, which starts every runtime", False, detail)]
+        return [(str(target), "agentrun, which starts every runtime", False, detail)]
     command = [detail, "doctor", target.backend, "--json"] + (["--model", target.model] if target.model else [])
     try:
         completed = subprocess.run(command, capture_output=True, text=True)
     except OSError as error:
-        return [(target.backend, "agentrun doctor", False, describe_error(error))]
+        return [(str(target), "agentrun doctor", False, describe_error(error))]
     try:
         checks = json.loads(completed.stdout)
         return [
             (
-                target.backend,
+                str(target),
                 f"agentrun doctor: {check['check']}",
                 check["status"] != "fail",
                 check["detail"] if check["status"] != "skip" else f"skipped: {check['detail']}",
@@ -655,7 +655,7 @@ def _runtime_rows(target: Target) -> list[tuple[str, str, bool, str]]:
         ]
     except (ValueError, TypeError, KeyError):
         stderr = completed.stderr.strip()[:OUTPUT_EXCERPT_CHARS]
-        return [(target.backend, "agentrun doctor", False, stderr or "agentrun doctor printed no check list")]
+        return [(str(target), "agentrun doctor", False, stderr or "agentrun doctor printed no check list")]
 
 
 def _check_executable(name: str) -> tuple[bool, str]:

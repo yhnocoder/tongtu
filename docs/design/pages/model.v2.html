@@ -21,6 +21,7 @@
 <main>
 <p class="nav"><a href="../index.html">返回索引</a></p>
 <h1>模型调用层</h1>
+<p class="lead">本页的运行时部分（命令模板、<code>skill_path</code>、沙箱参数、事件解析）已过时：三种运行时现在都经 agentrun 启动，见 <a href="remote.html">remote.html</a> 第 10 节。</p>
 <p class="lead"><code>tongtu/model/</code>。流水线里每一处调用模型都经过这一层，只有两个函数：<code>ask</code> 做单次问答（survey 提议术语、translate 的 API 模式逐 chunk 翻译），<code>work</code> 在一棵目录树里启动一次 agent 会话（precompile / compile 的修复、review、translate 的 Agent 模式）。服务商、运行时与各角色的默认模型都在 <code>models.toml</code>。各阶段见 <a href="../pipeline.html">pipeline.html</a>，命令行见 <a href="cli.html">cli.html</a>。</p>
 
 <section class="sheet" id="overview">
