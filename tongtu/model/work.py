@@ -136,7 +136,7 @@ def _launch(
                 )
         except OSError as error:
             return _error(
-                f"failed to launch {executable} ({type(error).__name__}: {error}). Check that the working directory {workdir} exists."
+                f"failed to open {events_path(trace_path)} or launch {executable} ({type(error).__name__}: {error})."
             )
     if outcome.timed_out:
         return _error(

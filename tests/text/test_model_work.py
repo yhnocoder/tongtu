@@ -249,7 +249,7 @@ def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.Mo
     record_run(monkeypatch, {}, FileNotFoundError(2, "No such file or directory"))
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
-    assert "failed to launch" in outcome.detail
+    assert "or launch" in outcome.detail
 
 
 def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
