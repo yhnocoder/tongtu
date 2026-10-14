@@ -644,18 +644,18 @@ def _runtime_rows(target: Target) -> list[tuple[str, str, bool, str]]:
         return [(target.backend, "agentrun doctor", False, describe_error(error))]
     try:
         checks = json.loads(completed.stdout)
-    except ValueError:
+        return [
+            (
+                target.backend,
+                f"agentrun doctor: {check['check']}",
+                check["status"] != "fail",
+                check["detail"] if check["status"] != "skip" else f"skipped: {check['detail']}",
+            )
+            for check in checks
+        ]
+    except (ValueError, TypeError, KeyError):
         stderr = completed.stderr.strip()[:OUTPUT_EXCERPT_CHARS]
-        return [(target.backend, "agentrun doctor", False, stderr or "agentrun doctor printed no JSON")]
-    return [
-        (
-            target.backend,
-            f"agentrun doctor: {check['check']}",
-            check["status"] != "fail",
-            check["detail"] if check["status"] != "skip" else f"skipped: {check['detail']}",
-        )
-        for check in checks
-    ]
+        return [(target.backend, "agentrun doctor", False, stderr or "agentrun doctor printed no check list")]
 
 
 def _check_executable(name: str) -> tuple[bool, str]:

@@ -87,8 +87,8 @@ class RoleConfig(BaseModel):
 
     model: str
     effort: str | None = None
-    timeout_seconds: float | None = None
-    max_turns: int | None = None
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    max_turns: int | None = Field(default=None, ge=1)
 
 
 class ModelsConfig(BaseModel):

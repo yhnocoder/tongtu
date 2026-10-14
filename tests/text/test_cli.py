@@ -818,3 +818,19 @@ def test_compile_entry_passes_the_workdir_and_report(tmp_path: Path, monkeypatch
     assert result.exit_code == 0
     assert captured["workdir"].path == workdir.path
     assert callable(captured["report"])
+
+
+def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text('[roles]\nreview = { model = "pi", timeout_seconds = 60 }\n', encoding="utf-8")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command == [cli.XELATEX, "--version"]:
+            return subprocess.CompletedProcess(command, 0, VERSION_2026, "")
+        return subprocess.CompletedProcess(command, 0, '[{"runtime": "pi"}]', "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert "[missing]piagentrundoctoragentrundoctorprintednochecklist" in squeeze(result.stdout)

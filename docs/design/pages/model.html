@@ -48,7 +48,7 @@
   report:   每解析出一条动作调一次，参数是一行文本    <span class="c"># None 不回报；见下「运行时 = 一条命令模板」</span>
   prompt:   会话的任务说明，None 用默认 prompt         <span class="c"># translate 的 Agent 模式用它指定输入与输出文件</span>
   → WorkOutcome(stop_reason: "finished"|"timeout"|"error", detail, model)   <span class="c"># model = 实际解析的「运行时/模型」；解析失败时为空串</span></pre>
-<p><b>work 默认从角色 skill 文件读取任务</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进会话目录，位置由运行时条目的 <code>skill_path</code> 决定（例如 Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code>），拷贝用 <code>dirs_exist_ok</code> 叠加，不清空目的地。然后启动会话，默认 prompt 是「读 skill，按它做；会话目录是当前目录这棵树」，调用方可以用 <code>prompt</code> 参数覆盖。skill 目录里除了 SKILL.md 还放 agent 要用的工具：review 阶段把 <code>tongtu/validation.py</code>（只依赖标准库，带 <code>main</code>）以 <code>validate.py</code> 拷进会话目录的 skill 目录，agent 运行的是这个文件，不是 <code>tongtu</code>。</p>
+<p><b>work 默认从角色 skill 文件读取任务</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进会话目录，位置是 <code>.skills/&lt;role&gt;/</code>，与运行时无关，拷贝用 <code>dirs_exist_ok</code> 叠加，不清空目的地。然后启动会话，默认 prompt 是「读 skill，按它做；会话目录是当前目录这棵树」，调用方可以用 <code>prompt</code> 参数覆盖。skill 目录里除了 SKILL.md 还放 agent 要用的工具：review 阶段把 <code>tongtu/validation.py</code>（只依赖标准库，带 <code>main</code>）以 <code>validate.py</code> 拷进会话目录的 skill 目录，agent 运行的是这个文件，不是 <code>tongtu</code>。</p>
 <p><code>roles.translate</code> 写 <code>provider</code>（API 模式，经 ask）或 <code>runtime</code>（Agent 模式，经 work）二者之一；两种模式的流程见 <a href="../pipeline.html#translate">translate 卡</a>。分块配置 <code>chunk_tokens</code> / <code>chunk_merge_tokens</code> 也写在 <code>roles.translate</code>，对两种模式通用，由 survey 读取，见 <a href="../pipeline.html#survey">survey 卡</a>。</p>
 </div>
 </div>
@@ -87,7 +87,6 @@ api         = "messages"          # 整个服务商一种接口时不必逐模�
 # 会话运行时：一条命令模板，{model} {effort} {max_turns} {tmp_dir} 由 work 填入；{tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删
 [runtime.codex]
 auth       = "codex"                     # 用 codex login 的登录凭据
-skill_path = ".codex/skills/{role}"      # skill 目录拷到会话目录的哪里
 events     = "codex-json"                # stdout 事件流的格式，进度行据此解析当前动作；不写则不解析
 command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
            "-s", "workspace-write", "-c", 'approval_policy="never"', …,

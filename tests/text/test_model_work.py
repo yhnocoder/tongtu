@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +17,8 @@ from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 work_module = importlib.import_module("tongtu.model.work")
 
 AGENTRUN = "/fake/bin/agentrun"
+
+real_which = shutil.which
 
 TABLE = """
 [provider.demo]
@@ -295,3 +298,31 @@ def test_missing_skill_directory_is_error(configured: Path, monkeypatch: pytest.
 
 def test_skill_dir_does_not_depend_on_the_runtime() -> None:
     assert skill_dir("review") == ".skills/review"
+
+
+@pytest.mark.parametrize("role", ["smoke", "claude", "pi", "bare_pi"])
+def test_the_command_passes_agentrun_dry_run(configured: Path, monkeypatch: pytest.MonkeyPatch, role: str) -> None:
+    agentrun = real_which("agentrun")
+    if agentrun is None:
+        pytest.skip("PATH 里没有 agentrun")
+    monkeypatch.setattr(shutil, "which", lambda name: agentrun if name == "agentrun" else real_which(name))
+    codex_home = configured / "codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    checked: dict = {}
+
+    def dry_run(command: list[str], cwd: Path, timeout_seconds: float | None, **kwargs: object) -> ProcessOutcome:
+        completed = subprocess.run(
+            [*command, "--dry-run", "--sandbox", "off"],
+            cwd=cwd,
+            input=kwargs["input_bytes"],
+            env=kwargs["env"],
+            capture_output=True,
+        )
+        checked.update(returncode=completed.returncode, stderr=completed.stderr.decode("utf-8", "replace"))
+        return exited(completed.returncode)
+
+    monkeypatch.setattr(work_module, "run_in_process_group", dry_run)
+    work(role, configured / "paper", trace_path=configured / "trace.jsonl")
+    assert checked["returncode"] == 0, checked["stderr"]

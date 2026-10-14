@@ -392,3 +392,11 @@ def test_model_api_rejects_unknown_api_value(tmp_path: Path, monkeypatch: pytest
     api, detail = model_api(config, "odd", "any-model")
     assert api is None
     assert "grpc" in detail
+
+
+@pytest.mark.parametrize("field", ["timeout_seconds = 0", "timeout_seconds = -5", "max_turns = 0"])
+def test_role_limits_must_be_positive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    write_config(tmp_path, monkeypatch, f'[roles]\nreview = {{ model = "claude-code", {field} }}\n')
+    config, detail = load_config()
+    assert config is None
+    assert field.partition(" ")[0] in detail

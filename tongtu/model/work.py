@@ -103,7 +103,7 @@ def _launch(
             "--format",
             "jsonl",
             "--timeout",
-            str(math.ceil(entry.timeout_seconds or 0)),
+            str(math.ceil(entry.timeout_seconds)),
             "--path",
             str(python_bin),
             "--raw",

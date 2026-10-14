@@ -43,14 +43,28 @@ description: 在现场外与现场内各建一个文件
 HOME_PROBE = Path.home() / "tongtu-sandbox-probe.txt"
 
 
-def require_login(name: str) -> None:
+def doctor_checks(name: str) -> dict[str, dict]:
     agentrun = shutil.which("agentrun")
     if agentrun is None:
         pytest.skip("PATH 里没有 agentrun")
     completed = subprocess.run([agentrun, "doctor", name, "--json"], capture_output=True, text=True)
-    login = next(check for check in json.loads(completed.stdout) if check["check"] == "login")
-    if login["status"] != "ok":
-        pytest.skip(f"{name} 没有登录：{login['detail']}")
+    try:
+        return {check["check"]: check for check in json.loads(completed.stdout)}
+    except (ValueError, TypeError, KeyError):
+        pytest.skip(f"agentrun doctor {name} 没有输出检查结果：{completed.stderr.strip()}")
+
+
+def require_login(name: str) -> None:
+    login = doctor_checks(name).get("login", {})
+    if login.get("status") != "ok":
+        pytest.skip(f"{name} 没有登录：{login.get('detail')}")
+
+
+def require_sandbox(name: str) -> None:
+    require_login(name)
+    sandbox = doctor_checks(name).get("sandbox", {})
+    if sandbox.get("status") != "ok":
+        pytest.skip(f"{name} 的沙箱没有运行：{sandbox.get('detail')}")
 
 
 def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, skill: str) -> None:
@@ -94,7 +108,7 @@ def test_work_runs_pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("runtime", ["codex", "claude-code", "pi"])
 def test_sandbox_keeps_writes_inside_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: str) -> None:
-    require_login(runtime)
+    require_sandbox(runtime)
     role = f"probe_{runtime.partition('-')[0]}"
     prepared(tmp_path, monkeypatch, role, PROBE_SKILL)
     workdir = tmp_path / "probe" / "paper"
