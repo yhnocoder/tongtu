@@ -150,3 +150,18 @@ def test_rotated_pages_keep_their_media_box_and_stay_out_of_the_union(
     assert cropping.crop_margins(pdf) == []
     padding = cropping.CROP_PADDING_POINTS
     assert crop_boxes(pdf) == [[100 - padding, 100 - padding, 500 + padding, 700 + padding], [0, 0, 612, 792]]
+
+
+def test_pages_of_each_size_get_their_own_union(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=1224, height=792)
+    writer.add_blank_page(width=612, height=792)
+    pdf = tmp_path / "paper.zh.pdf"
+    with pdf.open("wb") as stream:
+        writer.write(stream)
+    wire_ghostscript(monkeypatch, bbox_lines((100, 100, 500, 700), (50, 60, 1180, 760), (110, 90, 510, 690)))
+    assert cropping.crop_margins(pdf) == []
+    padding = cropping.CROP_PADDING_POINTS
+    letter = [100 - padding, 90 - padding, 510 + padding, 700 + padding]
+    assert crop_boxes(pdf) == [letter, [50 - padding, 60 - padding, 1180 + padding, 760 + padding], letter]

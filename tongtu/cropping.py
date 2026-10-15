@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from pypdf import PdfWriter
+from pypdf import PageObject, PdfWriter
 from pypdf.errors import PyPdfError
 from pypdf.generic import RectangleObject
 
@@ -79,22 +79,24 @@ def _write_crop_box(pdf: Path, boxes: list[Box]) -> str:
     writer = PdfWriter(pdf, incremental=True)
     if len(boxes) != len(writer.pages):
         return f"Ghostscript measured {len(boxes)} pages but {pdf.name} has {len(writer.pages)}"
-    upright = [page for page in writer.pages if page.rotation % 360 == 0]
-    filled = [box for box, page in zip(boxes, writer.pages, strict=True) if page.rotation % 360 == 0 and not box.empty]
-    if not filled:
+    groups: dict[tuple[float, float], list[tuple[PageObject, Box]]] = {}
+    for page, box in zip(writer.pages, boxes, strict=True):
+        if page.rotation % 360 == 0:
+            size = (float(page.mediabox.width), float(page.mediabox.height))
+            groups.setdefault(size, []).append((page, box))
+    cropped = False
+    for members in groups.values():
+        filled = [box for _, box in members if not box.empty]
+        if not filled:
+            continue
+        content = filled[0]
+        for box in filled[1:]:
+            content = content.union(box)
+        for page, _ in members:
+            _set_crop_box(page, content)
+        cropped = True
+    if not cropped:
         return "Ghostscript reported no content on upright pages"
-    content = filled[0]
-    for box in filled[1:]:
-        content = content.union(box)
-    for page in upright:
-        media = page.mediabox
-        crop = Box(
-            max(media.left, media.left + content.left - CROP_PADDING_POINTS),
-            max(media.bottom, media.bottom + content.bottom - CROP_PADDING_POINTS),
-            min(media.right, media.left + content.right + CROP_PADDING_POINTS),
-            min(media.top, media.bottom + content.top + CROP_PADDING_POINTS),
-        )
-        page.cropbox = RectangleObject((crop.left, crop.bottom, crop.right, crop.top))
     partial = pdf.with_name(pdf.name + ".part")
     try:
         with partial.open("wb") as stream:
@@ -103,3 +105,14 @@ def _write_crop_box(pdf: Path, boxes: list[Box]) -> str:
     finally:
         partial.unlink(missing_ok=True)
     return ""
+
+
+def _set_crop_box(page: PageObject, content: Box) -> None:
+    media = page.mediabox
+    crop = Box(
+        max(media.left, media.left + content.left - CROP_PADDING_POINTS),
+        max(media.bottom, media.bottom + content.bottom - CROP_PADDING_POINTS),
+        min(media.right, media.left + content.right + CROP_PADDING_POINTS),
+        min(media.top, media.bottom + content.top + CROP_PADDING_POINTS),
+    )
+    page.cropbox = RectangleObject((crop.left, crop.bottom, crop.right, crop.top))

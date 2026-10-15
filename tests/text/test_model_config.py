@@ -196,6 +196,13 @@ def test_crop_margins_is_off_by_default(tmp_path: Path, monkeypatch: pytest.Monk
     assert ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE)).pdf.crop_margins is False
 
 
+def test_unknown_pdf_field_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_config(tmp_path, monkeypatch, "[pdf]\ncrop = true\n")
+    config, detail = load_config()
+    assert config is None
+    assert "crop" in detail
+
+
 def test_crop_margins_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert loaded(tmp_path, monkeypatch, TABLE + "\n[pdf]\ncrop_margins = true\n").pdf.crop_margins is True
 
