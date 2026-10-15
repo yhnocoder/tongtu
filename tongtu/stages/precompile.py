@@ -112,7 +112,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
     fix_session = None
     expanded, failure, missing_diagnostic = _expand(src, main_file, warnings)
     if expanded is None and missing_diagnostic:
-        compiling.copy_src_tree(src, tree)
+        warnings.extend(compiling.copy_src_tree(src, tree, main_file))
         _write_expand_diagnostic(tree, main_file, failure, missing_diagnostic, warnings)
         report("fix session", "running")
         fix_session = compiling.fix(
@@ -154,7 +154,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
 
     injected = _inject_cjk(expanded, warnings, fonts.configured())
     if fix_session is None:
-        compiling.copy_src_tree(src, tree)
+        warnings.extend(compiling.copy_src_tree(src, tree, main_file))
     (tree / main_file).write_bytes(injected)
 
     final, fix_session, failure = compiling.compile_with_fix(

@@ -193,3 +193,21 @@ def test_jobname_named_companion_files_are_found(tmp_path: Path, monkeypatch: py
     tree = workdir.sandbox("tex")
     assert (tree / "subword.tex").read_bytes() == workdir.precompile_tex.read_bytes()
     assert (tree / "subword.data").is_file()
+
+
+def test_shipped_aux_of_the_jobname_is_not_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    workdir = Workdir(tmp_path / "paper")
+    workdir.create()
+    (workdir.src / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\nBody.\n\\end{document}\n")
+    (workdir.src / "main.aux").write_text("\\relax\n\\abx@aux@refcontext{nty/global//global/global}\n")
+
+    def work(role: str, tree: Path, **kwargs: object) -> WorkOutcome:
+        raise AssertionError("an aux file shipped in src/ must not need a fix session")
+
+    monkeypatch.setattr(tongtu.model, "work", work)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.OK, manifest.message
+    assert manifest.fix_session is None
+    assert any("main.aux" in warning for warning in manifest.warnings)
+    assert (workdir.src / "main.aux").is_file()

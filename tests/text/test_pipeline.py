@@ -17,7 +17,7 @@ OUTPUT_FILES: dict[str, tuple[str, ...]] = {
 
 SIDE_FILES: dict[str, tuple[str, ...]] = {
     "fetch": ("build/e-print.bin",),
-    "precompile": ("build/sandbox/tex/flat.tex", "logs/precompile-fix.jsonl"),
+    "precompile": ("build/sandbox/tex/main.tex", "logs/precompile-fix.jsonl"),
     "mask": (),
     "survey": ("logs/survey-terms.json",),
     "translate": ("logs/translate-c000-1.json", "logs/translate-c001-1.json"),

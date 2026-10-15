@@ -22,6 +22,8 @@ LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-xelatex", "-interactio
 
 LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-C")
 
+STALE_OUTPUT_SUFFIXES: tuple[str, ...] = (".aux", ".fdb_latexmk", ".fls", ".log", ".pdf", ".xdv")
+
 FIX_PROMPT_FILES = "主文件是 {main}，编译日志是 {log}。"
 
 
@@ -46,8 +48,18 @@ class CompileAttempt:
         return self.log_path.with_suffix(".pdf").name
 
 
-def copy_src_tree(src: Path, tree: Path) -> None:
+def copy_src_tree(src: Path, tree: Path, main_filename: str) -> list[str]:
     shutil.copytree(src, tree, dirs_exist_ok=True)
+    jobname = Path(main_filename).stem
+    stale = [tree / f"{jobname}{suffix}" for suffix in STALE_OUTPUT_SUFFIXES]
+    removed = [path.name for path in stale if path.is_file()]
+    for path in stale:
+        path.unlink(missing_ok=True)
+    if removed:
+        return [
+            f"removed compile outputs shipped in src/ that would be read as this compile's own: {', '.join(removed)}"
+        ]
+    return []
 
 
 def attempt_compile(tree: Path, main_filename: str) -> CompileAttempt:

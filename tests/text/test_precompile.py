@@ -22,7 +22,7 @@ Hello world.
 \\end{document}
 """
 
-LOG_OK = """Output written on flat.xdv (7 pages, 12345 bytes).
+LOG_OK = """Output written on main.xdv (7 pages, 12345 bytes).
 Overfull \\hbox (10.0pt too wide) in paragraph
 LaTeX Warning: Reference `fig:x' on page 1 undefined
 LaTeX Warning: Citation `adam' on page 2 undefined
@@ -31,7 +31,7 @@ Missing character: There is no X in font
 
 LOG_ERROR = """! Undefined control sequence.
 l.42 \\pdfoutput
-Output written on flat.xdv (0 pages, 8 bytes).
+Output written on main.xdv (0 pages, 8 bytes).
 """
 
 
@@ -566,7 +566,7 @@ def test_first_compile_timeout_skips_the_fix_session(tmp_path: Path, monkeypatch
 def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
     wire_expand(monkeypatch)
-    wire_latexmk(monkeypatch, [{"log": "Output written on flat.xdv (0 pages, 8 bytes).\n"}])
+    wire_latexmk(monkeypatch, [{"log": "Output written on main.xdv (0 pages, 8 bytes).\n"}])
     wire_work(monkeypatch)
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
@@ -576,7 +576,7 @@ def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"broken.tex": "no documentclass\n"})
     (workdir.build / "sandbox" / "tex").mkdir(parents=True)
-    (workdir.build / "sandbox" / "tex" / "flat.pdf").write_bytes(b"stale")
+    (workdir.build / "sandbox" / "tex" / "main.pdf").write_bytes(b"stale")
     (workdir.build / "precompile.tex").write_text("stale", encoding="utf-8")
     (workdir.logs / "precompile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = precompile.run(workdir)
@@ -625,7 +625,7 @@ def wire_missing_inputs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
             if not path.is_file():
                 return ProcessOutcome(
                     returncode=2,
-                    stdout=b"incomplete expansion must never become flat.tex",
+                    stdout=b"incomplete expansion must never become the main file",
                     stderr=f"ERROR: Could not find file [{name}.tex]\n".encode(),
                     timed_out=False,
                     duration_seconds=0.1,

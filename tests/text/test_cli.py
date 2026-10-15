@@ -664,8 +664,8 @@ def test_stage_display_action_aligns_status_and_summary(terminal_console: None) 
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
-    display.action("fix session", "Read: flat.tex")
-    expected = f"{'precompile':<{cli.NAME_WIDTH}}{'fix session':<{cli.STATUS_WIDTH}}Read: flat.tex"
+    display.action("fix session", "Read: main.tex")
+    expected = f"{'precompile':<{cli.NAME_WIDTH}}{'fix session':<{cli.STATUS_WIDTH}}Read: main.tex"
     width = cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
     assert progress.tasks[0].description == f"{expected:<{width}}"
 
@@ -686,7 +686,7 @@ def test_stage_display_action_pads_a_bare_status_to_the_same_width(terminal_cons
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
-    display.action("compiling", "flat.tex")
+    display.action("compiling", "main.tex")
     display.action("fix session")
     description = progress.tasks[0].description
     assert description.rstrip() == f"{'precompile':<{cli.NAME_WIDTH}}fix session"
@@ -700,10 +700,10 @@ def test_stage_display_action_prints_a_line_when_not_a_terminal(
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
-    display.action("fix session", "Read: flat.tex")
+    display.action("fix session", "Read: main.tex")
     display.action("verifying")
     out = capsys.readouterr().out
-    assert "    fix session: Read: flat.tex" in out
+    assert "    fix session: Read: main.tex" in out
     assert "    verifying: " in out
     assert progress.tasks[0].description == "precompile"
 
