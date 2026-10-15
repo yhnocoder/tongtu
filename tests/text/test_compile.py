@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import tongtu.model
-from tongtu import processes
+from tongtu import cropping, processes
 from tongtu.artifacts.common import CompileReport
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.artifacts.precompile import PrecompileManifest, PrecompileStatus
@@ -180,7 +180,19 @@ def assert_failed(workdir: Workdir, manifest: CompileManifest) -> None:
     assert not outputs_present(workdir, "compile")
 
 
-def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(autouse=True)
+def cropped(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    calls: list[Path] = []
+
+    def crop_margins(pdf: Path) -> list[str]:
+        calls.append(pdf)
+        return []
+
+    monkeypatch.setattr(cropping, "crop_margins", crop_margins)
+    return calls
+
+
+def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cropped: list[Path]) -> None:
     workdir = make_workdir(tmp_path)
     calls = wire_latexmk(monkeypatch, [{}])
     work_calls = wire_work(monkeypatch)
@@ -202,6 +214,18 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert not (tree / "main.pdf").exists()
     assert sorted(path.name for path in tree.iterdir()) == ["figure.pdf", "main.tex"]
     assert not (workdir.logs / "compile-fix.jsonl").exists()
+    assert cropped == [workdir.zh_pdf]
+
+
+def test_crop_failure_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path)
+    wire_latexmk(monkeypatch, [{}])
+    wire_work(monkeypatch)
+    monkeypatch.setattr(cropping, "crop_margins", lambda pdf: ["Ghostscript reported no page content"])
+    manifest = compile.run(workdir)
+    assert manifest.status is CompileStatus.OK
+    assert manifest.warnings == ["Ghostscript reported no page content"]
+    assert workdir.zh_pdf.is_file()
 
 
 def test_caption_paragraph_break_is_not_a_control_sequence_difference(
