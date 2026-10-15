@@ -22,7 +22,7 @@ Hello world.
 \\end{document}
 """
 
-LOG_OK = """Output written on flat.xdv (7 pages, 12345 bytes).
+LOG_OK = """Output written on main.xdv (7 pages, 12345 bytes).
 Overfull \\hbox (10.0pt too wide) in paragraph
 LaTeX Warning: Reference `fig:x' on page 1 undefined
 LaTeX Warning: Citation `adam' on page 2 undefined
@@ -31,7 +31,7 @@ Missing character: There is no X in font
 
 LOG_ERROR = """! Undefined control sequence.
 l.42 \\pdfoutput
-Output written on flat.xdv (0 pages, 8 bytes).
+Output written on main.xdv (0 pages, 8 bytes).
 """
 
 
@@ -110,6 +110,7 @@ def wire_work(
         *,
         trace_path: Path,
         report=None,
+        prompt=None,
     ):
         calls.append({"role": role, "workdir": workdir, "trace_path": trace_path})
         if report is not None:
@@ -211,9 +212,8 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert calls == {"compile": 1, "clean": 1}
     assert outputs_present(workdir, "precompile")
     tree = workdir.build / "sandbox" / "tex"
-    assert (tree / "flat.tex").is_file()
-    assert (tree / "main.tex").is_file()
-    assert not (tree / "flat.pdf").exists()
+    assert (tree / "main.tex").read_bytes() == workdir.precompile_tex.read_bytes()
+    assert sorted(path.name for path in tree.iterdir()) == ["main.tex"]
     assert workdir.precompile_pdf.read_bytes().startswith(b"%PDF")
     assert not (tree / "fonts").exists()
     assert not (workdir.build / "fonts").exists()
@@ -566,7 +566,7 @@ def test_first_compile_timeout_skips_the_fix_session(tmp_path: Path, monkeypatch
 def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
     wire_expand(monkeypatch)
-    wire_latexmk(monkeypatch, [{"log": "Output written on flat.xdv (0 pages, 8 bytes).\n"}])
+    wire_latexmk(monkeypatch, [{"log": "Output written on main.xdv (0 pages, 8 bytes).\n"}])
     wire_work(monkeypatch)
     manifest = precompile.run(workdir)
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
@@ -576,7 +576,7 @@ def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"broken.tex": "no documentclass\n"})
     (workdir.build / "sandbox" / "tex").mkdir(parents=True)
-    (workdir.build / "sandbox" / "tex" / "flat.pdf").write_bytes(b"stale")
+    (workdir.build / "sandbox" / "tex" / "main.pdf").write_bytes(b"stale")
     (workdir.build / "precompile.tex").write_text("stale", encoding="utf-8")
     (workdir.logs / "precompile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = precompile.run(workdir)
@@ -591,7 +591,7 @@ def test_report_traces_the_compile_actions(tmp_path: Path, monkeypatch: pytest.M
     actions: list[tuple[str, str]] = []
     manifest = precompile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is PrecompileStatus.OK
-    assert actions == [("compiling", "flat.tex")]
+    assert actions == [("compiling", "main.tex")]
 
 
 def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -603,10 +603,10 @@ def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: p
     manifest = precompile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is PrecompileStatus.OK
     assert actions == [
-        ("compiling", "flat.tex"),
+        ("compiling", "main.tex"),
         ("fix session", "running"),
         ("fix session", "Bash: ls"),
-        ("verifying", "flat.tex"),
+        ("verifying", "main.tex"),
     ]
 
 
@@ -625,7 +625,7 @@ def wire_missing_inputs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
             if not path.is_file():
                 return ProcessOutcome(
                     returncode=2,
-                    stdout=b"incomplete expansion must never become flat.tex",
+                    stdout=b"incomplete expansion must never become the main file",
                     stderr=f"ERROR: Could not find file [{name}.tex]\n".encode(),
                     timed_out=False,
                     duration_seconds=0.1,
@@ -641,7 +641,7 @@ def missing_input_paper() -> str:
     return PLAIN_PAPER.replace("\\begin{document}", "\\include{macros_new}\n\\include{new_cmds}\n\\begin{document}")
 
 
-@pytest.mark.parametrize("main_file", ["main.tex", "flat.tex"])
+@pytest.mark.parametrize("main_file", ["main.tex", "subword.tex"])
 @pytest.mark.parametrize("stop_reason", [StopReason.FINISHED, StopReason.ERROR, StopReason.TIMEOUT])
 def test_arxiv_1905_12322v3_missing_legacy_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, main_file: str
@@ -720,8 +720,8 @@ def test_missing_input_unresolved_fails_strict_recheck(
     def edit(tree: Path) -> None:
         if partial_repair:
             (tree / "main.tex").write_text(source.replace("\\include{macros_new}", "%\\include{macros_new}"))
-        (tree / "flat.tex").write_text(PLAIN_PAPER)
-        (tree / "flat.pdf").write_bytes(b"%PDF agent result cannot bypass strict expansion")
+        (tree / "expanded.tex").write_text(PLAIN_PAPER)
+        (tree / "main.pdf").write_bytes(b"%PDF agent result cannot bypass strict expansion")
 
     calls = wire_work(monkeypatch, stop_reason, edit=edit)
     manifest = precompile.run(workdir)
@@ -750,8 +750,8 @@ def test_expansion_fix_does_not_start_second_compile_session(
 
     def edit(tree: Path) -> None:
         (tree / "main.tex").write_text(source.replace("\\include{", "%\\include{"))
-        (tree / "flat.pdf").write_bytes(b"%PDF stale agent output")
-        (tree / "flat.log").write_text(LOG_OK)
+        (tree / "main.pdf").write_bytes(b"%PDF stale agent output")
+        (tree / "main.log").write_text(LOG_OK)
         workdir.precompile_fix_log.write_text("original session\n")
 
     calls = wire_work(monkeypatch, edit=edit)

@@ -109,11 +109,9 @@ def make_workdir(tmp_path: Path, paper: str = PAPER) -> Workdir:
         PrecompileManifest(status=PrecompileStatus.OK, main_file="main.tex", report=BASELINE),
     )
     tree = workdir.build / "sandbox" / "tex"
-    (tree / "fonts").mkdir(parents=True)
+    tree.mkdir(parents=True)
     (tree / "main.tex").write_text(paper, encoding="utf-8")
     (tree / "figure.pdf").write_bytes(b"%PDF")
-    (tree / "flat.tex").write_text(paper, encoding="utf-8")
-    (tree / "fonts" / "LXGWWenKai-Light.ttf").symlink_to(workdir.src / "figure.pdf")
     return workdir
 
 
@@ -122,7 +120,7 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> dict[str
 
     def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
         main = Path(command[-1])
-        assert main.name == "zh.tex"
+        assert main.name == "main.tex"
         if "-C" in command:
             calls["clean"] += 1
             (cwd / main.with_suffix(".pdf")).unlink(missing_ok=True)
@@ -156,6 +154,7 @@ def wire_work(
         *,
         trace_path: Path,
         report=None,
+        prompt=None,
     ):
         calls.append({"role": role, "workdir": workdir, "trace_path": trace_path})
         (trace_path).write_text("{}\n", encoding="utf-8")
@@ -199,10 +198,9 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     zh = (workdir.build / "zh.tex").read_text(encoding="utf-8")
     assert zh == translate(PAPER)
     tree = workdir.build / "sandbox" / "tex"
-    assert (tree / "zh.tex").read_text(encoding="utf-8") == zh
-    assert not (tree / "zh.pdf").exists()
-    assert (tree / "flat.tex").is_file()
-    assert not (workdir.build / "fonts").exists()
+    assert (tree / "main.tex").read_text(encoding="utf-8") == zh
+    assert not (tree / "main.pdf").exists()
+    assert sorted(path.name for path in tree.iterdir()) == ["figure.pdf", "main.tex"]
     assert not (workdir.logs / "compile-fix.jsonl").exists()
 
 
@@ -292,7 +290,7 @@ def test_chunks_do_not_add_up_to_masked(tmp_path: Path, monkeypatch: pytest.Monk
     manifest = compile.run(workdir)
     assert_failed(workdir, manifest)
     assert "masked.tex" in manifest.message
-    assert not (workdir.build / "sandbox" / "tex" / "zh.tex").exists()
+    assert "第一" not in (workdir.build / "sandbox" / "tex" / "main.tex").read_text(encoding="utf-8")
 
 
 def test_unmask_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -332,7 +330,7 @@ def test_fix_session_then_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
 
     def edit(tree: Path) -> None:
-        path = tree / "zh.tex"
+        path = tree / "main.tex"
         path.write_text(path.read_text(encoding="utf-8").replace("第二段。", "第二段。%"), encoding="utf-8")
 
     work_calls = wire_work(monkeypatch, edit=edit)
@@ -385,7 +383,7 @@ def test_control_sequences_must_match_the_source(tmp_path: Path, monkeypatch: py
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
 
     def edit(tree: Path) -> None:
-        path = tree / "zh.tex"
+        path = tree / "main.tex"
         path.write_text(path.read_text(encoding="utf-8").replace("\\emph{强调}", "强调"), encoding="utf-8")
 
     wire_work(monkeypatch, edit=edit)
@@ -445,7 +443,7 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     (workdir.logs / "compile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = compile.run(workdir)
     assert_failed(workdir, manifest)
-    assert (workdir.build / "sandbox" / "tex" / "flat.tex").is_file()
+    assert (workdir.build / "sandbox" / "tex" / "main.tex").is_file()
     assert not (workdir.logs / "compile-fix.jsonl").exists()
 
 
@@ -456,8 +454,8 @@ def test_report_traces_the_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     actions: list[tuple[str, str]] = []
     compile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
     assert actions == [
-        ("compiling", "zh.tex"),
+        ("compiling", "main.tex"),
         ("fix session", "running"),
         ("fix session", "Bash: ls"),
-        ("verifying", "zh.tex"),
+        ("verifying", "main.tex"),
     ]

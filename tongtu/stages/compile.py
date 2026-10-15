@@ -90,13 +90,13 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
             f"from the translation: {', '.join(unmasked.fallbacks)}"
         )
 
-    zh_name = paper_workdir.zh_tex.name
-    (tree / zh_name).write_text(unmasked.text, encoding=ENCODING)
+    main_file = precompile_manifest.main_file
+    (tree / main_file).write_text(unmasked.text, encoding=ENCODING)
 
     final, fix_session, failure = compiling.compile_with_fix(
         ROLE,
         tree,
-        zh_name,
+        main_file,
         paper_workdir.compile_fix_log,
         warnings,
         report,
@@ -106,7 +106,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
 
     compile_report = final.report
     warnings.extend(_count_increases(compile_report, baseline))
-    zh_final = (tree / zh_name).read_text(encoding=ENCODING)
+    zh_final = (tree / main_file).read_text(encoding=ENCODING)
     problems = _exit_problems(paper_workdir, unmasked.text, zh_final, compile_report, baseline)
     if problems:
         return _failed("; ".join(problems), warnings, baseline, fix_session, compile_report)
@@ -114,7 +114,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
     paper_workdir.zh_tex.write_text(zh_final, encoding=ENCODING)
     paper_workdir.out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(tree / final.pdf_name, paper_workdir.zh_pdf)
-    warnings.extend(compiling.clean_tree(tree, zh_name))
+    warnings.extend(compiling.clean_tree(tree, main_file))
     return CompileManifest(
         status=CompileStatus.OK,
         report=compile_report,

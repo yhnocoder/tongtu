@@ -10,7 +10,7 @@ from pathlib import Path
 from . import fonts, model, processes, texlog
 from .artifacts.common import CompileReport, FixSession
 from .manifests import describe_error, timeout_warning
-from .model.work import StopReason
+from .model.work import PROMPT, StopReason, skill_dir
 
 COMPILE_TIMEOUT_SECONDS = 600
 
@@ -21,6 +21,10 @@ ERROR_LINE_LIMIT = 5
 LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-xelatex", "-interaction=nonstopmode")
 
 LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-C")
+
+STALE_OUTPUT_SUFFIXES: tuple[str, ...] = (".aux", ".fdb_latexmk", ".fls", ".log", ".pdf", ".xdv")
+
+FIX_PROMPT_FILES = "主文件是 {main}，编译日志是 {log}。"
 
 
 @dataclass(frozen=True)
@@ -46,8 +50,15 @@ class CompileAttempt:
 
 def copy_src_tree(src: Path, tree: Path, main_filename: str) -> list[str]:
     shutil.copytree(src, tree, dirs_exist_ok=True)
-    if (tree / main_filename).exists():
-        return [f"src/ already contains {main_filename}; the copy in the compile tree is overwritten"]
+    jobname = Path(main_filename).stem
+    stale = [tree / f"{jobname}{suffix}" for suffix in STALE_OUTPUT_SUFFIXES]
+    removed = [path.name for path in stale if path.is_file()]
+    for path in stale:
+        path.unlink(missing_ok=True)
+    if removed:
+        return [
+            f"removed compile outputs shipped in src/ that would be read as this compile's own: {', '.join(removed)}"
+        ]
     return []
 
 
@@ -90,7 +101,9 @@ def fix(
     report: Callable[[str], None] | None = None,
 ) -> FixSession:
     started = time.monotonic()
-    outcome = model.work(role, tree, trace_path=trace_path, report=report)
+    log_name = Path(main_filename).with_suffix(".log").name
+    prompt = PROMPT.format(skill_path=skill_dir(role)) + FIX_PROMPT_FILES.format(main=main_filename, log=log_name)
+    outcome = model.work(role, tree, trace_path=trace_path, report=report, prompt=prompt)
     session = FixSession(
         stop_reason=str(outcome.stop_reason),
         model=outcome.model,

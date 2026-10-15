@@ -137,7 +137,7 @@
 
 <h3>进度行显示当前动作</h3>
 <ul>
-<li>运行时条目写了 <code>events</code>，work 写 trace 的同时逐行解析出当前动作（工具名加首要参数，例如 <code>Bash: latexmk -xelatex flat.tex</code>），经 <code>report</code> 回调交给调用方。</li>
+<li>运行时条目写了 <code>events</code>，work 写 trace 的同时逐行解析出当前动作（工具名加首要参数，例如 <code>Bash: latexmk -xelatex main.tex</code>），经 <code>report</code> 回调交给调用方。</li>
 <li>不写 <code>events</code> 或某行解析不出就不回报；<code>events</code> 取了未知值在加载配置时报错。</li>
 <li>解析只用于显示，不影响会话。</li>
 </ul>

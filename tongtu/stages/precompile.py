@@ -19,8 +19,6 @@ STAGE_NAME = "precompile"
 
 ROLE = "precompile_fix"
 
-FLAT_FILENAME = "flat.tex"
-
 TREE_NAME = "tex"
 
 LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--empty-comments", "--fatal")
@@ -114,7 +112,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
     fix_session = None
     expanded, failure, missing_diagnostic = _expand(src, main_file, warnings)
     if expanded is None and missing_diagnostic:
-        warnings.extend(compiling.copy_src_tree(src, tree, FLAT_FILENAME))
+        warnings.extend(compiling.copy_src_tree(src, tree, main_file))
         _write_expand_diagnostic(tree, main_file, failure, missing_diagnostic, warnings)
         report("fix session", "running")
         fix_session = compiling.fix(
@@ -156,13 +154,13 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
 
     injected = _inject_cjk(expanded, warnings, fonts.configured())
     if fix_session is None:
-        warnings.extend(compiling.copy_src_tree(src, tree, FLAT_FILENAME))
-    _assemble_tree(tree, injected)
+        warnings.extend(compiling.copy_src_tree(src, tree, main_file))
+    (tree / main_file).write_bytes(injected)
 
     final, fix_session, failure = compiling.compile_with_fix(
         ROLE,
         tree,
-        FLAT_FILENAME,
+        main_file,
         paper_workdir.precompile_fix_log,
         warnings,
         report,
@@ -171,9 +169,9 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
     if final is None or failure:
         return _compile_failed(main_file, warnings, failure, fix_session)
 
-    paper_workdir.precompile_tex.write_bytes((tree / FLAT_FILENAME).read_bytes())
-    shutil.copyfile((tree / FLAT_FILENAME).with_suffix(".pdf"), paper_workdir.precompile_pdf)
-    warnings.extend(compiling.clean_tree(tree, FLAT_FILENAME))
+    paper_workdir.precompile_tex.write_bytes((tree / main_file).read_bytes())
+    shutil.copyfile(tree / final.pdf_name, paper_workdir.precompile_pdf)
+    warnings.extend(compiling.clean_tree(tree, main_file))
     return PrecompileManifest(
         status=PrecompileStatus.OK,
         main_file=main_file,
@@ -485,7 +483,3 @@ def _brace_balance_end(lines: list[bytes], start: int, preamble_end: int) -> int
         if seen_open and depth <= 0:
             return index
     return start
-
-
-def _assemble_tree(tree: Path, flat: bytes) -> None:
-    (tree / FLAT_FILENAME).write_bytes(flat)
