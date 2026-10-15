@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import stat
 import subprocess
@@ -41,7 +42,7 @@ api = "chat"
 translate = { model = "demo/m1", effort = "low" }
 survey_terms = { model = "written/m1", effort = "low" }
 review = { model = "codex/m1", effort = "low", timeout_seconds = 60 }
-precompile_fix = { model = "claude-code/m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
+precompile_fix = { model = "claude-code/m1", effort = "low", timeout_seconds = 60 }
 compile_fix = { model = "pi/deepseek/m1", timeout_seconds = 60 }
 """
 
@@ -77,7 +78,7 @@ VERSION_WITHOUT_YEAR = "XeTeX 3.141592653-2.6-0.999996 (MiKTeX 24.1)\n"
 
 
 def fake_xelatex_version(
-    monkeypatch: pytest.MonkeyPatch, output: str, login: dict[str, tuple[int, str, str]] | None = None
+    monkeypatch: pytest.MonkeyPatch, output: str, failing: dict[str, str] | None = None
 ) -> list[list[str]]:
     calls: list[list[str]] = []
 
@@ -85,8 +86,15 @@ def fake_xelatex_version(
         calls.append(command)
         if command == [cli.XELATEX, "--version"]:
             return subprocess.CompletedProcess(command, 0, output, "")
-        returncode, stdout, stderr = (login or {}).get(command[0], (0, f"{command[0]} logged in\n", ""))
-        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+        runtime = command[2]
+        checks = [
+            {"runtime": runtime, "check": "executable", "status": "ok", "detail": f"/usr/bin/{runtime}"},
+            {"runtime": runtime, "check": "login", "status": "ok", "detail": f"{runtime} logged in"},
+            {"runtime": runtime, "check": "network", "status": "skip", "detail": "--network none"},
+        ]
+        if runtime in (failing or {}):
+            checks[1] = {"runtime": runtime, "check": "login", "status": "fail", "detail": (failing or {})[runtime]}
+        return subprocess.CompletedProcess(command, 1 if runtime in (failing or {}) else 0, json.dumps(checks), "")
 
     monkeypatch.setattr(cli.subprocess, "run", run)
     return calls
@@ -213,92 +221,64 @@ def test_doctor_lists_only_referenced_providers(tmp_path: Path, monkeypatch: pyt
     assert "providers,chunking,fontsandroles" in output
 
 
-def test_doctor_checks_each_referenced_runtime_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
-    output = squeeze(result.stdout)
-    for backend in ("codex", "claude-code", "pi"):
-        assert f"[ok]runtime{backend}" in output
-        assert f"[ok]login{backend}" in output
-    assert "/usr/bin/claude" in result.stdout
-    assert "codexloggedin" in output
-    assert "loggedin" in output
-    assert "piloggedin" in output
-    assert ["codex", "login", "status"] in calls
-    assert ["claude", "auth", "status"] in calls
-    assert ["pi", "auth", "check", "--model", "deepseek/m1", "--no-refresh"] in calls
-    assert output.count("runtimecodex") == 1
-
-
-def test_doctor_reports_a_runtime_that_is_not_logged_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    fake_xelatex_version(monkeypatch, VERSION_2026, login={"codex": (1, "", "Not logged in\n")})
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
-    output = squeeze(result.stdout)
-    assert "[missing]logincodex" in output
-    assert "Notloggedin" in output
-    assert "[ok]loginclaude-code" in output
-    assert "logincodexnotconfigured" in output
-
-
-def test_doctor_reports_a_runtime_missing_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
-    monkeypatch.setattr(shutil, "which", lambda name: None if name == "pi" else f"/usr/bin/{name}")
-    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
-    output = squeeze(result.stdout)
-    assert "[missing]runtimepi" in output
-    assert "[missing]loginpi" in output
-    assert "cannotcheck:picannotstart" in output
-    assert not any(command[0] == "pi" for command in calls)
-    assert "toolchainandfontscomplete" in output
-
-
-def test_doctor_reports_a_script_runtime_whose_interpreter_is_missing(
+def test_doctor_checks_each_referenced_runtime_once_through_agentrun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.setenv("DEMO_KEY", "demo-key")
-    codex = tmp_path / "npm" / "codex"
-    codex.parent.mkdir()
-    codex.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-    paths = {"codex": str(codex), "node": None}
-    monkeypatch.setattr(shutil, "which", lambda name: paths.get(name, f"/usr/bin/{name}"))
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "[missing]runtimecodex" in output
-    assert "isascriptfornode,whichisnotinPATH." in output
-    assert "[missing]logincodex" in output
-    assert not any(command[0] == "codex" for command in calls)
+    for backend, name in (("codex", "codex/m1"), ("claude-code", "claude-code/m1"), ("pi", "pi/deepseek/m1")):
+        assert f"[ok]{name}agentrundoctor:executable/usr/bin/{backend}" in output
+        assert f"[ok]{name}agentrundoctor:login{backend}loggedin" in output
+        assert f"[ok]{name}agentrundoctor:networkskipped:--networknone" in output
+    assert ["/usr/bin/agentrun", "doctor", "pi", "--json", "--model", "deepseek/m1"] in calls
+    assert sum(1 for command in calls if command[1:3] == ["doctor", "codex"]) == 1
 
 
-def test_doctor_reports_missing_node_behind_a_shell_wrapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_reports_a_failed_agentrun_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026, failing={"codex": "codex login file not found"})
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "[missing]codex/m1agentrundoctor:logincodexloginfilenotfound" in output
+    assert "[ok]claude-code/m1agentrundoctor:login" in output
+    assert "codex/m1notconfigured" in output
+
+
+def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "agentrun" else f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    output = squeeze(result.stdout)
+    assert "[missing]pi/deepseek/m1agentrun,whichstartseveryruntimeagentrunnotfoundinPATH" in output
+    assert calls == [[cli.XELATEX, "--version"]]
+    assert "toolchainandfontscomplete" in output
+
+
+def test_doctor_reports_agentrun_output_that_is_not_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
     path.write_text('[roles]\nreview = { model = "pi", timeout_seconds = 60 }\n', encoding="utf-8")
-    pi = tmp_path / "local" / "pi"
-    pi.parent.mkdir()
-    pi.write_text('#!/bin/sh\nexec node "$HOME/.pi/app/cli.js" "$@"\n', encoding="utf-8")
-    paths = {"pi": str(pi), "/bin/sh": "/bin/sh", "node": None}
-    monkeypatch.setattr(shutil, "which", lambda name: paths.get(name, f"/usr/bin/{name}"))
-    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command == [cli.XELATEX, "--version"]:
+            return subprocess.CompletedProcess(command, 0, VERSION_2026, "")
+        return subprocess.CompletedProcess(command, 2, "", "agentrun: unexpected argument\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
-    output = squeeze(result.stdout)
-    assert "[missing]runtimepi" in output
-    assert "needsnode,whichisnotinPATH." in output
-    assert "[missing]loginpi" in output
-    assert not any(command[0] == "pi" for command in calls)
+    assert "[missing]piagentrundoctoragentrun:unexpectedargument" in squeeze(result.stdout)
 
 
 def test_doctor_reports_roles_that_do_not_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -412,43 +392,6 @@ def test_entry_point_refuses_to_run_inside_a_session(monkeypatch: pytest.MonkeyP
     with pytest.raises(SystemExit) as raised:
         main()
     assert raised.value.code == 2
-
-
-def entry_point_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TONGTU_DISABLE", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TONGTU_CODEX_AUTH", '{"tokens":{}}')
-    monkeypatch.delenv("TONGTU_PI_AUTH", raising=False)
-    monkeypatch.setattr(cli, "app", lambda: None)
-
-
-def test_entry_point_writes_credentials_from_the_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    entry_point_environment(tmp_path, monkeypatch)
-    main()
-    codex = tmp_path / ".codex" / "auth.json"
-    assert codex.read_text(encoding="utf-8") == '{"tokens":{}}'
-    assert stat.S_IMODE(codex.stat().st_mode) == 0o600
-    assert not (tmp_path / ".pi").exists()
-
-
-def test_entry_point_exits_two_when_credentials_cannot_be_written(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entry_point_environment(tmp_path, monkeypatch)
-    (tmp_path / ".codex").write_text("not a directory", encoding="utf-8")
-    with pytest.raises(SystemExit) as raised:
-        main()
-    assert raised.value.code == 2
-
-
-def test_entry_point_writes_nothing_without_credential_variables(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entry_point_environment(tmp_path, monkeypatch)
-    monkeypatch.delenv("TONGTU_CODEX_AUTH", raising=False)
-    main()
-    assert not (tmp_path / ".codex").exists()
-    assert not (tmp_path / ".pi").exists()
 
 
 def wire_entries(
@@ -875,3 +818,39 @@ def test_compile_entry_passes_the_workdir_and_report(tmp_path: Path, monkeypatch
     assert result.exit_code == 0
     assert captured["workdir"].path == workdir.path
     assert callable(captured["report"])
+
+
+def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text('[roles]\nreview = { model = "pi", timeout_seconds = 60 }\n', encoding="utf-8")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command == [cli.XELATEX, "--version"]:
+            return subprocess.CompletedProcess(command, 0, VERSION_2026, "")
+        return subprocess.CompletedProcess(command, 0, '[{"runtime": "pi"}]', "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert "[missing]piagentrundoctoragentrundoctorprintednochecklist" in squeeze(result.stdout)
+
+
+def test_doctor_checks_each_runtime_and_model_pair_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(
+        "[roles]\n"
+        'review = { model = "pi/a/m1", timeout_seconds = 60 }\n'
+        'compile_fix = { model = "pi/a/m1", timeout_seconds = 60 }\n'
+        'precompile_fix = { model = "pi/b/m2", timeout_seconds = 60 }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    doctor_calls = [command[1:] for command in calls if command[1:2] == ["doctor"]]
+    assert doctor_calls == [
+        ["doctor", "pi", "--json", "--model", "a/m1"],
+        ["doctor", "pi", "--json", "--model", "b/m2"],
+    ]

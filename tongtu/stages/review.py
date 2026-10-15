@@ -9,7 +9,7 @@ from .. import chunks, pipeline, validation
 from ..artifacts.common import FixSession
 from ..artifacts.review import ReviewManifest, ReviewStatus
 from ..manifests import describe_error, timeout_warning, write_manifest
-from ..model.work import StopReason, skill_path, work
+from ..model.work import StopReason, skill_dir, work
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "review"
@@ -55,12 +55,8 @@ def _execute(
         _write_reviewed(paper_workdir, sources, translated)
         return ReviewManifest(status=ReviewStatus.OK, message=SKIPPED_MESSAGE)
 
-    skill_dir, detail = skill_path(ROLE)
-    if skill_dir is None:
-        return _failed(detail)
-
     try:
-        _stage_site(paper_workdir, sources, translated, skill_dir)
+        _stage_site(paper_workdir, sources, translated, skill_dir(ROLE))
     except OSError as error:
         return _failed(describe_error(error))
 

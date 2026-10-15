@@ -21,6 +21,7 @@
 <main>
 <p class="nav"><a href="../index.html">返回索引</a></p>
 <h1>模型调用层</h1>
+<p class="lead">本页的运行时部分（命令模板、<code>skill_path</code>、沙箱参数、事件解析）已过时：三种运行时现在都经 agentrun 启动，见 <a href="remote.html">remote.html</a> 第 10 节。</p>
 <p class="lead"><code>tongtu/model/</code>。流水线里每一处调用模型都经过这一层，只有两个函数：<code>ask</code> 做单次问答（survey 提议术语、translate 的 API 模式逐 chunk 翻译），<code>work</code> 在一棵目录树里启动一次 agent 会话（precompile / compile 的修复、review、translate 的 Agent 模式）。服务商、运行时与各角色的默认模型都在 <code>models.toml</code>。各阶段见 <a href="../pipeline.html">pipeline.html</a>，命令行见 <a href="cli.html">cli.html</a>。</p>
 
 <section class="sheet" id="overview">
@@ -127,7 +128,6 @@
 <thead><tr><th>字段</th><th>含义</th></tr></thead>
 <tbody>
 <tr><td><code>command</code></td><td>命令模板；<code>{model}</code> <code>{effort}</code> <code>{max_turns}</code> <code>{tmp_dir}</code> 由 work 填入，<code>{tmp_dir}</code> 是 work 为本次会话建的临时目录，会话结束即删</td></tr>
-<tr><td><code>skill_path</code></td><td>skill 目录拷到会话目录的哪里，例如 Claude Code 放 <code>.claude/skills/&lt;role&gt;/</code></td></tr>
 <tr><td><code>events</code></td><td>stdout 事件流的格式，<code>stream-json</code> / <code>codex-json</code>；不写则不解析</td></tr>
 <tr><td><code>auth</code></td><td><code>"codex"</code>：用 <code>codex login</code> 的登录凭据，见下「默认运行时 codex」</td></tr>
 <tr><td><code>provider</code></td><td>可选，指向 <code>[provider.*]</code>，见 <a href="#provider">Provider 卡</a>的「谁引用 provider」</td></tr>
@@ -238,7 +238,7 @@
 <h3>默认从角色 skill 文件读取任务</h3>
 <ul>
 <li><b>拷贝</b>：work 先把仓库里 <code>skill/&lt;role&gt;/</code> 整个目录拷进会话目录。</li>
-<li><b>位置</b>：由运行时条目的 <code>skill_path</code> 决定。</li>
+<li><b>位置</b>：会话目录的 <code>.skills/&lt;role&gt;/</code>，与运行时无关。</li>
 <li><b>叠加</b>：拷贝用 <code>dirs_exist_ok</code> 叠加，不清空目的地。</li>
 <li><b>默认 prompt</b>：「读 skill，按它做；会话目录是当前目录这棵树」。</li>
 <li><b>覆盖</b>：调用方可以用 <code>prompt</code> 参数覆盖。</li>
@@ -267,7 +267,6 @@
 <ul>
 <li>运行时自带，不自己写。</li>
 <li><code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 都能执行任意代码，前缀放行拦不住，只能靠沙箱把写范围限制在会话目录、断网。</li>
-<li>嵌套容器（例如云端会话）里设环境变量 <code>TONGTU_NESTED_SANDBOX=1</code>，work 给带 sandbox 表的运行时合入 <code>enableWeakerNestedSandbox = true</code>。</li>
 </ul></li>
 <li><b>嵌套检查</b>
 <ul>
@@ -319,7 +318,6 @@ api         = "messages"          # 整个服务商一种接口时不必逐模�
 # {tmp_dir} 是 work 为本次会话建的临时目录，会话结束即删
 [runtime.codex]
 auth       = "codex"                     # 用 codex login 的登录凭据
-skill_path = ".codex/skills/{role}"      # skill 目录拷到会话目录的哪里
 # stdout 事件流的格式，进度行据此解析当前动作；不写则不解析
 events     = "codex-json"
 command = ["codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral",

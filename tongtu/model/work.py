@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 import os
 import shutil
 import sys
@@ -12,19 +14,20 @@ from typing import IO
 
 from .. import fonts
 from ..assets import asset_path
-from ..config import config_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
 from .config import ModelsConfig, Target, load_config, role_target
-from .events import parse_event
-from .runtimes import RUNTIMES, Runtime, Session, session_path_dirs
 
 SKILL_ROOT = asset_path("skill")
 
+SKILL_DIR = ".skills/{role}"
+
 PROMPT = "读 {skill_path}/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
 
-SYSTEM_PATH_ENTRIES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+AGENTRUN_EXECUTABLE = "agentrun"
 
-TEX_EXECUTABLE = "xelatex"
+AGENTRUN_GRACE_SECONDS = 120
+
+EVENTS_SUFFIX = ".events.jsonl"
 
 PYTHON_EXECUTABLE = "python3"
 
@@ -68,20 +71,11 @@ def _launch(
     prompt: str | None,
 ) -> WorkOutcome:
     entry = config.roles[role]
-    runtime = RUNTIMES[target.backend]
-    absent = ["timeout_seconds"] if entry.timeout_seconds is None else []
-    if runtime.needs_max_turns and entry.max_turns is None:
-        absent.append("max_turns")
-    if absent:
-        return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {config_path()}.")
-    executable = shutil.which(runtime.executable)
+    executable = shutil.which(AGENTRUN_EXECUTABLE)
     if executable is None:
-        return _error(f"runtime {runtime.name} is not in PATH; its command is {runtime.executable}.")
-    extra_dirs, detail = session_path_dirs(runtime, executable)
-    if detail:
-        return _error(f"runtime {runtime.name} cannot start: {detail}")
+        return _error(f"{AGENTRUN_EXECUTABLE} is not in PATH; work runs every runtime through it.")
 
-    skill_path = runtime.skill_dir.format(role=role)
+    skill_path = skill_dir(role)
     source = SKILL_ROOT / role
     if not source.is_dir():
         return _error(f"skill directory {source} does not exist; role {role} has no skill to copy into the worksite.")
@@ -98,53 +92,65 @@ def _launch(
                 f"failed to prepare the {PYTHON_EXECUTABLE} link to {interpreter} for the session"
                 f" ({type(error).__name__}: {error})."
             )
-        session = Session(
-            workdir=workdir,
-            skill_path=skill_path,
-            model=target.model,
-            effort=target.effort,
-            max_turns=entry.max_turns,
-            tmp_dir=Path(tmp_dir),
-            prompt=prompt or PROMPT.format(skill_path=skill_path),
-        )
-        environment, detail = runtime.prepare_env(_session_env(python_bin, extra_dirs), session)
-        if detail:
-            return _error(detail)
-        trace_path.parent.mkdir(parents=True, exist_ok=True)
-        failures: list[str] = []
+        command = [
+            executable,
+            target.backend,
+            "--cwd",
+            str(workdir),
+            "--format",
+            "jsonl",
+            "--timeout",
+            str(math.ceil(entry.timeout_seconds)),
+            "--path",
+            str(python_bin),
+            "--raw",
+            str(trace_path),
+            "--no-subagents",
+        ]
+        if target.model:
+            command += ["--model", target.model]
+        if target.effort:
+            command += ["--effort", target.effort]
+        environment = fonts.environment(fonts.configured(), os.environ) | {"TONGTU_DISABLE": "1"}
+        ends: list[dict] = []
         try:
-            with (
-                tempfile.TemporaryDirectory(prefix=".tongtu-tmp-", dir=workdir) as sandbox_tmp,
-                trace_path.open("wb") as trace_file,
-            ):
-                environment.update({name: str(Path(sandbox_tmp).resolve()) for name in ("TMPDIR", "TMP", "TEMP")})
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            with events_path(trace_path).open("wb") as events_file:
                 outcome = run_in_process_group(
-                    [executable, *runtime.argv(session)],
+                    command,
                     workdir,
-                    entry.timeout_seconds,
-                    input_bytes=b"" if runtime.prompt_in_argv else session.prompt.encode("utf-8"),
+                    entry.timeout_seconds + AGENTRUN_GRACE_SECONDS,
+                    input_bytes=(prompt or PROMPT.format(skill_path=skill_path)).encode("utf-8"),
                     env=environment,
-                    on_stdout_line=_trace_line(trace_file, runtime, report, failures),
+                    on_stdout_line=_event_line(events_file, report, ends),
                 )
         except OSError as error:
             return _error(
-                f"failed to launch {executable} ({type(error).__name__}: {error}). Check that the working directory {workdir} exists."
+                f"failed to open {events_path(trace_path)} or launch {executable} ({type(error).__name__}: {error})."
             )
     if outcome.timed_out:
-        return WorkOutcome(stop_reason=StopReason.TIMEOUT)
-    if outcome.returncode != 0:
+        return _error(
+            f"{executable} did not stop within {AGENTRUN_GRACE_SECONDS} seconds after its own timeout; tongtu killed it."
+        )
+    if not ends:
         stderr = outcome.stderr_text.strip()[-OUTPUT_EXCERPT_CHARS:]
-        return _error(f"{executable} exited with code {outcome.returncode}; stderr: {stderr or '(empty)'}")
-    if failures:
-        return _error(failures[-1])
-    return WorkOutcome(stop_reason=StopReason.FINISHED)
+        return _error(
+            f"{executable} exited with code {outcome.returncode} without an end event; stderr: {stderr or '(empty)'}"
+        )
+    status = ends[-1].get("status")
+    if status == "finished":
+        return WorkOutcome(stop_reason=StopReason.FINISHED)
+    if status == "timeout":
+        return WorkOutcome(stop_reason=StopReason.TIMEOUT)
+    return _error(f"{AGENTRUN_EXECUTABLE} {status}: {ends[-1].get('detail') or '(no detail)'}")
 
 
-def skill_path(role: str) -> tuple[str | None, str]:
-    _config, target, detail = _runtime_target(role)
-    if target is None:
-        return None, detail
-    return RUNTIMES[target.backend].skill_dir.format(role=role), ""
+def skill_dir(role: str) -> str:
+    return SKILL_DIR.format(role=role)
+
+
+def events_path(trace_path: Path) -> Path:
+    return trace_path.with_name(trace_path.name.removesuffix(".jsonl") + EVENTS_SUFFIX)
 
 
 def _runtime_target(role: str, effort: str | None = None) -> tuple[ModelsConfig | None, Target | None, str]:
@@ -167,33 +173,21 @@ def _error(detail: str) -> WorkOutcome:
     return WorkOutcome(stop_reason=StopReason.ERROR, detail=detail)
 
 
-def _trace_line(
-    trace_file: IO[bytes],
-    runtime: Runtime,
-    report: Callable[[str], None] | None,
-    failures: list[str],
+def _event_line(
+    events_file: IO[bytes], report: Callable[[str], None] | None, ends: list[dict]
 ) -> Callable[[bytes], None]:
     def handle(line: bytes) -> None:
-        trace_file.write(line)
-        trace_file.flush()
-        event = parse_event(line)
-        if event is None:
+        events_file.write(line)
+        events_file.flush()
+        try:
+            event = json.loads(line)
+        except ValueError:
             return
-        summary = runtime.summarize(event)
-        if summary is not None and report is not None:
-            report(summary)
-        failure = runtime.failure(event)
-        if failure is not None:
-            failures.append(failure)
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "tool" and report is not None and isinstance(event.get("summary"), str):
+            report(event["summary"])
+        if event.get("type") == "end":
+            ends.append(event)
 
     return handle
-
-
-def _session_env(python_bin: Path, extra_dirs: list[Path]) -> dict[str, str]:
-    tex = shutil.which(TEX_EXECUTABLE)
-    entries = [str(python_bin)] + ([str(Path(tex).parent)] if tex else []) + list(SYSTEM_PATH_ENTRIES)
-    for directory in extra_dirs:
-        if str(directory) not in entries:
-            entries.append(str(directory))
-    environment = fonts.environment(fonts.configured(), os.environ)
-    return environment | {"TONGTU_DISABLE": "1", "PATH": ":".join(entries)}

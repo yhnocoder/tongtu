@@ -21,6 +21,8 @@ make lint            # 检查：ruff check + ruff format --check + comment lint
 make format          # 自动修：ruff check --fix + ruff format
 ```
 
+agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动 codex、claude-code 与 pi：`cargo binstall agentrun` 或下载它的 release 文件放进 `PATH`；Linux 上另装 bubblewrap 与 socat。`uv run tongtu doctor` 对配置里用到的运行时运行 `agentrun doctor`。
+
 ## 发版
 
 先开 PR 把 `tongtu/__init__.py` 的 `__version__` 升到新版本（SemVer，版本号只写这一处）并 merge，然后在 main 上打 tag：

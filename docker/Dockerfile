@@ -3,7 +3,7 @@
 # 三层构建，各层的变化频率差着数量级：
 #   base    基底层：debian + TeX Live scheme-full（release texlive-2026 的 ISO 打包产物）+ 图渲染
 #           工具 + uv 与受管 Python。几乎不变，层缓存常年命中。
-#   env     环境层：Python 依赖、字体文件、node 22 与三个 agent CLI。随 uv.lock、fonts/ 与
+#   env     环境层：Python 依赖、字体文件、node 22、三个 agent CLI 与 agentrun。随 uv.lock、fonts/ 与
 #           CLI 版本变，不含仓库代码。
 #   runtime 代码层：仓库本体 + 项目安装 + 构建期自检。每次改代码只重跑这一层。
 # 各层之间不 COPY 产物（TeX 树 6GB 级，多阶段裁剪没意义），分层的目的就是缓存边界。
@@ -142,8 +142,8 @@ RUN mkdir -p /tmp/node \
 
 # 三个 agent CLI 装成全局 npm 包，可执行文件落在 /usr/local/bin：论文容器的 HOME 是 tmpfs（remote.html 第 08 节），装在 HOME 下的会丢
 ARG CODEX_VERSION=0.160.0
-ARG CLAUDE_CODE_VERSION=2.1.287
-ARG PI_VERSION=1.0.0
+ARG CLAUDE_CODE_VERSION=2.1.288
+ARG PI_VERSION=1.0.1
 RUN npm install -g --no-fund --no-audit \
       "@openai/codex@${CODEX_VERSION}" \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
@@ -152,6 +152,17 @@ RUN npm install -g --no-fund --no-audit \
     && codex --version \
     && claude --version \
     && pi --version
+
+# agentrun 启动三个 agent CLI（tongtu/model/work.py）。release 只有单文件、没有校验和清单，校验和在这里固定。
+# 默认 docker 容器起不来 bwrap，容器本身就是隔离边界，所以关掉 agentrun 的沙箱；codex 随之用 danger-full-access
+ARG AGENTRUN_VERSION=1.0.1
+ARG AGENTRUN_SHA256=d794dbe708bcbde2793082e9f72aa284b1c29f65c1a3f5ae27b933491dfdc3d9
+RUN curl -fL --retry 3 -o /usr/local/bin/agentrun \
+      "https://github.com/yhnocoder/agentrun/releases/download/v${AGENTRUN_VERSION}/agentrun-${AGENTRUN_VERSION}-linux-x86_64" \
+    && echo "${AGENTRUN_SHA256}  /usr/local/bin/agentrun" | sha256sum -c - \
+    && chmod +x /usr/local/bin/agentrun \
+    && agentrun --version
+ENV AGENTRUN_SANDBOX=off
 
 # 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/papers/<arxiv_id>，宿主挂进来即可续跑。
 ENV PATH="/opt/tongtu/.venv/bin:${PATH}" \

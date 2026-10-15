@@ -19,7 +19,7 @@ from tongtu.workdir import Workdir
 
 work_module = importlib.import_module("tongtu.model.work")
 
-SKILL_PATH = ".codex/skills/review"
+SKILL_PATH = ".skills/review"
 
 BRIEF = '{"chunks": []}\n'
 
@@ -136,7 +136,7 @@ def test_the_site_holds_only_the_isolated_inputs(tmp_path: Path, monkeypatch: py
     assert (site / "chunks" / "c000.tex").stat().st_mode & 0o777 == 0o444
     assert in_site(workdir, "c000").read_text(encoding="utf-8") == TRANSLATION
     assert (site / "brief.json").read_text(encoding="utf-8") == BRIEF
-    assert sorted(path.name for path in site.iterdir()) == [".codex", "brief.json", "chunks", "reviewed"]
+    assert sorted(path.name for path in site.iterdir()) == [".skills", "brief.json", "chunks", "reviewed"]
 
 
 def test_a_valid_revision_is_recorded_and_copied_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,20 +267,13 @@ def test_skip_copies_the_translation_without_a_session(tmp_path: Path) -> None:
 def test_a_role_pointing_at_a_provider_fails_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = ModelsConfig(roles={review.ROLE: RoleConfig(model="nowhere/m1", effort="high")})
     monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
+    monkeypatch.setattr(review, "work", work_module.work)
     workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
     manifest = review.run(workdir)
     assert manifest.status is ReviewStatus.REVIEW_FAILED
-    assert manifest.session is None
+    assert manifest.session is not None
+    assert manifest.session.stop_reason == "error"
     assert "nowhere" in manifest.message
-
-
-def test_the_skill_directory_follows_the_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = ModelsConfig(roles={review.ROLE: RoleConfig(model="pi", timeout_seconds=60)})
-    monkeypatch.setattr(work_module, "load_config", lambda: (config, ""))
-    wire_work(monkeypatch)
-    workdir = make_workdir(tmp_path, [(SOURCE, TRANSLATION)])
-    assert review.run(workdir).status is ReviewStatus.OK
-    assert (site_path(workdir) / ".pi" / "skills" / "review" / review.VALIDATE_FILENAME).is_file()
 
 
 def run_validate_script(site: Path, source: Path, translation: Path) -> int:
