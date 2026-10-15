@@ -38,7 +38,7 @@
 <tr><td>某阶段失败</td><td>停在出错的阶段，退出 1，终端输出原因与 manifest 路径。修好后再执行一次同样的命令，就从这个阶段接着跑，前面的阶段不重做。</td></tr>
 <tr><td>被打断</td><td>同上：再执行一次，从中断的阶段接着跑。</td></tr>
 <tr><td>七个阶段都已跑完</td><td>什么也不做，退出 0，提示用 <code>--from</code>。</td></tr>
-<tr><td>改了输入要重跑</td><td>加 <code>--from STAGE</code>，从该阶段起重跑，先删掉它及其下游的旧产物。改了什么就从哪个阶段起：src/ 里的源码或 models.toml 的 <code>[fonts]</code> → precompile；<code>tongtu/data/environments.json</code> → mask；任一层术语表或分块参数 → survey；<code>skill/translate/SKILL.md</code> → translate；<code>skill/review/</code> → review。tongtu 不检测输入是否变化，不给 <code>--from</code> 就沿用旧产物。</td></tr>
+<tr><td>改了输入要重跑</td><td>加 <code>--from STAGE</code>，从该阶段起重跑，先删掉它及其下游的旧产物。改了什么就从哪个阶段起：src/ 里的源码或 config.toml 的 <code>[fonts]</code> → precompile；<code>tongtu/data/environments.json</code> → mask；任一层术语表或分块参数 → survey；<code>skill/translate/SKILL.md</code> → translate；<code>skill/review/</code> → review。tongtu 不检测输入是否变化，不给 <code>--from</code> 就沿用旧产物。</td></tr>
 </table>
 <div class="ex"><p class="cap">从头到尾跑一篇。</p>
 <div class="term"><span class="p">$ tongtu run 2412.19437</span>
@@ -101,7 +101,7 @@ compile     compile_failed    absent   build/manifests/compile.json
 1</div></div></dd>
 
 <dt>doctor</dt>
-<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体（只看仓库 <code>fonts/</code> 下的两个霞鹜文楷文件，不检查用户的 <code>[fonts]</code> 配置）、config.toml、<code>[roles]</code> 引用的服务商密钥，以及引用的每个运行时与模型组合：对每个组合运行一次 <code>agentrun doctor &lt;运行时&gt; --json [--model 模型]</code>，把它的 executable、login、sandbox、network 四项各列一行，skip 记为 ok。安装环境后先运行它。工具链或字体缺失退出 1；配置与密钥的问题只报告，不影响退出码，最后一行说明从 survey 起的阶段不能运行。
+<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体（只看仓库 <code>fonts/</code> 下的四个默认字体文件（霞鹜文楷与思源黑体 SC 各两个），不检查用户的 <code>[fonts]</code> 配置）、config.toml、<code>[roles]</code> 引用的服务商密钥，以及引用的每个运行时与模型组合：对每个组合运行一次 <code>agentrun doctor &lt;运行时&gt; --json [--model 模型]</code>，把它的 executable、login、sandbox、network 四项各列一行，skip 记为 ok。安装环境后先运行它。工具链或字体缺失退出 1；配置与密钥的问题只报告，不影响退出码，最后一行说明从 survey 起的阶段不能运行。
 <div class="ex"><p class="cap">全部齐全：退出 0。</p>
 <div class="term"><span class="p">$ tongtu doctor</span>
   [ok]      xelatex       compile engine (latexmk -xelatex)         /Library/TeX/texbin/xelatex

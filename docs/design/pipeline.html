@@ -548,8 +548,8 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div><span class="label">规则</span>
 <ol class="steps">
 <li>三个字段：<code>main</code> 正文、<code>sans</code> 无衬线、<code>mono</code> 等宽。<code>main</code> 与 <code>sans</code> 各写一族字体：只写一个文件表示这一族只有常规字形，粗体由 xeCJK 伪粗体生成；写成 <code>{ regular = …, bold = … }</code> 同时给出粗体。<code>mono</code> 写一个文件，不写则用 main 的常规字体</li>
-<li>只接受字体文件（.ttf / .otf / .ttc）：写仓库 fonts/ 里的文件名，或绝对路径、以 <code>~</code> 开头的路径；相对路径在读配置时报错。不接受系统字体名，理由：注入块只写文件名、不写本机路径，论文目录才能搬到别的机器继续编译</li>
-<li>字体位置：注入块里 <code>\setCJKmainfont</code> 等命令只写文件名。每次编译时由 <code>tongtu/fonts.py</code> 从当前运行的 tongtu 与当前的 config.toml 算出搜索目录（仓库 fonts/ 及其子目录，加上配置里写成路径的文件所在目录，去重、保序、只保留存在的目录），设进 latexmk 子进程与修复会话环境的 <code>TTFONTS</code> 与 <code>OPENTYPEFONTS</code>；值末尾留 <code>:</code>，接上 texmf.cnf 的默认值。工作目录里不放字体文件与软链，manifest 不记字体位置</li>
+<li>只接受字体文件（.ttf / .otf / .ttc）：写仓库 fonts/ 里的文件名，或绝对路径、以 <code>~</code> 开头的路径；相对路径让整份 config.toml 校验失败，此时 precompile 不报错、用默认字体，错误由 <code>tongtu doctor</code> 报告。不接受系统字体名，理由：注入块只写文件名、不写本机路径，论文目录才能搬到别的机器继续编译</li>
+<li>字体位置：注入块里 <code>\setCJKmainfont</code> 等命令只写文件名。每次编译时由 <code>tongtu/fonts.py</code> 从当前运行的 tongtu 与当前的 config.toml 算出搜索目录（仓库 fonts/ 及其子目录，加上配置里写成路径的文件所在目录，去重、保序、只保留存在的目录），设进 latexmk 子进程与修复会话环境的 <code>TTFONTS</code> 与 <code>OPENTYPEFONTS</code>，拼在环境里原有值的前面；原来没有设时值末尾留 <code>:</code>，接上 texmf.cnf 的默认值。工作目录里不放字体文件与软链，manifest 不记字体位置</li>
 <li>失败不抛异常：一族里有文件不是字体文件或找不到时，这一族整体改用自带的默认字体，并写进 precompile 的 manifest warnings；<code>mono</code> 不可用时用 main 的常规字体</li>
 <li>默认值：main 为霞鹜文楷（Light / Medium），sans 为思源黑体 SC（Regular / Bold），都随仓库分发。伪粗体的加粗系数 <code>AutoFakeBold=2</code></li>
 </ol></div>
