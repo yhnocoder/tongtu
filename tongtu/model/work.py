@@ -14,7 +14,6 @@ from typing import IO
 
 from .. import fonts
 from ..assets import asset_path
-from ..config import config_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
 from .config import ModelsConfig, Target, load_config, role_target
 
@@ -25,8 +24,6 @@ SKILL_DIR = ".skills/{role}"
 PROMPT = "读 {skill_path}/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
 
 AGENTRUN_EXECUTABLE = "agentrun"
-
-MAX_TURNS_RUNTIME = "claude-code"
 
 AGENTRUN_GRACE_SECONDS = 120
 
@@ -74,11 +71,6 @@ def _launch(
     prompt: str | None,
 ) -> WorkOutcome:
     entry = config.roles[role]
-    absent = ["timeout_seconds"] if entry.timeout_seconds is None else []
-    if target.backend == MAX_TURNS_RUNTIME and entry.max_turns is None:
-        absent.append("max_turns")
-    if absent:
-        return _error(f"role {role} is missing fields {', '.join(absent)}; add them under [roles] in {config_path()}.")
     executable = shutil.which(AGENTRUN_EXECUTABLE)
     if executable is None:
         return _error(f"{AGENTRUN_EXECUTABLE} is not in PATH; work runs every runtime through it.")
@@ -119,8 +111,6 @@ def _launch(
             command += ["--model", target.model]
         if target.effort:
             command += ["--effort", target.effort]
-        if target.backend == MAX_TURNS_RUNTIME:
-            command += ["--max-turns", str(entry.max_turns)]
         environment = fonts.environment(fonts.configured(), os.environ) | {"TONGTU_DISABLE": "1"}
         ends: list[dict] = []
         try:

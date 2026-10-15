@@ -43,7 +43,7 @@ unknown_model_role = { model = "demo/other-model", effort = "low" }
 ghost_role = { model = "ghost/chat-model", effort = "low" }
 odd_role = { model = "odd/any-model", effort = "low" }
 inline_role = { model = "inline/chat-model", effort = "low" }
-work_role = { model = "claude-code/m", effort = "low", max_turns = 4, timeout_seconds = 60 }
+work_role = { model = "claude-code/m", effort = "low", timeout_seconds = 60 }
 """
 
 MESSAGES = [("user", "把下面这句话译成中文：Hello, world.")]

@@ -82,13 +82,15 @@ class ChunkingConfig(BaseModel):
         return self
 
 
+DEFAULT_TIMEOUT_SECONDS = 1800
+
+
 class RoleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str
     effort: str | None = None
-    timeout_seconds: float | None = Field(default=None, gt=0)
-    max_turns: int | None = Field(default=None, ge=1)
+    timeout_seconds: float = Field(default=DEFAULT_TIMEOUT_SECONDS, gt=0)
 
 
 class ModelsConfig(BaseModel):
@@ -245,15 +247,15 @@ main = { regular = "LXGWWenKai-Light.ttf", bold = "LXGWWenKai-Medium.ttf" }
 sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.otf" }
 
 # 角色：model = "后端/模型"，只在第一个 / 处切分。后端是 codex / claude-code / pi 时经 agentrun 启动该 CLI 的会话，否则是上面 [provider.*] 的名字，直接调 API
-# effort 不写就不传，写了原样交给后端，取值范围由后端决定；timeout_seconds 对 codex / claude-code / pi 必填；max_turns 只有 claude-code 用
+# effort 不写就不传，写了原样交给后端，取值范围由后端决定；timeout_seconds 是 codex / claude-code / pi 会话的时限，不写时为 1800 秒
 # 只写后端名（codex、claude-code、pi）则不传模型参数，用运行时自己的默认模型；pi 的模型写 pi/服务商/模型（pi 自己的服务商名）；服务商必须写全 服务商/模型
 # pi 的模型名以 pi --list-models 列出的为准：pi 的 --model 会模糊匹配，写错时可能匹配到别的服务商的同名模型，报错会指向那个服务商缺少密钥
 # 没有命令行选项覆盖这里的模型：换模型就改这个文件
 [roles]
 survey_terms   = { model = "deepseek/deepseek-flash", effort = "low" }
-translate      = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 1800 }
+translate      = { model = "codex/gpt-6-astra", effort = "low" }
 review         = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 3600 }
-precompile_fix = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 1800 }
-compile_fix    = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 1800 }
+precompile_fix = { model = "codex/gpt-6-astra", effort = "low" }
+compile_fix    = { model = "codex/gpt-6-astra", effort = "low" }
 # API 翻译的例子：translate = { model = "deepseek/deepseek-v4-pro" }，并把 [chunking] 改小（例如 5000 / 1500）
 """

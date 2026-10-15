@@ -8,6 +8,7 @@ import pytest
 from tongtu.config import config_path
 from tongtu.model.config import (
     CONFIG_TEMPLATE,
+    DEFAULT_TIMEOUT_SECONDS,
     RUNTIME_NAMES,
     Api,
     ChunkingConfig,
@@ -43,7 +44,7 @@ api = "grpc"
 
 [roles]
 translate = { model = "demo/chat-model", effort = "low" }
-review = { model = "claude-code/sonnet", effort = "high", max_turns = 8, timeout_seconds = 60 }
+review = { model = "claude-code/sonnet", effort = "high", timeout_seconds = 60 }
 compile_fix = { model = "pi", timeout_seconds = 60 }
 bare = { model = "demo/chat-model" }
 slashless = { model = "demo" }
@@ -76,10 +77,9 @@ def test_template_parses_and_validates() -> None:
     assert config.provider["deepseek"].api == "chat"
     assert config.roles["survey_terms"].model == "deepseek/deepseek-flash"
     assert config.roles["review"].timeout_seconds == 3600
+    assert config.roles["translate"].timeout_seconds == DEFAULT_TIMEOUT_SECONDS
     for role in ("translate", "review", "precompile_fix", "compile_fix"):
         assert (config.roles[role].model, config.roles[role].effort) == ("codex/gpt-6-astra", "low")
-        assert config.roles[role].timeout_seconds is not None
-        assert config.roles[role].max_turns is None
 
 
 def test_template_roles_resolve_to_targets() -> None:
@@ -394,7 +394,7 @@ def test_model_api_rejects_unknown_api_value(tmp_path: Path, monkeypatch: pytest
     assert "grpc" in detail
 
 
-@pytest.mark.parametrize("field", ["timeout_seconds = 0", "timeout_seconds = -5", "max_turns = 0"])
+@pytest.mark.parametrize("field", ["timeout_seconds = 0", "timeout_seconds = -5"])
 def test_role_limits_must_be_positive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str) -> None:
     write_config(tmp_path, monkeypatch, f'[roles]\nreview = {{ model = "claude-code", {field} }}\n')
     config, detail = load_config()

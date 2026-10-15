@@ -42,7 +42,7 @@ api = "chat"
 translate = { model = "demo/m1", effort = "low" }
 survey_terms = { model = "written/m1", effort = "low" }
 review = { model = "codex/m1", effort = "low", timeout_seconds = 60 }
-precompile_fix = { model = "claude-code/m1", effort = "low", max_turns = 4, timeout_seconds = 60 }
+precompile_fix = { model = "claude-code/m1", effort = "low", timeout_seconds = 60 }
 compile_fix = { model = "pi/deepseek/m1", timeout_seconds = 60 }
 """
 

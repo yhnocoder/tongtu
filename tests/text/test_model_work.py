@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tongtu import fonts
+from tongtu.model.config import DEFAULT_TIMEOUT_SECONDS
 from tongtu.model.work import PROMPT, StopReason, skill_dir, work
 from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
@@ -27,15 +28,14 @@ api = "chat"
 
 [roles]
 smoke = { model = "codex/m1", effort = "high", timeout_seconds = 60 }
-claude = { model = "claude-code/m1", effort = "low", max_turns = 4, timeout_seconds = 60.5 }
-pi = { model = "pi/p/m1", effort = "low", max_turns = 9, timeout_seconds = 60 }
+claude = { model = "claude-code/m1", effort = "low", timeout_seconds = 60.5 }
+pi = { model = "pi/p/m1", effort = "low", timeout_seconds = 60 }
 bare_pi = { model = "pi", timeout_seconds = 60 }
 asker = { model = "demo/m1", effort = "low" }
-halfway = { model = "claude-code/m1", effort = "low", timeout_seconds = 60 }
 untimed = { model = "codex/m1", effort = "low" }
 """
 
-ROLES = ("smoke", "claude", "pi", "bare_pi", "halfway", "untimed")
+ROLES = ("smoke", "claude", "pi", "bare_pi", "untimed")
 
 
 def end_line(status: str, detail: str = "") -> bytes:
@@ -122,7 +122,6 @@ def test_codex_session_copies_skill_and_runs_agentrun(configured: Path, monkeypa
     assert option(command, "--raw") == str(trace_path)
     assert option(command, "--model") == "m1"
     assert option(command, "--effort") == "high"
-    assert "--max-turns" not in command
     assert recorded["cwd"] == workdir
     assert "--no-subagents" in command
     assert recorded["timeout_seconds"] == 60 + work_module.AGENTRUN_GRACE_SECONDS
@@ -130,20 +129,17 @@ def test_codex_session_copies_skill_and_runs_agentrun(configured: Path, monkeypa
     assert (configured / "logs" / "smoke.events.jsonl").read_bytes() == end_line("finished")
 
 
-def test_claude_session_passes_max_turns_and_rounds_the_timeout_up(
-    configured: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_claude_session_rounds_the_timeout_up(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, exited())
     outcome = work("claude", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.FINISHED
     command = recorded["command"]
     assert command[:2] == [AGENTRUN, "claude-code"]
-    assert option(command, "--max-turns") == "4"
     assert option(command, "--timeout") == "61"
 
 
-def test_pi_session_passes_provider_model_and_no_max_turns(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pi_session_passes_provider_model(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: dict = {}
     record_run(monkeypatch, recorded, exited())
     outcome = work("pi", configured / "paper", trace_path=configured / "trace.jsonl")
@@ -151,7 +147,6 @@ def test_pi_session_passes_provider_model_and_no_max_turns(configured: Path, mon
     command = recorded["command"]
     assert command[:2] == [AGENTRUN, "pi"]
     assert option(command, "--model") == "p/m1"
-    assert "--max-turns" not in command
 
 
 def test_bare_runtime_passes_no_model_or_effort(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,16 +266,12 @@ def test_role_pointing_at_a_provider_is_error(configured: Path) -> None:
     assert "work needs a runtime" in outcome.detail
 
 
-def test_role_without_timeout_is_error(configured: Path) -> None:
+def test_role_without_timeout_uses_the_default(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, exited())
     outcome = work("untimed", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "timeout_seconds" in outcome.detail
-
-
-def test_claude_role_without_max_turns_is_error(configured: Path) -> None:
-    outcome = work("halfway", configured / "paper", trace_path=configured / "trace.jsonl")
-    assert outcome.stop_reason == StopReason.ERROR
-    assert "max_turns" in outcome.detail
+    assert outcome.stop_reason == StopReason.FINISHED
+    assert option(recorded["command"], "--timeout") == str(DEFAULT_TIMEOUT_SECONDS)
 
 
 def test_effort_argument_is_applied(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:

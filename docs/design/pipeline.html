@@ -121,7 +121,7 @@
 <li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝 + <code>flat.tex</code> + 以软链放进来的 <code>fonts/</code>。命令 <code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，超时 600 秒；通过的判据是退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0；latexmk 无法运行或超时 → <code>compile_failed</code></li>
 <li>缺文件展开修复：仅 latexpand 非超时、非零退出且 stderr 含 <code>ERROR: Could not find file [...]</code> 时触发；工具不存在、超时及其他错误直接 <code>expand_failed</code>。脚本先完整复制 src/ 到编译目录，写 <code>precompile-expand.log</code>，再启动修复会话在源码副本里修复。对 agent 的要求写在 <code>skill/precompile_fix/SKILL.md</code>；会话里不运行 tongtu</li>
 <li>修复会话结束后，脚本从修复后的源码树重新执行同一条展开命令，再内联 .bbl、检查全文、注入中文排版设置，写 flat.tex 并放入 fonts/；不再拷贝 src/，会话对附属文件的修复保留。随后清理编译产物再编译；仍失败则 <code>compile_failed</code>，不再开会话</li>
-<li>修复预算：整个 precompile 最多一次 work，展开修复和编译修复共用角色配置的 max_turns / timeout_seconds。编译修复会话结束后 <code>latexmk -C</code> 清掉中间产物再重新编译。会话以 error / timeout 结束记 warning，仍执行脚本复验；展开与编译都通过才是 ok。manifest.fix_session 记这一次会话的结局，包括 expand_failed / compile_failed 时的；report 只在最终编译通过时有</li>
+<li>修复预算：整个 precompile 最多一次 work，展开修复和编译修复共用角色配置的 timeout_seconds。编译修复会话结束后 <code>latexmk -C</code> 清掉中间产物再重新编译。会话以 error / timeout 结束记 warning，仍执行脚本复验；展开与编译都通过才是 ok。manifest.fix_session 记这一次会话的结局，包括 expand_failed / compile_failed 时的；report 只在最终编译通过时有</li>
 </ul></details>
 <details open id="def-precompile"><summary>产物（两个子模型与 compile 共用）</summary>
 <pre><span class="c"># 一次编译的统计结果。precompile 对原文记一份，compile 对译文记一份，两份字段相同，放在一起就能看出译文比原文多了几页、多了几个未定义引用。</span>

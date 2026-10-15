@@ -17,7 +17,7 @@ work_module = importlib.import_module("tongtu.model.work")
 TABLE = """
 [roles]
 smoke_codex = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 300 }
-smoke_claude = { model = "claude-code/claude-haiku-4-5-20251001", effort = "low", max_turns = 5, timeout_seconds = 300 }
+smoke_claude = { model = "claude-code/claude-haiku-4-5-20251001", effort = "low", timeout_seconds = 300 }
 smoke_pi = { model = "pi", timeout_seconds = 300 }
 """
 
