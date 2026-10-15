@@ -81,8 +81,10 @@ def test_empty_pages_do_not_shrink_the_union(tmp_path: Path, monkeypatch: pytest
 @pytest.mark.parametrize(
     ("stderr", "returncode", "timed_out", "fragment"),
     [
-        (bbox_lines((0, 0, 0, 0)), 0, False, "no page content"),
-        ("", 0, False, "no page content"),
+        (bbox_lines((0, 0, 0, 0), (0, 0, 0, 0)), 0, False, "no content on upright pages"),
+        ("", 0, False, "measured 0 pages"),
+        (bbox_lines((100, 100, 500, 700)), 0, False, "measured 1 pages"),
+        ("%%HiResBoundingBox: a b c d\n", 0, False, "could not convert"),
         ("Error: /undefined", 1, False, "exited with code 1"),
         ("", -9, True, "timeout"),
     ],
@@ -132,3 +134,19 @@ def test_enabled_follows_the_config(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cropping.enabled() is False
     (tmp_path / "config.toml").write_text("[pdf]\ncrop_margins = true\n", encoding="utf-8")
     assert cropping.enabled() is True
+
+
+def test_rotated_pages_keep_their_media_box_and_stay_out_of_the_union(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writer = PdfWriter()
+    for _ in range(2):
+        writer.add_blank_page(width=612, height=792)
+    writer.pages[1].rotate(90)
+    pdf = tmp_path / "paper.zh.pdf"
+    with pdf.open("wb") as stream:
+        writer.write(stream)
+    wire_ghostscript(monkeypatch, bbox_lines((100, 100, 500, 700), (70, 80, 780, 600)))
+    assert cropping.crop_margins(pdf) == []
+    padding = cropping.CROP_PADDING_POINTS
+    assert crop_boxes(pdf) == [[100 - padding, 100 - padding, 500 + padding, 700 + padding], [0, 0, 612, 792]]

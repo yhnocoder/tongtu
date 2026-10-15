@@ -51,3 +51,24 @@ def test_cropping_a_xelatex_pdf_keeps_links_and_outline(tmp_path: Path) -> None:
         assert float(page.cropbox.height) < float(page.mediabox.height)
     assert cropping.crop_margins(pdf) == []
     assert [list(page.cropbox) for page in PdfReader(pdf).pages] == [list(page.cropbox) for page in after.pages]
+
+
+def test_landscape_pages_are_left_uncropped(tmp_path: Path) -> None:
+    source = (
+        "\\documentclass{article}\n\\usepackage{pdflscape}\n\\begin{document}\nPortrait page.\n"
+        "\\begin{landscape}\nA landscape page with a wide table.\n\\end{landscape}\n\\end{document}\n"
+    )
+    (tmp_path / "paper.tex").write_text(source, encoding="utf-8")
+    subprocess.run(
+        ["xelatex", "-interaction=nonstopmode", "-halt-on-error", "paper.tex"],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
+    pdf = tmp_path / "paper.pdf"
+    assert [page.rotation for page in PdfReader(pdf).pages] == [0, 90]
+    assert cropping.crop_margins(pdf) == []
+    portrait, landscape = PdfReader(pdf).pages
+    assert float(portrait.cropbox.width) < float(portrait.mediabox.width)
+    assert list(landscape.cropbox) == list(landscape.mediabox)
