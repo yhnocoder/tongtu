@@ -82,6 +82,12 @@ class ChunkingConfig(BaseModel):
         return self
 
 
+class PdfConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    crop_margins: bool = Field(default=False, strict=True)
+
+
 DEFAULT_TIMEOUT_SECONDS = 1800
 
 
@@ -99,6 +105,7 @@ class ModelsConfig(BaseModel):
     provider: dict[str, ProviderConfig] = {}
     chunking: ChunkingConfig = ChunkingConfig()
     fonts: FontsConfig = FontsConfig()
+    pdf: PdfConfig = PdfConfig()
     roles: dict[str, RoleConfig] = {}
 
     @model_validator(mode="after")
@@ -245,6 +252,10 @@ chunk_merge_tokens = 12000
 [fonts]
 main = { regular = "LXGWWenKai-Light.ttf", bold = "LXGWWenKai-Medium.ttf" }
 sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.otf" }
+
+# 中文 PDF：crop_margins = true 时 compile 把 out/ 下 PDF 的页边白边裁掉（只改 CropBox，排版与链接不变，需要 Ghostscript）；改后从 compile 重跑
+[pdf]
+crop_margins = false
 
 # 角色：model = "后端/模型"，只在第一个 / 处切分。后端是 codex / claude-code / pi 时经 agentrun 启动该 CLI 的会话，否则是上面 [provider.*] 的名字，直接调 API
 # effort 不写就不传，写了原样交给后端，取值范围由后端决定；timeout_seconds 是 codex / claude-code / pi 会话的时限，不写时为 1800 秒

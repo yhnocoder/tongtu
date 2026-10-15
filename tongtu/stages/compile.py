@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .. import compiling, masking, pipeline, validation
+from .. import compiling, cropping, masking, pipeline, validation
 from ..artifacts.common import CompileReport, FixSession
 from ..artifacts.compile import CompileManifest, CompileStatus
 from ..artifacts.mask import BlocksFile
@@ -114,6 +114,8 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
     paper_workdir.zh_tex.write_text(zh_final, encoding=ENCODING)
     paper_workdir.out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(tree / final.pdf_name, paper_workdir.zh_pdf)
+    if cropping.enabled():
+        warnings.extend(cropping.crop_margins(paper_workdir.zh_pdf))
     warnings.extend(compiling.clean_tree(tree, main_file))
     return CompileManifest(
         status=CompileStatus.OK,
