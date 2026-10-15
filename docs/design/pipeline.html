@@ -89,8 +89,8 @@
 <li><b>展开成单文件</b>：用 <code>latexpand</code> 把 <code>\input</code> / <code>\include</code> 全部内联，有 .bbl 就一并内联进去；缺失引用文件时在源码副本中进入修复会话，修复后重新展开；其他展开错误或修复后仍失败 → <code>expand_failed</code></li>
 <li><b>删掉注释文字与死分支</b>：latexpand 已清空注释文字；前导区里取值定死的开关（论文常用 <code>\ifarxiv</code> 做双版本排版）只保留生效的分支，这样 mask 与 survey 配对环境时不受死分支干扰，<code>\documentclass</code> 也只剩一处。无法确定取值的开关原样保留并记 warning</li>
 <li><b>注入中文排版设置</b>：先按 <code>tongtu/preamble.py</code> 的规则处理前导区里 pdflatex 遗留的写法，再在前导区加上 xeCJK 与中文字体（字体来自 <a href="#fonts">fonts</a> 配置）。放在这一步的理由：宏包冲突在翻译之前暴露并修掉，之后 compile 与这里的差别只剩正文文字，再出错只可能是译文引起</li>
-<li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，加上展开后的 flat.tex；latexmk 在这个目录里运行，不改动 src/，字体经 kpathsea 搜索路径查找，见 <a href="#fonts">fonts</a>），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数，PDF 拷出为 <code>build/precompile.pdf</code>。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
-<li class="branch"><b>编译不通过 → 修复会话</b>：尚未因展开失败用过修复会话时，启动一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改 flat.tex，然后重新编译一次，以这次结果为准；已用过展开修复会话则只重新编译，不再开会话；仍不通过 → <code>compile_failed</code>。agent 改过的 flat.tex 就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，直接使用这些改动</li>
+<li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，其中的主文件用展开后的单文件覆盖、文件名不变；latexmk 在这个目录里运行，不改动 src/，字体经 kpathsea 搜索路径查找，见 <a href="#fonts">fonts</a>），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数，PDF 拷出为 <code>build/precompile.pdf</code>。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
+<li class="branch"><b>编译不通过 → 修复会话</b>：尚未因展开失败用过修复会话时，启动一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改主文件，然后重新编译一次，以这次结果为准；已用过展开修复会话则只重新编译，不再开会话；仍不通过 → <code>compile_failed</code>。agent 改过的主文件就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，直接使用这些改动</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">main_not_found</span><span class="e">main_ambiguous</span><span class="e">expand_failed</span><span class="e">compile_failed</span></div>
 <div class="io">
@@ -103,7 +103,7 @@
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝 + flat.tex；修复会话在这里运行；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
+<tr><td>build/sandbox/tex/</td><td class="src"><a href="#compile">compile</a></td><td><span class="ty">目录</span></td><td>编译目录：src/ 拷贝，主文件已换成展开后的单文件；修复会话在这里运行；结束时已 <code>latexmk -C</code>，compile 直接在里面编译</td></tr>
 <tr><td>build/precompile.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>注入中文排版设置、展开为单文件、编译通过的全文（修复过就是修复后的）；mask 的掩码对象与往返自检基准</td></tr>
 <tr><td>build/precompile.pdf</td><td class="src">—</td><td><span class="ty">PDF</span></td><td>原文（注入中文排版设置后）编译出的 PDF；与 out/&lt;ID&gt;.zh.pdf 对照看版式差异</td></tr>
 <tr><td>build/sandbox/tex/precompile-expand.log</td><td class="src">precompile_fix</td><td><span class="ty">文本</span></td><td>仅缺文件展开失败时写出：主文件相对路径、展开命令与失败原因、完整 stderr、源码中 input/include 引用的文件与行号；修复会话据它进入源码修复模式</td></tr>
@@ -118,9 +118,9 @@
 <li>死分支删除：在 .bbl 内联与注入中文排版设置之前做，纯文本处理。只删取值在前导区定死的开关的死分支，无法确定的保留并记 warning；结果与原文逐 token 等价（xelatex 回归用例在 tests/compile）。每个处理过的开关记一条 warning，manifest 不加字段与状态</li>
 <li>注入块：<code>\documentclass</code> 之后插入 xeCJK 设置，字体只写文件名，断行按中文规则，行距 <code>\linespread{1.4}</code>。注入块以 <code>\PassOptionsToPackage{no-math}{fontspec}</code> 开头，避免 fontspec 与 fdsymbol 一类数学字体宏包争 <code>\mathdollar</code>。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包时，删掉 <code>\begin{CJK}</code> / <code>\end{CJK}</code> 与 <code>\CJKfamily{…}</code>，包名本身由下一条的规则删掉</li>
 <li>pdflatex 遗留：注入之前对文件开头到 <code>\begin{document}</code> 之间的区域做一次纯文本改写，注释里的内容不动。处理规则是 <code>tongtu/preamble.py</code> 的模块常量（删 pdfTeX 专有原语与驱动选项、删 pdfTeX 专用旧宏包、给 microtype 与 fontawesome 补上 xelatex 下必需的选项与前导）；新发现的模式只加条目，不加分支。每条命中记一条 warning，manifest 不加字段与状态</li>
-<li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝 + <code>flat.tex</code>。命令 <code>latexmk -xelatex -interaction=nonstopmode flat.tex</code>，环境里设 <code>TTFONTS</code> / <code>OPENTYPEFONTS</code>（见 <a href="#fonts">fonts</a>），超时 600 秒；通过的判据是退出码 0、flat.pdf 非空、flat.log 解析出的页数 &gt; 0；latexmk 无法运行或超时 → <code>compile_failed</code></li>
+<li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝，再把展开、注入后的单文件写回主文件的原路径。主文件全程不改名，理由：jobname 随之不变，作者随源码上传、按 jobname 命名的文件（pgfplots 的 gnuplot 结果 <code>&lt;jobname&gt;.*.table</code> 一类）在 precompile 与 compile 都能直接找到。原文以 src/ 与 <code>build/precompile.tex</code> 为准，编译目录里的主文件可以覆盖。命令 <code>latexmk -xelatex -interaction=nonstopmode &lt;主文件&gt;</code>，环境里设 <code>TTFONTS</code> / <code>OPENTYPEFONTS</code>（见 <a href="#fonts">fonts</a>），超时 600 秒；通过的判据是退出码 0、<code>&lt;jobname&gt;.pdf</code> 非空、<code>&lt;jobname&gt;.log</code> 解析出的页数 &gt; 0；latexmk 无法运行或超时 → <code>compile_failed</code></li>
 <li>缺文件展开修复：仅 latexpand 非超时、非零退出且 stderr 含 <code>ERROR: Could not find file [...]</code> 时触发；工具不存在、超时及其他错误直接 <code>expand_failed</code>。脚本先完整复制 src/ 到编译目录，写 <code>precompile-expand.log</code>，再启动修复会话在源码副本里修复。对 agent 的要求写在 <code>skill/precompile_fix/SKILL.md</code>；会话里不运行 tongtu</li>
-<li>修复会话结束后，脚本从修复后的源码树重新执行同一条展开命令，再内联 .bbl、检查全文、注入中文排版设置，写 flat.tex；不再拷贝 src/，会话对附属文件的修复保留。随后清理编译产物再编译；仍失败则 <code>compile_failed</code>，不再开会话</li>
+<li>修复会话结束后，脚本从修复后的源码树重新执行同一条展开命令，再内联 .bbl、检查全文、注入中文排版设置，写回主文件；不再拷贝 src/，会话对附属文件的修复保留。随后清理编译产物再编译；仍失败则 <code>compile_failed</code>，不再开会话</li>
 <li>修复预算：整个 precompile 最多一次 work，展开修复和编译修复共用角色配置的 timeout_seconds。编译修复会话结束后 <code>latexmk -C</code> 清掉中间产物再重新编译。会话以 error / timeout 结束记 warning，仍执行脚本复验；展开与编译都通过才是 ok。manifest.fix_session 记这一次会话的结局，包括 expand_failed / compile_failed 时的；report 只在最终编译通过时有</li>
 </ul></details>
 <details open id="def-precompile"><summary>产物（两个子模型与 compile 共用）</summary>
@@ -453,8 +453,8 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div class="card-head"><span class="name">compile</span><span class="one">译文回填、编译出 PDF</span><span class="tag agent">work（失败时）</span></div>
 <div><span class="label">任务</span>
 <ol class="steps">
-<li><b>拼回全文</b>：按 chunk 顺序把 <code>reviewed/</code> 拼成翻译后的掩码全文，再用 blocks.json 把 <code>⟦BLK-n⟧</code> / <code>⟦CAP-n⟧</code> 换回原文块，得到 zh.tex。前导区 precompile 已经注入过中文排版设置，这里不再动</li>
-<li><b>编译</b>：把 zh.tex 写进 precompile 留下的编译目录 <code>build/sandbox/tex/</code>（不拷 src/，precompile 修复过的文件都已在里面），与 precompile 用同一组字体搜索路径，跑 <code>latexmk -xelatex zh.tex</code></li>
+<li><b>拼回全文</b>：按 chunk 顺序把 <code>reviewed/</code> 拼成翻译后的掩码全文，再用 blocks.json 把 <code>⟦BLK-n⟧</code> / <code>⟦CAP-n⟧</code> 换回原文块，得到中文全文。前导区 precompile 已经注入过中文排版设置，这里不再动</li>
+<li><b>编译</b>：把中文全文写进 precompile 留下的编译目录 <code>build/sandbox/tex/</code>，覆盖主文件，文件名与 precompile 相同（取自 precompile manifest 的 main_file；不拷 src/，precompile 修复过的文件都已在里面），与 precompile 用同一组字体搜索路径，跑 <code>latexmk -xelatex &lt;主文件&gt;</code></li>
 <li class="branch"><b>不通过 → 修复会话</b>：启动一次 agent work（角色 <code>compile_fix</code>）在编译目录里修，然后重新编译一次，以这次结果为准</li>
 <li><b>出口判据</b>：编译通过；页数与原文基线相差不超过 30%；修复会话没有删掉正文里的 LaTeX 命令。任一不过 → <code>compile_failed</code></li>
 <li><b>拷出</b>：<code>out/&lt;ID&gt;.zh.pdf</code> 与 <code>build/zh.tex</code>（修复过就是修复后的），然后 <code>latexmk -C</code> 清掉中间文件；判据不过时两者都不写</li>
@@ -468,7 +468,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <tr><td>build/blocks.json</td><td class="src"><a href="#mask">mask</a></td><td><a href="#def-mask">BlocksFile</a></td><td>回填 ⟦BLK-n⟧ ⟦CAP-n⟧</td></tr>
 <tr><td>build/masked.tex</td><td class="src"><a href="#mask">mask</a></td><td><span class="ty">LaTeX</span></td><td>入口自检：chunks/ 拼接必须与它相等</td></tr>
 <tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>入口自检的另一方</td></tr>
-<tr><td>build/manifests/precompile.json</td><td class="src"><a href="#precompile">precompile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>原文的编译基线，页数判据以它为准</td></tr>
+<tr><td>build/manifests/precompile.json</td><td class="src"><a href="#precompile">precompile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>原文的编译基线，页数判据以它为准；main_file 给出编译目录里主文件的路径</td></tr>
 <tr><td>build/sandbox/tex/</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">目录</span></td><td>编译目录，直接在里面编译：图、bib、cls、precompile 修复过的文件都在</td></tr>
 <tr><td>skill/compile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>编译失败时拷进编译目录，修复会话读它</td></tr>
 <tr><td>$TONGTU_HOME/config.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 compile_fix 用哪个运行时与模型</td></tr>
@@ -477,8 +477,8 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
 <tr><td>out/&lt;ID&gt;.zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物。&lt;ID&gt; 是论文工作目录的名字，默认就是 arXiv 编号（/ 换成 _）；文件名带编号，拷出 out/ 之后也能认出是哪篇论文</td></tr>
 <tr><td>build/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>编译通过的中文全文（修复过就是修复后的）；判据不过时不写</td></tr>
-<tr><td>build/sandbox/tex/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>写进编译目录的译文；修复会话在这个目录里运行；结束时 <code>latexmk -C</code> 清掉中间文件</td></tr>
-<tr><td>build/sandbox/tex/zh.log、zh.pdf</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物：计数从 zh.log 解析，修复会话读 zh.log 定位错误；通过后 zh.pdf 拷出为 out/&lt;ID&gt;.zh.pdf，<code>latexmk -C</code> 后不保留</td></tr>
+<tr><td>build/sandbox/tex/&lt;主文件&gt;</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>写进编译目录的译文，覆盖 precompile 写的英文单文件；修复会话在这个目录里运行；结束时 <code>latexmk -C</code> 清掉中间文件</td></tr>
+<tr><td>build/sandbox/tex/&lt;jobname&gt;.log、.pdf</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物，jobname 是主文件去掉扩展名：计数从 .log 解析，修复会话读 .log 定位错误；通过后 .pdf 拷出为 out/&lt;ID&gt;.zh.pdf，<code>latexmk -C</code> 后不保留</td></tr>
 <tr><td>logs/compile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；启动过修复会话才有</td></tr>
 <tr><td>build/manifests/compile.json</td><td class="src">—</td><td><a href="#def-compile">CompileManifest</a></td><td>译文的编译统计与原文基线并排、修复会话结局</td></tr>
 </tbody></table>
@@ -487,7 +487,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <ul class="fine">
 <li>入口自检：按 chunk 顺序拼接 <code>chunks/</code> 必须与 <code>masked.tex</code> 逐字符相等，不等即 <code>compile_failed</code>，message 提示 <code>--from survey</code>。用来发现 survey 之后被手工改过的 chunk 文件</li>
 <li>页数判据：译文页数 / 基线页数落在 <code>[0.7, 1.3]</code>（模块常量 <code>PAGE_RATIO_MIN</code> / <code>PAGE_RATIO_MAX</code>），用来发现整章丢失或整章重复</li>
-<li>命令判据：编译目录里最终的 zh.tex 与修复会话之前 unmask 直接写出的版本做 <a href="#translate">translate</a> 校验的第 2 条（命令一个不少）。译文对原文的一致性 review 已逐 chunk 保证，这里检查的是修复会话有没有删命令。不拿 precompile.tex 作参照，因为 mask 对 caption 的段落归一化会引入 <code>\par</code></li>
+<li>命令判据：编译目录里最终的主文件与修复会话之前 unmask 直接写出的版本做 <a href="#translate">translate</a> 校验的第 2 条（命令一个不少）。译文对原文的一致性 review 已逐 chunk 保证，这里检查的是修复会话有没有删命令。不拿 precompile.tex 作参照，因为 mask 对 caption 的段落归一化会引入 <code>\par</code></li>
 <li>修复会话：会话结束 <code>latexmk -C</code> 清掉中间产物再重新编译；会话以 error / timeout 结束记 warning，判定仍由重新编译给出</li>
 <li>只记 warning 不算失败的：overfull hbox、未定义引用、未定义文献、缺字四个计数相对基线的增量；caption 回退</li>
 </ul></details>
@@ -562,7 +562,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>build/sandbox/tex/flat.tex</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">LaTeX</span></td><td>前导区的注入块，按本配置生成，字体只写文件名</td></tr>
+<tr><td>build/sandbox/tex/&lt;主文件&gt;</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">LaTeX</span></td><td>前导区的注入块，按本配置生成，字体只写文件名</td></tr>
 </tbody></table>
 </div>
 <details open><summary>配置与示例</summary>

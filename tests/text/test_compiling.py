@@ -134,6 +134,7 @@ def wire_work(monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=Non
         *,
         trace_path: Path,
         report=None,
+        prompt=None,
     ):
         calls.append(
             {
@@ -141,6 +142,7 @@ def wire_work(monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=Non
                 "workdir": workdir,
                 "trace_path": trace_path,
                 "report": report,
+                "prompt": prompt,
             }
         )
         if edit is not None:
@@ -156,9 +158,8 @@ def make_tree(tmp_path: Path) -> tuple[Path, Path]:
     tree = tmp_path / "tree"
     src.mkdir()
     (src / "macros.sty").write_text("\\newcommand{\\x}{1}\n", encoding="utf-8")
-    (src / "zh.tex").write_text("stale main\n", encoding="utf-8")
-    warnings = compiling.copy_src_tree(src, tree, "zh.tex")
-    assert warnings and "zh.tex" in warnings[0]
+    (src / "zh.tex").write_text("original main\n", encoding="utf-8")
+    compiling.copy_src_tree(src, tree)
     (tree / "zh.tex").write_text("\\documentclass{article}\n", encoding="utf-8")
     return src, tree
 
@@ -178,6 +179,8 @@ def test_fix_passes_the_role_and_tree(tmp_path: Path, monkeypatch: pytest.Monkey
             "workdir": tree,
             "trace_path": tmp_path / "trace.jsonl",
             "report": None,
+            "prompt": "读 .skills/compile_fix/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
+            "主文件是 zh.tex，编译日志是 zh.log。",
         }
     ]
 
@@ -208,12 +211,14 @@ def test_fix_warns_on_error_and_timeout(
     assert str(stop_reason) in warnings[0]
 
 
-def test_copy_src_tree_without_collision(tmp_path: Path) -> None:
+def test_copy_src_tree_copies_every_file(tmp_path: Path) -> None:
     src = tmp_path / "src"
-    src.mkdir()
+    (src / "sections").mkdir(parents=True)
     (src / "main.tex").write_text("x", encoding="utf-8")
-    assert compiling.copy_src_tree(src, tmp_path / "tree", "zh.tex") == []
-    assert (tmp_path / "tree" / "main.tex").is_file()
+    (src / "sections" / "intro.tex").write_text("y", encoding="utf-8")
+    compiling.copy_src_tree(src, tmp_path / "tree")
+    assert (tmp_path / "tree" / "main.tex").read_text(encoding="utf-8") == "x"
+    assert (tmp_path / "tree" / "sections" / "intro.tex").read_text(encoding="utf-8") == "y"
 
 
 def call_compile_with_fix(

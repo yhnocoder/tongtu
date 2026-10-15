@@ -51,6 +51,7 @@ def test_arxiv_1905_12322v3_double_missing_inputs(
         *,
         trace_path: Path,
         report=None,
+        prompt=None,
     ) -> WorkOutcome:
         assert role == "precompile_fix"
         calls.append(tree)
@@ -130,9 +131,9 @@ FAKE_BOLD_PAPER = (
 )
 
 
-def xelatex_flat(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def xelatex_main(tmp_path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["xelatex", "-interaction=nonstopmode", "-halt-on-error", precompile.FLAT_FILENAME],
+        ["xelatex", "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
         cwd=tmp_path,
         env=fonts.environment(FontsConfig(), os.environ),
         capture_output=True,
@@ -149,10 +150,10 @@ def test_pdflatex_leftovers_compile_after_adapt(tmp_path: Path, name: str) -> No
         pytest.skip(f"{' '.join(required)} not installed")
     warnings: list[str] = []
     injected = precompile._inject_cjk(source.encode("utf-8"), warnings, FontsConfig())
-    precompile._assemble_tree(tmp_path, injected)
-    completed = xelatex_flat(tmp_path)
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
     assert completed.returncode == 0, completed.stdout[-2000:]
-    assert (tmp_path / "flat.pdf").stat().st_size > 0
+    assert (tmp_path / "main.pdf").stat().st_size > 0
 
 
 def test_fake_bold_without_a_bold_file_compiles_without_undefined_shapes(tmp_path: Path) -> None:
@@ -162,9 +163,33 @@ def test_fake_bold_without_a_bold_file_compiles_without_undefined_shapes(tmp_pat
     assert warnings == []
     assert b"\\usepackage[AutoFakeBold=2]{xeCJK}\n" in injected
     assert b"\\setCJKmainfont{LXGWWenKai-Light.ttf}\n" in injected
-    precompile._assemble_tree(tmp_path, injected)
-    completed = xelatex_flat(tmp_path)
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
     assert completed.returncode == 0, completed.stdout[-2000:]
-    log = (tmp_path / "flat.log").read_text(encoding="utf-8", errors="replace")
+    log = (tmp_path / "main.log").read_text(encoding="utf-8", errors="replace")
     assert not [line for line in log.splitlines() if "Font shape" in line and "undefined" in line]
-    assert (tmp_path / "flat.pdf").stat().st_size > 0
+    assert (tmp_path / "main.pdf").stat().st_size > 0
+
+
+def test_jobname_named_companion_files_are_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    workdir = Workdir(tmp_path / "1508.07909")
+    workdir.create()
+    (workdir.src / "subword.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n"
+        "\\InputIfFileExists{\\jobname.data}{}{\\errmessage{missing \\jobname.data}}\n\\end{document}\n"
+    )
+    (workdir.src / "subword.data").write_text("Data uploaded by the author.\n")
+
+    def work(role: str, tree: Path, **kwargs: object) -> WorkOutcome:
+        raise AssertionError("a jobname-named companion file must not need a fix session")
+
+    monkeypatch.setattr(tongtu.model, "work", work)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.OK, manifest.message
+    assert manifest.main_file == "subword.tex"
+    assert manifest.fix_session is None
+    assert workdir.precompile_pdf.read_bytes().startswith(b"%PDF")
+    tree = workdir.sandbox("tex")
+    assert (tree / "subword.tex").read_bytes() == workdir.precompile_tex.read_bytes()
+    assert (tree / "subword.data").is_file()

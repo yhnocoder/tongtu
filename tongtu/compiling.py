@@ -10,7 +10,7 @@ from pathlib import Path
 from . import fonts, model, processes, texlog
 from .artifacts.common import CompileReport, FixSession
 from .manifests import describe_error, timeout_warning
-from .model.work import StopReason
+from .model.work import PROMPT, StopReason, skill_dir
 
 COMPILE_TIMEOUT_SECONDS = 600
 
@@ -21,6 +21,8 @@ ERROR_LINE_LIMIT = 5
 LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-xelatex", "-interaction=nonstopmode")
 
 LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-C")
+
+FIX_PROMPT_FILES = "主文件是 {main}，编译日志是 {log}。"
 
 
 @dataclass(frozen=True)
@@ -44,11 +46,8 @@ class CompileAttempt:
         return self.log_path.with_suffix(".pdf").name
 
 
-def copy_src_tree(src: Path, tree: Path, main_filename: str) -> list[str]:
+def copy_src_tree(src: Path, tree: Path) -> None:
     shutil.copytree(src, tree, dirs_exist_ok=True)
-    if (tree / main_filename).exists():
-        return [f"src/ already contains {main_filename}; the copy in the compile tree is overwritten"]
-    return []
 
 
 def attempt_compile(tree: Path, main_filename: str) -> CompileAttempt:
@@ -90,7 +89,9 @@ def fix(
     report: Callable[[str], None] | None = None,
 ) -> FixSession:
     started = time.monotonic()
-    outcome = model.work(role, tree, trace_path=trace_path, report=report)
+    log_name = Path(main_filename).with_suffix(".log").name
+    prompt = PROMPT.format(skill_path=skill_dir(role)) + FIX_PROMPT_FILES.format(main=main_filename, log=log_name)
+    outcome = model.work(role, tree, trace_path=trace_path, report=report, prompt=prompt)
     session = FixSession(
         stop_reason=str(outcome.stop_reason),
         model=outcome.model,
