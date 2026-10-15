@@ -191,6 +191,23 @@ def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.Mo
     assert loaded(tmp_path, monkeypatch).fonts == FontsConfig()
 
 
+def test_crop_margins_is_off_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert loaded(tmp_path, monkeypatch).pdf.crop_margins is False
+    assert ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE)).pdf.crop_margins is False
+
+
+def test_crop_margins_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert loaded(tmp_path, monkeypatch, TABLE + "\n[pdf]\ncrop_margins = true\n").pdf.crop_margins is True
+
+
+@pytest.mark.parametrize("value", ['"yes"', "1"])
+def test_crop_margins_must_be_a_boolean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    write_config(tmp_path, monkeypatch, "[pdf]\ncrop_margins = " + value + "\n")
+    config, detail = load_config()
+    assert config is None
+    assert "crop_margins" in detail
+
+
 def test_chunking_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert loaded(tmp_path, monkeypatch).chunking == ChunkingConfig(chunk_tokens=5000, chunk_merge_tokens=1500)
 

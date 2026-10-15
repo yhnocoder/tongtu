@@ -10,6 +10,7 @@ from pypdf.generic import RectangleObject
 
 from . import processes
 from .manifests import describe_error
+from .model.config import load_config
 
 GHOSTSCRIPT_BBOX_COMMAND: tuple[str, ...] = ("gs", "-q", "-dSAFER", "-dNOPAUSE", "-dBATCH", "-sDEVICE=bbox")
 
@@ -40,11 +41,18 @@ class Box:
         )
 
 
+def enabled() -> bool:
+    config, _ = load_config()
+    return config is not None and config.pdf.crop_margins
+
+
 def crop_margins(pdf: Path) -> list[str]:
     try:
         content = _content_box(pdf)
     except OSError as error:
-        return [f"cannot run Ghostscript to measure the page content ({describe_error(error)}); the PDF keeps its margins"]
+        return [
+            f"cannot run Ghostscript to measure the page content ({describe_error(error)}); the PDF keeps its margins"
+        ]
     if isinstance(content, str):
         return [f"{content}; the PDF keeps its margins"]
     try:

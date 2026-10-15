@@ -189,6 +189,7 @@ def cropped(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
         return []
 
     monkeypatch.setattr(cropping, "crop_margins", crop_margins)
+    monkeypatch.setattr(cropping, "enabled", lambda: False)
     return calls
 
 
@@ -214,6 +215,17 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cr
     assert not (tree / "main.pdf").exists()
     assert sorted(path.name for path in tree.iterdir()) == ["figure.pdf", "main.tex"]
     assert not (workdir.logs / "compile-fix.jsonl").exists()
+    assert cropped == []
+
+
+def test_crop_margins_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cropped: list[Path]) -> None:
+    workdir = make_workdir(tmp_path)
+    wire_latexmk(monkeypatch, [{}])
+    wire_work(monkeypatch)
+    monkeypatch.setattr(cropping, "enabled", lambda: True)
+    manifest = compile.run(workdir)
+    assert manifest.status is CompileStatus.OK
+    assert manifest.warnings == []
     assert cropped == [workdir.zh_pdf]
 
 
@@ -221,6 +233,7 @@ def test_crop_failure_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.Monk
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{}])
     wire_work(monkeypatch)
+    monkeypatch.setattr(cropping, "enabled", lambda: True)
     monkeypatch.setattr(cropping, "crop_margins", lambda pdf: ["Ghostscript reported no page content"])
     manifest = compile.run(workdir)
     assert manifest.status is CompileStatus.OK

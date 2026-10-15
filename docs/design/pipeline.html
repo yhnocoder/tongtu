@@ -458,7 +458,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <li class="branch"><b>不通过 → 修复会话</b>：启动一次 agent work（角色 <code>compile_fix</code>）在编译目录里修，然后重新编译一次，以这次结果为准</li>
 <li><b>出口判据</b>：编译通过；页数与原文基线相差不超过 30%；修复会话没有删掉正文里的 LaTeX 命令。任一不过 → <code>compile_failed</code></li>
 <li><b>拷出</b>：<code>out/&lt;ID&gt;.zh.pdf</code> 与 <code>build/zh.tex</code>（修复过就是修复后的），然后 <code>latexmk -C</code> 清掉中间文件；判据不过时两者都不写</li>
-<li><b>裁白边</b>：用 Ghostscript 量出 <code>out/&lt;ID&gt;.zh.pdf</code> 每页内容的边界，取全部页的并集，四边各留出边距，写成每一页的 CropBox。理由：手机上读 PDF 时页边空白占去大量屏幕；只改 CropBox 不改排版，断行、页码、链接与书签都不变。所有页用同一个框，翻页时尺寸一致。build/precompile.pdf 不裁</li>
+<li class="branch"><b>裁白边（可选，默认关闭）</b>：config.toml 里 <code>[pdf] crop_margins = true</code> 时，用 Ghostscript 量出 <code>out/&lt;ID&gt;.zh.pdf</code> 每页内容的边界，取全部页的并集，四边各留出边距，写成每一页的 CropBox。理由：手机上读 PDF 时页边空白占去大量屏幕；只改 CropBox 不改排版，断行、页码、链接与书签都不变。所有页用同一个框，翻页时尺寸一致。build/precompile.pdf 不裁</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">compile_failed</span></div>
 <div class="io">
@@ -476,7 +476,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
-<tr><td>out/&lt;ID&gt;.zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物。&lt;ID&gt; 是论文工作目录的名字，默认就是 arXiv 编号（/ 换成 _）；文件名带编号，拷出 out/ 之后也能认出是哪篇论文；已裁掉白边（CropBox）</td></tr>
+<tr><td>out/&lt;ID&gt;.zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物。&lt;ID&gt; 是论文工作目录的名字，默认就是 arXiv 编号（/ 换成 _）；文件名带编号，拷出 out/ 之后也能认出是哪篇论文；开了 <code>crop_margins</code> 时已裁掉白边（CropBox）</td></tr>
 <tr><td>build/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>编译通过的中文全文（修复过就是修复后的）；判据不过时不写</td></tr>
 <tr><td>build/sandbox/tex/&lt;主文件&gt;</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>写进编译目录的译文，覆盖 precompile 写的英文单文件；修复会话在这个目录里运行；结束时 <code>latexmk -C</code> 清掉中间文件</td></tr>
 <tr><td>build/sandbox/tex/&lt;jobname&gt;.log、.pdf</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物，jobname 是主文件去掉扩展名：计数从 .log 解析，修复会话读 .log 定位错误；通过后 .pdf 拷出为 out/&lt;ID&gt;.zh.pdf，<code>latexmk -C</code> 后不保留</td></tr>

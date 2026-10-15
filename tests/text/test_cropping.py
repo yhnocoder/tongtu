@@ -48,9 +48,7 @@ def crop_boxes(pdf: Path) -> list[list[float]]:
     return [[float(value) for value in page.cropbox] for page in PdfReader(pdf).pages]
 
 
-def test_every_page_gets_the_union_of_the_content_plus_padding(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_every_page_gets_the_union_of_the_content_plus_padding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pdf = blank_pdf(tmp_path / "paper.zh.pdf")
     original = pdf.read_bytes()
     calls = wire_ghostscript(monkeypatch, bbox_lines((120, 90, 480, 700), (118, 100, 520, 710)))
@@ -127,3 +125,10 @@ def test_an_unreadable_pdf_keeps_its_bytes(tmp_path: Path, monkeypatch: pytest.M
     assert len(warnings) == 1 and "crop box" in warnings[0]
     assert pdf.read_bytes() == b"%PDF-1.5 truncated"
     assert not (tmp_path / "paper.zh.pdf.part").exists()
+
+
+def test_enabled_follows_the_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    assert cropping.enabled() is False
+    (tmp_path / "config.toml").write_text("[pdf]\ncrop_margins = true\n", encoding="utf-8")
+    assert cropping.enabled() is True
