@@ -111,7 +111,7 @@ compile_fix    = { runtime = "codex", model = "astra", effort = "light", timeout
 <span class="label">会话的约束</span>
 <ol class="rules">
 <li><b>Bash 不做前缀放行</b>：沙箱内的命令一律放行，沙箱不可用时会话直接失败，角色级放行清单起不了作用。正确性由调用方在会话目录外重跑校验。Claude Code 运行时另外经 <code>--disallowedTools</code> 禁止编辑 skill 目录，agent 改不了 validate.py，也不能用 <code>&gt;</code> 重定向覆盖它；默认的 Codex 运行时没有这条限制，会话目录整体可写，validate.py 被改也不影响判定，因为校验在会话目录外重跑。</li>
-<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 都能执行任意代码，前缀放行拦不住，只能靠沙箱把写范围限制在会话目录、断网。嵌套容器（例如云端会话）里设环境变量 <code>TONGTU_NESTED_SANDBOX=1</code>，work 给带 sandbox 表的运行时合入 <code>enableWeakerNestedSandbox = true</code>。</li>
+<li><b>操作系统沙箱</b>：运行时自带，不自己写。<code>latexmk -e</code>、<code>xelatex -shell-escape</code>、<code>.latexmkrc</code> 都能执行任意代码，前缀放行拦不住，只能靠沙箱把写范围限制在会话目录、断网。</li>
 <li><b>嵌套检查</b>：子进程环境加 <code>TONGTU_DISABLE=1</code>，<code>tongtu</code> 入口看到它立刻以退出码 2 退出。它只给会话里的 <code>tongtu run</code> 一个明确失败，不防有意绕过；有意绕过需要写会话目录之外的工作目录根、需要出网，第 2 条会让它在第一个阶段失败。</li>
 <li><b>会话隔离</b>：不加载用户的 hooks / MCP / 插件；子进程 PATH 收成固定清单（TeX bin 与系统 bin），最前面加一个只含 <code>python3</code> 符号链接的目录，指向 tongtu 自身的基础解释器（<code>sys.base_prefix</code>）。只链接这一个文件，不把基础解释器的 bin 目录放进 PATH，会话就拿不到装在那里的 <code>tongtu</code>。</li>
 </ol>
