@@ -26,9 +26,9 @@
 <span class="k">tongtu status</span>   PAPER [--workdir DIR]
 <span class="k">tongtu validate</span> SRC DST
 <span class="k">tongtu doctor</span>
-<span class="k">tongtu setup</span>    [-i]
+<span class="k">tongtu setup</span>    [--dev]
 <span class="k">tongtu</span>          --version</pre>
-<p>PAPER 是 arXiv 编号、arXiv 链接或本地源码目录。STAGE 取 fetch、precompile、mask、survey、translate、review、compile 之一。终端输出、manifest 的 message 与 warnings 一律英文；发给模型的素材与 models.toml 模板注释不在此列。</p>
+<p>PAPER 是 arXiv 编号、arXiv 链接或本地源码目录。STAGE 取 fetch、precompile、mask、survey、translate、review、compile 之一。终端输出、manifest 的 message 与 warnings 一律英文；发给模型的素材与 config.toml 模板注释不在此列。</p>
 
 <h2>COMMANDS <small>示例输出为示意</small></h2>
 <dl>
@@ -117,27 +117,22 @@ compile     compile_failed    absent   build/manifests/compile.json
   [ok]      claude-code/opus agentrun doctor: network                  skipped: --network none
 environment complete.</div></div></dd>
 
-<dt>setup [-i]</dt>
-<dd>第一次使用前运行一次，生成配置文件 <code>models.toml</code>（带注释的模板，已存在不覆盖，权限 0600）。<code>-i</code>：逐个询问是否启用模板里的服务商并输入 API key（不回显），API 直调类角色指向第一个启用的服务商，模型换成该服务商的默认模型；一个都没启用退出 2。不加 <code>-i</code> 就自己打开文件填写。
-<div class="ex"><p class="cap">第一次使用：写出配置、填入密钥。</p>
-<div class="term"><span class="p">$ tongtu setup -i</span>
-configure opencode? [y/N]: y
-API key for opencode:
-configure deepseek? [y/N]: n
-configure anthropic? [y/N]: n
-wrote /Users/zach/.config/tongtu/models.toml.</div></div></dd>
+<dt>setup [--dev]</dt>
+<dd>第一次使用前运行一次，写出配置文件 <code>$TONGTU_HOME/config.toml</code>（带注释的模板，已存在不覆盖，权限 0600），之后自己打开文件填写服务商与角色。
+<div class="ex"><p class="cap">第一次使用：写出配置模板。</p>
+<div class="term"><span class="p">$ tongtu setup</span>
+wrote /Users/zach/.tongtu/config.toml.</div></div></dd>
 </dl>
 
 <h2>OPTIONS <small>run 与 stage 共用；stage 不含 --from 与 --no-review</small></h2>
 <dl>
 <dt>--from STAGE</dt><dd>从哪个阶段起重跑，见 run。</dd>
-<dt>--ask-model PROVIDER/MODEL，--ask-effort LEVEL</dt><dd>本次换一个模型做 API 直调：覆盖所有 ask 类角色（survey_terms、API 模式的 translate）。PROVIDER 是 models.toml 里 <code>[provider.*]</code> 的名字。要长期更换或只换一个角色，改 models.toml。</dd>
-<dt>--work-model RUNTIME/MODEL，--work-effort LEVEL</dt><dd>本次换一个模型做 agent 工作：覆盖所有 agent 会话（work）类角色（Agent 模式的 translate、review、precompile_fix、compile_fix）。RUNTIME 是 <code>[runtime.*]</code> 的名字，例如 <code>codex/astra</code>。</dd>
 <dt>--glossary FILE</dt><dd>给这篇论文额外指定术语表，可多次给出，靠后的优先。与全局层、论文层术语表叠加。</dd>
 <dt>--no-terms</dt><dd>不让模型提议术语，只用自己给出的术语表。</dd>
 <dt>--no-review</dt><dd>只 <code>run</code> 有。跳过审校会话，行为见 <a href="../pipeline.html#review">review 卡</a>。</dd>
 <dt>--jobs N</dt><dd>translate 同时翻译的 chunk 数，默认 4。</dd>
-<dt>--workdir DIR</dt><dd>把这篇论文的工作目录放到指定位置。默认 <code>$TONGTU_HOME/&lt;编号&gt;</code>，再默认 <code>~/.local/share/tongtu/&lt;编号&gt;</code>。</dd>
+<dt>--workdir DIR</dt><dd>把这篇论文的工作目录放到指定位置。默认 <code>$TONGTU_HOME/papers/&lt;编号&gt;</code>。</dd>
+<dt>--dev</dt><dd>本次以 <code>~/.tongtu-dev</code> 作为 <code>$TONGTU_HOME</code>（config.toml、glossary.json 与 papers/ 一起换）。</dd>
 </dl>
 
 <h2>EXIT STATUS</h2>
@@ -149,17 +144,16 @@ wrote /Users/zach/.config/tongtu/models.toml.</div></div></dd>
 
 <h2>FILES</h2>
 <dl>
-<dt>~/.config/tongtu/models.toml</dt><dd>服务商、模型清单、各角色默认模型，见 <a href="model.html">模型调用层</a>。</dd>
-<dt>~/.config/tongtu/glossary.json</dt><dd>全局层术语表。</dd>
+<dt>$TONGTU_HOME/config.toml</dt><dd>服务商、分块参数、字体、中文 PDF 选项与各角色的模型，见 <a href="model.html">模型调用层</a>。</dd>
+<dt>$TONGTU_HOME/glossary.json</dt><dd>全局层术语表。</dd>
 <dt>&lt;工作目录&gt;/glossary.json</dt><dd>论文层术语表。</dd>
 <dt>&lt;工作目录&gt;/src/ build/ logs/ out/</dt><dd>各阶段的输入与产物，见各阶段卡片；manifest 在 <code>build/manifests/&lt;stage&gt;.json</code>。</dd>
 </dl>
-<p>取值优先级，右边覆盖左边：模型与强度 = models.toml [roles] → <code>--ask-*</code> / <code>--work-*</code>；术语表 = 模型提议 → 全局层 → 论文层 → <code>--glossary</code>；工作目录 = <code>~/.local/share/tongtu/</code> → <code>$TONGTU_HOME</code> → <code>--workdir</code>。</p>
+<p>取值优先级，右边覆盖左边：模型与强度 = config.toml 的 [roles]，没有命令行覆盖；术语表 = 模型提议 → 全局层 → 论文层 → <code>--glossary</code>；工作目录 = <code>~/.tongtu/papers/</code> → <code>$TONGTU_HOME/papers/</code> → <code>--workdir</code>。</p>
 
 <h2>ENVIRONMENT</h2>
 <dl>
-<dt>TONGTU_HOME</dt><dd>工作目录根。</dd>
-<dt>XDG_CONFIG_HOME</dt><dd>配置目录根，默认 <code>~/.config</code>。</dd>
+<dt>TONGTU_HOME</dt><dd>tongtu 的根目录，默认 <code>~/.tongtu</code>，含 config.toml、glossary.json 与论文工作目录 papers/。</dd>
 <dt>服务商密钥</dt><dd>服务商条目 <code>api_key</code> 留空时，用其 <code>api_key_env</code> 指定的环境变量。</dd>
 <dt>TONGTU_DISABLE</dt><dd>已设置时入口立刻退出 2。work 会话的子进程环境里设置它，让会话内的 <code>tongtu run</code> 明确失败。</dd>
 </dl>

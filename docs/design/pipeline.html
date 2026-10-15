@@ -99,7 +99,7 @@
 <tr><td>src/</td><td class="src"><a href="#fetch">fetch</a></td><td><span class="ty">目录</span></td><td>判定主文件；latexpand 展开；整体拷成编译目录</td></tr>
 <tr><td>skill/precompile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>缺文件展开失败或编译失败时拷进编译目录，修复会话读它</td></tr>
 <tr><td>tongtu/preamble.py</td><td class="src">仓库</td><td><span class="ty">模块常量</span></td><td>pdflatex 遗留的处理规则，注入前按它改写前导区</td></tr>
-<tr><td>$XDG_CONFIG_HOME/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 precompile_fix 用哪个运行时与模型；展开修复与编译修复共用一次 work 预算</td></tr>
+<tr><td>$TONGTU_HOME/config.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 precompile_fix 用哪个运行时与模型；展开修复与编译修复共用一次 work 预算</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
@@ -243,7 +243,7 @@
 <tr><td>glossary.json</td><td class="src">用户</td><td><a href="#def-glossary">GlossaryFile</a></td><td>术语表论文层（工作目录根）</td></tr>
 <tr><td>--glossary FILE</td><td class="src">用户</td><td><a href="#def-glossary">GlossaryFile</a></td><td>术语表命令行层，可多个，靠后优先</td></tr>
 <tr><td>skill/survey_terms/SKILL.md</td><td class="src">仓库</td><td><span class="ty">Markdown</span></td><td>提议术语表那次 ask 的 system</td></tr>
-<tr><td>$XDG_CONFIG_HOME/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 survey_terms 用哪个服务商与模型；角色 translate 的分块参数</td></tr>
+<tr><td>$TONGTU_HOME/config.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 survey_terms 用哪个服务商与模型；<code>[chunking]</code> 的分块参数</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
@@ -256,9 +256,9 @@
 <details><summary>细节与常量</summary>
 <ul class="fine">
 <li>切 chunk：扫标题结构选首选层级 → 按章节切 → 大于 chunk_tokens 下分、小于 chunk_merge_tokens 合并 → 定区 front / body / appendix → 自检拼接恒等。token 数用 <code>tiktoken</code>（o200k_base）实数，只用于分块决策</li>
-<li>分块上限与合并阈值是 models.toml 里 <code>roles.translate.chunk_tokens</code> / <code>chunk_merge_tokens</code>，不写时为 5000 / 1500，<code>tongtu setup</code> 生成的模板写 20000 / 12000；API 与 Agent 模式共用，改后从 survey 重跑</li>
+<li>分块上限与合并阈值是 config.toml 里 <code>[chunking]</code> 的 <code>chunk_tokens</code> / <code>chunk_merge_tokens</code>，不写时为 5000 / 1500，<code>tongtu setup</code> 生成的模板写 20000 / 12000；API 与 Agent 模式共用，改后从 survey 重跑</li>
 <li>术语提议：<code>--no-terms</code> 或角色未配置时跳过；system 是 <code>skill/survey_terms/SKILL.md</code>，输入摘要 + 标题树 + 全文掩码文本，schema 约束输出 <code>{terms, do_not_translate}</code>。提议的译名机械补空格：中文字符与 ASCII 字母数字相邻处插一个空格（<code>细粒度token选择</code> → <code>细粒度 token 选择</code>）</li>
-<li><code>chunk_failed</code> 的出口：models.toml 读取或校验失败；读不到或解析不了 masked.tex / blocks.json；tiktoken 的 o200k_base 编码加载失败（首次使用要联网下载 BPE 文件，或以 <code>TIKTOKEN_CACHE_DIR</code> 指向已有的）；无法切出拼接后恒等于 masked.tex 的 chunk</li>
+<li><code>chunk_failed</code> 的出口：config.toml 读取或校验失败；读不到或解析不了 masked.tex / blocks.json；tiktoken 的 o200k_base 编码加载失败（首次使用要联网下载 BPE 文件，或以 <code>TIKTOKEN_CACHE_DIR</code> 指向已有的）；无法切出拼接后恒等于 masked.tex 的 chunk</li>
 <li>摘要来源：先取 blocks.json 的 abstract 槽位，没有再找 masked.tex 里的 abstract 环境；两处都没有则 brief.abstract 为 null 并记 warning，不算失败</li>
 </ul></details>
 <details open id="def-survey"><summary>产物</summary>
@@ -329,7 +329,7 @@
 <tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>摘要、标题树、术语表、style 进 system；chunks 清单定顺序、每 chunk 的标题与 translatable_chars</td></tr>
 <tr><td>build/chunks/*.tex</td><td class="src"><a href="#survey">survey</a></td><td><span class="ty">LaTeX</span></td><td>待译正文，每个 chunk 至多两次模型调用</td></tr>
 <tr><td>skill/translate/SKILL.md</td><td class="src">仓库</td><td><span class="ty">Markdown</span></td><td>翻译规则，system 的首段；改了它要 <code>--from translate</code></td></tr>
-<tr><td>$XDG_CONFIG_HOME/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 translate 选 provider（API）还是 runtime（Agent），用哪个模型</td></tr>
+<tr><td>$TONGTU_HOME/config.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 translate 选 provider（API）还是 runtime（Agent），用哪个模型</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
@@ -421,7 +421,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <tr><td>build/translated/*.tex</td><td class="src"><a href="#translate">translate</a></td><td><span class="ty">LaTeX</span></td><td>修订的起点，拷进隔离目录为 reviewed/；未过校验的 chunk 回退到这一版</td></tr>
 <tr><td>build/brief.json</td><td class="src"><a href="#survey">survey</a></td><td><a href="#def-survey">BriefFile</a></td><td>术语表与全局语境，拷进隔离目录</td></tr>
 <tr><td>skill/review/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>SKILL.md，由 work 拷进隔离目录的 skill 目录</td></tr>
-<tr><td>$XDG_CONFIG_HOME/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 review 用哪个运行时与模型</td></tr>
+<tr><td>$TONGTU_HOME/config.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 review 用哪个运行时与模型</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
@@ -471,7 +471,7 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <tr><td>build/manifests/precompile.json</td><td class="src"><a href="#precompile">precompile</a></td><td><a href="#def-precompile">PrecompileManifest</a></td><td>原文的编译基线，页数判据以它为准</td></tr>
 <tr><td>build/sandbox/tex/</td><td class="src"><a href="#precompile">precompile</a></td><td><span class="ty">目录</span></td><td>编译目录，直接在里面编译：图、bib、cls、precompile 修复过的文件都在</td></tr>
 <tr><td>skill/compile_fix/</td><td class="src">仓库</td><td><span class="ty">Skill</span></td><td>编译失败时拷进编译目录，修复会话读它</td></tr>
-<tr><td>$XDG_CONFIG_HOME/tongtu/models.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 compile_fix 用哪个运行时与模型</td></tr>
+<tr><td>$TONGTU_HOME/config.toml</td><td class="src">用户</td><td><span class="ty">TOML</span></td><td>角色 compile_fix 用哪个运行时与模型</td></tr>
 </tbody></table>
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
