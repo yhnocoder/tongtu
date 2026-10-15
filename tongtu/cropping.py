@@ -49,10 +49,12 @@ def enabled() -> bool:
 def crop_margins(pdf: Path) -> list[str]:
     try:
         boxes = _page_boxes(pdf)
-    except (OSError, ValueError) as error:
+    except OSError as error:
         return [
             f"cannot run Ghostscript to measure the page content ({describe_error(error)}); the PDF keeps its margins"
         ]
+    except ValueError as error:
+        return [f"cannot parse Ghostscript's bounding boxes ({describe_error(error)}); the PDF keeps its margins"]
     if isinstance(boxes, str):
         return [f"{boxes}; the PDF keeps its margins"]
     try:
