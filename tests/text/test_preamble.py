@@ -73,6 +73,17 @@ def test_other_pdftex_assignments_are_removed() -> None:
     assert len(warnings) == 2
 
 
+def test_pdfsuppressptexinfo_with_a_negative_value_is_removed() -> None:
+    output, warnings = run(
+        "\\pdfoutput=1\n\\pdfsuppressptexinfo=-1\n\\documentclass{article}\n\\begin{document}\n\\end{document}\n"
+    )
+    assert output.startswith("\n\n\\documentclass{article}")
+    assert warnings == [
+        "removed the pdftex assignment \\pdfoutput=1 at line 1",
+        "removed the pdftex assignment \\pdfsuppressptexinfo=-1 at line 2",
+    ]
+
+
 def test_ifpdf_idioms_are_kept() -> None:
     text = (
         "\\documentclass{article}\n"
