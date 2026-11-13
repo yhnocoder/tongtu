@@ -389,15 +389,16 @@ def locate(
             continue
         holder = graphic_box or box
         for unit, left, right, lines in _segments(box, records, groups, owners, graphic_box):
+            x0, y0, x1, y1 = sync.page_bounds(holder, (left, holder.y - holder.height, right, holder.y + holder.depth))
             found.append(
                 (
                     unit,
                     Rect(
                         page=box.page,
-                        x=sync.x_points(left),
-                        y=sync.y_points(holder.y - holder.height),
-                        width=sync.points(right - left),
-                        height=sync.points(holder.extent),
+                        x=sync.x_points(x0),
+                        y=sync.y_points(y0),
+                        width=sync.points(x1 - x0),
+                        height=sync.points(y1 - y0),
                         lines=frozenset(lines),
                         box=box.index,
                         graphic=graphic_box is not None,
@@ -418,7 +419,7 @@ def _inside(sync: Synctex, box: Box, frame: Box) -> bool:
 def _is_container(
     sync: Synctex, box: Box, frame: Box, main_tags: set[int], owners: Mapping[int, int], memo: dict[int, set[int]]
 ) -> bool:
-    if box.extent <= CONTAINER_HEIGHT_RATIO * frame.extent:
+    if sync.page_extent(box) <= CONTAINER_HEIGHT_RATIO * frame.extent:
         return False
     if box.index not in memo:
         units: set[int] = set()

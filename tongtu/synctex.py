@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
+from pypdf import Transformation
+
 RECORD_RE = re.compile(r"([(\[hvxkg$r])(\d+),(\d+):(-?\d+),(-?\d+)(?::(-?\d+)(?:,(-?\d+),(-?\d+))?)?")
 
 HBOX = "("
@@ -31,6 +33,13 @@ BODY_MIN_WIDTH_RATIO = 0.9
 BODY_SIBLING_MAX_RATIO = 0.15
 
 BODY_SEARCH_DEPTH = 12
+
+TRANSFORM_TOLERANCE = 0.1
+
+QUARTER_TURNS = (90, 180, 270)
+
+
+type Bounds = tuple[float, float, float, float]
 
 
 class SynctexError(ValueError):
@@ -95,6 +104,10 @@ class Box:
     def extent(self) -> int:
         return self.height + self.depth
 
+    @property
+    def bounds(self) -> Bounds:
+        return self.x, self.y - self.height, self.x + self.width, self.y + self.depth
+
 
 @dataclass
 class Synctex:
@@ -105,8 +118,9 @@ class Synctex:
     magnification: int
     boxes: list[Box]
     pages: dict[int, list[int]]
+    transforms: dict[int, Transformation] = field(default_factory=dict)
 
-    def points(self, value: int) -> float:
+    def points(self, value: float) -> float:
         scaled = value * self.unit * self.magnification / MAGNIFICATION_BASE
         return scaled / SCALED_POINTS_PER_POINT * PDF_POINTS_PER_INCH / TEX_POINTS_PER_INCH
 
@@ -114,14 +128,22 @@ class Synctex:
         scaled = points * TEX_POINTS_PER_INCH / PDF_POINTS_PER_INCH * SCALED_POINTS_PER_POINT
         return round(scaled * MAGNIFICATION_BASE / (self.unit * self.magnification))
 
-    def x_points(self, value: int) -> float:
+    def x_points(self, value: float) -> float:
         return self.points(value) + self.points_offset(self.x_offset)
 
-    def y_points(self, value: int) -> float:
+    def y_points(self, value: float) -> float:
         return self.points(value) + self.points_offset(self.y_offset)
 
     def points_offset(self, offset: int) -> float:
         return offset / SCALED_POINTS_PER_POINT * PDF_POINTS_PER_INCH / TEX_POINTS_PER_INCH
+
+    def page_bounds(self, box: Box, bounds: Bounds) -> Bounds:
+        transform = self.transforms.get(box.index)
+        return bounds if transform is None else _mapped(transform, bounds)
+
+    def page_extent(self, box: Box) -> float:
+        _, top, _, bottom = self.page_bounds(box, box.bounds)
+        return bottom - top
 
     def tags_of(self, path: str) -> set[int]:
         target = _normalize(path)
@@ -218,7 +240,7 @@ def parse(text: str) -> Synctex:
                 stack[-1].child_count += 1
     if not pages:
         raise SynctexError("the SyncTeX file has no page records")
-    return Synctex(
+    sync = Synctex(
         inputs=inputs,
         unit=header["Unit"],
         x_offset=header["X Offset"],
@@ -227,6 +249,75 @@ def parse(text: str) -> Synctex:
         boxes=boxes,
         pages=pages,
     )
+    tolerance = sync.raw(TRANSFORM_TOLERANCE)
+    for box in boxes:
+        local = _scaling(boxes, box, tolerance) or _rotation(boxes, box, tolerance)
+        outer = sync.transforms.get(box.parent) if box.parent is not None else None
+        if local is not None and outer is not None:
+            local = local.transform(outer)
+        transform = local or outer
+        if transform is not None:
+            sync.transforms[box.index] = transform
+    return sync
+
+
+def _scaling(boxes: list[Box], box: Box, tolerance: int) -> Transformation | None:
+    if box.kind != HBOX or box.width != 0 or box.extent <= 0 or box.child_count != 1 or not box.children:
+        return None
+    natural = boxes[box.children[0]]
+    holder = _only_parent(boxes, box)
+    outer = _only_parent(boxes, holder) if holder is not None else None
+    if natural.width <= 0 or holder is None or outer is None or holder.width != 0 or outer.width <= 0:
+        return None
+    if abs(holder.x - box.x) > tolerance or abs(outer.x - box.x) > tolerance:
+        return None
+    if abs(holder.extent - box.extent) <= tolerance or holder.extent <= 0:
+        return None
+    vertical = holder.extent / box.extent
+    if (
+        abs(holder.height - vertical * box.height) > tolerance
+        or abs(outer.height - holder.height) > tolerance
+        or abs(outer.depth - holder.depth) > tolerance
+    ):
+        return None
+    return (
+        Transformation().translate(-box.x, -box.y).scale(outer.width / natural.width, vertical).translate(box.x, box.y)
+    )
+
+
+def _rotation(boxes: list[Box], box: Box, tolerance: int) -> Transformation | None:
+    if box.kind != HBOX or box.width <= 0 or box.extent <= 0 or box.child_count != 1 or not box.children:
+        return None
+    inner = boxes[box.children[0]]
+    outer = _only_parent(boxes, box)
+    if outer is None or not _close(inner.bounds, box.bounds, tolerance) or _close(box.bounds, outer.bounds, tolerance):
+        return None
+    for angle in QUARTER_TURNS:
+        turn = Transformation().translate(-box.x, -box.y).rotate(-angle).translate(box.x, box.y)
+        if _close(_mapped(turn, box.bounds), outer.bounds, tolerance):
+            return turn
+    return None
+
+
+def _only_parent(boxes: list[Box], box: Box) -> Box | None:
+    if box.parent is None:
+        return None
+    parent = boxes[box.parent]
+    if parent.kind != HBOX or parent.child_count != 1:
+        return None
+    return parent
+
+
+def _mapped(transform: Transformation, bounds: Bounds) -> Bounds:
+    left, top, right, bottom = bounds
+    corners = [transform.apply_on((x, y)) for x in (left, right) for y in (top, bottom)]
+    xs = [x for x, _ in corners]
+    ys = [y for _, y in corners]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _close(first: Bounds, second: Bounds, tolerance: int) -> bool:
+    return all(abs(a - b) <= tolerance for a, b in zip(first, second, strict=True))
 
 
 def _integer(value: str, name: str) -> int:

@@ -249,6 +249,52 @@ def test_missing_main_input_is_an_anchors_error(environments_table: Mapping[str,
         )
 
 
+SCALED_PAPER = r"""\documentclass{article}
+\begin{document}
+Some words.
+
+\begin{table}
+\scalebox{0.5}{\begin{tabular}{ll}
+a & b \\
+\end{tabular}}
+\end{table}
+\end{document}
+"""
+
+
+def scaled_page() -> list[str]:
+    def group(line: int, x: float, width: float, height: float, depth: float) -> str:
+        return synctex_record("(", 1, line, x, 200, width, height, depth)
+
+    return [
+        synctex_record("[", 1, 2, 0, 700, 500, 700, 0),
+        synctex_record("[", 1, 2, 0, 680, 480, 640, 0),
+        *line(3, 0, 60, 480, synctex_record("g", 1, 3, 100, 60), synctex_record("k", 1, 3, 200, 60, 1)),
+        group(6, 100, 60, 20, 10),
+        synctex_record("g", 1, 6, 160, 200),
+        group(6, 100, 0, 20, 10),
+        group(6, 100, 0, 40, 20),
+        group(6, 100, 120, 40, 20),
+        *line(7, 100, 172, 120, synctex_record("g", 1, 7, 130, 172), synctex_record("k", 1, 7, 150, 172, 1), height=8),
+        ")",
+        ")",
+        ")",
+        ")",
+        "]",
+        "]",
+    ]
+
+
+def test_scaled_table_rect_follows_the_scaled_box(environments_table: Mapping[str, masking.TableEntry]) -> None:
+    unmasked, units = masked_units(SCALED_PAPER, environments_table)
+    parsed = synctex.parse(synctex_file({1: MAIN}, [scaled_page()]))
+    result = anchors.anchors_file(
+        parsed, ["/tmp/tree/main.tex"], units, unmasked.text, unmasked.text, [MEDIA], "x.zh.pdf", "zh.tex"
+    )
+    (table,) = [block for block in result.blocks if block.kind is AnchorKind.TABLE]
+    assert corners(table.rects) == [box(100, 182, 160, 187)]
+
+
 def rect(x: float, y: float, width: float, height: float) -> anchors.Rect:
     return anchors.Rect(page=1, x=x, y=y, width=width, height=height)
 
