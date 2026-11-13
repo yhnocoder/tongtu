@@ -8,6 +8,7 @@ from pathlib import Path
 
 import anthropic
 import openai
+from pydantic import BaseModel
 
 from .config import Api, ModelsConfig, Target, load_config, model_api, provider_key, role_target
 
@@ -33,6 +34,11 @@ ASK_TIMEOUT_SECONDS = 300
 class AskStatus(StrEnum):
     OK = "ok"
     ERROR = "error"
+
+
+class CallLog(BaseModel):
+    status: AskStatus
+    response: str
 
 
 @dataclass(frozen=True)

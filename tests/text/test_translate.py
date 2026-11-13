@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tongtu import masking
+from tongtu.artifacts.status import ChunkCounts
 from tongtu.artifacts.survey import (
     BriefFile,
     ChunkRecord,
@@ -18,7 +19,7 @@ from tongtu.artifacts.survey import (
     TermEntry,
 )
 from tongtu.artifacts.translate import ChunkTranslateStatus, TranslateManifest, TranslateStatus
-from tongtu.model.ask import AskOutcome, AskStatus
+from tongtu.model.ask import AskOutcome, AskStatus, CallLog
 from tongtu.model.config import ModelsConfig, ProviderConfig, RoleConfig
 from tongtu.pipeline import outputs_present
 from tongtu.stages import translate
@@ -586,3 +587,106 @@ def test_translate_rejects_an_undeclared_provider(tmp_path: Path, monkeypatch: p
     manifest = translate.run(make_workdir(tmp_path, ["Hello."]), jobs=1)
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
     assert "provider ghost" in manifest.message
+
+
+CHUNK_BODY = "\nHello ⟦BLK-0⟧.\n"
+
+VALID_REPLY = "你好 ⟦BLK-0⟧。"
+
+INVALID_REPLY = "你好。"
+
+
+def write_call_log(workdir: Workdir, attempt: int, status: AskStatus, response: str) -> None:
+    path = workdir.logs / f"translate-c000-{attempt}.json"
+    path.write_text(CallLog(status=status, response=response).model_dump_json(), encoding="utf-8")
+
+
+def write_session(workdir: Workdir, attempt: int, end: str | None, translation: str | None) -> None:
+    lines = [json.dumps({"schema": 1, "type": "tool", "name": "Bash", "summary": "ls"}), "not json"]
+    if end is not None:
+        lines.append(json.dumps({"schema": 1, "type": "end", "status": end, "detail": ""}))
+    (workdir.logs / f"translate-c000-{attempt}.jsonl").write_text("", encoding="utf-8")
+    (workdir.logs / f"translate-c000-{attempt}.events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    site = workdir.sandbox(translate.STAGE_NAME) / "c000" / str(attempt)
+    site.mkdir(parents=True, exist_ok=True)
+    if translation is not None:
+        (site / "translation.tex").write_text(translation, encoding="utf-8")
+
+
+def test_chunk_counts_need_the_brief(tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "paper")
+    assert translate.chunk_counts(workdir) is None
+    workdir.create()
+    workdir.brief.write_text("{", encoding="utf-8")
+    assert translate.chunk_counts(workdir) is None
+
+
+def test_chunk_counts_come_from_the_manifest_after_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_ask(monkeypatch, failing_after(1))
+    workdir = make_workdir(tmp_path, [*sentences(2), "⟦BLK-0⟧\n"])
+    assert translate.chunk_counts(workdir) == ChunkCounts(total=2, done=0)
+    manifest = translate.run(workdir, jobs=1)
+    assert manifest.chunks["c001"].status is ChunkTranslateStatus.FALLBACK
+    assert manifest.chunks["c002"].status is ChunkTranslateStatus.SKIPPED
+    assert translate.chunk_counts(workdir) == ChunkCounts(total=2, done=2)
+
+
+def test_chunk_counts_of_a_failed_stage_are_zero(tmp_path: Path) -> None:
+    workdir = make_workdir(tmp_path, ["Hello.\n"])
+    write_call_log(workdir, 1, AskStatus.OK, "你好。")
+    failed = TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, message="config")
+    workdir.manifest_path(translate.STAGE_NAME).write_text(failed.model_dump_json(), encoding="utf-8")
+    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=0)
+
+
+@pytest.mark.parametrize(
+    ("attempts", "done"),
+    [
+        ((), 0),
+        (((AskStatus.OK, VALID_REPLY),), 1),
+        (((AskStatus.OK, f"```latex\n{VALID_REPLY}\n```"),), 1),
+        (((AskStatus.OK, INVALID_REPLY),), 0),
+        (((AskStatus.OK, ""),), 0),
+        (((AskStatus.ERROR, ""),), 0),
+        (((AskStatus.OK, INVALID_REPLY), (AskStatus.OK, INVALID_REPLY)), 1),
+        (((AskStatus.ERROR, ""), (AskStatus.OK, VALID_REPLY)), 1),
+    ],
+)
+def test_chunk_counts_during_an_api_run_replay_the_check(
+    tmp_path: Path, attempts: tuple[tuple[AskStatus, str], ...], done: int
+) -> None:
+    workdir = make_workdir(tmp_path, [CHUNK_BODY])
+    for attempt, (status, response) in enumerate(attempts, start=1):
+        write_call_log(workdir, attempt, status, response)
+    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=done)
+
+
+@pytest.mark.parametrize(
+    ("sessions", "done"),
+    [
+        (((None, VALID_REPLY),), 0),
+        ((("finished", VALID_REPLY),), 1),
+        ((("finished", INVALID_REPLY),), 0),
+        ((("finished", None),), 0),
+        ((("timeout", VALID_REPLY),), 0),
+        ((("error", VALID_REPLY),), 0),
+        ((("finished", INVALID_REPLY), (None, None)), 0),
+        ((("finished", INVALID_REPLY), ("error", None)), 1),
+    ],
+)
+def test_chunk_counts_during_an_agent_run_replay_the_check(
+    tmp_path: Path, sessions: tuple[tuple[str | None, str | None], ...], done: int
+) -> None:
+    workdir = make_workdir(tmp_path, [CHUNK_BODY])
+    for attempt, (end, translation) in enumerate(sessions, start=1):
+        write_session(workdir, attempt, end, translation)
+    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=done)
+
+
+def test_chunk_counts_reject_a_symlinked_agent_translation(tmp_path: Path) -> None:
+    workdir = make_workdir(tmp_path, [CHUNK_BODY])
+    write_session(workdir, 1, "finished", None)
+    external = tmp_path / "external.tex"
+    external.write_text(VALID_REPLY, encoding="utf-8")
+    (workdir.sandbox(translate.STAGE_NAME) / "c000" / "1" / "translation.tex").symlink_to(external)
+    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=0)

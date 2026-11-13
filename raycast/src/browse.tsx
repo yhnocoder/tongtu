@@ -121,11 +121,24 @@ function Actions({ p, detail, toggleView, extra }: { p: Paper; detail?: boolean;
   );
 }
 
+let scanned: Paper[] = [];
+
 export function usePapers(): Paper[] {
-  const [papers, setPapers] = useState<Paper[]>(scan);
+  const [papers, setPapers] = useState<Paper[]>(scanned);
   useEffect(() => {
-    fetchMeta(papers).then((changed) => changed && setPapers(scan()));
-    const timer = setInterval(() => setPapers(scan()), 2000);
+    let busy = false;
+    const refresh = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        scanned = await scan();
+        setPapers(scanned);
+      } finally {
+        busy = false;
+      }
+    };
+    refresh().then(async () => (await fetchMeta(scanned)) && refresh());
+    const timer = setInterval(refresh, 2000);
     return () => clearInterval(timer);
   }, []);
   return papers;

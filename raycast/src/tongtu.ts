@@ -1,8 +1,9 @@
 import { getPreferenceValues } from "@raycast/api";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 export const STAGES = ["fetch", "precompile", "mask", "survey", "translate", "review", "compile"] as const;
 export const ROOT = path.join(process.env.TONGTU_HOME || path.join(os.homedir(), ".tongtu"), "papers");
@@ -35,6 +36,18 @@ export const prefs = () => getPreferenceValues<Prefs>();
 
 export type Stage = { name: string; status: string; message: string; warnings: string[] };
 
+type StageState = Stage & { outputs_present: boolean; manifest: string | null };
+
+type PaperStatus = {
+  workdir: string;
+  arxiv_id: string | null;
+  stages: StageState[];
+  translate_chunks: { total: number; done: number } | null;
+  pdf: string | null;
+};
+
+const ABSENT = "absent";
+
 export type Meta = { title: string; authors: string[]; category: string; published: string };
 
 export type Paper = Meta & {
@@ -55,11 +68,14 @@ export type Paper = Meta & {
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const metaPath = (id: string) => path.join(CACHE, `${id}.json`);
+const statusPath = (id: string) => path.join(CACHE, `${id}.status.json`);
+const run = promisify(execFile);
+const repoDir = () => prefs().repo.replace(/^~/, os.homedir());
 export const normalize = (paper: string) => paper.match(ARXIV_ID)?.[0] ?? paper.trim();
 
 export function start(paper: string) {
   const id = normalize(paper);
-  const repo = prefs().repo.replace(/^~/, os.homedir());
+  const repo = repoDir();
   const dir = path.join(ROOT, id);
   const script = [
     `if uv run --directory ${q(repo)} tongtu run ${q(id)} > /dev/null 2>&1`,
@@ -115,15 +131,21 @@ function pdfPath(dir: string): string {
   return !fs.existsSync(pdf) && fs.existsSync(legacy) ? legacy : pdf;
 }
 
-function translateProgress(dir: string): [number, number] | null {
-  const brief = read(path.join(dir, "build/brief.json"));
-  if (!brief) return null;
-  const total = JSON.parse(brief).chunks.filter((c: { translatable_chars: number }) => c.translatable_chars).length;
-  let done: string[] = [];
-  try {
-    done = fs.readdirSync(path.join(dir, "logs")).flatMap((f) => f.match(/^translate-(.+)-\d+\.json$/)?.[1] ?? []);
-  } catch {}
-  return [new Set(done).size, total];
+function manifestsKey(dir: string): string {
+  const manifests = path.join(dir, "build/manifests");
+  return [manifests, ...STAGES.map((name) => path.join(manifests, `${name}.json`))].map(mtime).join(",");
+}
+
+async function paperStatus(id: string, dir: string, running: boolean): Promise<PaperStatus> {
+  const key = manifestsKey(dir);
+  const cached = JSON.parse(read(statusPath(id)) || "null") as { key: string; status: PaperStatus } | null;
+  if (cached && cached.key === key && !running) return cached.status;
+  const command = `uv run --directory ${q(repoDir())} tongtu status ${q(id)} --workdir ${q(dir)} --json`;
+  const { stdout } = await run("/bin/zsh", ["-c", command], { env: ENV, encoding: "utf8" });
+  const status = JSON.parse(stdout) as PaperStatus;
+  fs.mkdirSync(CACHE, { recursive: true });
+  fs.writeFileSync(statusPath(id), JSON.stringify({ key, status }));
+  return status;
 }
 
 function sessionEvents(dir: string, stage: string): string[] {
@@ -140,19 +162,23 @@ function sessionEvents(dir: string, stage: string): string[] {
   return events.slice(-8);
 }
 
-function inspect(id: string, pgid: number | null): Paper {
+async function inspect(id: string, pgid: number | null): Promise<Paper> {
   const dir = path.join(ROOT, id);
   const stages: Stage[] = [];
   let latest = 0;
   let failed: Stage | null = null;
-  for (const name of STAGES) {
-    const file = path.join(dir, "build/manifests", `${name}.json`);
-    const text = read(file);
-    if (!text) break;
-    const manifest = JSON.parse(text);
-    latest = Math.max(latest, mtime(file));
-    stages.push({ name, status: manifest.status, message: manifest.message ?? "", warnings: manifest.warnings ?? [] });
-    if (manifest.status !== "ok") {
+  let status: PaperStatus | null = null;
+  let error = "";
+  try {
+    status = await paperStatus(id, dir, pgid !== null);
+  } catch (e) {
+    error = `tongtu status failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  for (const state of status?.stages ?? []) {
+    if (state.status === ABSENT || !state.manifest) break;
+    latest = Math.max(latest, mtime(state.manifest));
+    stages.push({ name: state.name, status: state.status, message: state.message, warnings: state.warnings });
+    if (state.status !== "ok") {
       failed = stages[stages.length - 1];
       break;
     }
@@ -169,22 +195,23 @@ function inspect(id: string, pgid: number | null): Paper {
     status: pgid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial",
     stage,
     done,
-    message: failed ? `${failed.status} ${failed.message}`.trim() : "",
+    message: failed ? `${failed.status} ${failed.message}`.trim() : error,
     stages,
     events: sessionEvents(dir, stage),
-    translated: stage === "translate" ? translateProgress(dir) : null,
+    translated: stage === "translate" && status?.translate_chunks ? [status.translate_chunks.done, status.translate_chunks.total] : null,
     added: mtime(path.join(dir, "build/manifests/fetch.json")) || mtime(dir),
     mtime: latest || mtime(dir),
   };
 }
 
-export function scan(): Paper[] {
+export async function scan(): Promise<Paper[]> {
   let ids: string[] = [];
   try {
     ids = fs.readdirSync(ROOT, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {}
   const groups = runningGroups();
-  return ids.map((id) => inspect(id, groups.get(id) ?? null)).sort((a, b) => b.mtime - a.mtime);
+  const papers = await Promise.all(ids.map((id) => inspect(id, groups.get(id) ?? null)));
+  return papers.sort((a, b) => b.mtime - a.mtime);
 }
 
 export function groupKey(p: Paper, by: Prefs["groupBy"]): string {

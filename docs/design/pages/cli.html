@@ -23,7 +23,7 @@
 <h2>SYNOPSIS</h2>
 <pre><span class="k">tongtu run</span>      PAPER [--from STAGE] [--no-review] [OPTIONS]
 <span class="k">tongtu stage</span>    [STAGE PAPER] [OPTIONS]
-<span class="k">tongtu status</span>   PAPER [--workdir DIR]
+<span class="k">tongtu status</span>   PAPER [--workdir DIR] [--json]
 <span class="k">tongtu validate</span> SRC DST
 <span class="k">tongtu doctor</span>
 <span class="k">tongtu setup</span>    [--dev]
@@ -87,7 +87,59 @@ translate   ok                present  build/manifests/translate.json
               c004 fell back to the English source; the last attempt failed: control_sequences: \cite appears 3 times in source, 2 in translation
 review      ok                present  build/manifests/review.json
 compile     compile_failed    absent   build/manifests/compile.json
-              47 pages against a baseline of 31 (ratio 1.52) falls outside [0.7, 1.3]</div></div></dd>
+              47 pages against a baseline of 31 (ratio 1.52) falls outside [0.7, 1.3]</div></div>
+<p><b>--json。</b>把同样的内容写成一个 JSON 对象输出到 stdout（UTF-8），此外不输出任何文字，另外给出 translate 的分块进度与中文 PDF 的路径。它给 Raycast 插件这类定时读取状态的程序使用，这些程序不再自己解析工作目录里的文件。退出码与不加 <code>--json</code> 时相同：工作目录不存在时照常输出，七个阶段都是 <code>absent</code>，退出 0；PAPER 不合法时退出 2，错误信息写到 stderr。<code>tongtu run</code> 没有 JSON 输出。</p>
+<pre><code class="language-python">class PaperStatus(BaseModel):          # tongtu/artifacts/status.py
+    workdir: Path                         # 绝对路径
+    arxiv_id: str | None                  # PAPER 解析出的 arXiv 编号；PAPER 是本地源码目录时为 null
+    stages: list[StageState]              # 七个阶段，按阶段顺序
+    translate_chunks: ChunkCounts | None  # build/brief.json 读不到时为 null
+    pdf: Path | None                      # out/&lt;工作目录名&gt;.zh.pdf，文件存在时给出
+
+class StageState(BaseModel):
+    name: str
+    status: str                           # manifest 的 status；manifest 不存在或读不出时为 "absent"
+    outputs_present: bool                 # 与表格的 outputs 列相同，run 按它判断从哪个阶段接着跑
+    message: str
+    warnings: list[str]
+    manifest: Path | None                 # manifest 文件存在时给出绝对路径
+
+class ChunkCounts(BaseModel):
+    total: int                            # translatable_chars 大于 0 的 chunk 数，即 translate 要翻译的 chunk
+    done: int                             # 其中结果已经确定（translated 或 fallback）的 chunk 数</code></pre>
+<p><code>done</code> 的算法：translate 的 manifest 存在时，数 manifest 的 <code>chunks</code> 里记录的可翻译 chunk，阶段结束后 <code>done</code> 等于 <code>total</code>，<code>translate_failed</code> 时为 0。manifest 不存在时（translate 正在运行或被打断），按 logs/ 与 build/sandbox/translate/ 里每次尝试的记录重放 translate 自己的判定：一个 chunk 的第二次尝试已经结束，或者第一次尝试已经结束且它的译文通过与 translate 相同的校验，就算已完成。尝试已经结束指 API 模式的 <code>logs/translate-cNNN-k.json</code> 已写出，或者 Agent 模式的 <code>logs/translate-cNNN-k.events.jsonl</code> 里已有 end 事件。translate 在开始时删除这些记录，所以它们只属于最近一次运行。</p>
+<p>输出里没有「是否正在运行」：通途不写锁文件或 pid 文件，从工作目录看不出有没有进程在跑。输出也不带格式版本号，读它的程序与通途在同一个仓库里一起修改。</p>
+<div class="ex"><p class="cap">survey 跑完、translate 还没开始（节选）。</p>
+<div class="term"><span class="p">$ tongtu status 2512.02556 --json</span>
+{
+  "workdir": "/Users/zach/.tongtu/papers/2512.02556",
+  "arxiv_id": "2512.02556",
+  "stages": [
+    {
+      "name": "fetch",
+      "status": "ok",
+      "outputs_present": true,
+      "message": "",
+      "warnings": [],
+      "manifest": "/Users/zach/.tongtu/papers/2512.02556/build/manifests/fetch.json"
+    },
+    <span class="dim">…</span>
+    {
+      "name": "translate",
+      "status": "absent",
+      "outputs_present": false,
+      "message": "",
+      "warnings": [],
+      "manifest": null
+    },
+    <span class="dim">…</span>
+  ],
+  "translate_chunks": {
+    "total": 29,
+    "done": 0
+  },
+  "pdf": null
+}</div></div></dd>
 
 <dt>validate SRC DST</dt>
 <dd>检查一份译文是否破坏了原文结构：给原文与译文两个文件，逐层输出 pass / fail 与差异（placeholders、control_sequences、braces_and_math、paragraph_count）。手工修改译文后用它确认；translate 与 review 内部运行的是同一套校验。

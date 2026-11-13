@@ -12,7 +12,7 @@ import pytest
 
 from tongtu import fonts
 from tongtu.model.config import DEFAULT_TIMEOUT_SECONDS
-from tongtu.model.work import PROMPT, StopReason, skill_dir, work
+from tongtu.model.work import PROMPT, StopReason, events_path, session_end, skill_dir, work
 from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
 work_module = importlib.import_module("tongtu.model.work")
@@ -337,3 +337,23 @@ def test_agentrun_killed_after_the_grace_period_is_error(configured: Path, monke
     outcome = work("smoke", configured / "paper", trace_path=configured / "trace.jsonl")
     assert outcome.stop_reason == StopReason.ERROR
     assert "did not stop within" in outcome.detail
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        (None, None),
+        ((tool_line("ls"), b"not json\n", b"[1]\n"), None),
+        ((tool_line("ls"), end_line("finished")), StopReason.FINISHED),
+        ((end_line("timeout"),), StopReason.TIMEOUT),
+        ((end_line("crashed", "boom"),), StopReason.ERROR),
+        ((end_line("timeout"), end_line("finished")), StopReason.FINISHED),
+    ],
+)
+def test_session_end_reads_the_last_end_event(
+    tmp_path: Path, lines: tuple[bytes, ...] | None, expected: StopReason | None
+) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    if lines is not None:
+        events_path(trace_path).write_bytes(b"".join(lines))
+    assert session_end(trace_path) is expected

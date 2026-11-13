@@ -33,6 +33,7 @@ from .artifacts.compile import CompileManifest
 from .artifacts.fetch import FetchManifest
 from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
+from .artifacts.status import ABSENT_STATUS, PaperStatus, StageState
 from .artifacts.survey import SurveyManifest
 from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
 from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present
@@ -46,7 +47,7 @@ from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
 from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .stages.translate import ChunkProgress, ChunkProgressState
-from .workdir import Workdir, WorkdirError, resolve
+from .workdir import ENCODING, Workdir, WorkdirError, resolve
 
 EXIT_FAILURE = 1
 
@@ -531,25 +532,52 @@ def stage(
     raise typer.Exit(0 if manifest.ok else EXIT_FAILURE)
 
 
+JsonOpt = Annotated[
+    bool, typer.Option("--json", help="print one JSON object (UTF-8) with the same content instead of the table")
+]
+
+
 @app.command()
-def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False) -> None:
+def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_json: JsonOpt = False) -> None:
     _apply_dev(dev)
-    _paper_input, paper_workdir = _paper_workdir(paper, workdir)
-    console.print(f"workdir {paper_workdir.path}")
+    paper_input, paper_workdir = _paper_workdir(paper, workdir)
+    stages = []
+    for name in STAGES:
+        manifest_path = paper_workdir.manifest_path(name)
+        manifest = load_manifest(manifest_path, Manifest)
+        stages.append(
+            StageState(
+                name=name,
+                status=manifest.status if manifest is not None else ABSENT_STATUS,
+                outputs_present=outputs_present(paper_workdir, name),
+                message=manifest.message if manifest is not None else "",
+                warnings=manifest.warnings if manifest is not None else [],
+                manifest=manifest_path if manifest_path.is_file() else None,
+            )
+        )
+    snapshot = PaperStatus(
+        workdir=paper_workdir.path,
+        arxiv_id=paper_input.arxiv_id,
+        stages=stages,
+        translate_chunks=translate.chunk_counts(paper_workdir),
+        pdf=paper_workdir.zh_pdf if paper_workdir.zh_pdf.is_file() else None,
+    )
+    if as_json:
+        typer.echo(snapshot.model_dump_json(indent=2).encode(ENCODING))
+        return
+    console.print(f"workdir {snapshot.workdir}")
     console.print("")
     console.print(
         f"{'stage':<{NAME_WIDTH}}{'status':<{STATUS_WIDTH}}{'outputs':<{OUTPUTS_WIDTH}}manifest", style=HEADER_STYLE
     )
-    for name in STAGES:
-        manifest_path = paper_workdir.manifest_path(name)
-        manifest = load_manifest(manifest_path, Manifest)
-        status_cell = manifest.status if manifest is not None else ABSENT_CELL
-        outputs_cell = "present" if outputs_present(paper_workdir, name) else "absent"
-        manifest_cell = str(manifest_path.relative_to(paper_workdir.path)) if manifest_path.is_file() else ABSENT_CELL
+    for state in snapshot.stages:
+        status_cell = ABSENT_CELL if state.status == ABSENT_STATUS else state.status
+        outputs_cell = "present" if state.outputs_present else "absent"
+        manifest_cell = str(state.manifest.relative_to(snapshot.workdir)) if state.manifest else ABSENT_CELL
         console.print(
-            f"{name:<{NAME_WIDTH}}{status_cell:<{STATUS_WIDTH}}{outputs_cell:<{OUTPUTS_WIDTH}}{manifest_cell}"
+            f"{state.name:<{NAME_WIDTH}}{status_cell:<{STATUS_WIDTH}}{outputs_cell:<{OUTPUTS_WIDTH}}{manifest_cell}"
         )
-        for note in [manifest.message, *manifest.warnings] if manifest is not None else []:
+        for note in [state.message, *state.warnings]:
             if note:
                 console.print(f"{'':<{NAME_WIDTH}}  {note}")
 
