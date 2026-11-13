@@ -137,12 +137,28 @@ def _launch(
         return _error(
             f"{executable} exited with code {outcome.returncode} without an end event; stderr: {stderr or '(empty)'}"
         )
-    status = ends[-1].get("status")
+    stop_reason = _stop_reason(ends[-1])
+    if stop_reason is not StopReason.ERROR:
+        return WorkOutcome(stop_reason=stop_reason)
+    return _error(f"{AGENTRUN_EXECUTABLE} {ends[-1].get('status')}: {ends[-1].get('detail') or '(no detail)'}")
+
+
+def session_end(trace_path: Path) -> StopReason | None:
+    try:
+        lines = events_path(trace_path).read_bytes().splitlines()
+    except OSError:
+        return None
+    ends = [event for event in map(_parse_event, lines) if event is not None and _is_end(event)]
+    return _stop_reason(ends[-1]) if ends else None
+
+
+def _stop_reason(end: dict) -> StopReason:
+    status = end.get("status")
     if status == "finished":
-        return WorkOutcome(stop_reason=StopReason.FINISHED)
+        return StopReason.FINISHED
     if status == "timeout":
-        return WorkOutcome(stop_reason=StopReason.TIMEOUT)
-    return _error(f"{AGENTRUN_EXECUTABLE} {status}: {ends[-1].get('detail') or '(no detail)'}")
+        return StopReason.TIMEOUT
+    return StopReason.ERROR
 
 
 def skill_dir(role: str) -> str:
@@ -179,15 +195,24 @@ def _event_line(
     def handle(line: bytes) -> None:
         events_file.write(line)
         events_file.flush()
-        try:
-            event = json.loads(line)
-        except ValueError:
-            return
-        if not isinstance(event, dict):
+        event = _parse_event(line)
+        if event is None:
             return
         if event.get("type") == "tool" and report is not None and isinstance(event.get("summary"), str):
             report(event["summary"])
-        if event.get("type") == "end":
+        if _is_end(event):
             ends.append(event)
 
     return handle
+
+
+def _parse_event(line: bytes) -> dict | None:
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _is_end(event: dict) -> bool:
+    return event.get("type") == "end"

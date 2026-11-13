@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .. import chunks, masking, pipeline, validation
+from ..artifacts.status import ChunkCounts
 from ..artifacts.survey import BriefFile, Part
 from ..artifacts.translate import (
     ChunkTranslateRecord,
@@ -19,10 +20,10 @@ from ..artifacts.translate import (
     TranslateStatus,
 )
 from ..assets import asset_path
-from ..manifests import describe_error, write_manifest
-from ..model.ask import AskOutcome, AskStatus, ask
+from ..manifests import describe_error, load_manifest, write_manifest
+from ..model.ask import AskOutcome, AskStatus, CallLog, ask
 from ..model.config import Target, load_config, role_target
-from ..model.work import StopReason, work
+from ..model.work import StopReason, session_end, work
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "translate"
@@ -40,6 +41,10 @@ EMPTY_REPLY_DETAIL = "model returned an empty translation: the call succeeded wi
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
 PROMPT_VERSION_RE = re.compile(r"^version:\s*(\S+)\s*$", re.MULTILINE)
+
+TRANSLATION_FILENAME = "translation.tex"
+
+ATTEMPTS = (1, 2)
 
 CODE_FENCE_RE = re.compile(r"\A```[A-Za-z]*[ \t]*\r?\n(.*?)\s*```\Z", re.DOTALL)
 
@@ -100,6 +105,20 @@ def run(
     )
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
+
+
+def chunk_counts(paper_workdir: Workdir) -> ChunkCounts | None:
+    try:
+        brief = BriefFile.model_validate_json(paper_workdir.brief.read_text(encoding=ENCODING))
+    except (OSError, UnicodeDecodeError, ValidationError):
+        return None
+    translatable = [record.id for record in brief.chunks if record.translatable_chars]
+    manifest = load_manifest(paper_workdir.manifest_path(STAGE_NAME), TranslateManifest)
+    if manifest is None:
+        done = sum(1 for chunk_id in translatable if _settled(paper_workdir, chunk_id))
+    else:
+        done = sum(1 for chunk_id in translatable if chunk_id in manifest.chunks)
+    return ChunkCounts(total=len(translatable), done=done)
 
 
 def _execute(
@@ -264,7 +283,7 @@ def _translate_until_valid(context: _Context, paper_workdir: Workdir, target: Ta
     failures: list[str] = []
     model = ""
     effort: str | None = None
-    for attempts in (1, 2):
+    for attempts in ATTEMPTS:
         if target.is_runtime:
             outcome = _agent_request(context, paper_workdir, messages, attempts, effort)
         else:
@@ -272,7 +291,7 @@ def _translate_until_valid(context: _Context, paper_workdir: Workdir, target: Ta
                 role=ROLE,
                 system=context.system,
                 messages=messages,
-                log_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempts}.json",
+                log_path=_call_log_path(paper_workdir, context.id, attempts),
                 effort=effort,
             )
         model = outcome.model or model
@@ -280,11 +299,8 @@ def _translate_until_valid(context: _Context, paper_workdir: Workdir, target: Ta
             failures = [outcome.detail]
             continue
         translated = _strip_code_fence(outcome.text)
-        if not translated:
-            failures = [EMPTY_REPLY_DETAIL]
-            continue
-        result = validation.validate(context.body, translated)
-        if result.ok:
+        failures = _check_failures(context.body, translated)
+        if not failures:
             return _Outcome(
                 id=context.id,
                 status=ChunkTranslateStatus.TRANSLATED,
@@ -292,7 +308,8 @@ def _translate_until_valid(context: _Context, paper_workdir: Workdir, target: Ta
                 attempts=attempts,
                 model=model,
             )
-        failures = [f"{failure.check}: {failure.message}" for failure in result.failures]
+        if not translated:
+            continue
         messages = [
             ("user", _task_message(context.body)),
             ("assistant", translated),
@@ -303,7 +320,7 @@ def _translate_until_valid(context: _Context, paper_workdir: Workdir, target: Ta
         id=context.id,
         status=ChunkTranslateStatus.FALLBACK,
         body=context.body,
-        attempts=2,
+        attempts=ATTEMPTS[-1],
         failures=failures,
         model=model,
     )
@@ -316,7 +333,7 @@ def _agent_request(
     attempt: int,
     effort: str | None,
 ) -> AskOutcome:
-    site = paper_workdir.sandbox(STAGE_NAME) / context.id / str(attempt)
+    site = _site(paper_workdir, context.id, attempt)
     actual_model = ""
     try:
         site.mkdir(parents=True, exist_ok=True)
@@ -325,7 +342,7 @@ def _agent_request(
         outcome = work(
             role=ROLE,
             workdir=site,
-            trace_path=paper_workdir.logs / f"{STAGE_NAME}-{context.id}-{attempt}.jsonl",
+            trace_path=_trace_path(paper_workdir, context.id, attempt),
             effort=effort,
             prompt=(
                 "读取 task.md，按其中的翻译规则、论文语境与对话完成翻译。"
@@ -341,7 +358,7 @@ def _agent_request(
                 detail=outcome.detail or f"agent stopped: {outcome.stop_reason}",
                 model=outcome.model,
             )
-        output = site / "translation.tex"
+        output = site / TRANSLATION_FILENAME
         if output.is_symlink():
             return AskOutcome(
                 status=AskStatus.ERROR, detail="translation.tex must not be a symlink", model=outcome.model
@@ -349,6 +366,12 @@ def _agent_request(
         return AskOutcome(status=AskStatus.OK, text=output.read_text(encoding=ENCODING), model=outcome.model)
     except (OSError, UnicodeDecodeError) as error:
         return AskOutcome(status=AskStatus.ERROR, detail=describe_error(error), model=actual_model)
+
+
+def _check_failures(body: str, translated: str) -> list[str]:
+    if not translated:
+        return [EMPTY_REPLY_DETAIL]
+    return [f"{failure.check}: {failure.message}" for failure in validation.validate(body, translated).failures]
 
 
 def _retry_message(failures: Sequence[str]) -> str:
@@ -412,3 +435,44 @@ def _chunk_path(paper_workdir: Workdir, chunk_id: str) -> Path:
 
 def _translated_path(paper_workdir: Workdir, chunk_id: str) -> Path:
     return paper_workdir.translated / f"{chunk_id}.tex"
+
+
+def _call_log_path(paper_workdir: Workdir, chunk_id: str, attempt: int) -> Path:
+    return paper_workdir.logs / f"{STAGE_NAME}-{chunk_id}-{attempt}.json"
+
+
+def _trace_path(paper_workdir: Workdir, chunk_id: str, attempt: int) -> Path:
+    return paper_workdir.logs / f"{STAGE_NAME}-{chunk_id}-{attempt}.jsonl"
+
+
+def _site(paper_workdir: Workdir, chunk_id: str, attempt: int) -> Path:
+    return paper_workdir.sandbox(STAGE_NAME) / chunk_id / str(attempt)
+
+
+def _settled(paper_workdir: Workdir, chunk_id: str) -> bool:
+    first = _attempt_reply(paper_workdir, chunk_id, ATTEMPTS[0])
+    if first is None:
+        return False
+    if _attempt_reply(paper_workdir, chunk_id, ATTEMPTS[-1]) is not None:
+        return True
+    try:
+        body = _chunk_path(paper_workdir, chunk_id).read_text(encoding=ENCODING).strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return not _check_failures(body, _strip_code_fence(first))
+
+
+def _attempt_reply(paper_workdir: Workdir, chunk_id: str, attempt: int) -> str | None:
+    call_log = load_manifest(_call_log_path(paper_workdir, chunk_id, attempt), CallLog)
+    if call_log is not None:
+        return call_log.response if call_log.status is AskStatus.OK else ""
+    stop_reason = session_end(_trace_path(paper_workdir, chunk_id, attempt))
+    if stop_reason is None:
+        return None
+    output = _site(paper_workdir, chunk_id, attempt) / TRANSLATION_FILENAME
+    if stop_reason is not StopReason.FINISHED or output.is_symlink():
+        return ""
+    try:
+        return output.read_text(encoding=ENCODING)
+    except (OSError, UnicodeDecodeError):
+        return ""

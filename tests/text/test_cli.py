@@ -13,6 +13,9 @@ from typer.testing import CliRunner
 from tongtu import __version__, cli, validation
 from tongtu.artifacts.common import CompileReport, FixSession, Manifest
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
+from tongtu.artifacts.status import ABSENT_STATUS, ChunkCounts, PaperStatus
+from tongtu.artifacts.survey import BriefFile, ChunkRecord, Part
+from tongtu.artifacts.translate import ChunkTranslateRecord, ChunkTranslateStatus, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
 from tongtu.model.config import CONFIG_TEMPLATE
 from tongtu.pipeline import STAGES
@@ -597,6 +600,111 @@ def test_status_does_not_create_the_workdir(tmp_path: Path) -> None:
     result = runner.invoke(app, ["status", "2002.05202", "--workdir", str(target)])
     assert result.exit_code == 0
     assert not target.exists()
+
+
+def status_json(*arguments: str) -> PaperStatus:
+    result = runner.invoke(app, ["status", *arguments, "--json"])
+    assert result.exit_code == 0
+    return PaperStatus.model_validate_json(result.stdout)
+
+
+def test_status_json_of_an_absent_workdir_marks_every_stage_absent(tmp_path: Path) -> None:
+    target = tmp_path / "absent"
+    snapshot = status_json("2002.05202", "--workdir", str(target))
+    assert snapshot.workdir == target
+    assert snapshot.arxiv_id == "2002.05202"
+    assert [state.name for state in snapshot.stages] == list(STAGES)
+    for state in snapshot.stages:
+        assert state.status == ABSENT_STATUS
+        assert not state.outputs_present
+        assert (state.message, state.warnings, state.manifest) == ("", [], None)
+    assert snapshot.translate_chunks is None
+    assert snapshot.pdf is None
+    assert not target.exists()
+
+
+def test_status_json_reports_each_stage_from_its_manifest(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir.manifest_path("mask").write_text(
+        Manifest(status="mask_failed", warnings=["警告一条"], message="哨兵已存在").model_dump_json(),
+        encoding="utf-8",
+    )
+    workdir.manifest_path("survey").write_text("{", encoding="utf-8")
+    workdir.precompile_pdf.unlink()
+    for path in (workdir.zh_tex, workdir.zh_pdf):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("compile", encoding="utf-8")
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    states = {state.name: state for state in snapshot.stages}
+    assert (states["fetch"].status, states["fetch"].outputs_present) == ("ok", True)
+    assert states["fetch"].manifest == workdir.manifest_path("fetch")
+    assert (states["precompile"].status, states["precompile"].outputs_present) == ("ok", False)
+    assert states["mask"].status == "mask_failed"
+    assert states["mask"].message == "哨兵已存在"
+    assert states["mask"].warnings == ["警告一条"]
+    assert not states["mask"].outputs_present
+    assert states["mask"].manifest == workdir.manifest_path("mask")
+    assert states["survey"].status == ABSENT_STATUS
+    assert states["survey"].manifest == workdir.manifest_path("survey")
+    for name in ("translate", "review", "compile"):
+        assert (states[name].status, states[name].manifest) == (ABSENT_STATUS, None)
+    assert [name for name, state in states.items() if state.outputs_present] == ["fetch", "compile"]
+    assert snapshot.pdf == workdir.zh_pdf
+
+
+def test_status_json_counts_the_translatable_chunks(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch", "precompile", "mask")
+    records = [
+        ChunkRecord(id=chunk_id, start=0, end=1, part=Part.BODY, tokens=1, paragraphs=1, translatable_chars=chars)
+        for chunk_id, chars in (("c000", 5), ("c001", 0), ("c002", 7))
+    ]
+    workdir.brief.write_text(BriefFile(chunks=records).model_dump_json(), encoding="utf-8")
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).translate_chunks == ChunkCounts(total=2, done=0)
+    manifest = TranslateManifest(
+        status=TranslateStatus.OK,
+        chunks={
+            "c000": ChunkTranslateRecord(status=ChunkTranslateStatus.TRANSLATED, attempts=1),
+            "c001": ChunkTranslateRecord(status=ChunkTranslateStatus.SKIPPED, attempts=0),
+            "c002": ChunkTranslateRecord(status=ChunkTranslateStatus.FALLBACK, attempts=2),
+        },
+    )
+    workdir.manifest_path("translate").write_text(manifest.model_dump_json(), encoding="utf-8")
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert snapshot.translate_chunks == ChunkCounts(total=2, done=2)
+    assert next(state for state in snapshot.stages if state.name == "translate").status == "ok"
+
+
+def test_status_json_gives_the_pdf_once_it_exists(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert snapshot.pdf == workdir.zh_pdf
+    assert all(state.status == "ok" and state.outputs_present for state in snapshot.stages)
+    workdir.zh_pdf.unlink()
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).pdf is None
+
+
+def test_status_json_of_a_local_source_has_no_arxiv_id(tmp_path: Path) -> None:
+    source = tmp_path / "article"
+    source.mkdir()
+    snapshot = status_json(str(source), "--workdir", str(tmp_path / "paper"))
+    assert snapshot.arxiv_id is None
+
+
+def test_status_json_writes_utf8_bytes(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch")
+    workdir.manifest_path("fetch").write_text(
+        Manifest(status="ok", warnings=["中文警告"]).model_dump_json(), encoding="utf-8"
+    )
+    result = runner.invoke(app, ["status", "2002.05202", "--workdir", str(workdir.path), "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout_bytes.decode("utf-8"))["stages"][0]["warnings"] == ["中文警告"]
+
+
+def test_status_json_keeps_the_usage_error_exit_and_stdout_empty(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["status", "not an id", "--workdir", str(tmp_path / "paper"), "--json"])
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr
 
 
 def test_validate_exits_zero_when_every_layer_passes(tmp_path: Path) -> None:
