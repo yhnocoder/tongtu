@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pypdf import PdfReader
 
 import tongtu.model
 from tongtu import fonts, processes
@@ -169,6 +170,70 @@ def test_fake_bold_without_a_bold_file_compiles_without_undefined_shapes(tmp_pat
     log = (tmp_path / "main.log").read_text(encoding="utf-8", errors="replace")
     assert not [line for line in log.splitlines() if "Font shape" in line and "undefined" in line]
     assert (tmp_path / "main.pdf").stat().st_size > 0
+
+
+TU_FONT_BODY = (
+    "\\begin{document}\n"
+    "中文正文 café, naïve, “curly” ‘single’ \\textbf{bold} \\textit{italic} \\textsf{sans} \\texttt{mono}\n"
+    "\\end{document}\n"
+)
+
+
+def compile_tu_font_paper(tmp_path: Path, preamble: str) -> tuple[set[str], str, str]:
+    injected = precompile._inject_cjk((preamble + TU_FONT_BODY).encode("utf-8"), [], FontsConfig())
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    reader = PdfReader(tmp_path / "main.pdf")
+    names: set[str] = set()
+    for page in reader.pages:
+        for font in page["/Resources"]["/Font"].values():
+            names.add(str(font.get_object()["/BaseFont"]).lstrip("/").partition("+")[2])
+    text = "".join(page.extract_text() for page in reader.pages)
+    log = (tmp_path / "main.log").read_text(encoding="utf-8", errors="replace")
+    return names, text, log
+
+
+def undefined_tu_shapes(log: str) -> list[str]:
+    return [line for line in log.splitlines() if "Font shape `TU/" in line and "undefined" in line]
+
+
+def test_mathptmx_text_uses_tex_gyre_termes(tmp_path: Path) -> None:
+    names, text, log = compile_tu_font_paper(tmp_path, "\\documentclass{article}\n\\usepackage{mathptmx}\n")
+    assert {"TeXGyreTermes-Regular-Identity-H", "TeXGyreTermes-Bold-Identity-H"} <= names
+    assert "TeXGyreTermes-Italic-Identity-H" in names
+    assert not [name for name in names if name.startswith("LMRoman")]
+    assert "LXGWWenKai-Light" in names
+    assert "中文正文" in text and "café, naïve" in text and "“curly”" in text and "‘single’" in text
+    assert undefined_tu_shapes(log) == []
+    assert "Missing character" not in log
+
+
+def test_class_families_reset_by_fontspec_are_substituted(tmp_path: Path) -> None:
+    names, text, log = compile_tu_font_paper(tmp_path, "\\documentclass{IEEEtran}\n")
+    assert {
+        "TeXGyreTermes-Regular-Identity-H",
+        "TeXGyreHeros-Regular-Identity-H",
+        "TeXGyreCursor-Regular-Identity-H",
+    } <= names
+    assert not [name for name in names if name.startswith(("LMRoman", "LMSans", "LMMono"))]
+    assert "café, naïve" in text
+    assert "Missing character" not in log
+
+
+def test_families_under_an_eight_bit_encoding_are_left_alone(tmp_path: Path) -> None:
+    names, _, _ = compile_tu_font_paper(
+        tmp_path, "\\documentclass{article}\n\\usepackage[T1]{fontenc}\n\\usepackage{times}\n"
+    )
+    assert "NimbusRomNo9L-Regu" in names
+    assert not [name for name in names if name.startswith("TeXGyre")]
+
+
+def test_families_with_tu_font_definitions_are_left_alone(tmp_path: Path) -> None:
+    names, _, log = compile_tu_font_paper(tmp_path, "\\documentclass{article}\n\\usepackage{lmodern}\n")
+    assert "LMRoman10-Regular-Identity-H" in names
+    assert not [name for name in names if name.startswith("TeXGyre")]
+    assert undefined_tu_shapes(log) == []
 
 
 def test_jobname_named_companion_files_are_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

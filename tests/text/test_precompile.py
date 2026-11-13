@@ -8,7 +8,7 @@ import pytest
 import tongtu.model
 from tongtu import processes
 from tongtu.artifacts.precompile import PrecompileStatus
-from tongtu.model.config import load_config
+from tongtu.model.config import FontsConfig, load_config
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.processes import ProcessOutcome
@@ -233,6 +233,45 @@ def test_injects_xecjk_after_documentclass(tmp_path: Path, monkeypatch: pytest.M
     )
     assert "% ---- injected by tongtu (precompile) ----" in output
     assert "LXGWWenKai-Light.ttf" in output
+
+
+def test_tu_font_substitutes_cover_the_psnfss_families() -> None:
+    assert precompile.TU_FONT_SUBSTITUTES == {
+        "ptm": "texgyretermes",
+        "ppl": "texgyrepagella",
+        "pplx": "texgyrepagella",
+        "pplj": "texgyrepagella",
+        "phv": "texgyreheros",
+        "pcr": "texgyrecursor",
+    }
+
+
+def test_font_substitution_defines_one_gyre_font_per_family() -> None:
+    fragment = precompile._font_substitution({"ptm": "texgyretermes", "pplx": "texgyrepagella"})
+    assert fragment.startswith(precompile.FONT_SUBSTITUTION_HEAD)
+    assert fragment.endswith(precompile.FONT_SUBSTITUTION_TAIL)
+    definitions = fragment[len(precompile.FONT_SUBSTITUTION_HEAD) : -len(precompile.FONT_SUBSTITUTION_TAIL)]
+    assert definitions == (
+        b"\\@namedef{tongtu@gyre@ptm}{texgyretermes}\n\\@namedef{tongtu@gyre@pplx}{texgyrepagella}\n"
+    )
+
+
+def test_font_substitution_runs_at_begin_document_for_each_slot() -> None:
+    tail = precompile.FONT_SUBSTITUTION_TAIL
+    hook = tail[tail.index(b"\\AddToHook{begindocument/before}") :]
+    assert b"\\ifx\\tongtu@encoding\\tongtu@tu" in hook
+    assert hook.index(b"\\tongtu@substitute{rm}\\setmainfont") < hook.index(b"\\fi}")
+    assert b"\\tongtu@substitute{sf}\\setsansfont" in hook
+    assert b"\\tongtu@substitute{tt}\\setmonofont" in hook
+    assert b"\\IfFileExists{tu\\tongtu@family.fd}" in tail
+
+
+def test_author_font_families_are_captured_before_fontspec_resets_them() -> None:
+    output = precompile._inject_cjk(PLAIN_PAPER.encode("utf-8"), [], FontsConfig())
+    xecjk = output.index(b"\\usepackage[AutoFakeBold=2]{xeCJK}")
+    assert output.index(b"\\documentclass") < output.index(b"\\edef\\tongtu@author@rm{\\rmdefault}") < xecjk
+    assert xecjk < output.index(b"\\edef\\tongtu@fontspec@rm{\\rmdefault}") < output.index(b"\\begin{document}")
+    assert output.index(b"\\@namedef{tongtu@gyre@ptm}{texgyretermes}") < output.index(b"\\XeTeXlinebreaklocale")
 
 
 DEFAULT_MAIN_LINE = "\\setCJKmainfont[BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}"

@@ -57,9 +57,21 @@ DOCUMENTCLASS_RE = re.compile(rb"\\(?:documentclass|documentstyle)\s*(\[[^\]]*\]
 
 FAKE_BOLD_FACTOR = 2
 
+TU_FONT_SUBSTITUTES: dict[str, str] = {
+    "ptm": "texgyretermes",
+    "ppl": "texgyrepagella",
+    "pplx": "texgyrepagella",
+    "pplj": "texgyrepagella",
+    "phv": "texgyreheros",
+    "pcr": "texgyrecursor",
+}
+
 XECJK_HEAD = (
     rb"""% ---- injected by tongtu (precompile) ----
 \PassOptionsToPackage{no-math}{fontspec}
+\makeatletter
+\edef\tongtu@author@rm{\rmdefault}\edef\tongtu@author@sf{\sfdefault}\edef\tongtu@author@tt{\ttdefault}
+\makeatother
 \usepackage[AutoFakeBold="""
     + str(FAKE_BOLD_FACTOR).encode("ascii")
     + rb"""]{xeCJK}
@@ -67,6 +79,30 @@ XECJK_HEAD = (
 )
 
 DEFAULT_FONTS = FontsConfig()
+
+FONT_SUBSTITUTION_HEAD = rb"""\makeatletter
+\edef\tongtu@fontspec@rm{\rmdefault}\edef\tongtu@fontspec@sf{\sfdefault}\edef\tongtu@fontspec@tt{\ttdefault}
+"""
+
+FONT_SUBSTITUTION_TAIL = rb"""\def\tongtu@substitute#1#2{%
+  \edef\tongtu@family{\csname #1default\endcsname}%
+  \expandafter\ifx\csname tongtu@fontspec@#1\endcsname\tongtu@family
+    \edef\tongtu@family{\csname tongtu@author@#1\endcsname}%
+  \fi
+  \ifcsname tongtu@gyre@\tongtu@family\endcsname
+    \edef\tongtu@set{\noexpand#2{\csname tongtu@gyre@\tongtu@family\endcsname}}%
+    \edef\tongtu@fd{\lowercase{\noexpand\IfFileExists{tu\tongtu@family.fd}}}%
+    \tongtu@fd{}{\tongtu@set[Extension=.otf,UprightFont=*-regular,BoldFont=*-bold,ItalicFont=*-italic,BoldItalicFont=*-bolditalic]}%
+  \fi}
+\AddToHook{begindocument/before}{%
+  \edef\tongtu@encoding{\encodingdefault}\def\tongtu@tu{TU}%
+  \ifx\tongtu@encoding\tongtu@tu
+    \tongtu@substitute{rm}\setmainfont
+    \tongtu@substitute{sf}\setsansfont
+    \tongtu@substitute{tt}\setmonofont
+  \fi}
+\makeatother
+"""
 
 XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 \XeTeXlinebreakskip = 0pt plus 1pt
@@ -398,9 +434,18 @@ def _xecjk_block(fonts: FontsConfig, warnings: list[str]) -> bytes:
             _font_command(rb"\setCJKmainfont", main_regular, main_bold) + b"\n",
             _font_command(rb"\setCJKsansfont", sans_regular, sans_bold) + b"\n",
             _font_command(rb"\setCJKmonofont", mono, None) + b"\n",
+            _font_substitution(TU_FONT_SUBSTITUTES),
             XECJK_TAIL,
         )
     )
+
+
+def _font_substitution(substitutes: dict[str, str]) -> bytes:
+    definitions = b"".join(
+        rb"\@namedef{tongtu@gyre@" + family.encode("ascii") + b"}{" + font.encode("ascii") + b"}\n"
+        for family, font in substitutes.items()
+    )
+    return FONT_SUBSTITUTION_HEAD + definitions + FONT_SUBSTITUTION_TAIL
 
 
 def _resolve_family(
