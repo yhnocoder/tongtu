@@ -41,3 +41,4 @@ def test_pdf_is_named_after_the_paper_directory(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     workdir = Workdir(resolve("hep-th/9901001"))
     assert workdir.zh_pdf == tmp_path / "papers" / "hep-th_9901001" / "out" / "hep-th_9901001.zh.pdf"
+    assert workdir.zh_anchors == tmp_path / "papers" / "hep-th_9901001" / "out" / "hep-th_9901001.zh.anchors.json"

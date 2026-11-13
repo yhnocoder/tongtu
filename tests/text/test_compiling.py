@@ -71,7 +71,7 @@ def test_attempt_compile_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert attempt.report.duration_seconds == 2.5
     assert attempt.log_path == tmp_path / "zh.log"
     assert attempt.pdf_name == "zh.pdf"
-    assert commands == [["latexmk", "-norc", "-xelatex", "-interaction=nonstopmode", "zh.tex"]]
+    assert commands == [["latexmk", "-norc", "-xelatex", "-interaction=nonstopmode", "-synctex=1", "zh.tex"]]
 
 
 def test_attempt_compile_passes_the_font_search_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

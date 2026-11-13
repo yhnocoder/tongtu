@@ -211,3 +211,34 @@ def test_shipped_aux_of_the_jobname_is_not_read(tmp_path: Path, monkeypatch: pyt
     assert manifest.fix_session is None
     assert any("main.aux" in warning for warning in manifest.warnings)
     assert (workdir.src / "main.aux").is_file()
+
+
+def test_expansion_keeps_percent_inside_code_and_empties_comments_elsewhere(tmp_path: Path) -> None:
+    (tmp_path / "main.tex").write_text(
+        "\\documentclass{article}\n"
+        "\\usepackage{listings}\n"
+        "\\begin{document}\n"
+        "Body text. % author note\n"
+        "\\input{code}\n"
+        "Rate \\verb|50% off| here.\n"
+        "\\end{document}\n"
+    )
+    (tmp_path / "code.tex").write_text(
+        "% file header\n"
+        "\\begin{lstlisting}\n"
+        "x = 1 % keep this\n"
+        "\\end{lstlisting}\n"
+        "\\begin{comment}\n"
+        "hidden % drop this\n"
+        "\\end{comment}\n"
+    )
+    expanded, failure, _ = precompile._expand(tmp_path, "main.tex", [])
+    assert expanded is not None, failure
+    text = expanded.decode("utf-8")
+    assert "Body text. %\n" in text
+    assert "author note" not in text
+    assert "file header" not in text
+    assert "x = 1 % keep this\n" in text
+    assert "\\verb|50% off|" in text
+    assert "hidden %\n" in text
+    assert "drop this" not in text

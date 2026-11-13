@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import gzip
 import json
 import shutil
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
 
 import tongtu.model
 from tongtu import cropping, processes
 from tongtu.artifacts.common import CompileReport
-from tongtu.artifacts.compile import CompileManifest, CompileStatus
+from tongtu.artifacts.compile import AnchorKind, AnchorRect, AnchorsFile, CompileManifest, CompileStatus
 from tongtu.artifacts.precompile import PrecompileManifest, PrecompileStatus
 from tongtu.artifacts.survey import BriefFile, ChunkRecord, Part
 from tongtu.manifests import write_manifest
@@ -19,6 +21,8 @@ from tongtu.pipeline import outputs_present
 from tongtu.processes import ProcessOutcome
 from tongtu.stages import compile, mask
 from tongtu.workdir import Workdir
+
+from ..conftest import synctex_file, synctex_record
 
 PAPER = """\\documentclass{article}
 \\begin{document}
@@ -60,6 +64,46 @@ Missing character: There is no X in font
 """
 
 LOG_ERROR = "! Undefined control sequence.\nl.42 \\pdfoutput\nOutput written on zh.xdv (0 pages, 8 bytes).\n"
+
+PAGE_WIDTH = 612.0
+
+PAGE_HEIGHT = 792.0
+
+PAGES = 5
+
+TEXT_LINES: tuple[tuple[int, float], ...] = ((3, 100.0), (5, 130.0), (8, 160.0), (13, 190.0), (16, 220.0))
+
+
+def fake_synctex(main: Path) -> str:
+    page = [
+        synctex_record("[", 1, 2, 72, 720, 468, 648, 0),
+        synctex_record("[", 1, 2, 72, 720, 468, 648, 0),
+    ]
+    for line, baseline in TEXT_LINES:
+        page.extend(
+            [
+                synctex_record("(", 1, line, 72, baseline, 468, 10, 2),
+                synctex_record("x", 1, line, 80, baseline),
+                synctex_record("g", 1, line, 200, baseline),
+                synctex_record("k", 1, line, 300, baseline, 1),
+                ")",
+            ]
+        )
+    page.extend(["]", "]"])
+    return synctex_file({1: f"{main.parent}/./{main.name}"}, [page, *([[]] * (PAGES - 1))])
+
+
+def fake_pdf(path: Path) -> None:
+    writer = PdfWriter()
+    for _ in range(PAGES):
+        writer.add_blank_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    with path.open("wb") as stream:
+        writer.write(stream)
+
+
+def line_rect(baseline: float) -> AnchorRect:
+    return AnchorRect(page=1, x0=72.0, y0=PAGE_HEIGHT - baseline - 2, x1=540.0, y1=PAGE_HEIGHT - baseline + 10)
+
 
 BASELINE = CompileReport(
     pages=5,
@@ -123,15 +167,18 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> dict[str
         assert main.name == "main.tex"
         if "-C" in command:
             calls["clean"] += 1
-            (cwd / main.with_suffix(".pdf")).unlink(missing_ok=True)
-            (cwd / main.with_suffix(".log")).unlink(missing_ok=True)
+            for suffix in (".pdf", ".log", ".synctex.gz"):
+                (cwd / main.with_suffix(suffix)).unlink(missing_ok=True)
             return ProcessOutcome(returncode=0, stdout=b"", stderr=b"", timed_out=False, duration_seconds=0.1)
         spec = specs[min(calls["compile"], len(specs) - 1)]
         calls["compile"] += 1
         if spec.get("timeout"):
             return ProcessOutcome(returncode=-9, stdout=b"", stderr=b"", timed_out=True, duration_seconds=600.0)
         if spec.get("pdf", True):
-            (cwd / main.with_suffix(".pdf")).write_bytes(b"%PDF-1.5 fake body")
+            fake_pdf(cwd / main.with_suffix(".pdf"))
+            if spec.get("synctex", True):
+                synctex = fake_synctex(cwd / main).encode("utf-8")
+                (cwd / main.with_suffix(".synctex.gz")).write_bytes(gzip.compress(synctex))
         (cwd / main.with_suffix(".log")).write_text(spec.get("log", LOG_OK), encoding="utf-8")
         return ProcessOutcome(
             returncode=spec.get("returncode", 0), stdout=b"", stderr=b"", timed_out=False, duration_seconds=2.5
@@ -207,9 +254,29 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cr
     assert calls == {"compile": 1, "clean": 1}
     assert work_calls == []
     assert outputs_present(workdir, "compile")
-    assert sorted(path.name for path in workdir.out.iterdir()) == ["paper.zh.pdf"]
+    assert sorted(path.name for path in workdir.out.iterdir()) == ["paper.zh.anchors.json", "paper.zh.pdf"]
     zh = (workdir.build / "zh.tex").read_text(encoding="utf-8")
     assert zh == translate(PAPER)
+    assert workdir.zh_synctex.is_file()
+    anchors = AnchorsFile.model_validate_json(workdir.zh_anchors.read_text(encoding="utf-8"))
+    assert (anchors.pdf, anchors.tex) == ("paper.zh.pdf", "zh.tex")
+    assert [(page.page, page.width, page.height) for page in anchors.pages] == [
+        (number, PAGE_WIDTH, PAGE_HEIGHT) for number in range(1, PAGES + 1)
+    ]
+    assert anchors.pages[0].body == AnchorRect(page=1, x0=72.0, y0=72.0, x1=540.0, y1=720.0)
+    assert all(page.body is None for page in anchors.pages[1:])
+    blocks = {block.id: block for block in anchors.blocks}
+    assert [(block.id, block.kind, block.parent, block.first_line, block.last_line) for block in anchors.blocks] == [
+        ("PAR-0-0", AnchorKind.HEADING, None, 3, 3),
+        ("PAR-1-0", AnchorKind.TEXT, None, 5, 5),
+        ("BLK-1", AnchorKind.MATH, None, 7, 9),
+        ("BLK-2", AnchorKind.FIGURE, None, 11, 14),
+        ("CAP-0", AnchorKind.CAPTION, "BLK-2", 13, 13),
+        ("PAR-4-0", AnchorKind.TEXT, None, 16, 16),
+    ]
+    for block_id, (_, baseline) in zip(("PAR-0-0", "PAR-1-0", "BLK-1", "CAP-0", "PAR-4-0"), TEXT_LINES, strict=True):
+        assert blocks[block_id].rects == [line_rect(baseline)]
+    assert blocks["BLK-2"].rects == blocks["CAP-0"].rects
     tree = workdir.build / "sandbox" / "tex"
     assert (tree / "main.tex").read_text(encoding="utf-8") == zh
     assert not (tree / "main.pdf").exists()
@@ -239,6 +306,40 @@ def test_crop_failure_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.Monk
     assert manifest.status is CompileStatus.OK
     assert manifest.warnings == ["Ghostscript reported no page content"]
     assert workdir.zh_pdf.is_file()
+
+
+def test_missing_synctex_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path)
+    wire_latexmk(monkeypatch, [{"synctex": False}])
+    wire_work(monkeypatch)
+    manifest = compile.run(workdir)
+    assert manifest.status is CompileStatus.OK
+    assert len(manifest.warnings) == 1
+    assert manifest.warnings[0].startswith("cannot build paper.zh.anchors.json (")
+    assert workdir.zh_pdf.is_file()
+    assert not workdir.zh_anchors.exists()
+    assert not workdir.zh_synctex.exists()
+    assert outputs_present(workdir, "compile")
+
+
+def test_unreadable_synctex_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path)
+    wire_latexmk(monkeypatch, [{"synctex": False}])
+    wire_work(monkeypatch)
+    original = processes.run_in_process_group
+
+    def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
+        outcome = original(command, cwd, timeout, **kwargs)
+        if "-C" not in command:
+            (cwd / "main.synctex.gz").write_bytes(b"not gzip")
+        return outcome
+
+    monkeypatch.setattr(processes, "run_in_process_group", run)
+    manifest = compile.run(workdir)
+    assert manifest.status is CompileStatus.OK
+    assert len(manifest.warnings) == 1
+    assert manifest.warnings[0].startswith("cannot build paper.zh.anchors.json (")
+    assert not workdir.zh_anchors.exists()
 
 
 def test_caption_paragraph_break_is_not_a_control_sequence_difference(
@@ -477,9 +578,13 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     workdir.manifest_path("precompile").unlink()
     (workdir.build / "zh.tex").write_text("stale", encoding="utf-8")
     workdir.zh_pdf.write_bytes(b"stale")
+    workdir.zh_anchors.write_text("stale", encoding="utf-8")
+    workdir.zh_synctex.write_bytes(b"stale")
     (workdir.logs / "compile-fix.jsonl").write_text("stale", encoding="utf-8")
     manifest = compile.run(workdir)
     assert_failed(workdir, manifest)
+    assert not workdir.zh_anchors.exists()
+    assert not workdir.zh_synctex.exists()
     assert (workdir.build / "sandbox" / "tex" / "main.tex").is_file()
     assert not (workdir.logs / "compile-fix.jsonl").exists()
 

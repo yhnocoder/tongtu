@@ -845,9 +845,22 @@ def test_strip_invalid_utf8_is_kept_with_warning() -> None:
     assert any("UTF-8" in line for line in warnings)
 
 
-def test_latexpand_empties_comments() -> None:
+def test_latexpand_keeps_comments_for_tongtu_to_empty() -> None:
     assert "--empty-comments" in precompile.LATEXPAND_COMMAND
-    assert "--keep-comments" not in precompile.LATEXPAND_COMMAND
+    assert "--keep-comments" in precompile.LATEXPAND_COMMAND
+
+
+def test_expansion_empties_comments_outside_code_environments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paper = (
+        "\\documentclass{article}\n\\begin{document}\nText % note\n"
+        "\\begin{lstlisting}\nx[i % n] = 1\n\\end{lstlisting}\n\\end{document}\n"
+    )
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
+    manifest = precompile.run(workdir)
+    output = workdir.precompile_tex.read_text(encoding="utf-8")
+    assert manifest.status is PrecompileStatus.OK
+    assert "Text %\n" in output
+    assert "x[i % n] = 1\n" in output
 
 
 def test_injects_xecjk_after_the_live_documentclass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

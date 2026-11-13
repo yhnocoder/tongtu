@@ -38,6 +38,8 @@ STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path] | str, ...]] = {
     "compile": (
         lambda w: w.zh_tex,
         lambda w: w.zh_pdf,
+        lambda w: w.zh_anchors,
+        lambda w: w.zh_synctex,
         lambda w: w.compile_fix_log,
         # why(#119): 改名前编译的论文留有 out/zh.pdf
         "out/zh.pdf",

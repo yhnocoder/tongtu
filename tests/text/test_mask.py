@@ -221,6 +221,27 @@ def test_roundtrip_on_fixture_papers(paper: str, environments_table) -> None:
         assert_placeholders_consistent(outcome, path)
 
 
+@pytest.mark.parametrize("paper", FIXTURE_PAPERS)
+def test_unmask_records_where_blocks_and_captions_land(paper: str, environments_table) -> None:
+    for path in tex_sources(paper):
+        source = path.read_text(encoding="utf-8")
+        if r"\begin{document}" not in source:
+            continue
+        outcome = masking.mask_document(source, environments_table)
+        unmasked = masking.unmask(outcome.masked, outcome.blocks, outcome.captions)
+        blocks = {block.id: block for block in outcome.blocks}
+        assert all(masking.block_token(block_id) in unmasked.stream for block_id in blocks)
+        captions = {caption.id: caption for caption in outcome.captions}
+        placed = [place.token_id for place in unmasked.placements]
+        assert sorted(placed) == sorted([*blocks, *captions])
+        for place in unmasked.placements:
+            landed = unmasked.text[place.start : place.end]
+            if place.token_id in captions:
+                assert landed == captions[place.token_id].tex
+            elif not any(caption.block_id == place.token_id for caption in outcome.captions):
+                assert landed == blocks[place.token_id].tex
+
+
 @pytest.mark.parametrize("character", SENTINEL_CHARACTERS)
 def test_sentinel_in_source_is_rejected(character: str, environments_table) -> None:
     with pytest.raises(masking.MaskError):

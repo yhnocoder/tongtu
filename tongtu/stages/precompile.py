@@ -5,7 +5,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
-from .. import compiling, fonts, pipeline, preamble, processes
+from .. import comments, compiling, fonts, pipeline, preamble, processes
 from ..artifacts.common import FixSession
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..conditionals import strip_dead_branches
@@ -21,7 +21,7 @@ ROLE = "precompile_fix"
 
 TREE_NAME = "tex"
 
-LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--empty-comments", "--fatal")
+LATEXPAND_COMMAND: tuple[str, ...] = ("latexpand", "--keep-comments", "--empty-comments", "--fatal")
 
 LATEXPAND_TIMEOUT_SECONDS = 10.0
 
@@ -266,7 +266,8 @@ def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | Non
             ),
             stderr_text if MISSING_INPUT_RE.search(stderr_text) else "",
         )
-    return outcome.stdout, "", ""
+    table = parse_environment_table(ENVIRONMENTS_TABLE_PATH.read_text(encoding="utf-8"))
+    return comments.strip_comment_text(outcome.stdout, table), "", ""
 
 
 def _write_expand_diagnostic(tree: Path, main_file: str, failure: str, stderr: str, warnings: list[str]) -> None:
