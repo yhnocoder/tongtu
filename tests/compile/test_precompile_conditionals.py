@@ -233,9 +233,9 @@ def compile_markers(directory: Path, name: str) -> tuple[int, list[str]]:
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_stripped_source_compiles_like_the_original(tmp_path: Path, name: str) -> None:
     (tmp_path / "input.tex").write_text(CASES[name], encoding="utf-8")
-    expanded = subprocess.run(
-        [*precompile.LATEXPAND_COMMAND, "input.tex"], cwd=tmp_path, capture_output=True, text=True, check=True
-    ).stdout
+    expanded_bytes, failure, _ = precompile._expand(tmp_path, "input.tex", [])
+    assert expanded_bytes is not None, failure
+    expanded = expanded_bytes.decode("utf-8")
     warnings: list[str] = []
     stripped = conditionals.strip_dead_branches(expanded, ENVIRONMENTS_TABLE, warnings)
     (tmp_path / "original.tex").write_text(expanded, encoding="utf-8")

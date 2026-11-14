@@ -79,9 +79,18 @@ class MaskOutcome:
 
 
 @dataclass(frozen=True)
+class Placement:
+    token_id: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class UnmaskOutcome:
     text: str
     fallbacks: tuple[str, ...]
+    stream: str = ""
+    placements: tuple[Placement, ...] = ()
 
 
 def block_token(block_id: str) -> str:
@@ -130,13 +139,13 @@ def mask_document(text: str, table: Mapping[str, TableEntry]) -> MaskOutcome:
 
 def unmask(masked: str, blocks: Sequence[BlockRecord], captions: Sequence[CaptionRecord]) -> UnmaskOutcome:
     filled, fallbacks, stream = _restore_captions(masked, captions)
-    text = _restore_blocks(stream, blocks, filled)
+    text, placements = _restore_blocks(stream, blocks, filled)
     residual = [ch for ch in (SENTINEL_OPEN, SENTINEL_CLOSE) if ch in text]
     if residual:
         raise MaskError(
             f"unmask output still contains sentinel characters {', '.join(residual)}; the masked text has broken placeholders"
         )
-    return UnmaskOutcome(text=text, fallbacks=tuple(fallbacks))
+    return UnmaskOutcome(text=text, fallbacks=tuple(fallbacks), stream=stream, placements=tuple(placements))
 
 
 def verify_roundtrip(source: str, outcome: MaskOutcome) -> None:
@@ -771,35 +780,54 @@ def _restore_captions(masked: str, captions: Sequence[CaptionRecord]) -> tuple[d
     return filled, fallbacks, stream
 
 
-def _restore_blocks(stream: str, blocks: Sequence[BlockRecord], filled: Mapping[str, str]) -> str:
+def _restore_blocks(
+    stream: str, blocks: Sequence[BlockRecord], filled: Mapping[str, str]
+) -> tuple[str, list[Placement]]:
     block_by_id = {block.id: block for block in blocks}
     used: dict[str, int] = {}
-
-    def replace(match: re.Match[str]) -> str:
+    parts: list[str] = []
+    placements: list[Placement] = []
+    length = 0
+    cursor = 0
+    for match in TOKEN_RE.finditer(stream):
         token_id = f"{match.group(1)}-{match.group(2)}"
         block = block_by_id.get(token_id)
         if block is None:
             raise MaskError(f"{match.group(0)} in the stream has no entry in the blocks records")
         used[token_id] = used.get(token_id, 0) + 1
-        return _fill_slots(block.tex, filled)
-
-    text = TOKEN_RE.sub(replace, stream)
+        parts.append(stream[cursor : match.start()])
+        length += match.start() - cursor
+        body, slots = _fill_slots(block.tex, filled)
+        placements.append(Placement(token_id, length, length + len(body)))
+        placements.extend(Placement(slot.token_id, length + slot.start, length + slot.end) for slot in slots)
+        parts.append(body)
+        length += len(body)
+        cursor = match.end()
+    parts.append(stream[cursor:])
     for block in blocks:
         count = used.get(block.id, 0)
         if count != 1:
             raise MaskError(
                 f"{block_token(block.id)} is used {count} times in the stream; each block token must be used exactly once"
             )
-    return text
+    return "".join(parts), placements
 
 
-def _fill_slots(tex: str, filled: Mapping[str, str]) -> str:
-
-    def replace(match: re.Match[str]) -> str:
+def _fill_slots(tex: str, filled: Mapping[str, str]) -> tuple[str, list[Placement]]:
+    parts: list[str] = []
+    slots: list[Placement] = []
+    length = 0
+    cursor = 0
+    for match in TOKEN_RE.finditer(tex):
         token_id = f"{match.group(1)}-{match.group(2)}"
         text = filled.get(token_id)
         if text is None:
             raise MaskError(f"{match.group(0)} inside a block has no entry in the captions records")
-        return text
-
-    return TOKEN_RE.sub(replace, tex)
+        parts.append(tex[cursor : match.start()])
+        length += match.start() - cursor
+        slots.append(Placement(token_id, length, length + len(text)))
+        parts.append(text)
+        length += len(text)
+        cursor = match.end()
+    parts.append(tex[cursor:])
+    return "".join(parts), slots

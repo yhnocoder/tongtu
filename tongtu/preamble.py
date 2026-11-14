@@ -21,7 +21,9 @@ FONTAWESOME_PRELUDE = (
 
 PACKAGE_PRELUDES = {"fontawesome": FONTAWESOME_PRELUDE}
 
-DROPPED_ASSIGNMENTS = frozenset({"pdfoutput", "pdfcompresslevel", "pdfminorversion", "pdfobjcompresslevel"})
+DROPPED_ASSIGNMENTS = frozenset(
+    {"pdfoutput", "pdfcompresslevel", "pdfminorversion", "pdfobjcompresslevel", "pdfsuppressptexinfo"}
+)
 
 DROPPED_COMMANDS = frozenset({"pdfinfo"})
 
@@ -35,7 +37,7 @@ OPTIONS_RE = re.compile(r"\s*\[([^\]]*)\]", re.DOTALL)
 
 GROUP_START_RE = re.compile(r"\s*\{")
 
-ASSIGNMENT_RE = re.compile(r"[ \t]*=?[ \t]*\d+(?:[ \t]*\\relax)?")
+ASSIGNMENT_RE = re.compile(r"[ \t]*=?[ \t]*-?\d+(?:[ \t]*\\relax)?")
 
 CJK_ENV_RE = re.compile(r"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\})*|\\end\s*\{CJK\*?\}|\\CJKfamily\s*\{[^}]*\}")
 

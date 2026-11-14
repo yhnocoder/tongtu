@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import gzip
 import shutil
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import ValidationError
+from pypdf import PdfReader
+from pypdf.errors import PyPdfError
 
-from .. import compiling, cropping, masking, pipeline, validation
+from .. import anchors, compiling, cropping, masking, pipeline, synctex, validation
 from ..artifacts.common import CompileReport, FixSession
 from ..artifacts.compile import CompileManifest, CompileStatus
 from ..artifacts.mask import BlocksFile
@@ -22,6 +26,8 @@ ROLE = "compile_fix"
 PRECOMPILE_STAGE_NAME = "precompile"
 
 TREE_NAME = "tex"
+
+SYNCTEX_SUFFIX = ".synctex.gz"
 
 PAGE_RATIO_MIN = 0.7
 
@@ -114,6 +120,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
     paper_workdir.zh_tex.write_text(zh_final, encoding=ENCODING)
     paper_workdir.out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(tree / final.pdf_name, paper_workdir.zh_pdf)
+    warnings.extend(_write_anchors(paper_workdir, tree, main_file, final.pdf_name, unmasked, blocks_file, zh_final))
     if cropping.enabled():
         warnings.extend(cropping.crop_margins(paper_workdir.zh_pdf))
     warnings.extend(compiling.clean_tree(tree, main_file))
@@ -124,6 +131,57 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
         fix_session=fix_session,
         warnings=warnings,
     )
+
+
+def _write_anchors(
+    paper_workdir: Workdir,
+    tree: Path,
+    main_file: str,
+    pdf_name: str,
+    unmasked: masking.UnmaskOutcome,
+    blocks_file: BlocksFile,
+    zh_final: str,
+) -> list[str]:
+    synctex_path = tree / Path(pdf_name).with_suffix(SYNCTEX_SUFFIX).name
+    try:
+        shutil.copyfile(synctex_path, paper_workdir.zh_synctex)
+        parsed = synctex.parse(gzip.decompress(synctex_path.read_bytes()).decode(ENCODING, errors="replace"))
+        pages = PdfReader(tree / pdf_name).pages
+        media_boxes = [
+            anchors.MediaBox(
+                float(page.mediabox.left),
+                float(page.mediabox.bottom),
+                float(page.mediabox.right),
+                float(page.mediabox.top),
+            )
+            for page in pages
+        ]
+        units = anchors.build_units(unmasked, blocks_file.blocks, blocks_file.captions)
+        main_path = tree / main_file
+        result = anchors.anchors_file(
+            parsed,
+            (str(main_path), str(main_path.resolve())),
+            units,
+            unmasked.text,
+            zh_final,
+            media_boxes,
+            paper_workdir.zh_pdf.name,
+            paper_workdir.zh_tex.name,
+        )
+    except (
+        OSError,
+        EOFError,
+        zlib.error,
+        PyPdfError,
+        synctex.SynctexError,
+        anchors.AnchorsError,
+        masking.MaskError,
+    ) as error:
+        return [
+            f"cannot build {paper_workdir.zh_anchors.name} ({describe_error(error)}); the PDF ships without anchors"
+        ]
+    paper_workdir.zh_anchors.write_text(result.model_dump_json(indent=2) + "\n", encoding=ENCODING)
+    return []
 
 
 def _exit_problems(

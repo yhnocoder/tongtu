@@ -25,7 +25,7 @@
   <span class="dn">↓</span><span></span><span></span>
   <a class="st" href="#review">review</a><span class="one">agent 通读，补翻回退、修正跨 chunk 不一致</span><div class="out"><span class="f">build/reviewed/</span></div>
   <span class="dn">↓</span><span></span><span></span>
-  <a class="st" href="#compile">compile</a><span class="one">译文回填、编译出 PDF</span><div class="out"><span class="f">build/zh.tex</span><span class="f">out/&lt;ID&gt;.zh.pdf</span></div>
+  <a class="st" href="#compile">compile</a><span class="one">译文回填、编译出 PDF</span><div class="out"><span class="f">build/zh.tex</span><span class="f">out/&lt;ID&gt;.zh.pdf</span><span class="f">out/&lt;ID&gt;.zh.anchors.json</span></div>
 </div>
 
 <!-- ============ fetch ============ -->
@@ -87,7 +87,7 @@
 <ol class="steps">
 <li><b>选主文件</b>：src/ 里带 <code>\documentclass</code> 的 .tex；没有候选 → <code>main_not_found</code>，候选不唯一 → <code>main_ambiguous</code></li>
 <li><b>展开成单文件</b>：用 <code>latexpand</code> 把 <code>\input</code> / <code>\include</code> 全部内联，有 .bbl 就一并内联进去；缺失引用文件时在源码副本中进入修复会话，修复后重新展开；其他展开错误或修复后仍失败 → <code>expand_failed</code></li>
-<li><b>删掉注释文字与死分支</b>：latexpand 已清空注释文字；前导区里取值定死的开关（论文常用 <code>\ifarxiv</code> 做双版本排版）只保留生效的分支，这样 mask 与 survey 配对环境时不受死分支干扰，<code>\documentclass</code> 也只剩一处。无法确定取值的开关原样保留并记 warning</li>
+<li><b>删掉注释文字与死分支</b>：注释文字清空，只留 <code>%</code>；代码环境与 <code>\verb</code> 里的 <code>%</code> 是正文，不动；前导区里取值定死的开关（论文常用 <code>\ifarxiv</code> 做双版本排版）只保留生效的分支，这样 mask 与 survey 配对环境时不受死分支干扰，<code>\documentclass</code> 也只剩一处。无法确定取值的开关原样保留并记 warning</li>
 <li><b>注入中文排版设置</b>：先按 <code>tongtu/preamble.py</code> 的规则处理前导区里 pdflatex 遗留的写法，再在前导区加上 xeCJK 与中文字体（字体来自 <a href="#fonts">fonts</a> 配置）。放在这一步的理由：宏包冲突在翻译之前暴露并修掉，之后 compile 与这里的差别只剩正文文字，再出错只可能是译文引起</li>
 <li><b>编译</b>：搭编译目录 <code>build/sandbox/tex/</code>（src/ 的完整拷贝，其中的主文件用展开后的单文件覆盖、文件名不变；latexmk 在这个目录里运行，不改动 src/，字体经 kpathsea 搜索路径查找，见 <a href="#fonts">fonts</a>），用 <code>latexmk -xelatex</code> 编译；通过就记下页数等基线计数，PDF 拷出为 <code>build/precompile.pdf</code>。结束时 <code>latexmk -C</code> 清掉中间文件，这个目录留给 compile 直接使用</li>
 <li class="branch"><b>编译不通过 → 修复会话</b>：尚未因展开失败用过修复会话时，启动一次 agent work（角色 <code>precompile_fix</code>）在编译目录里改主文件，然后重新编译一次，以这次结果为准；已用过展开修复会话则只重新编译，不再开会话；仍不通过 → <code>compile_failed</code>。agent 改过的主文件就是本阶段输出的 <code>build/precompile.tex</code>；它对编译目录里其他文件（cls、sty）的改动留在 <code>build/sandbox/tex/</code>，compile 在同一个目录里编译，直接使用这些改动</li>
@@ -114,11 +114,12 @@
 <details><summary>细节与常量</summary>
 <ul class="fine">
 <li>主文件判定：候选是注释外含 <code>\documentclass</code> 或 <code>\documentstyle</code> 的 .tex；多个候选时取唯一含 <code>\begin{document}</code> 的，再不唯一取名为 <code>main.tex</code> 的；<code>main_ambiguous</code> 时 message 列出全部候选</li>
-<li>展开：<code>latexpand --empty-comments --fatal</code>（整行注释与行尾注释只剩 <code>%</code>，换行保留），超时 10 秒；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>；仍残留 <code>\input</code> 的行数记 warning</li>
+<li>展开：<code>latexpand --keep-comments --empty-comments --fatal</code>，超时 10 秒。latexpand 自己清空注释时不认 verbatim 一类环境，会把 lstlisting 里 <code>x % y</code> 的 <code>% y</code> 也删掉，所以让它保留注释，展开后由 tongtu 清空（<code>tongtu/comments.py</code>）：整行注释与行尾注释只剩 <code>%</code>，换行保留；跳过 <code>\verb</code> 与 <code>environments.json</code> 里 code 一类的环境（<code>comment</code> 环境除外，它的内容本来就不排版，照常清空）；没有闭合的代码环境按普通文本处理；<code>\url{…}</code> 参数里没有转义的 <code>%</code> 改写成 <code>\%</code>（与 latexpand 清空注释时的做法相同）；<code>\end{document}</code> 所在行之后的内容删掉。保留 <code>--empty-comments</code> 是为了让 latexpand 在 <code>\input</code> 处补的换行与注释行的位置不变；主文件旁有同名 .bbl 且全文恰有一处 <code>\bibliography{}</code> 时，把 .bbl 内容替换到该命令处。展开结果必须非空且含 <code>\begin{document}</code> 与 <code>\end{document}</code>；仍残留 <code>\input</code> 的行数记 warning</li>
 <li>死分支删除：在 .bbl 内联与注入中文排版设置之前做，纯文本处理。只删取值在前导区定死的开关的死分支，无法确定的保留并记 warning；结果与原文逐 token 等价（xelatex 回归用例在 tests/compile）。每个处理过的开关记一条 warning，manifest 不加字段与状态</li>
 <li>注入块：<code>\documentclass</code> 之后插入 xeCJK 设置，字体只写文件名，断行按中文规则，行距 <code>\linespread{1.4}</code>。注入块以 <code>\PassOptionsToPackage{no-math}{fontspec}</code> 开头，避免 fontspec 与 fdsymbol 一类数学字体宏包争 <code>\mathdollar</code>。文档已经用 xeCJK / ctex 一族则不注入；用旧式 CJK 宏包时，删掉 <code>\begin{CJK}</code> / <code>\end{CJK}</code> 与 <code>\CJKfamily{…}</code>，包名本身由下一条的规则删掉</li>
+<li>8 位西文字体族：加载 xeCJK 时 fontspec 把默认编码设为 TU，并把 <code>\rmdefault</code> / <code>\sfdefault</code> / <code>\ttdefault</code> 重设为 Latin Modern。作者经 times、mathptmx、mathpazo、helvet、courier 或 IEEEtran 一类文档类选的 8 位字体族在 TU 下没有字体定义文件，正文因此退回 Latin Modern。注入块在加载 xeCJK 之前记下这三个字体族，在 <code>begindocument/before</code> 钩子里逐个检查：默认编码是 TU 时，当前字体族仍是 fontspec 重设的值就取记下的字体族，否则取当前值；这个字体族没有 <code>tu&lt;字体族&gt;.fd</code> 且在映射表 <code>TU_FONT_SUBSTITUTES</code> 里，就用 fontspec 换成同款的 TeX Gyre OpenType 字体（按文件名加载，四种字形 regular / bold / italic / bolditalic）。映射表：<code>ptm</code> → texgyretermes（Times）；<code>ppl</code>、<code>pplx</code>、<code>pplj</code> → texgyrepagella（Palatino）；<code>phv</code> → texgyreheros（Helvetica）；<code>pcr</code> → texgyrecursor（Courier）。默认编码不是 TU（作者自己加载了 <code>\usepackage[T1]{fontenc}</code> 一类）或字体族有 TU 定义时不替换；数学字体不在替换范围内。不改用恢复 8 位编码的做法，理由：8 位编码下 é、ï 与弯引号这类 Unicode 字符排不出来</li>
 <li>pdflatex 遗留：注入之前对文件开头到 <code>\begin{document}</code> 之间的区域做一次纯文本改写，注释里的内容不动。处理规则是 <code>tongtu/preamble.py</code> 的模块常量（删 pdfTeX 专有原语与驱动选项、删 pdfTeX 专用旧宏包、给 microtype 与 fontawesome 补上 xelatex 下必需的选项与前导）；新发现的模式只加条目，不加分支。每条命中记一条 warning，manifest 不加字段与状态</li>
-<li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝，再把展开、注入后的单文件写回主文件的原路径。主文件全程不改名，理由：jobname 随之不变，作者随源码上传、按 jobname 命名的文件（pgfplots 的 gnuplot 结果 <code>&lt;jobname&gt;.*.table</code> 一类）在 precompile 与 compile 都能直接找到。原文以 src/ 与 <code>build/precompile.tex</code> 为准，编译目录里的主文件可以覆盖。拷贝后删掉编译目录根下与 jobname 同名的编译输出（.aux、.fdb_latexmk、.fls、.log、.pdf、.xdv，模块常量 <code>STALE_OUTPUT_SUFFIXES</code>），作者随源码上传的这类文件会被当成本次编译的输出读入，例如 biblatex 写的 .aux 在不加载 biblatex 时让编译报错；删掉的文件名记一条 warning。命令 <code>latexmk -xelatex -interaction=nonstopmode &lt;主文件&gt;</code>，环境里设 <code>TTFONTS</code> / <code>OPENTYPEFONTS</code>（见 <a href="#fonts">fonts</a>），超时 600 秒；通过的判据是退出码 0、<code>&lt;jobname&gt;.pdf</code> 非空、<code>&lt;jobname&gt;.log</code> 解析出的页数 &gt; 0；latexmk 无法运行或超时 → <code>compile_failed</code></li>
+<li>编译目录 <code>build/sandbox/tex/</code>：src/ 整体拷贝，再把展开、注入后的单文件写回主文件的原路径。主文件全程不改名，理由：jobname 随之不变，作者随源码上传、按 jobname 命名的文件（pgfplots 的 gnuplot 结果 <code>&lt;jobname&gt;.*.table</code> 一类）在 precompile 与 compile 都能直接找到。原文以 src/ 与 <code>build/precompile.tex</code> 为准，编译目录里的主文件可以覆盖。拷贝后删掉编译目录根下与 jobname 同名的编译输出（.aux、.fdb_latexmk、.fls、.log、.pdf、.xdv，模块常量 <code>STALE_OUTPUT_SUFFIXES</code>），作者随源码上传的这类文件会被当成本次编译的输出读入，例如 biblatex 写的 .aux 在不加载 biblatex 时让编译报错；删掉的文件名记一条 warning。命令 <code>latexmk -xelatex -interaction=nonstopmode -synctex=1 &lt;主文件&gt;</code>（与 compile 共用；SyncTeX 只多写一个 <code>&lt;jobname&gt;.synctex.gz</code>，不改变排版，<code>latexmk -C</code> 会删掉它），环境里设 <code>TTFONTS</code> / <code>OPENTYPEFONTS</code>（见 <a href="#fonts">fonts</a>），超时 600 秒；通过的判据是退出码 0、<code>&lt;jobname&gt;.pdf</code> 非空、<code>&lt;jobname&gt;.log</code> 解析出的页数 &gt; 0；latexmk 无法运行或超时 → <code>compile_failed</code></li>
 <li>缺文件展开修复：仅 latexpand 非超时、非零退出且 stderr 含 <code>ERROR: Could not find file [...]</code> 时触发；工具不存在、超时及其他错误直接 <code>expand_failed</code>。脚本先完整复制 src/ 到编译目录，写 <code>precompile-expand.log</code>，再启动修复会话在源码副本里修复。对 agent 的要求写在 <code>skill/precompile_fix/SKILL.md</code>；会话里不运行 tongtu</li>
 <li>修复会话结束后，脚本从修复后的源码树重新执行同一条展开命令，再内联 .bbl、检查全文、注入中文排版设置，写回主文件；不再拷贝 src/，会话对附属文件的修复保留。随后清理编译产物再编译；仍失败则 <code>compile_failed</code>，不再开会话</li>
 <li>修复预算：整个 precompile 最多一次 work，展开修复和编译修复共用角色配置的 timeout_seconds。编译修复会话结束后 <code>latexmk -C</code> 清掉中间产物再重新编译。会话以 error / timeout 结束记 warning，仍执行脚本复验；展开与编译都通过才是 ok。manifest.fix_session 记这一次会话的结局，包括 expand_failed / compile_failed 时的；report 只在最终编译通过时有</li>
@@ -454,10 +455,11 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <div><span class="label">任务</span>
 <ol class="steps">
 <li><b>拼回全文</b>：按 chunk 顺序把 <code>reviewed/</code> 拼成翻译后的掩码全文，再用 blocks.json 把 <code>⟦BLK-n⟧</code> / <code>⟦CAP-n⟧</code> 换回原文块，得到中文全文。前导区 precompile 已经注入过中文排版设置，这里不再动</li>
-<li><b>编译</b>：把中文全文写进 precompile 留下的编译目录 <code>build/sandbox/tex/</code>，覆盖主文件，文件名与 precompile 相同（取自 precompile manifest 的 main_file；不拷 src/，precompile 修复过的文件都已在里面），与 precompile 用同一组字体搜索路径，跑 <code>latexmk -xelatex &lt;主文件&gt;</code></li>
+<li><b>编译</b>：把中文全文写进 precompile 留下的编译目录 <code>build/sandbox/tex/</code>，覆盖主文件，文件名与 precompile 相同（取自 precompile manifest 的 main_file；不拷 src/，precompile 修复过的文件都已在里面），与 precompile 用同一组字体搜索路径，跑 <code>latexmk -xelatex -synctex=1 &lt;主文件&gt;</code></li>
 <li class="branch"><b>不通过 → 修复会话</b>：启动一次 agent work（角色 <code>compile_fix</code>）在编译目录里修，然后重新编译一次，以这次结果为准</li>
 <li><b>出口判据</b>：编译通过；页数与原文基线相差不超过 30%；修复会话没有删掉正文里的 LaTeX 命令。任一不过 → <code>compile_failed</code></li>
 <li><b>拷出</b>：<code>out/&lt;ID&gt;.zh.pdf</code> 与 <code>build/zh.tex</code>（修复过就是修复后的），然后 <code>latexmk -C</code> 清掉中间文件；判据不过时两者都不写</li>
+<li><b>写锚点</b>：在 <code>latexmk -C</code> 之前，用 SyncTeX 文件把 zh.tex 的每个块对到 PDF 每页上的矩形，写成 <code>out/&lt;ID&gt;.zh.anchors.json</code>，供阅读器在原文与译文之间按块对照。块的划分只由掩码全文决定，原文与译文的同一块 id 相同。锚点写不出只记一条 warning，PDF 照常输出，阶段仍是 ok</li>
 <li class="branch"><b>裁白边（可选，默认关闭）</b>：config.toml 里 <code>[pdf] crop_margins = true</code> 时，用 Ghostscript 量出 <code>out/&lt;ID&gt;.zh.pdf</code> 每页内容的边界，取全部页的并集，四边各留出边距，写成每一页的 CropBox。理由：手机上读 PDF 时页边空白占去大量屏幕；只改 CropBox 不改排版，断行、页码、链接与书签都不变。同一尺寸的页用同一个框，翻页时尺寸一致。build/precompile.pdf 不裁</li>
 </ol></div>
 <div class="enum"><span class="label">状态</span> <span class="e ok">ok</span><span class="e">compile_failed</span></div>
@@ -477,9 +479,11 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <span class="label" style="display:block;margin-top:12px">写</span>
 <table class="iot"><thead><tr><th>文件</th><th>给谁</th><th>结构</th><th>是什么</th></tr></thead><tbody>
 <tr><td>out/&lt;ID&gt;.zh.pdf</td><td class="src">用户</td><td><span class="ty">PDF</span></td><td>最终产物。&lt;ID&gt; 是论文工作目录的名字，默认就是 arXiv 编号（/ 换成 _）；文件名带编号，拷出 out/ 之后也能认出是哪篇论文；开了 <code>crop_margins</code> 时已裁掉白边（CropBox）</td></tr>
+<tr><td>out/&lt;ID&gt;.zh.anchors.json</td><td class="src">用户</td><td><a href="#def-compile">AnchorsFile</a></td><td>zh.tex 每个块在 PDF 上的位置：块 id、类别、zh.tex 行号范围、每页的矩形，以及每页的版心矩形；锚点写不出时没有这个文件</td></tr>
 <tr><td>build/zh.tex</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>编译通过的中文全文（修复过就是修复后的）；判据不过时不写</td></tr>
+<tr><td>build/zh.synctex.gz</td><td class="src">—</td><td><span class="ty">SyncTeX</span></td><td>编译目录里 <code>&lt;jobname&gt;.synctex.gz</code> 的副本，锚点由它算出；<code>latexmk -C</code> 会删掉编译目录里的那份，留这份用来查锚点问题</td></tr>
 <tr><td>build/sandbox/tex/&lt;主文件&gt;</td><td class="src">—</td><td><span class="ty">LaTeX</span></td><td>写进编译目录的译文，覆盖 precompile 写的英文单文件；修复会话在这个目录里运行；结束时 <code>latexmk -C</code> 清掉中间文件</td></tr>
-<tr><td>build/sandbox/tex/&lt;jobname&gt;.log、.pdf</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物，jobname 是主文件去掉扩展名：计数从 .log 解析，修复会话读 .log 定位错误；通过后 .pdf 拷出为 out/&lt;ID&gt;.zh.pdf，<code>latexmk -C</code> 后不保留</td></tr>
+<tr><td>build/sandbox/tex/&lt;jobname&gt;.log、.pdf、.synctex.gz</td><td class="src">—</td><td><span class="ty">日志 / PDF</span></td><td>编译中间产物，jobname 是主文件去掉扩展名：计数从 .log 解析，修复会话读 .log 定位错误；通过后 .pdf 拷出为 out/&lt;ID&gt;.zh.pdf，.synctex.gz 拷出为 build/zh.synctex.gz，<code>latexmk -C</code> 后不保留</td></tr>
 <tr><td>logs/compile-fix.jsonl</td><td class="src">—</td><td><span class="ty">JSONL</span></td><td>修复会话的逐轮记录；启动过修复会话才有</td></tr>
 <tr><td>build/manifests/compile.json</td><td class="src">—</td><td><a href="#def-compile">CompileManifest</a></td><td>译文的编译统计与原文基线并排、修复会话结局</td></tr>
 </tbody></table>
@@ -491,7 +495,13 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
 <li>命令判据：编译目录里最终的主文件与修复会话之前 unmask 直接写出的版本做 <a href="#translate">translate</a> 校验的第 2 条（命令一个不少）。译文对原文的一致性 review 已逐 chunk 保证，这里检查的是修复会话有没有删命令。不拿 precompile.tex 作参照，因为 mask 对 caption 的段落归一化会引入 <code>\par</code></li>
 <li>修复会话：会话结束 <code>latexmk -C</code> 清掉中间产物再重新编译；会话以 error / timeout 结束记 warning，判定仍由重新编译给出</li>
 <li>裁白边：命令 <code>gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=bbox</code>，超时 120 秒；内容边界取 <code>%%HiResBoundingBox</code>，按 MediaBox 尺寸把页分组，每组各取并集，空白页不计入；带 <code>/Rotate</code> 的页（pdflscape 横排页一类）不计入并集，也不写 CropBox，因为 Ghostscript 按旋转后的方向报告坐标；每边留 12pt（模块常量 <code>CROP_PADDING_POINTS</code>），不超出 MediaBox。用 pypdf 以增量方式写回，原文件的字节原样保留在新文件开头。Ghostscript 不存在、超时、退出码非零、量出的页数与 PDF 不符、量不到内容，或 PDF 写不回时，PDF 保持不裁并记一条 warning，阶段仍是 ok。每次裁的都是 latexmk 刚编译出的 PDF，不带旧的 CropBox，所以重跑 compile 得到同一组框</li>
-<li>只记 warning 不算失败的：overfull hbox、未定义引用、未定义文献、缺字四个计数相对基线的增量；caption 回退；裁白边失败</li>
+<li>锚点的块：掩码全文按空行分段，段号从 0 起；段内的 <code>⟦BLK-n⟧</code> 把段切开，<code>\part</code> 到 <code>\subsubsection</code> 的标题单独成块（到行尾为止，并带上紧跟其后、只有 <code>\label{…}</code> 的行），其余文字块 id 为 <code>PAR-&lt;段号&gt;-&lt;段内序号&gt;</code>，类别 text 或 heading；注释块（category comment）留在所在的文字块里。每个 <code>⟦BLK-n⟧</code> 一块，id 即 <code>BLK-n</code>，类别取 blocks.json 的 category，preamble 与 postamble 不出块；每个 <code>⟦CAP-n⟧</code> 一块，parent 是它所在的 BLK，范围从 <code>\caption</code> 到右括号（摘要从 <code>\begin{abstract}</code> 到 <code>\end{abstract}</code>）；thebibliography 里每个 <code>\bibitem</code> 一块，id 为 <code>BLK-n.k</code>（k 从 0 起），parent 是 <code>BLK-n</code>。理由：id 只依赖掩码全文，原文与译文的掩码结构相同，同一 id 就是同一块</li>
+<li>锚点的题名区：掩码全文里第一个含 <code>\maketitle</code> 的文字块是题名区块，类别改为 metadata。从它往前连续的块都属于题名区，直到遇到标题块或含正文的文字块为止；属于题名区的有 <code>⟦BLK-n⟧</code> 块（<code>\title</code>、<code>\author</code> 一类 metadata 块，以及 CCSXML 一类）、前导区的摘要（<code>⟦CAP-n⟧</code>）、只由命令（连同参数）和 abstract 环境组成的文字块（<code>\thanks</code>、<code>\keywords</code>、<code>\ccsdesc</code>、摘要一类）。题名区的块各自保留 id、类别与行号范围，parent 指向题名区块，原来已有 parent 的（BLK 里的 caption）不变；题名区块在 blocks 里排到这些块之前，行号范围从题名区的第一个块开始。没有 <code>\maketitle</code> 的文档没有题名区块。理由：<code>\maketitle</code> 排出 <code>\title</code>、<code>\author</code> 等时，SyncTeX 把排出的内容都记在 <code>\maketitle</code> 那一行，这些块自己没有矩形，位置只能由题名区块的矩形给出；块仍各自出块，是为了块的划分只看掩码全文，原文与译文的 id 一一对应</li>
+<li>锚点的位置：SyncTeX 给出每个排版盒子来自 zh.tex 的哪一行，行再按上一条的行号范围归到块。只取版心里的盒子：版心是页面根盒子下高度不小于父盒子 0.6、宽度不小于 0.9、其他兄弟高度都不超过它 0.15 的那一层，最多往下找 12 层（<code>tongtu/synctex.py</code> 的 <code>BODY_*</code> 常量），页眉、页脚、页边注因此不计入。高于版心 0.6 且装着两个以上块的盒子是容器，本身不出矩形；只有空白记录、又含子盒子的外层盒子看作包装，矩形取自里面的盒子；高度 30pt 以内的这类盒子若自己也排了文字，仍按普通行处理。判断自己排了文字只用 SyncTeX 记录：子盒子以外、离盒子两端超过 0.5pt 的空白记录有 2 个以上，或者有一段宽过 1pt、没有被子盒子与记录覆盖、也不从空白记录开始的空隙；行尾 0.5pt 内的空白记录与首尾属于别的块的记录不算本行；图形没有记录时取它单子盒链的最外层；段落最后一行若与上一行的行距不超过前 4 个行距中位数的 1.02 倍，归回上一块。矩形宽或高不足 0.2pt 的丢掉，被同页另一矩形（0.5pt 容差）包住的丢掉，同一行上竖向重叠超过较矮者一半、横向空隙小于 6pt 的合并。有 parent 的块的矩形也并进 parent，parent 的行号范围也包含它的子块。常量在 <code>tongtu/anchors.py</code></li>
+<li>锚点的缩放与旋转：SyncTeX 记的是变换前的坐标，<code>\scalebox</code>、<code>\resizebox</code>、<code>\rotatebox</code> 以及基于它们的 sidewaystable、turn 一类排出的盒子要先换算到页面上的位置。变换组只按盒子尺寸认出，规则与 graphicx 排出的盒子结构对应。缩放组是这样一串盒子：外层盒子宽度大于 0、只装一个盒子；往里两层盒子宽度都为 0、各只装一个盒子；再往里是自然大小的内容盒子；第一层宽度为 0 的盒子的高与深是第二层的同一倍数，这个倍数不等于 1。横向比例取外层宽度与内容盒子宽度之比，纵向比例取这个倍数，以第二层盒子的参考点为中心缩放，第二层及以下的盒子都按它换算。旋转组是这样一个盒子：它只装着一个位置与尺寸都和它相同的盒子，它的父盒子也只装着它；把它绕参考点转 90°、180° 或 270° 后的外接矩形与父盒子重合时，它及以下的盒子按这个角度换算，其他角度不认。比较尺寸的容差 0.1pt（<code>tongtu/synctex.py</code> 的 <code>TRANSFORM_TOLERANCE</code>）。嵌套的变换先作用里层，再作用外层。矩形与「高于版心 0.6」的容器判断用换算后的位置与高度，其余判断（包装、自己排了文字、行距）在盒子自己的坐标里做。理由：缩放的表格不换算时矩形按原始大小从左上角伸出版心，旋转的表格盖住整页</li>
+<li>锚点的坐标：PDF 默认用户空间，单位 pt，y 轴向上，与该页 MediaBox 同一坐标系（MediaBox 左下角不一定是原点）；保留 2 位小数。裁白边只改 CropBox，锚点坐标不受影响。每块的矩形按页、自上而下、自左而右排序。rects 可以为空：块没有排出可见内容（<code>\appendix</code>、<code>\bibliographystyle</code> 一类），或 SyncTeX 没有给出它的位置（题名区的块，位置看它的 parent 题名区块；不在题名区的 <code>\title</code> 一类，例如文中没有 <code>\maketitle</code>）；脚注不单独成块，算在所在的文字块里</li>
+<li>锚点写不出的情形：<code>&lt;jobname&gt;.synctex.gz</code> 不在或解不开、PDF 读不了、SyncTeX 页数与 PDF 不符、SyncTeX 的输入里没有主文件、unmask 的块位置对不上；都只记一条 warning，不写 <code>out/&lt;ID&gt;.zh.anchors.json</code></li>
+<li>只记 warning 不算失败的：overfull hbox、未定义引用、未定义文献、缺字四个计数相对基线的增量；caption 回退；裁白边失败；锚点写不出</li>
 </ul></details>
 <details open id="def-compile"><summary>产物</summary>
 <pre><span class="k">class</span> CompileManifest(Manifest):
@@ -499,6 +509,35 @@ user:       各层差异说明 + 请修正并重新输出完整译文         <s
     report: <span class="t">CompileReport | None</span>         <span class="c"># 译文校验编译的统计结果；判据不过也保留。与 precompile 的 report 同一个类</span>
     baseline: <span class="t">CompileReport | None</span>       <span class="c"># 原文的统计结果，从 precompile manifest 转录过来，方便与 report 并排比较</span>
     fix_session: <span class="t">FixSession | None</span>       <span class="c"># 启动过修复会话才有</span>
+
+<span class="c"># out/&lt;ID&gt;.zh.anchors.json；坐标是 PDF 默认用户空间的 pt，y 轴向上</span>
+<span class="k">class</span> AnchorsFile(BaseModel):
+    pdf: <span class="t">str</span>                             <span class="c"># 对应的 PDF 文件名，&lt;ID&gt;.zh.pdf</span>
+    tex: <span class="t">str</span>                             <span class="c"># 行号所在的文件名，zh.tex</span>
+    pages: <span class="t">list[AnchorPage]</span>
+    blocks: <span class="t">list[AnchorBlock]</span>            <span class="c"># 按 zh.tex 中的先后顺序；子块紧跟在 parent 之后</span>
+
+<span class="k">class</span> AnchorPage(BaseModel):
+    page: <span class="t">int</span>                            <span class="c"># 从 1 起</span>
+    width: <span class="t">float</span>                         <span class="c"># MediaBox 的宽与高</span>
+    height: <span class="t">float</span>
+    body: <span class="t">AnchorRect | None</span>              <span class="c"># 版心；SyncTeX 里这一页没有盒子时为 None</span>
+
+<span class="k">class</span> AnchorBlock(BaseModel):
+    id: <span class="t">str</span>                              <span class="c"># PAR-&lt;段&gt;-&lt;序号&gt; / BLK-n / CAP-n / BLK-n.k</span>
+    kind: <span class="t">"text" | "heading" | "caption" | "abstract" | "bibitem" | "math" | "table" | "figure" | "tikz"
+        | "code" | "algorithm" | "bibliography" | "box" | "unknown" | "metadata"</span>
+    parent: <span class="t">str | None</span>                   <span class="c"># CAP-n 与 BLK-n.k 所在的 BLK-n；题名区的块指向题名区块</span>
+    first_line: <span class="t">int</span>                      <span class="c"># zh.tex 的行号范围，从 1 起，含两端；parent 的范围包含子块</span>
+    last_line: <span class="t">int</span>
+    rects: <span class="t">list[AnchorRect]</span>              <span class="c"># 可以为空，见细节与常量</span>
+
+<span class="k">class</span> AnchorRect(BaseModel):
+    page: <span class="t">int</span>
+    x0: <span class="t">float</span>                            <span class="c"># 左下角</span>
+    y0: <span class="t">float</span>
+    x1: <span class="t">float</span>                            <span class="c"># 右上角</span>
+    y1: <span class="t">float</span>
 
 <span class="c"># config.toml 的 [pdf] 表</span>
 <span class="k">class</span> PdfConfig(BaseModel):

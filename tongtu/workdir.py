@@ -126,6 +126,14 @@ class Workdir:
         return self.out / f"{self.path.name}.zh.pdf"
 
     @property
+    def zh_anchors(self) -> Path:
+        return self.out / f"{self.path.name}.zh.anchors.json"
+
+    @property
+    def zh_synctex(self) -> Path:
+        return self.build / "zh.synctex.gz"
+
+    @property
     def compile_fix_log(self) -> Path:
         return self.logs / "compile-fix.jsonl"
 
