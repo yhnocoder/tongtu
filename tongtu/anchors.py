@@ -11,7 +11,7 @@ from .artifacts.compile import AnchorBlock, AnchorKind, AnchorPage, AnchorRect, 
 from .artifacts.mask import BlockCategory, BlockRecord, CaptionRecord
 from .masking import MaskError, Placement, UnmaskOutcome, match_group, skip_optional_arguments
 from .synctex import HBOX, Box, Record, Synctex
-from .validation import BLANK_LINE_RE, BLOCK_ID_PREFIX, TOKEN_RE
+from .validation import BLANK_LINE_RE, BLOCK_ID_PREFIX, TOKEN_RE, read_control_sequence
 
 SKIPPED_CATEGORIES = frozenset({BlockCategory.PREAMBLE, BlockCategory.POSTAMBLE})
 
@@ -32,6 +32,8 @@ CAPTION_CLOSER = "}"
 ABSTRACT_OPENER = "\\begin{abstract}"
 
 ABSTRACT_CLOSER = "\\end{abstract}"
+
+MAKETITLE_RE = re.compile(r"\\maketitle(?![A-Za-z])")
 
 DISPLAY_OPEN_RE = re.compile(
     r"[ \t]*(?:\\\[|\$\$|\\begin\{[A-Za-z*]+\}(?:\{[^}]*\})?(?:[ \t]*\\label\{[^}]*\})?)[ \t]*"
@@ -128,12 +130,14 @@ def build_units(outcome: UnmaskOutcome, blocks: Sequence[BlockRecord], captions:
 
     token_starts = [token.start() for token in tokens]
     units: list[Unit] = []
+    pieces: dict[int, str] = {}
     for paragraph, (start, end) in enumerate(_paragraph_spans(stream)):
         number = 0
 
         def add_text(piece_start: int, piece_end: int, paragraph: int = paragraph) -> None:
             nonlocal number
             for kind, unit_start, unit_end in _text_pieces(stream, piece_start, piece_end):
+                pieces[len(units)] = stream[unit_start:unit_end]
                 units.append(Unit(f"PAR-{paragraph}-{number}", kind, to_text(unit_start), to_text(unit_end)))
                 number += 1
 
@@ -147,7 +151,62 @@ def build_units(outcome: UnmaskOutcome, blocks: Sequence[BlockRecord], captions:
             units.extend(_object_units(place, category, outcome.text, caption_places, caption_kinds))
             cursor = tokens[index].end()
         add_text(cursor, end)
-    return units
+    return _title_area(units, pieces)
+
+
+def _title_area(units: list[Unit], pieces: Mapping[int, str]) -> list[Unit]:
+    title = next(
+        (
+            index
+            for index, piece in pieces.items()
+            if units[index].kind is AnchorKind.TEXT and MAKETITLE_RE.search(piece)
+        ),
+        None,
+    )
+    if title is None:
+        return units
+    start = title
+    while start > 0 and _in_title_area(units[start - 1], pieces.get(start - 1)):
+        start -= 1
+    head = replace(units[title], kind=AnchorKind.METADATA)
+    members = [unit if unit.parent is not None else replace(unit, parent=head.id) for unit in units[start:title]]
+    return [*units[:start], head, *members, *units[title + 1 :]]
+
+
+def _in_title_area(unit: Unit, piece: str | None) -> bool:
+    return piece is None or (unit.kind is AnchorKind.TEXT and _only_front_matter(piece))
+
+
+def _only_front_matter(piece: str) -> bool:
+    cursor = 0
+    try:
+        while cursor < len(piece):
+            token = TOKEN_RE.match(piece, cursor)
+            if token is not None:
+                cursor = token.end()
+            elif piece[cursor].isspace():
+                cursor += 1
+            elif piece.startswith(ABSTRACT_OPENER, cursor):
+                closing = piece.find(ABSTRACT_CLOSER, cursor)
+                if closing < 0:
+                    return False
+                cursor = closing + len(ABSTRACT_CLOSER)
+            elif piece[cursor] == "\\":
+                cursor = _skip_command(piece, cursor)
+            else:
+                return False
+    except MaskError:
+        return False
+    return True
+
+
+def _skip_command(piece: str, start: int) -> int:
+    _, cursor = read_control_sequence(piece, start)
+    if piece.startswith("*", cursor):
+        cursor += 1
+    while (cursor := skip_optional_arguments(piece, cursor)) < len(piece) and piece[cursor] == "{":
+        cursor = match_group(piece, cursor)
+    return cursor
 
 
 def _paragraph_spans(stream: str) -> list[tuple[int, int]]:
@@ -670,7 +729,9 @@ def anchors_file(
         own = merged.get(index, [])
         family = [rect for child in children.get(unit.id, []) for rect in merged.get(child, [])]
         rects = merge([*own, *family]) if family else own
-        first, last = ranges[index]
+        members = [index, *children.get(unit.id, [])]
+        first = min(ranges[member][0] for member in members)
+        last = max(ranges[member][1] for member in members)
         blocks.append(
             AnchorBlock(
                 id=unit.id,

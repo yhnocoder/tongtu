@@ -315,3 +315,141 @@ def test_merge_drops_contained_rects_and_joins_close_rects_on_one_line() -> None
         (0, 40, 100, 10),
         (120, 40, 50, 10),
     ]
+
+
+TITLE_PAPER = r"""\documentclass{article}
+\begin{document}
+\title{A Title}
+\author{An Author}
+\thanks{Funded.}
+
+\begin{abstract}
+Short abstract.
+\end{abstract}
+
+\maketitle
+
+Body words here.
+\end{document}
+"""
+
+TITLE_TRANSLATIONS: tuple[tuple[str, str], ...] = (
+    ("Funded.", "资助。"),
+    ("Short abstract.", "简短摘要。"),
+    ("Body words here.", "正文。"),
+)
+
+PROSE_BEFORE_TITLE_PAPER = r"""\documentclass{article}
+\begin{document}
+\title{A Title}
+
+Some prose before the title.
+
+\author{An Author}
+\maketitle
+
+Body words here.
+\end{document}
+"""
+
+PREAMBLE_ABSTRACT_PAPER = r"""\documentclass{revtex4-2}
+\begin{abstract}
+Short abstract.
+\end{abstract}
+\begin{document}
+\title{A Title}
+\maketitle
+
+Body words here.
+\end{document}
+"""
+
+NO_MAKETITLE_PAPER = r"""\documentclass{article}
+\begin{document}
+\title{A Title}
+
+Body words here.
+\end{document}
+"""
+
+
+def test_title_area_blocks_point_to_the_maketitle_block(environments_table: Mapping[str, masking.TableEntry]) -> None:
+    unmasked, units = masked_units(TITLE_PAPER, environments_table)
+    assert describe(unmasked, units) == [
+        ("PAR-2-0", AnchorKind.METADATA, None),
+        ("BLK-1", AnchorKind.METADATA, "PAR-2-0"),
+        ("BLK-2", AnchorKind.METADATA, "PAR-2-0"),
+        ("PAR-0-0", AnchorKind.TEXT, "PAR-2-0"),
+        ("PAR-1-0", AnchorKind.TEXT, "PAR-2-0"),
+        ("PAR-3-0", AnchorKind.TEXT, None),
+    ]
+    spans = {unit.id: unmasked.text[unit.start : unit.end] for unit in units}
+    assert spans["PAR-2-0"] == "\\maketitle"
+    assert spans["PAR-0-0"] == "\\thanks{Funded.}"
+    target, target_units = masked_units(TITLE_PAPER, environments_table, TITLE_TRANSLATIONS)
+    assert target.text != unmasked.text
+    assert describe(target, target_units) == describe(unmasked, units)
+
+
+def test_prose_before_maketitle_ends_the_title_area(environments_table: Mapping[str, masking.TableEntry]) -> None:
+    unmasked, units = masked_units(PROSE_BEFORE_TITLE_PAPER, environments_table)
+    assert describe(unmasked, units) == [
+        ("BLK-1", AnchorKind.METADATA, None),
+        ("PAR-1-0", AnchorKind.TEXT, None),
+        ("PAR-2-0", AnchorKind.METADATA, None),
+        ("BLK-2", AnchorKind.METADATA, "PAR-2-0"),
+        ("PAR-3-0", AnchorKind.TEXT, None),
+    ]
+
+
+def test_preamble_abstract_joins_the_title_area(environments_table: Mapping[str, masking.TableEntry]) -> None:
+    unmasked, units = masked_units(PREAMBLE_ABSTRACT_PAPER, environments_table)
+    assert describe(unmasked, units) == [
+        ("PAR-0-0", AnchorKind.METADATA, None),
+        ("CAP-0", AnchorKind.ABSTRACT, "PAR-0-0"),
+        ("BLK-1", AnchorKind.METADATA, "PAR-0-0"),
+        ("PAR-1-0", AnchorKind.TEXT, None),
+    ]
+
+
+def test_document_without_maketitle_has_no_title_block(environments_table: Mapping[str, masking.TableEntry]) -> None:
+    unmasked, units = masked_units(NO_MAKETITLE_PAPER, environments_table)
+    assert describe(unmasked, units) == [
+        ("BLK-1", AnchorKind.METADATA, None),
+        ("PAR-1-0", AnchorKind.TEXT, None),
+    ]
+
+
+def title_page() -> list[str]:
+    return [
+        synctex_record("[", 1, 2, 0, 700, 500, 700, 0),
+        synctex_record("[", 1, 2, 0, 680, 480, 640, 0),
+        *line(11, 40, 60, 400, synctex_record("g", 1, 11, 100, 60), synctex_record("k", 1, 11, 300, 60, 1)),
+        *line(11, 100, 80, 280, synctex_record("g", 1, 11, 150, 80), synctex_record("k", 1, 11, 250, 80, 1)),
+        *line(11, 60, 120, 360, synctex_record("g", 1, 11, 120, 120), synctex_record("k", 1, 11, 320, 120, 1)),
+        *line(13, 0, 200, 480, synctex_record("g", 1, 13, 100, 200), synctex_record("k", 1, 13, 200, 200, 1)),
+        "]",
+        "]",
+    ]
+
+
+def test_title_block_takes_the_rects_recorded_at_maketitle(
+    environments_table: Mapping[str, masking.TableEntry],
+) -> None:
+    unmasked, units = masked_units(TITLE_PAPER, environments_table)
+    parsed = synctex.parse(synctex_file({1: MAIN}, [title_page()]))
+    result = anchors.anchors_file(
+        parsed, ["/tmp/tree/main.tex"], units, unmasked.text, unmasked.text, [MEDIA], "x.zh.pdf", "zh.tex"
+    )
+    assert [(block.id, block.kind, block.parent, block.first_line, block.last_line) for block in result.blocks] == [
+        ("PAR-2-0", AnchorKind.METADATA, None, 3, 11),
+        ("BLK-1", AnchorKind.METADATA, "PAR-2-0", 3, 3),
+        ("BLK-2", AnchorKind.METADATA, "PAR-2-0", 4, 4),
+        ("PAR-0-0", AnchorKind.TEXT, "PAR-2-0", 5, 5),
+        ("PAR-1-0", AnchorKind.TEXT, "PAR-2-0", 7, 9),
+        ("PAR-3-0", AnchorKind.TEXT, None, 13, 13),
+    ]
+    blocks = {block.id: block for block in result.blocks}
+    assert corners(blocks["PAR-2-0"].rects) == [box(40, 50, 440, 62), box(100, 70, 380, 82), box(60, 110, 420, 122)]
+    assert all(not block.rects for block in result.blocks if block.parent == "PAR-2-0")
+    assert corners(blocks["PAR-3-0"].rects) == [box(0, 190, 480, 202)]
