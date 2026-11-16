@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import signal
 import stat
 import subprocess
+import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -13,10 +18,11 @@ from typer.testing import CliRunner
 from tongtu import __version__, cli, validation
 from tongtu.artifacts.common import CompileReport, FixSession, Manifest
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
-from tongtu.artifacts.status import ABSENT_STATUS, ChunkCounts, PaperStatus
+from tongtu.artifacts.status import ABSENT_STATUS, ChunkCounts, PaperStatus, RunCommand, RunMarker
 from tongtu.artifacts.survey import BriefFile, ChunkRecord, Part
 from tongtu.artifacts.translate import ChunkTranslateRecord, ChunkTranslateStatus, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
+from tongtu.manifests import load_manifest
 from tongtu.model.config import CONFIG_TEMPLATE
 from tongtu.pipeline import STAGES
 from tongtu.stages.translate import ChunkProgress, ChunkProgressState
@@ -147,15 +153,51 @@ def test_setup_rejects_the_interactive_flag(tmp_path: Path, monkeypatch: pytest.
     assert not path.exists()
 
 
-def test_doctor_without_config_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_without_config_exits_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
     assert "tongtusetup" in output
     assert "toolchainandfontscomplete" in output
+
+
+def test_doctor_with_unreadable_config_exits_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text("[roles\n", encoding="utf-8")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
+
+
+def test_doctor_missing_fonts_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    monkeypatch.setattr(cli, "FONTS_DIR", tmp_path / "no-fonts")
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert f"environmentincomplete:{squeeze(cli.FONT_CHECK_NAME)}" in squeeze(result.stdout)
+
+
+def test_doctor_missing_toolchain_and_config_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_FAILURE
+
+
+@pytest.mark.parametrize("tool", [name for name, _purpose in cli.TOOLCHAIN_CHECKS])
+def test_doctor_missing_one_tool_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("DEMO_KEY", "demo-key")
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == tool else f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_FAILURE
 
 
 def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,7 +290,7 @@ def test_doctor_reports_a_failed_agentrun_check(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026, failing={"codex": "codex login file not found"})
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
     assert "[missing]codex/m1agentrundoctor:logincodexloginfilenotfound" in output
     assert "[ok]claude-code/m1agentrundoctor:login" in output
@@ -261,7 +303,7 @@ def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(shutil, "which", lambda name: None if name == "agentrun" else f"/usr/bin/{name}")
     calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
     assert "[missing]pi/deepseek/m1agentrun,whichstartseveryruntimeagentrunnotfoundinPATH" in output
     assert calls == [[cli.XELATEX, "--version"]]
@@ -280,7 +322,7 @@ def test_doctor_reports_agentrun_output_that_is_not_json(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(cli.subprocess, "run", run)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     assert "[missing]piagentrundoctoragentrun:unexpectedargument" in squeeze(result.stdout)
 
 
@@ -290,7 +332,7 @@ def test_doctor_reports_roles_that_do_not_resolve(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
     assert "[ok]keydemo" in output
     assert "[missing]rolereview" in output
@@ -300,13 +342,13 @@ def test_doctor_reports_roles_that_do_not_resolve(tmp_path: Path, monkeypatch: p
     assert "rolereview,rolecompile_fixnotconfigured" in output
 
 
-def test_doctor_reports_missing_key_without_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_reports_missing_key_as_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.delenv("DEMO_KEY", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
     assert "toolchainandfontscomplete" in output
     assert "keydemo" in output
@@ -318,7 +360,7 @@ def test_doctor_keeps_table_names_in_the_text(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     assert "[provider.demo]" in result.stdout
 
 
@@ -573,6 +615,176 @@ def test_stage_exits_one_when_the_stage_fails(tmp_path: Path, monkeypatch: pytes
     assert calls == ["mask"]
 
 
+def wire_marker_probe(
+    monkeypatch: pytest.MonkeyPatch, seen: list[RunMarker | None], failure: BaseException | None = None
+) -> None:
+    def entry(options: RunOptions, display: cli.StageDisplay) -> Manifest:
+        seen.append(load_manifest(options.workdir.run_marker, RunMarker))
+        if failure is not None:
+            raise failure
+        return Manifest(status="ok", warnings=[])
+
+    for name in STAGES:
+        monkeypatch.setitem(cli.STAGE_ENTRIES, name, entry)
+
+
+def test_run_keeps_the_run_marker_while_stages_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[RunMarker | None] = []
+    wire_marker_probe(monkeypatch, seen)
+    workdir = cli.Workdir(tmp_path / "paper")
+    previous = signal.getsignal(signal.SIGTERM)
+    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert len(seen) == len(STAGES)
+    assert all(marker is not None and marker.pid == os.getpid() for marker in seen)
+    assert all(marker is not None and marker.command is RunCommand.RUN for marker in seen)
+    assert not workdir.run_marker.exists()
+    assert signal.getsignal(signal.SIGTERM) == previous
+
+
+def test_stage_keeps_the_run_marker_while_the_stage_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    seen: list[RunMarker | None] = []
+    wire_marker_probe(monkeypatch, seen)
+    result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert [marker.command if marker else None for marker in seen] == [RunCommand.STAGE]
+    assert not workdir.run_marker.exists()
+
+
+def test_stage_with_absent_upstream_writes_no_run_marker(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(tmp_path / "paper")])
+    assert result.exit_code == 2
+    assert not (tmp_path / "paper").exists()
+
+
+def test_run_removes_the_run_marker_after_a_failed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    wire_entries(monkeypatch, calls, statuses={"mask": "mask_failed"})
+    workdir = cli.Workdir(tmp_path / "paper")
+    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code == 1
+    assert not workdir.run_marker.exists()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("程序错误"), KeyboardInterrupt()])
+def test_run_removes_the_run_marker_when_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    seen: list[RunMarker | None] = []
+    wire_marker_probe(monkeypatch, seen, failure)
+    workdir = cli.Workdir(tmp_path / "paper")
+    previous = signal.getsignal(signal.SIGTERM)
+    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code != 0
+    assert len(seen) == 1 and seen[0] is not None
+    assert not workdir.run_marker.exists()
+    assert signal.getsignal(signal.SIGTERM) == previous
+
+
+def test_run_leaves_a_marker_written_by_another_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    other = RunMarker(pid=os.getpid() + 1, started_at=datetime.now(UTC), command=RunCommand.RUN)
+
+    def entry(options: RunOptions, display: cli.StageDisplay) -> Manifest:
+        options.workdir.run_marker.write_text(other.model_dump_json(), encoding="utf-8")
+        return Manifest(status="ok", warnings=[])
+
+    for name in STAGES:
+        monkeypatch.setitem(cli.STAGE_ENTRIES, name, entry)
+    workdir = cli.Workdir(tmp_path / "paper")
+    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert load_manifest(workdir.run_marker, RunMarker) == other
+
+
+BLOCKING_RUN = """
+import sys
+import time
+
+from tongtu import cli
+from tongtu.artifacts.common import Manifest
+
+
+def entry(options, display):
+    time.sleep(60)
+    return Manifest(status="ok", warnings=[])
+
+
+for name in list(cli.STAGE_ENTRIES):
+    cli.STAGE_ENTRIES[name] = entry
+cli.app(["run", "2002.05202", "--workdir", sys.argv[1]])
+"""
+
+
+def start_blocking_run(workdir: cli.Workdir) -> subprocess.Popen[bytes]:
+    child = subprocess.Popen(
+        [sys.executable, "-c", BLOCKING_RUN, str(workdir.path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "TONGTU_HOME": str(workdir.path.parent / "home")},
+    )
+    deadline = time.monotonic() + 60
+    while load_manifest(workdir.run_marker, RunMarker) is None:
+        if child.poll() is not None or time.monotonic() > deadline:
+            child.kill()
+            pytest.fail("the blocking run never wrote its run marker")
+        time.sleep(0.05)
+    return child
+
+
+def test_sigterm_removes_the_run_marker(tmp_path: Path) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    child = start_blocking_run(workdir)
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert (snapshot.running, snapshot.pid) == (True, child.pid)
+    child.send_signal(signal.SIGTERM)
+    assert child.wait(timeout=60) == -signal.SIGTERM
+    assert not workdir.run_marker.exists()
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).running is False
+
+
+def test_status_json_treats_a_killed_run_as_not_running(tmp_path: Path) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    child = start_blocking_run(workdir)
+    child.kill()
+    child.wait(timeout=60)
+    assert load_manifest(workdir.run_marker, RunMarker) is not None
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert (snapshot.running, snapshot.pid) == (False, None)
+
+
+def write_run_marker(workdir: cli.Workdir, pid: int) -> None:
+    workdir.path.mkdir(parents=True, exist_ok=True)
+    marker = RunMarker(pid=pid, started_at=datetime.now(UTC), command=RunCommand.STAGE)
+    workdir.run_marker.write_text(marker.model_dump_json(), encoding="utf-8")
+
+
+def test_status_json_reports_the_live_pid_of_the_run_marker(tmp_path: Path) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    write_run_marker(workdir, os.getpid())
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert (snapshot.running, snapshot.pid) == (True, os.getpid())
+    assert workdir.run_marker.exists()
+
+
+def test_status_json_ignores_a_run_marker_whose_process_is_gone(tmp_path: Path) -> None:
+    finished = subprocess.Popen([sys.executable, "-c", ""])
+    finished.wait()
+    workdir = cli.Workdir(tmp_path / "paper")
+    write_run_marker(workdir, finished.pid)
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert (snapshot.running, snapshot.pid) == (False, None)
+
+
+@pytest.mark.parametrize("content", ["{", '{"pid": 0, "started_at": "2026-01-01T00:00:00Z", "command": "run"}'])
+def test_status_json_ignores_an_unreadable_run_marker(tmp_path: Path, content: str) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    workdir.path.mkdir(parents=True)
+    workdir.run_marker.write_text(content, encoding="utf-8")
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert (snapshot.running, snapshot.pid) == (False, None)
+
+
 def test_status_prints_one_row_per_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COLUMNS", "400")
     workdir = write_outputs(tmp_path, "fetch")
@@ -620,6 +832,7 @@ def test_status_json_of_an_absent_workdir_marks_every_stage_absent(tmp_path: Pat
         assert (state.message, state.warnings, state.manifest) == ("", [], None)
     assert snapshot.translate_chunks is None
     assert snapshot.pdf is None
+    assert (snapshot.running, snapshot.pid) == (False, None)
     assert not target.exists()
 
 
@@ -940,7 +1153,7 @@ def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, m
 
     monkeypatch.setattr(cli.subprocess, "run", run)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     assert "[missing]piagentrundoctoragentrundoctorprintednochecklist" in squeeze(result.stdout)
 
 
