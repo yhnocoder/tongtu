@@ -11,6 +11,8 @@ AREAS: tuple[str, ...] = ("src", "build", "out", "logs")
 
 MANIFESTS_DIRNAME = "manifests"
 
+RUN_MARKER_FILENAME = "running.json"
+
 ENCODING = "utf-8"
 
 
@@ -42,6 +44,10 @@ def resolve(
 @dataclass(frozen=True)
 class Workdir:
     path: Path
+
+    @property
+    def run_marker(self) -> Path:
+        return self.path / RUN_MARKER_FILENAME
 
     @property
     def src(self) -> Path:

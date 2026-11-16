@@ -4,13 +4,16 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from types import FrameType
 from typing import Annotated
 
 import typer
@@ -33,13 +36,13 @@ from .artifacts.compile import CompileManifest
 from .artifacts.fetch import FetchManifest
 from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
-from .artifacts.status import ABSENT_STATUS, PaperStatus, StageState
+from .artifacts.status import ABSENT_STATUS, PaperStatus, RunCommand, RunMarker, StageState
 from .artifacts.survey import SurveyManifest
 from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
 from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present
 from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
-from .manifests import describe_error, load_manifest
+from .manifests import describe_error, load_manifest, write_manifest
 from .model.config import CONFIG_TEMPLATE, FontsConfig, Target, load_config, provider_key, role_target
 from .model.work import AGENTRUN_EXECUTABLE
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
@@ -52,6 +55,8 @@ from .workdir import ENCODING, Workdir, WorkdirError, resolve
 EXIT_FAILURE = 1
 
 EXIT_USAGE = 2
+
+EXIT_NOT_CONFIGURED = 3
 
 DEFAULT_JOBS = 4
 
@@ -480,21 +485,22 @@ def run(
     _apply_dev(dev)
     options = _options(paper, workdir, glossary, jobs, no_terms, no_review)
     console.print(f"workdir {options.workdir.path}")
-    if from_stage is not None:
-        clean_from(options.workdir, from_stage.value)
-        start = from_stage.value
-        console.print(f"--from {start}: removed {start} and downstream outputs")
-    else:
-        pending = first_pending(options.workdir)
-        if pending is None:
-            console.print("all seven stage outputs are present; nothing to run. Use --from STAGE to redo.")
-            return
-        start = pending
-        if start != STAGES[0]:
-            console.print(f"resuming from {start} (upstream outputs present)")
-    console.print("")
-    _print_stage_header()
-    raise _run_stages(start, options)
+    with _running(options.workdir, RunCommand.RUN):
+        if from_stage is not None:
+            clean_from(options.workdir, from_stage.value)
+            start = from_stage.value
+            console.print(f"--from {start}: removed {start} and downstream outputs")
+        else:
+            pending = first_pending(options.workdir)
+            if pending is None:
+                console.print("all seven stage outputs are present; nothing to run. Use --from STAGE to redo.")
+                return
+            start = pending
+            if start != STAGES[0]:
+                console.print(f"resuming from {start} (upstream outputs present)")
+        console.print("")
+        _print_stage_header()
+        raise _run_stages(start, options)
 
 
 @app.command()
@@ -527,9 +533,46 @@ def stage(
             f"Run tongtu run first, or tongtu run --from {missing[0]} to redo."
         )
         raise typer.Exit(EXIT_USAGE)
-    _print_stage_header()
-    manifest = _run_stage(name.value, options)
+    with _running(options.workdir, RunCommand.STAGE):
+        _print_stage_header()
+        manifest = _run_stage(name.value, options)
     raise typer.Exit(0 if manifest.ok else EXIT_FAILURE)
+
+
+@contextmanager
+def _running(workdir: Workdir, command: RunCommand) -> Iterator[None]:
+    write_manifest(workdir.run_marker, RunMarker(pid=os.getpid(), started_at=datetime.now(UTC), command=command))
+
+    def terminate(signum: int, frame: FrameType | None) -> None:
+        _remove_run_marker(workdir)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        _remove_run_marker(workdir)
+
+
+def _remove_run_marker(workdir: Workdir) -> None:
+    marker = load_manifest(workdir.run_marker, RunMarker)
+    if marker is not None and marker.pid == os.getpid():
+        workdir.run_marker.unlink(missing_ok=True)
+
+
+def _running_pid(workdir: Workdir) -> int | None:
+    marker = load_manifest(workdir.run_marker, RunMarker)
+    if marker is None:
+        return None
+    try:
+        os.kill(marker.pid, 0)
+    except PermissionError:
+        return marker.pid
+    except (ProcessLookupError, OverflowError):
+        return None
+    return marker.pid
 
 
 JsonOpt = Annotated[
@@ -555,9 +598,12 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_
                 manifest=manifest_path if manifest_path.is_file() else None,
             )
         )
+    pid = _running_pid(paper_workdir)
     snapshot = PaperStatus(
         workdir=paper_workdir.path,
         arxiv_id=paper_input.arxiv_id,
+        running=pid is not None,
+        pid=pid,
         stages=stages,
         translate_chunks=translate.chunk_counts(paper_workdir),
         pdf=paper_workdir.zh_pdf if paper_workdir.zh_pdf.is_file() else None,
@@ -566,6 +612,8 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_
         typer.echo(snapshot.model_dump_json(indent=2).encode(ENCODING))
         return
     console.print(f"workdir {snapshot.workdir}")
+    if snapshot.running:
+        console.print(f"running pid {snapshot.pid}")
     console.print("")
     console.print(
         f"{'stage':<{NAME_WIDTH}}{'status':<{STATUS_WIDTH}}{'outputs':<{OUTPUTS_WIDTH}}manifest", style=HEADER_STYLE
@@ -615,7 +663,7 @@ def doctor(dev: DevOpt = False) -> None:
             f"toolchain and fonts complete; {', '.join(absent_config)} not configured, "
             "stages from survey on cannot run."
         )
-        return
+        raise typer.Exit(EXIT_NOT_CONFIGURED)
     console.print("environment complete.")
 
 

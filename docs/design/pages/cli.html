@@ -71,7 +71,7 @@ translate   <span class="ok">━━</span><span class="warn">━━</span><span 
 <span class="ok">✓</span> translate   ok                17 chunks                                   0:04:31</div></div></dd>
 
 <dt>status PAPER</dt>
-<dd>查看一篇论文各阶段的状态：每个阶段一行，列出状态、产物是否存在、manifest 路径；manifest 的 message 与 warnings 列在该行下方。上次运行失败后想先了解原因再决定是否重跑，用它；更详细的记录在 <code>logs/</code>。只读，不改任何文件。
+<dd>查看一篇论文各阶段的状态：每个阶段一行，列出状态、产物是否存在、manifest 路径；manifest 的 message 与 warnings 列在该行下方。上次运行失败后想先了解原因再决定是否重跑，用它；更详细的记录在 <code>logs/</code>。只读，不改任何文件。这篇论文正在运行时（判断方法见下面的 --json），workdir 行下方多一行 <code>running pid &lt;进程号&gt;</code>，不在运行时没有这一行。
 <div class="ex"><p class="cap">compile 失败，查看原因。</p>
 <div class="term"><span class="p">$ tongtu status 2512.02556</span>
 workdir /Users/zach/.local/share/tongtu/2512.02556
@@ -92,6 +92,8 @@ compile     compile_failed    absent   build/manifests/compile.json
 <pre><code class="language-python">class PaperStatus(BaseModel):          # tongtu/artifacts/status.py
     workdir: Path                         # 绝对路径
     arxiv_id: str | None                  # PAPER 解析出的 arXiv 编号；PAPER 是本地源码目录时为 null
+    running: bool                         # 运行标记存在且其中的进程还活着
+    pid: int | None                       # running 为 true 时给出运行标记里的进程号，否则为 null
     stages: list[StageState]              # 七个阶段，按阶段顺序
     translate_chunks: ChunkCounts | None  # build/brief.json 读不到时为 null
     pdf: Path | None                      # out/&lt;工作目录名&gt;.zh.pdf，文件存在时给出
@@ -108,12 +110,19 @@ class ChunkCounts(BaseModel):
     total: int                            # translatable_chars 大于 0 的 chunk 数，即 translate 要翻译的 chunk
     done: int                             # 其中结果已经确定（translated 或 fallback）的 chunk 数</code></pre>
 <p><code>done</code> 的算法：translate 的 manifest 存在时，数 manifest 的 <code>chunks</code> 里记录的可翻译 chunk，阶段结束后 <code>done</code> 等于 <code>total</code>，<code>translate_failed</code> 时为 0。manifest 不存在时（translate 正在运行或被打断），按 logs/ 与 build/sandbox/translate/ 里每次尝试的记录重放 translate 自己的判定：一个 chunk 的第二次尝试已经结束，或者第一次尝试已经结束且它的译文通过与 translate 相同的校验，就算已完成。尝试已经结束指 API 模式的 <code>logs/translate-cNNN-k.json</code> 已写出，或者 Agent 模式的 <code>logs/translate-cNNN-k.events.jsonl</code> 里已有 end 事件。translate 在开始时删除这些记录，所以它们只属于最近一次运行。</p>
-<p>输出里没有「是否正在运行」：通途不写锁文件或 pid 文件，从工作目录看不出有没有进程在跑。输出也不带格式版本号，读它的程序与通途在同一个仓库里一起修改。</p>
-<div class="ex"><p class="cap">survey 跑完、translate 还没开始（节选）。</p>
+<p><b>是否正在运行。</b><code>run</code> 与 <code>stage</code> 开始运行阶段前在工作目录写运行标记 <code>&lt;工作目录&gt;/running.json</code>，结束时删除；<code>run</code> 发现七个阶段都已跑完时也是先写再删，<code>stage</code> 因上游产物不在而退出 2 时不写。正常结束、阶段失败、程序异常与 Ctrl-C 都在退出前删除它。收到 SIGTERM 时先删除标记，再按 SIGTERM 的默认动作结束进程，所以退出状态仍是「被 SIGTERM 终止」（shell 里是 143），进程立即结束，不等正在运行的 translate 分块做完。删除前先读标记，其中的进程号是本进程时才删，另一个进程后来写的标记留着。</p>
+<pre><code class="language-python">class RunMarker(BaseModel):           # tongtu/artifacts/status.py
+    pid: PositiveInt                    # 写标记的 tongtu 进程
+    started_at: datetime                # 写标记的时间，UTC
+    command: RunCommand                 # "run" 或 "stage"</code></pre>
+<p><code>status</code> 读这个文件，再用 <code>os.kill(pid, 0)</code> 检查进程是否还在：进程在，或者进程属于别的用户（无权发信号），<code>running</code> 为 true；文件不存在、读不出或进程已经不在（崩溃、被 kill -9、主机重启），<code>running</code> 为 false，不报错，也不删除这个文件。进程号被系统重新分配给了无关进程时，<code>status</code> 会误报 running，直到那个进程结束或下一次 <code>run</code>/<code>stage</code> 覆盖标记。同一个工作目录可以同时启动两次 <code>run</code>/<code>stage</code>，通途不拒绝；这时标记里是后启动的那个进程。输出不带格式版本号，读它的程序与通途在同一个仓库里一起修改。</p>
+<div class="ex"><p class="cap">survey 跑完、translate 刚开始运行（节选）。</p>
 <div class="term"><span class="p">$ tongtu status 2512.02556 --json</span>
 {
   "workdir": "/Users/zach/.tongtu/papers/2512.02556",
   "arxiv_id": "2512.02556",
+  "running": true,
+  "pid": 48213,
   "stages": [
     {
       "name": "fetch",
@@ -153,7 +162,7 @@ class ChunkCounts(BaseModel):
 1</div></div></dd>
 
 <dt>doctor</dt>
-<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体（只看仓库 <code>fonts/</code> 下的四个默认字体文件，即霞鹜文楷与思源黑体 SC 各两个，不检查用户的 <code>[fonts]</code> 配置）、config.toml、<code>[roles]</code> 引用的服务商密钥，以及引用的每个运行时与模型组合：对每个组合运行一次 <code>agentrun doctor &lt;运行时&gt; --json [--model 模型]</code>，把它的 executable、login、sandbox、network 四项各列一行，skip 记为 ok。安装环境后先运行它。工具链或字体缺失退出 1；配置与密钥的问题只报告，不影响退出码，最后一行说明从 survey 起的阶段不能运行。
+<dd>检查环境，逐项输出 ok / missing：TeX 工具链（xelatex、TeX Live 不低于 2026、latexmk、latexpand）、中文字体（只看仓库 <code>fonts/</code> 下的四个默认字体文件，即霞鹜文楷与思源黑体 SC 各两个，不检查用户的 <code>[fonts]</code> 配置）、config.toml、<code>[roles]</code> 引用的服务商密钥，以及引用的每个运行时与模型组合：对每个组合运行一次 <code>agentrun doctor &lt;运行时&gt; --json [--model 模型]</code>，把它的 executable、login、sandbox、network 四项各列一行，skip 记为 ok。安装环境后先运行它，后台调用通途的程序（CodeBoard、Raycast 插件）在开始翻译前用退出码判断环境。全部通过时最后一行是 <code>environment complete.</code>，退出 0。工具链或字体缺失时退出 1，这时配置是否齐全不影响退出码。工具链与字体齐全，但 config.toml 不存在或读不出、<code>[roles]</code> 某个角色解析不出、引用的服务商密钥缺失，或者 agentrun 不在 PATH、某个运行时的 agentrun doctor 有一项 fail 时，退出 3，最后一行说明从 survey 起的阶段不能运行；fetch、precompile、mask 仍然可以运行，所以与 1 分开。
 <div class="ex"><p class="cap">全部齐全：退出 0。</p>
 <div class="term"><span class="p">$ tongtu doctor</span>
   [ok]      xelatex       compile engine (latexmk -xelatex)         /Library/TeX/texbin/xelatex
@@ -189,9 +198,11 @@ wrote /Users/zach/.tongtu/config.toml.</div></div></dd>
 
 <h2>EXIT STATUS</h2>
 <dl>
-<dt>0</dt><dd>成功。run：PDF 已写出，或七个阶段的产物都在；validate：四层全部通过；doctor：工具链与字体齐全。</dd>
+<dt>0</dt><dd>成功。run：PDF 已写出，或七个阶段的产物都在；validate：四层全部通过；doctor：全部检查通过。</dd>
 <dt>1</dt><dd>某阶段失败，manifest 里有原因；validate 某层不通过；doctor 工具链或字体缺失。</dd>
 <dt>2</dt><dd>用法错误；stage 的上游产物不在；setup -i 一个服务商都没选；<code>TONGTU_DISABLE</code> 已设置。</dd>
+<dt>3</dt><dd>doctor：工具链与字体齐全，配置、角色、服务商密钥或运行时有缺失。</dd>
+<dt>143</dt><dd>run、stage 收到 SIGTERM，标记删除后按默认动作被终止（shell 显示的值）。</dd>
 </dl>
 
 <h2>FILES</h2>
@@ -199,6 +210,7 @@ wrote /Users/zach/.tongtu/config.toml.</div></div></dd>
 <dt>$TONGTU_HOME/config.toml</dt><dd>服务商、分块参数、字体、中文 PDF 选项与各角色的模型，见 <a href="model.html">模型调用层</a>。</dd>
 <dt>$TONGTU_HOME/glossary.json</dt><dd>全局层术语表。</dd>
 <dt>&lt;工作目录&gt;/glossary.json</dt><dd>论文层术语表。</dd>
+<dt>&lt;工作目录&gt;/running.json</dt><dd>运行标记，只在 run 或 stage 运行期间存在，见 status 的 --json。</dd>
 <dt>&lt;工作目录&gt;/src/ build/ logs/ out/</dt><dd>各阶段的输入与产物，见各阶段卡片；manifest 在 <code>build/manifests/&lt;stage&gt;.json</code>。</dd>
 </dl>
 <p>取值优先级，右边覆盖左边：模型与强度 = config.toml 的 [roles]，没有命令行覆盖；术语表 = 模型提议 → 全局层 → 论文层 → <code>--glossary</code>；工作目录 = <code>~/.tongtu/papers/</code> → <code>$TONGTU_HOME/papers/</code> → <code>--workdir</code>。</p>

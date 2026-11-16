@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PositiveInt
 
 ABSENT_STATUS = "absent"
 
@@ -21,9 +23,22 @@ class ChunkCounts(BaseModel):
     done: int
 
 
+class RunCommand(StrEnum):
+    RUN = "run"
+    STAGE = "stage"
+
+
+class RunMarker(BaseModel):
+    pid: PositiveInt
+    started_at: datetime
+    command: RunCommand
+
+
 class PaperStatus(BaseModel):
     workdir: Path
     arxiv_id: str | None = None
+    running: bool
+    pid: int | None = None
     stages: list[StageState]
     translate_chunks: ChunkCounts | None = None
     pdf: Path | None = None

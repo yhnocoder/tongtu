@@ -41,12 +41,15 @@ type StageState = Stage & { outputs_present: boolean; manifest: string | null };
 type PaperStatus = {
   workdir: string;
   arxiv_id: string | null;
+  running: boolean;
+  pid: number | null;
   stages: StageState[];
   translate_chunks: { total: number; done: number } | null;
   pdf: string | null;
 };
 
 const ABSENT = "absent";
+const RUN_MARKER = "running.json";
 
 export type Meta = { title: string; authors: string[]; category: string; published: string };
 
@@ -54,7 +57,7 @@ export type Paper = Meta & {
   id: string;
   dir: string;
   pdf: string;
-  pgid: number | null;
+  pid: number | null;
   status: "running" | "ok" | "failed" | "partial";
   stage: string;
   done: number;
@@ -86,7 +89,11 @@ export function start(paper: string) {
 }
 
 export function stop(paper: Paper) {
-  if (paper.pgid) process.kill(-paper.pgid, "SIGTERM");
+  if (!paper.pid) return;
+  try {
+    const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(paper.pid)], { encoding: "utf8" }).trim());
+    if (pgid) process.kill(-pgid, "SIGTERM");
+  } catch {}
 }
 
 export function remove(paper: Paper) {
@@ -97,15 +104,6 @@ export function remove(paper: Paper) {
 
 export function quickLook(file: string) {
   spawn("qlmanage", ["-p", file], { detached: true, stdio: "ignore" }).unref();
-}
-
-function runningGroups(): Map<string, number> {
-  const groups = new Map<string, number>();
-  for (const line of execFileSync("ps", ["-ax", "-o", "pgid=,command="], { encoding: "utf8" }).split("\n")) {
-    const match = line.match(/^\s*(\d+) .*tongtu run (\S+)$/);
-    if (match) groups.set(match[2], Number(match[1]));
-  }
-  return groups;
 }
 
 function read(file: string): string {
@@ -133,13 +131,14 @@ function pdfPath(dir: string): string {
 
 function manifestsKey(dir: string): string {
   const manifests = path.join(dir, "build/manifests");
-  return [manifests, ...STAGES.map((name) => path.join(manifests, `${name}.json`))].map(mtime).join(",");
+  const files = [manifests, ...STAGES.map((name) => path.join(manifests, `${name}.json`)), path.join(dir, RUN_MARKER)];
+  return files.map(mtime).join(",");
 }
 
-async function paperStatus(id: string, dir: string, running: boolean): Promise<PaperStatus> {
+async function paperStatus(id: string, dir: string): Promise<PaperStatus> {
   const key = manifestsKey(dir);
   const cached = JSON.parse(read(statusPath(id)) || "null") as { key: string; status: PaperStatus } | null;
-  if (cached && cached.key === key && !running) return cached.status;
+  if (cached && cached.key === key && !cached.status.running) return cached.status;
   const command = `uv run --directory ${q(repoDir())} tongtu status ${q(id)} --workdir ${q(dir)} --json`;
   const { stdout } = await run("/bin/zsh", ["-c", command], { env: ENV, encoding: "utf8" });
   const status = JSON.parse(stdout) as PaperStatus;
@@ -162,7 +161,7 @@ function sessionEvents(dir: string, stage: string): string[] {
   return events.slice(-8);
 }
 
-async function inspect(id: string, pgid: number | null): Promise<Paper> {
+async function inspect(id: string): Promise<Paper> {
   const dir = path.join(ROOT, id);
   const stages: Stage[] = [];
   let latest = 0;
@@ -170,7 +169,7 @@ async function inspect(id: string, pgid: number | null): Promise<Paper> {
   let status: PaperStatus | null = null;
   let error = "";
   try {
-    status = await paperStatus(id, dir, pgid !== null);
+    status = await paperStatus(id, dir);
   } catch (e) {
     error = `tongtu status failed: ${e instanceof Error ? e.message : String(e)}`;
   }
@@ -186,13 +185,14 @@ async function inspect(id: string, pgid: number | null): Promise<Paper> {
   const done = stages.length - (failed ? 1 : 0);
   const stage = failed?.name ?? STAGES[done] ?? "compile";
   const meta: Meta = { title: "", authors: [], category: "", published: "", ...JSON.parse(read(metaPath(id)) || "{}") };
+  const pid = status?.running ? status.pid : null;
   return {
     ...meta,
     id,
     dir,
     pdf: pdfPath(dir),
-    pgid,
-    status: pgid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial",
+    pid,
+    status: pid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial",
     stage,
     done,
     message: failed ? `${failed.status} ${failed.message}`.trim() : error,
@@ -209,8 +209,7 @@ export async function scan(): Promise<Paper[]> {
   try {
     ids = fs.readdirSync(ROOT, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {}
-  const groups = runningGroups();
-  const papers = await Promise.all(ids.map((id) => inspect(id, groups.get(id) ?? null)));
+  const papers = await Promise.all(ids.map((id) => inspect(id)));
   return papers.sort((a, b) => b.mtime - a.mtime);
 }
 
