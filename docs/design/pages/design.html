@@ -90,7 +90,7 @@ tongtu          --version</code></pre>
       <tr><td><code>--latest</code></td><td>run</td><td class="wrap">向 arXiv 查询最新版本并使用它。见<a href="#versions">论文编号与版本</a>。</td></tr>
       <tr><td><code>--from STAGE</code></td><td>run</td><td class="wrap">从这个阶段起重跑，先删掉它及其下游的旧产物。</td></tr>
       <tr><td><code>--glossary FILE</code></td><td>run、stage、validate</td><td class="wrap">本次运行追加的术语表，可以给多个，靠后的优先。</td></tr>
-      <tr><td><code>--workdir DIR</code></td><td>run、stage、status</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同，或者同为本地源码目录。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
+      <tr><td><code>--workdir DIR</code></td><td>run、stage、status</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同；或者 manifest 记的是本地源码目录，<code>PAPER</code> 是同一个目录，或者是这个目录的名字。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
       <tr><td><code>--dev</code></td><td>run、stage、status、setup</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
     </tbody>
   </table>

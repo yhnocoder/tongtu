@@ -1227,8 +1227,8 @@ def make_paper_dirs(home: Path, *names: str) -> None:
         (home / "papers" / name).mkdir(parents=True)
 
 
-def write_fetch_manifest(workdir: Path, arxiv_id: str | None, version: int | None) -> None:
-    manifest = FetchManifest(status=FetchStatus.OK, source="x", arxiv_id=arxiv_id, version=version)
+def write_fetch_manifest(workdir: Path, arxiv_id: str | None, version: int | None, source: str = "x") -> None:
+    manifest = FetchManifest(status=FetchStatus.OK, source=source, arxiv_id=arxiv_id, version=version)
     path = cli.Workdir(workdir).manifest_path("fetch")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(manifest.model_dump_json(), encoding="utf-8")
@@ -1504,16 +1504,54 @@ def test_workdir_holding_another_paper_is_a_usage_error(
     assert f"holds {holds}, but the command asks for {asks}" in stderr
 
 
-def test_workdir_of_a_local_source_accepts_the_same_kind_of_paper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def local_source_workdir(tmp_path: Path, *stages: str) -> tuple[Path, Path]:
     source = tmp_path / "article"
     source.mkdir()
-    workdir = tmp_path / "chosen"
-    write_fetch_manifest(workdir, None, None)
-    result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, "run", str(source), "--workdir", str(workdir))
+    workdir = write_outputs(tmp_path / "home" / "papers", *stages).path
+    write_fetch_manifest(workdir, None, None, str(source))
+    return source, workdir
+
+
+@pytest.mark.parametrize("by_name", [True, False])
+def test_status_with_workdir_of_a_local_source_accepts_its_name_or_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, by_name: bool
+) -> None:
+    urls = wire_api(monkeypatch)
+    source, workdir = local_source_workdir(tmp_path)
+    paper = "article" if by_name else str(source)
+    snapshot = status_with_home(tmp_path / "home", paper, "--workdir", str(workdir))
+    assert urls == []
+    assert (snapshot.workdir, snapshot.arxiv_id, snapshot.version) == (workdir, None, None)
+
+
+@pytest.mark.parametrize("paper", ["OTHER", "draft"])
+def test_status_with_workdir_of_a_local_source_rejects_another_paper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paper: str
+) -> None:
+    urls = wire_api(monkeypatch)
+    _, workdir = local_source_workdir(tmp_path)
+    other = tmp_path / "other" / "article"
+    other.mkdir(parents=True)
+    argument = str(other) if paper == "OTHER" else paper
+    result = runner.invoke(
+        app, ["status", argument, "--workdir", str(workdir), "--json"], env={"TONGTU_HOME": str(tmp_path / "home")}
+    )
+    assert result.exit_code == 2
+    assert (urls, result.stdout) == ([], "")
+    assert "holds a local source directory" in " ".join(ANSI_ESCAPE_RE.sub("", result.stderr).replace("│", " ").split())
+
+
+@pytest.mark.parametrize("head", [["run"], ["stage", "mask"]])
+def test_run_and_stage_with_workdir_of_a_local_source_accept_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head: list[str]
+) -> None:
+    urls = wire_api(monkeypatch)
+    source, workdir = local_source_workdir(tmp_path, "fetch", "precompile")
+    result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, *head, "article", "--workdir", str(workdir))
     assert result.exit_code == 0
+    assert urls == []
     assert captured[0].workdir.path == workdir
+    assert captured[0].paper.source_dir == source
 
 
 def test_status_rejects_the_latest_option(tmp_path: Path) -> None:
