@@ -153,6 +153,28 @@ def test_the_session_directory_is_prepared_before_the_session(
     assert manifest.glossary.model_dump() == {"user": 1, "learned": 1, "added": 1}
 
 
+@pytest.mark.parametrize(
+    ("masked", "expected"),
+    [(MASKED.rstrip("\n"), MASKED.encode("utf-8")), (MASKED, MASKED.encode("utf-8"))],
+    ids=["without_final_newline", "with_final_newline"],
+)
+def test_the_session_source_ends_with_exactly_one_added_newline(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch, masked: str, expected: bytes
+) -> None:
+    seen: dict = {}
+
+    def inspect(directory: Path) -> None:
+        seen["en"] = (directory / "en.tex").read_bytes()
+        writes(GOOD)(directory)
+
+    workdir.masked.write_text(masked, encoding="utf-8")
+    fake_session(monkeypatch, inspect)
+    manifest = run(workdir)
+    assert seen["en"] == expected
+    assert workdir.masked.read_text(encoding="utf-8") == masked
+    assert manifest.status is TranslateStatus.OK
+
+
 def test_a_translation_that_fails_the_checks_is_translate_failed(
     workdir: Workdir, monkeypatch: pytest.MonkeyPatch
 ) -> None:

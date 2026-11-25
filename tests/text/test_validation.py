@@ -560,3 +560,39 @@ def test_the_copied_check_script_uses_both_glossaries(tmp_path: Path) -> None:
     (session / "glossary.fixed.json").write_text(fixed, encoding="utf-8")
     result = run_check(session)
     assert result.returncode == 0, result.stdout
+
+
+ENDS_WITH_PLACEHOLDER = (
+    "We train the language model on long sequences of text with a large batch.\n\n⟦BLK-1⟧\n⟦BLK-2⟧",
+    "我们用大批量在长文本序列上训练语言模型。\n\n⟦BLK-1⟧\n⟦BLK-2⟧",
+)
+
+ENDS_WITH_CAPTION = (
+    "We train the language model on long sequences of text with a large batch.\n\n"
+    "⟦BLK-1⟧\n⟦CAP-1⟧ Loss curves of the language model on long sequences of text.",
+    "我们用大批量在长文本序列上训练语言模型。\n\n⟦BLK-1⟧\n⟦CAP-1⟧ 语言模型在长文本序列上的损失曲线。",
+)
+
+ENDS_WITH_A_SPLIT_CAPTION = (
+    ENDS_WITH_CAPTION[0],
+    "我们用大批量在长文本序列上训练语言模型。\n\n⟦BLK-1⟧\n⟦CAP-1⟧ 语言模型在长文本序列上的\n损失曲线。",
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "translation", "problems", "paragraphs"),
+    [(*ENDS_WITH_PLACEHOLDER, 0, 1), (*ENDS_WITH_CAPTION, 0, 2), (*ENDS_WITH_A_SPLIT_CAPTION, 1, 2)],
+    ids=["placeholder", "caption", "split_caption"],
+)
+def test_a_final_newline_on_either_side_does_not_change_the_report(
+    source: str, translation: str, problems: int, paragraphs: int
+) -> None:
+    reports = {
+        validation.check(source + source_end, translation + translation_end)
+        for source_end in ("", "\n")
+        for translation_end in ("", "\n")
+    }
+    assert len(reports) == 1
+    report = reports.pop()
+    assert len(report.problems) == problems
+    assert (report.paragraphs_total, report.paragraphs_translated) == (paragraphs, paragraphs)

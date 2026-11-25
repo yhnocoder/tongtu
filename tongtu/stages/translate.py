@@ -106,7 +106,8 @@ def _launch(
     session_dir.mkdir(parents=True, exist_ok=True)
     source = session_dir / SOURCE_FILENAME
     source.unlink(missing_ok=True)
-    shutil.copyfile(paper_workdir.masked, source)
+    content = paper_workdir.masked.read_bytes()
+    source.write_bytes(content if content.endswith(b"\n") else content + b"\n")
     source.chmod(glossary.READ_ONLY_MODE)
     glossary.write_session_files(session_dir, selection)
     validate_copy = session_dir / skill_dir(SKILL) / VALIDATE_FILENAME

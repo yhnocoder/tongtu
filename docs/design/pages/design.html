@@ -418,7 +418,7 @@ class EnvironmentDecisionRecord(BaseModel):
       <dt>会话目录</dt>
       <dd>
         <pre><code>build/sandbox/translate/
-├── en.tex                   <span class="c">build/masked.tex 的拷贝，只读</span>
+├── en.tex                   <span class="c">build/masked.tex 的拷贝，末尾没有换行符时补一个，只读</span>
 ├── glossary.fixed.json      <span class="c">用户术语表里本篇命中的条目与 style，只读，必须照用</span>
 ├── glossary.json            <span class="c">开始时是已学术语表里本篇命中的条目；会话可以修改和追加</span>
 ├── .skills/translate/
