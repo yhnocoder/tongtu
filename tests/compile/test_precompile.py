@@ -307,3 +307,61 @@ def test_expansion_keeps_percent_inside_code_and_empties_comments_elsewhere(tmp_
     assert "\\verb|50% off|" in text
     assert "hidden %\n" in text
     assert "drop this" not in text
+
+
+def test_arxiv_2607_24653_inputs_in_command_arguments_compile_unexpanded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    workdir = Workdir(tmp_path / "2607.24653")
+    workdir.create()
+    main = (
+        "\\documentclass{article}\n"
+        "\\usepackage{standalone}\n"
+        "\\usepackage{pgfplots}\n"
+        "\\begin{document}\n"
+        "\\resizebox{0.5\\textwidth}{!}{\\input{figures/benchmark}}\n"
+        "\\input{case-study}\n"
+        "Closing paragraph.\n"
+        "\\end{document}\n"
+    )
+    case_study = "Case study text.\n\\resizebox{\\columnwidth}{!}{\\input{figures/kernel.tex}}\n"
+    benchmark = "\\documentclass{standalone}\n\\begin{document}\nBenchmark figure\n\\end{document}\n"
+    kernel = (
+        "\\begin{tikzpicture}\n\\begin{axis}\n"
+        "\\addplot table [x=step, y=speedup] {\nstep speedup\n1 1.0\n2 1.8\n};\n"
+        "\\end{axis}\n\\end{tikzpicture}\n"
+    )
+    files = {
+        "main.tex": main,
+        "case-study.tex": case_study,
+        "figures/benchmark.tex": benchmark,
+        "figures/kernel.tex": kernel,
+    }
+    for name, content in files.items():
+        (workdir.src / name).parent.mkdir(parents=True, exist_ok=True)
+        (workdir.src / name).write_text(content)
+
+    def work(role: str, tree: Path, **kwargs: object) -> WorkOutcome:
+        raise AssertionError("inputs in command arguments must not need a fix session")
+
+    monkeypatch.setattr(tongtu.model, "work", work)
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.OK, manifest.message
+    assert manifest.fix_session is None
+    output = workdir.precompile_tex.read_text()
+    assert "\\resizebox{0.5\\textwidth}{!}{\\input{figures/benchmark}}\n" in output
+    assert "\\resizebox{\\columnwidth}{!}{\\input{figures/kernel.tex}}\n" in output
+    assert "Case study text." in output and "Closing paragraph." in output
+    assert output.count("\\end{document}") == 1
+    assert [warning for warning in manifest.warnings if "is not expanded" in warning] == [
+        "\\input{figures/benchmark} in an argument of \\resizebox is not expanded; "
+        "TeX reads the file at compile time and its text is not translated, at line 5",
+        "\\input{figures/kernel.tex} in an argument of \\resizebox is not expanded; "
+        "TeX reads the file at compile time and its text is not translated, at line 7",
+    ]
+    assert not any("lines still contain" in warning for warning in manifest.warnings)
+    for name, content in files.items():
+        assert (workdir.src / name).read_text() == content
+    text = "".join(page.extract_text() for page in PdfReader(workdir.precompile_pdf).pages)
+    assert "Closing paragraph." in text

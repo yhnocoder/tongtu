@@ -58,9 +58,6 @@ class MaskManifest(Manifest):
     environments: dict[str, EnvironmentDecisionRecord] = {}
     blocks_total: int = 0
     captions_total: int = 0
-    precompile_chars: int = 0
-    masked_chars: int = 0
-    masked_chars_ratio: float = 0.0
 
 
 class BlockRecord(BaseModel):
@@ -69,12 +66,7 @@ class BlockRecord(BaseModel):
     id: str
     category: BlockCategory
     environment: str = ""
-    decided_by: DecisionSource | None = None
-    labels: list[str] = []
     tex: str
-    start: int
-    end: int
-    line: int
 
 
 class CaptionRecord(BaseModel):

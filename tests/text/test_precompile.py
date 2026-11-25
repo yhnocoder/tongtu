@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 import tongtu.model
 from tongtu import processes
 from tongtu.artifacts.precompile import PrecompileStatus
+from tongtu.masking import TableEntry
 from tongtu.model.config import FontsConfig, load_config
 from tongtu.model.work import StopReason, WorkOutcome
 from tongtu.pipeline import outputs_present
@@ -654,7 +656,7 @@ def wire_missing_inputs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
     def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
         assert command[:-1] == list(precompile.LATEXPAND_COMMAND)
-        calls.append(cwd)
+        calls.append((cwd / command[-1]).resolve().parent)
         source = (cwd / command[-1]).read_bytes()
         for name in ("macros_new", "new_cmds", "wrong/body", "sections/body"):
             marker = b"\\include{" + name.encode() + b"}"
@@ -711,7 +713,7 @@ def test_arxiv_1905_12322v3_missing_legacy_inputs(
     assert manifest.fix_session is not None and manifest.fix_session.stop_reason == str(stop_reason)
     assert manifest.report is not None and manifest.report.pdf_bytes > 0
     assert len(calls) == 1
-    assert expansions == [workdir.src, tree]
+    assert expansions == [workdir.src.resolve(), tree.resolve()]
     assert latexmk == {"compile": 1, "clean": 2}
     assert (workdir.src / main_file).read_text() == source
     assert (workdir.src / "local.sty").read_text() == "old"
@@ -923,4 +925,71 @@ def test_strip_unterminated_code_environment_is_kept_with_warning() -> None:
     assert precompile._strip_dead_branches(source, warnings) == source
     assert warnings == [
         "environment verbatim has no matching \\end{verbatim} before end of file; constant switch branches are not removed"
+    ]
+
+
+def kept(text: str, table: Mapping[str, TableEntry]) -> list[tuple[str, str, str]]:
+    return [(found.command, found.owner, found.target) for found in precompile.argument_inputs(text, table)]
+
+
+def test_arxiv_2607_24653_inputs_in_command_arguments_are_found(environments_table: Mapping[str, TableEntry]) -> None:
+    text = (
+        "\\resizebox{0.95\\textwidth}{!}{\\input{figures/benchmark0727-fixed}}\n"
+        "\\resizebox{\\columnwidth}{!}{\\input{figures/case-study-kernel-optimization.tex}}\n"
+        "\\fbox{\\include{part}}\n"
+        "\\scalebox{0.5}[1]{\\input fig.pdf_t }\n"
+        "\\resizebox{1pt}{!}%\n  {\n  \\input{commented_newline}\n}\n"
+    )
+    assert kept(text, environments_table) == [
+        ("input", "resizebox", "figures/benchmark0727-fixed"),
+        ("input", "resizebox", "figures/case-study-kernel-optimization.tex"),
+        ("include", "fbox", "part"),
+        ("input", "scalebox", "fig.pdf_t"),
+        ("input", "resizebox", "commented_newline"),
+    ]
+
+
+def test_inputs_outside_command_arguments_are_not_found(environments_table: Mapping[str, TableEntry]) -> None:
+    text = (
+        "\\input{top}\n"
+        "{\\small \\input{bare}}\n"
+        "Text {\\input{after_text}}\n"
+        "\\begin{figure}\n\\centering\n\\input{figure_body}\n\\end{figure}\n"
+        "\\begin{multicols}{4}\n{\n\\small\n\\input{contributors}\n}\n\\end{multicols}\n"
+        "\\section{A}\n\n{\\input{after_paragraph}}\n"
+        "\\section{B}\n{\\input{after_line_break}}\n"
+        "\\input{first} {\\input{after_input}}\n"
+        "\\fbox{\\{ \\}} \\input{after_escaped_braces}\n"
+        "\\fbox{% {\n\\textbf{x}} \\input{after_comment_brace}\n"
+        "\\fbox{\\verb|}|} \\input{after_verb}\n"
+        "\\begin{verbatim}\n\\fbox{\n\\end{verbatim}\n\\input{after_code}\n"
+    )
+    assert kept(text, environments_table) == []
+
+
+def test_hide_argument_inputs_marks_only_argument_inputs(environments_table: Mapping[str, TableEntry]) -> None:
+    source = b"\\input{top}\n\\resizebox{1pt}{!}{\\input{fig}}\n"
+    hidden = precompile.hide_argument_inputs(source, environments_table)
+    assert hidden == b"\\input{top}\n\\resizebox{1pt}{!}{" + precompile.KEPT_INPUT_MARK + b"input{fig}}\n"
+    assert hidden.replace(precompile.KEPT_INPUT_MARK, b"\\") == source
+
+
+def test_argument_inputs_stay_in_the_expansion_with_warnings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = PLAIN_PAPER.replace(
+        "Hello world.", "Hello world.\n\\resizebox{\\columnwidth}{!}{\\input{figures/plot.tex}}\n\\input{missing}"
+    )
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": source, "figures/plot.tex": "x y\n1 2\n"})
+    manifest = precompile.run(workdir)
+    assert manifest.status is PrecompileStatus.OK
+    assert (workdir.src / "main.tex").read_text() == source
+    output = workdir.precompile_tex.read_text()
+    assert "\\resizebox{\\columnwidth}{!}{\\input{figures/plot.tex}}\n" in output
+    assert precompile.KEPT_INPUT_MARK.decode() not in output
+    assert [line for line in manifest.warnings if "figures/plot.tex" in line] == [
+        "\\input{figures/plot.tex} in an argument of \\resizebox is not expanded; "
+        "TeX reads the file at compile time and its text is not translated, at line 5"
+    ]
+    assert [line for line in manifest.warnings if "lines still contain" in line] == [
+        "1 lines still contain \\input{ or \\include{ outside comments and outside command arguments "
+        "after expansion; latexpand did not expand those files"
     ]

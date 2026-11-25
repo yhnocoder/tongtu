@@ -175,6 +175,17 @@ def test_legacy_cjk_packages_and_environments_are_stripped() -> None:
     assert "stripped 3 CJK environment wrappers and \\CJKfamily settings" in warnings
 
 
+def test_cjk_wrapper_in_a_macro_body_keeps_the_macro_argument() -> None:
+    text = (
+        "\\documentclass{article}\n\\usepackage{CJKutf8}\n"
+        "\\newcommand{\\chinese}[1]{\\begin{CJK*}{UTF8}{gbsn}{#1}\\end{CJK*}}\n"
+        "\\begin{document}\n\\chinese{中文}\n\\end{document}\n"
+    )
+    output, warnings = run(text)
+    assert "\\newcommand{\\chinese}[1]{{#1}}\n" in output
+    assert "stripped 2 CJK environment wrappers and \\CJKfamily settings" in warnings
+
+
 def test_cjkfamily_is_kept_when_no_legacy_package_was_dropped() -> None:
     text = "\\documentclass{article}\n\\usepackage{xeCJK}\n\\begin{document}\n\\CJKfamily{song}\n\\end{document}\n"
     output, warnings = run(text)

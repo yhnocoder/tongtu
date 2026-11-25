@@ -274,15 +274,14 @@ def test_run_ok_writes_outputs_and_manifest(tmp_path: Path) -> None:
     assert manifest.blocks_total == len(blocks.blocks) == masked.count(f"{masking.SENTINEL_OPEN}BLK-")
     assert manifest.captions_total == len(blocks.captions) == 2
     assert {caption.kind for caption in blocks.captions} == {CaptionKind.ABSTRACT, CaptionKind.CAPTION}
-    assert manifest.precompile_chars == len(SAMPLE_PAPER)
-    assert manifest.masked_chars == len(masked)
-    assert manifest.masked_chars_ratio == round(len(masked) / len(SAMPLE_PAPER), 4)
     assert manifest.environments["equation"].classification is EnvironmentClass.NON_TRANSLATABLE
     assert manifest.environments["equation"].category is BlockCategory.MATH
     assert manifest.environments["equation"].blocks == 1
     assert manifest.environments["abstract"].classification is EnvironmentClass.TEXT
     assert manifest.environments["abstract"].category is None
-    assert [block.labels for block in blocks.blocks if block.environment == "equation"] == [["eq:mass"]]
+    assert [set(block.model_dump()) for block in blocks.blocks if block.environment == "equation"] == [
+        {"id", "category", "environment", "tex"}
+    ]
     restored = masking.unmask(masked, blocks.blocks, blocks.captions)
     assert restored.text == SAMPLE_PAPER
 
@@ -296,9 +295,6 @@ def test_manifest_fields_match_card(tmp_path: Path) -> None:
         "environments",
         "blocks_total",
         "captions_total",
-        "precompile_chars",
-        "masked_chars",
-        "masked_chars_ratio",
         "warnings",
         "message",
     }

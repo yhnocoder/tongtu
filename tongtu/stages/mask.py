@@ -32,8 +32,5 @@ def _execute(paper_workdir: Workdir) -> MaskManifest:
         environments=dict(sorted(outcome.environments.items())),
         blocks_total=len(outcome.blocks),
         captions_total=len(outcome.captions),
-        precompile_chars=len(source),
-        masked_chars=len(outcome.masked),
-        masked_chars_ratio=round(len(outcome.masked) / len(source), 4) if source else 0.0,
         warnings=list(outcome.warnings),
     )
