@@ -11,6 +11,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 from rich.progress import Progress
 from typer.testing import CliRunner
@@ -18,6 +19,7 @@ from typer.testing import CliRunner
 from tongtu import __version__, cli, validation
 from tongtu.artifacts.common import CompileReport, FixSession, Manifest
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
+from tongtu.artifacts.fetch import FetchManifest, FetchStatus
 from tongtu.artifacts.status import ABSENT_STATUS, ChunkCounts, PaperStatus, RunCommand, RunMarker
 from tongtu.artifacts.survey import BriefFile, ChunkRecord, Part
 from tongtu.artifacts.translate import ChunkTranslateRecord, ChunkTranslateStatus, TranslateManifest, TranslateStatus
@@ -27,6 +29,7 @@ from tongtu.model.config import CONFIG_TEMPLATE
 from tongtu.pipeline import STAGES
 from tongtu.stages.translate import ChunkProgress, ChunkProgressState
 
+from .test_arxiv import ERROR_FEED, LATEST_FEED, VERSIONED_FEED
 from .test_pipeline import write_outputs
 
 runner = CliRunner()
@@ -462,7 +465,7 @@ def wire_entries(
 def test_run_from_scratch_runs_all_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper")])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
     assert result.exit_code == 0
     assert calls == list(STAGES)
     header = [line for line in result.stdout.splitlines() if "summary" in line and "elapsed" in line]
@@ -473,7 +476,7 @@ def test_run_resumes_from_the_first_absent_output(tmp_path: Path, monkeypatch: p
     workdir = write_outputs(tmp_path, "fetch", "precompile")
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert calls == ["mask", "survey", "translate", "review", "compile"]
     assert "resumingfrommask" in squeeze(result.stdout)
@@ -483,7 +486,7 @@ def test_run_with_all_outputs_runs_nothing(tmp_path: Path, monkeypatch: pytest.M
     workdir = write_outputs(tmp_path, *STAGES)
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert calls == []
     assert "--from" in result.stdout
@@ -493,7 +496,7 @@ def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch
     workdir = write_outputs(tmp_path, *STAGES)
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path), "--from", "review"])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path), "--from", "review"])
     assert result.exit_code == 0
     assert calls == ["review", "compile"]
     assert (workdir.build / "translated" / "c000.tex").is_file()
@@ -507,7 +510,7 @@ def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch
 def test_run_stops_at_the_first_failed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     wire_entries(monkeypatch, calls, statuses={"mask": "mask_failed"})
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper")])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
     assert result.exit_code == 1
     assert calls == ["fetch", "precompile", "mask"]
     assert "mask_failed" in result.stdout
@@ -523,7 +526,7 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
         app,
         [
             "run",
-            "https://arxiv.org/abs/2002.05202",
+            "https://arxiv.org/abs/2002.05202v1",
             "--workdir",
             str(tmp_path / "paper"),
             "--glossary",
@@ -538,7 +541,8 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
     )
     assert result.exit_code == 0
     options = captured[0]
-    assert options.paper.arxiv_id == "2002.05202"
+    assert (options.paper.arxiv_id, options.paper.version) == ("2002.05202", 1)
+    assert options.meta is None
     assert options.workdir.path == tmp_path / "paper"
     assert options.glossary == (Path("a.json"), Path("b.json"))
     assert options.jobs == 9
@@ -551,7 +555,7 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
 def test_run_rejects_the_removed_model_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: str) -> None:
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper"), option, "a/b"])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper"), option, "a/b"])
     assert result.exit_code == 2
     assert calls == []
 
@@ -572,7 +576,7 @@ def test_run_rejects_an_invalid_paper_argument(tmp_path: Path) -> None:
 
 
 def test_run_rejects_an_unknown_from_stage(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper"), "--from", "flatten"])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper"), "--from", "flatten"])
     assert result.exit_code == 2
 
 
@@ -633,7 +637,7 @@ def test_run_keeps_the_run_marker_while_stages_run(tmp_path: Path, monkeypatch: 
     wire_marker_probe(monkeypatch, seen)
     workdir = cli.Workdir(tmp_path / "paper")
     previous = signal.getsignal(signal.SIGTERM)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert len(seen) == len(STAGES)
     assert all(marker is not None and marker.pid == os.getpid() for marker in seen)
@@ -662,7 +666,7 @@ def test_run_removes_the_run_marker_after_a_failed_stage(tmp_path: Path, monkeyp
     calls: list[str] = []
     wire_entries(monkeypatch, calls, statuses={"mask": "mask_failed"})
     workdir = cli.Workdir(tmp_path / "paper")
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 1
     assert not workdir.run_marker.exists()
 
@@ -675,7 +679,7 @@ def test_run_removes_the_run_marker_when_interrupted(
     wire_marker_probe(monkeypatch, seen, failure)
     workdir = cli.Workdir(tmp_path / "paper")
     previous = signal.getsignal(signal.SIGTERM)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code != 0
     assert len(seen) == 1 and seen[0] is not None
     assert not workdir.run_marker.exists()
@@ -692,7 +696,7 @@ def test_run_leaves_a_marker_written_by_another_process(tmp_path: Path, monkeypa
     for name in STAGES:
         monkeypatch.setitem(cli.STAGE_ENTRIES, name, entry)
     workdir = cli.Workdir(tmp_path / "paper")
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert load_manifest(workdir.run_marker, RunMarker) == other
 
@@ -712,7 +716,7 @@ def entry(options, display):
 
 for name in list(cli.STAGE_ENTRIES):
     cli.STAGE_ENTRIES[name] = entry
-cli.app(["run", "2002.05202", "--workdir", sys.argv[1]])
+cli.app(["run", "2002.05202v1", "--workdir", sys.argv[1]])
 """
 
 
@@ -1175,3 +1179,282 @@ def test_doctor_checks_each_runtime_and_model_pair_once(tmp_path: Path, monkeypa
         ["doctor", "pi", "--json", "--model", "a/m1"],
         ["doctor", "pi", "--json", "--model", "b/m2"],
     ]
+
+
+LATEST_API_URL = "https://export.arxiv.org/api/query?id_list=2106.04426"
+
+
+def wire_api(monkeypatch: pytest.MonkeyPatch, feed: str = LATEST_FEED, status_code: int = 200) -> list[str]:
+    urls: list[str] = []
+
+    def get(url: str, **kwargs: object) -> httpx.Response:
+        urls.append(url)
+        return httpx.Response(status_code, text=feed, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", get)
+    return urls
+
+
+def run_with_home(
+    home: Path, monkeypatch: pytest.MonkeyPatch, *arguments: str
+) -> tuple[object, list[RunOptions], list[str]]:
+    calls: list[str] = []
+    captured: list[RunOptions] = []
+    wire_entries(monkeypatch, calls, captured=captured)
+    result = runner.invoke(app, list(arguments), env={"TONGTU_HOME": str(home)})
+    return result, captured, calls
+
+
+def make_paper_dirs(home: Path, *names: str) -> None:
+    for name in names:
+        (home / "papers" / name).mkdir(parents=True)
+
+
+def write_fetch_manifest(workdir: Path, arxiv_id: str | None, version: int | None) -> None:
+    manifest = FetchManifest(status=FetchStatus.OK, source="x", arxiv_id=arxiv_id, version=version)
+    path = cli.Workdir(workdir).manifest_path("fetch")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(manifest.model_dump_json(), encoding="utf-8")
+
+
+def test_run_with_a_version_uses_it_without_asking_arxiv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426v3")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "https://arxiv.org/abs/2106.04426v2")
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v2"
+    assert (captured[0].paper.arxiv_id, captured[0].paper.version, captured[0].meta) == ("2106.04426", 2, None)
+
+
+def test_run_without_a_version_takes_the_highest_local_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426v1", "2106.04426v2", "2106.04426")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v2"
+    assert (captured[0].paper.version, captured[0].meta) == (2, None)
+
+
+def test_run_without_a_local_version_asks_arxiv_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+    assert captured[0].paper.version == 3
+    assert captured[0].meta is not None and captured[0].meta.version == 3
+    assert calls == list(STAGES)
+
+
+def test_run_ignores_the_unversioned_directory_of_v01(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+
+
+@pytest.mark.parametrize("local", ["2106.04426v1", "2106.04426v3"])
+def test_run_latest_asks_arxiv_even_with_a_local_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local: str
+) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, local)
+    (tmp_path / "papers" / local / "kept").write_text("x", encoding="utf-8")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426", "--latest")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+    assert captured[0].meta is not None
+    assert (tmp_path / "papers" / local / "kept").is_file()
+
+
+def test_run_latest_with_a_version_is_a_usage_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "run", "2106.04426v2", "--latest")
+    assert result.exit_code == 2
+    assert (urls, calls) == ([], [])
+    assert not (tmp_path / "papers").exists()
+
+
+@pytest.mark.parametrize(
+    ("feed", "status_code"), [(ERROR_FEED, 200), ("<feed xmlns='http://www.w3.org/2005/Atom'/>", 200), ("", 503)]
+)
+def test_run_whose_version_query_fails_exits_one_without_a_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feed: str, status_code: int
+) -> None:
+    urls = wire_api(monkeypatch, feed, status_code)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 1
+    assert urls == [LATEST_API_URL]
+    assert calls == []
+    assert "2106.04426" in result.stderr
+    assert not (tmp_path / "papers").exists()
+
+
+def test_run_with_workdir_takes_the_version_of_its_fetch_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    urls = wire_api(monkeypatch)
+    workdir = tmp_path / "chosen"
+    write_fetch_manifest(workdir, "2106.04426", 2)
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426", "--workdir", str(workdir))
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == workdir
+    assert (captured[0].paper.version, captured[0].meta) == (2, None)
+
+
+@pytest.mark.parametrize("manifest", [None, ("1412.6980", 8), ("2106.04426", None)])
+def test_run_with_workdir_of_another_paper_asks_arxiv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest: tuple[str, int | None] | None
+) -> None:
+    urls = wire_api(monkeypatch)
+    workdir = tmp_path / "chosen"
+    if manifest is not None:
+        write_fetch_manifest(workdir, *manifest)
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426", "--workdir", str(workdir))
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == workdir
+    assert captured[0].paper.version == 3
+
+
+def test_run_of_a_local_source_has_no_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    source = tmp_path / "article"
+    source.mkdir()
+    result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, "run", str(source))
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == tmp_path / "home" / "papers" / "article"
+    assert (captured[0].paper.version, captured[0].meta) == (None, None)
+
+
+def test_stage_resolves_only_local_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    write_outputs(tmp_path / "papers", "fetch", "precompile").path.rename(tmp_path / "papers" / "2106.04426v2")
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, "stage", "mask", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == []
+    assert calls == ["mask"]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v2"
+
+
+def test_stage_without_a_local_version_uses_the_bare_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    write_outputs(tmp_path / "papers", "fetch", "precompile").path.rename(tmp_path / "papers" / "2106.04426")
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, "stage", "mask", "2106.04426")
+    assert result.exit_code == 0
+    assert (urls, calls) == ([], ["mask"])
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426"
+    assert captured[0].paper.version is None
+
+
+def test_stage_rejects_the_latest_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426", "--latest")
+    assert result.exit_code == 2
+    assert (urls, calls) == ([], [])
+
+
+def test_stage_fetch_asks_arxiv_when_no_version_is_known(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert calls == ["fetch"]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+    assert captured[0].meta is not None and captured[0].meta.version == 3
+
+
+def test_stage_fetch_reuses_the_local_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426v3")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == []
+    assert (captured[0].paper.version, captured[0].meta) == (3, None)
+
+
+def test_stage_fetch_whose_version_query_fails_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_api(monkeypatch, ERROR_FEED)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426")
+    assert result.exit_code == 1
+    assert calls == []
+    assert not (tmp_path / "papers").exists()
+
+
+def status_with_home(home: Path, *arguments: str) -> PaperStatus:
+    result = runner.invoke(app, ["status", *arguments, "--json"], env={"TONGTU_HOME": str(home)})
+    assert result.exit_code == 0
+    return PaperStatus.model_validate_json(result.stdout)
+
+
+def test_status_resolves_the_highest_local_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "1412.6980v8", "1412.6980v9")
+    snapshot = status_with_home(tmp_path, "1412.6980")
+    assert urls == []
+    assert snapshot.workdir == tmp_path / "papers" / "1412.6980v9"
+    assert (snapshot.arxiv_id, snapshot.version) == ("1412.6980", 9)
+
+
+def test_status_without_a_local_version_uses_the_bare_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "1412.6980")
+    snapshot = status_with_home(tmp_path, "1412.6980")
+    assert urls == []
+    assert snapshot.workdir == tmp_path / "papers" / "1412.6980"
+    assert (snapshot.arxiv_id, snapshot.version) == ("1412.6980", None)
+
+
+def test_status_with_workdir_reads_the_version_of_its_fetch_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    urls = wire_api(monkeypatch)
+    workdir = tmp_path / "chosen"
+    write_fetch_manifest(workdir, "1412.6980", 8)
+    snapshot = status_with_home(tmp_path, "1412.6980", "--workdir", str(workdir))
+    assert urls == []
+    assert (snapshot.workdir, snapshot.version) == (workdir, 8)
+    assert status_with_home(tmp_path, "1412.6980v9", "--workdir", str(workdir)).version == 9
+
+
+def test_status_rejects_the_latest_option(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["status", "1412.6980", "--latest"], env={"TONGTU_HOME": str(tmp_path)})
+    assert result.exit_code == 2
+
+
+def test_fetch_summary_starts_with_the_version() -> None:
+    remote = FetchManifest(
+        status=FetchStatus.OK,
+        source="2412.19437v2",
+        arxiv_id="2412.19437",
+        version=2,
+        kind="tar.gz",
+        tex_files=["a.tex", "b.tex"],
+    )
+    local = FetchManifest(status=FetchStatus.OK, source="/src", kind="local", tex_files=["a.tex"])
+    assert cli.stage_summary(remote) == "v2, tar.gz, 2 tex files"
+    assert cli.stage_summary(local) == "local, 1 tex files"
+
+
+def test_fetch_entry_passes_the_meta(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple] = []
+
+    def fake_run(paper, workdir, meta=None):
+        captured.append((paper, workdir, meta))
+        return FetchManifest(status=FetchStatus.OK, source="x")
+
+    monkeypatch.setattr(cli.fetch, "run", fake_run)
+    wire_api(monkeypatch, VERSIONED_FEED)
+    result = runner.invoke(app, ["stage", "fetch", "1412.6980"], env={"TONGTU_HOME": str(tmp_path)})
+    assert result.exit_code == 0
+    paper, workdir, meta = captured[0]
+    assert (paper.arxiv_id, paper.version) == ("1412.6980", 8)
+    assert workdir.path == tmp_path / "papers" / "1412.6980v8"
+    assert meta is not None and meta.title == "Adam: A Method for Stochastic Optimization"
