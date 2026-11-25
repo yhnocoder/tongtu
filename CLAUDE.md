@@ -23,13 +23,13 @@
 1. **LaTeX 源码是翻译的依据**：翻译 arXiv 提供的 e-print 源码，不解析 PDF。编译能否通过由机器检查，作为硬性指标。
 2. **agent 做翻译，脚本做校验**：翻译由 agent 完成，结果是否正确以校验脚本的结果为准。脚本不对翻译过程做细粒度控制，例如不按段重试后再拼接。要提高译文质量，就修改提供给模型的信息（skill、上下文、术语表），不增加脚本逻辑。
 3. **修复先用规则，agent 只处理规则处理不了的情况**：precompile 与 compile 的修复会话（`precompile_fix`、`compile_fix`）只在规则处理失败后调用。调用 agent 成本高、耗时长，每次结果也不完全一样，这类流程里应尽量不调用 agent。修复会话的日志用来发现共性问题：同一类修复在多篇论文里重复出现、处理方式不依赖具体论文时，把它写成前面阶段的规则，之后这类问题不再进入修复会话。例如 #140 把 7 篇论文的修复会话都在处理的 pdflatex 遗留写成了 `tongtu/preamble.py` 里的规则。
-4. **论文工作目录不在仓库内**：默认路径是 `~/.tongtu/papers/<arxiv_id>/`，可以用 `$TONGTU_HOME`（换整个目录，含 `config.toml` 与 `glossary.json`）、`--dev`（等于 `TONGTU_HOME=~/.tongtu-dev`）或 `--workdir` 修改。测试与试验也不在仓库里创建论文目录。
-5. **agent 运行时可以替换**：适配层在 `tongtu/model/`，不依赖具体产品。直接调用 API，或者启动 Claude Code、Codex，都是可选的实现方式。
+4. **论文工作目录不在仓库内**：默认路径是 `~/.tongtu/papers/<编号加版本号>/`，可以用 `$TONGTU_HOME`（换整个目录，含 `config.toml` 与 `glossary.json`）、`--dev`（等于 `TONGTU_HOME=~/.tongtu-dev`）或 `--workdir` 修改。测试与试验也不在仓库里创建论文目录。
+5. **agent 运行时可以替换**：适配层在 `tongtu/model/`，只有一个入口：在一个目录里启动一次 agent 会话。它不依赖具体产品，Claude Code、Codex 等运行时由 agentrun 适配。
 
 ## 当前状态
 
-- v0.1 已完成。fetch → precompile → mask → survey → translate → review → compile 七个阶段全部实现，`tongtu run <arxiv_id>` 可以在验证集上生成中文 PDF（`out/<工作目录名>.zh.pdf`）。
-- v0.2 还在设计，方向未定。候选方向记录在 GitHub Issues 中（`gh issue list --state open`），新会话先查看。
+- v0.2 已实现。fetch → precompile → mask → translate → compile 五个阶段，`tongtu run <arxiv_id>` 生成中文 PDF（`out/<工作目录名>.zh.pdf`）。translate 由一次 agent 会话整篇翻译，通途在会话外重跑校验。设计见 `docs/design/pages/design.html`。
+- 后续方向记录在 GitHub Issues 中（`gh issue list --state open`），新会话先查看。
 
 ## 工作流程
 
@@ -104,7 +104,7 @@ Validate 由用户执行：跑整篇论文，读中文 PDF。主 agent 给出从
 
 章节按读者会问的问题划分。上面列的几类内容写在相关章节里，和它们解释的机制放在一起，不单独成章；常量不在文末另做汇总。
 
-文件组织：`index.html` 是索引；`style.css` 是共用样式，组件写法见 `pages/_template.html`，项目新增的组件追加在 `style.css` 末尾；项目文档放在 `pages/`，新文档复制 `_template.html` 开始。`pipeline.html` 暂留根目录，使用 `legacy.css`，等迁移完成后移入 `pages/`。改动 `docs/design/` 后运行 `uv run scripts/check_design.py`，脚本截取桌面、375px、深色三种截图并报告机械性错误，布局仍然要看截图。脚本默认用 Chrome；没有 Chrome 的环境加 `--browser chromium`（Playwright 自带的 Chromium）或 `--browser <浏览器可执行文件路径>`。
+文件组织：`index.html` 是索引；`style.css` 是共用样式，组件写法见 `pages/_template.html`，项目新增的组件追加在 `style.css` 末尾；项目文档放在 `pages/`，新文档复制 `_template.html` 开始。改动 `docs/design/` 后运行 `uv run scripts/check_design.py`，脚本截取桌面、375px、深色三种截图并报告机械性错误，布局仍然要看截图。脚本默认用 Chrome；没有 Chrome 的环境加 `--browser chromium`（Playwright 自带的 Chromium）或 `--browser <浏览器可执行文件路径>`。
 
 ### Intro Doc
 

@@ -41,7 +41,7 @@ description: 在工作目录里把一篇已掩码的英文 LaTeX 论文整篇译
    python3 -I .skills/translate/check.py
    ```
 
-   它对比 `en.tex` 与 `zh.tex`，报告五类问题：结构不一致（`structure`）、行内公式被改动（`formula`）、章节标题被改动（`heading`）、还没翻译的段落（`untranslated`）、术语没按两个术语文件用（`glossary`）。`do_not_translate` 里的词按大小写原样匹配。只对它报告的位置用 Edit 修改，改到它输出 `check passed`。翻译途中新定的术语追加进 `glossary.json`。
+   它对比 `en.tex` 与 `zh.tex`，报告五类问题：结构不一致（`structure`）、行内公式被改动（`formula`）、章节标题被改动（`heading`）、还没翻译的段落（`untranslated`）、术语没按两个术语文件用（`glossary`）。`do_not_translate` 里的词按大小写原样匹配。只对它报告的位置用 Edit 修改，改到它输出 `check passed`。翻译途中新定的术语追加进 `glossary.json`。改动 `glossary.json` 之后必须再运行一次检查：新加的术语会被用来检查全文。写文件用 Write 或 Edit，不用 Bash 的重定向。
 5. 检查通过后，**必须**从头到尾通读一遍 `zh.tex`（对照 `en.tex`），只改这几类：误译与漏译、同一概念前后译法不一、专名写法不统一、翻译腔。改完再跑一次检查。
 6. 会话结束后，通途在会话之外用原始的 `en.tex` 和术语表重跑同一套比对，以那次的结果为准。只在当前目录内读写。
 
