@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -22,6 +23,22 @@ class ChunkTranslateRecord(BaseModel):
     status: ChunkTranslateStatus
     attempts: int
     failures: list[str] = []
+
+
+class PaperTerm(BaseModel):
+    word: str
+    translation: str
+    source: Literal["user", "learned", "new"]
+
+
+class PaperKeptWord(BaseModel):
+    word: str
+    source: Literal["user", "learned", "new"]
+
+
+class PaperGlossary(BaseModel):
+    terms: list[PaperTerm]
+    do_not_translate: list[PaperKeptWord]
 
 
 class TranslateManifest(Manifest):

@@ -678,8 +678,15 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_
 def validate(
     src: Annotated[Path, typer.Argument(help="source chunk file")],
     dst: Annotated[Path, typer.Argument(help="translated file")],
+    glossary: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--glossary", metavar="FILE", help="glossary file to check terms against; repeatable, later files win"
+        ),
+    ] = None,
 ) -> None:
-    raise typer.Exit(validation.main([str(src), str(dst)]))
+    glossary_arguments = [argument for path in glossary or () for argument in (validation.GLOSSARY_OPTION, str(path))]
+    raise typer.Exit(validation.main([str(src), str(dst), *glossary_arguments]))
 
 
 @app.command()

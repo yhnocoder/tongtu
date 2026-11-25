@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 SENTINEL_OPEN = "⟦"
@@ -19,7 +21,7 @@ BLANK_LINE_RE = re.compile(r"\n[ \t]*\n")
 
 ENVIRONMENT_NAME_RE = re.compile(r"[A-Za-z0-9@]+\*?")
 
-USAGE = "usage: validate.py SOURCE_FILE TRANSLATED_FILE"
+USAGE = "usage: validate.py SOURCE_FILE TRANSLATED_FILE [--glossary FILE]..."
 
 EXIT_OK = 0
 
@@ -129,20 +131,26 @@ class ValidationResult:
 
 
 def validate(source: str, translation: str) -> ValidationResult:
+    failures = [*_structure_failures(source, translation)]
+    paragraph_count = _check_paragraph_count(source, translation)
+    if paragraph_count is not None:
+        failures.append(paragraph_count)
+    return ValidationResult(failures=tuple(failures))
+
+
+def _structure_failures(source: str, translation: str) -> list[Failure]:
     scanned_source = scan(source)
     scanned_translation = scan(translation)
     paragraphs = _paired_paragraphs(source, translation)
-    failures = [
+    return [
         failure
         for failure in (
             _check_placeholders(source, translation),
             check_control_sequences(scanned_source, scanned_translation, paragraphs),
             _check_braces_and_math(scanned_source, scanned_translation, paragraphs),
-            _check_paragraph_count(source, translation),
         )
         if failure is not None
     ]
-    return ValidationResult(failures=tuple(failures))
 
 
 def _check_placeholders(source: str, translation: str) -> Failure | None:
@@ -324,24 +332,405 @@ def _describe_counter(counter: Counter[str]) -> str:
     return listed
 
 
+UNTRANSLATED_WORDS_MIN = 6
+
+PROBLEM_PREVIEW_ITEMS = 4
+
+GLOSSARY_OPTION = "--glossary"
+
+TERMS_FIELD = "terms"
+
+DO_NOT_TRANSLATE_FIELD = "do_not_translate"
+
+STYLE_FIELD = "style"
+
+GLOSSARY_FIELDS: tuple[str, ...] = (TERMS_FIELD, DO_NOT_TRANSLATE_FIELD, STYLE_FIELD)
+
+CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+ENGLISH_WORD_RE = re.compile(r"(?<![A-Za-z])[a-z][A-Za-z]{2,}")
+
+INLINE_MATH_RE = re.compile(r"(?<!\\)\$(?:\\.|[^$\\])*\$")
+
+REFERENCE_COMMAND_RE = re.compile(
+    r"\\(?:label|ref|eqref|autoref|cref|Cref|cite[a-zA-Z]*|url|input|includegraphics)\*?(?:\[[^\]]*\])*\{[^{}]*\}"
+)
+
+COMMAND_NAME_RE = re.compile(r"\\[A-Za-z@]+")
+
+SECTION_HEADING_RE = re.compile(r"\\(?:sub){0,2}section\*?\s*(?:\[[^\]]*\])?\s*\{")
+
+PLURAL_SUFFIX_RE = re.compile(r"(?:es|s)$")
+
+
+class Category(StrEnum):
+    STRUCTURE = "structure"
+    FORMULA = "formula"
+    HEADING = "heading"
+    UNTRANSLATED = "untranslated"
+    GLOSSARY = "glossary"
+
+
+@dataclass(frozen=True)
+class Problem:
+    category: Category
+    message: str
+
+
+@dataclass(frozen=True)
+class Report:
+    problems: tuple[Problem, ...]
+    paragraphs_total: int
+    paragraphs_translated: int
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+class GlossaryFormatError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Glossary:
+    terms: tuple[tuple[str, str], ...] = ()
+    do_not_translate: tuple[str, ...] = ()
+    style: str | None = None
+
+    def entries(self) -> list[tuple[str, str | None]]:
+        return [*((word, None) for word in self.do_not_translate), *self.terms]
+
+
+def check(
+    source: str,
+    translation: str,
+    terms: Mapping[str, str] | None = None,
+    do_not_translate: Sequence[str] = (),
+) -> Report:
+    terms = dict(terms or {})
+    source_paragraphs = paragraphs(source)
+    translation_paragraphs = paragraphs(translation)
+    total = sum(1 for _line, paragraph in source_paragraphs if _needs_translation(paragraph))
+    if len(source_paragraphs) != len(translation_paragraphs):
+        problem = Problem(
+            Category.STRUCTURE,
+            f"paragraph counts differ: {len(source_paragraphs)} in the source, {len(translation_paragraphs)} in the "
+            "translation; blank lines delimit paragraphs. Fix the paragraph count first, "
+            "the paragraph-by-paragraph checks run only after that",
+        )
+        return Report(problems=(problem,), paragraphs_total=total, paragraphs_translated=0)
+    whole = _structure_failures(source.strip(), translation.strip())
+    problems = [Problem(Category.STRUCTURE, f"whole text, {failure.check}: {failure.message}") for failure in whole]
+    translated = 0
+    for (_line, source_paragraph), (line, translation_paragraph) in zip(
+        source_paragraphs, translation_paragraphs, strict=True
+    ):
+        where = f"paragraph starting at line {line} of the translation"
+        if whole:
+            problems.extend(
+                Problem(Category.STRUCTURE, f"{where}, {failure.check}: {failure.message}")
+                for failure in _structure_failures(source_paragraph, translation_paragraph)
+            )
+        problems.extend(_paragraph_problems(where, source_paragraph, translation_paragraph, terms, do_not_translate))
+        if not _needs_translation(source_paragraph):
+            continue
+        if CJK_RE.search(translation_paragraph):
+            translated += 1
+        elif _english_words(without_headings(translation_paragraph)) >= UNTRANSLATED_WORDS_MIN:
+            preview = translation_paragraph[:PARAGRAPH_PREVIEW_LENGTH]
+            problems.append(Problem(Category.UNTRANSLATED, f"{where} is still English: {preview!r}"))
+    problems.extend(
+        Problem(
+            Category.GLOSSARY,
+            f"glossary term {word!r} translates to {term_translation!r}, "
+            f"which does not keep the do-not-translate word {kept!r} verbatim",
+        )
+        for word, term_translation, kept in kept_word_conflicts(terms, do_not_translate)
+    )
+    return Report(problems=tuple(problems), paragraphs_total=total, paragraphs_translated=translated)
+
+
+def _paragraph_problems(
+    where: str, source: str, translation: str, terms: Mapping[str, str], do_not_translate: Sequence[str]
+) -> list[Problem]:
+    problems: list[Problem] = []
+    source_headings = heading_texts(source)
+    if source_headings != heading_texts(translation):
+        problems.append(
+            Problem(
+                Category.HEADING,
+                f"{where}: section headings must stay identical to the source, "
+                f"which has {source_headings[:PROBLEM_PREVIEW_ITEMS]}",
+            )
+        )
+    source_formulas = sorted(INLINE_MATH_RE.findall(source))
+    translation_formulas = sorted(INLINE_MATH_RE.findall(translation))
+    if source_formulas != translation_formulas:
+        missing = [formula for formula in source_formulas if formula not in translation_formulas]
+        extra = [formula for formula in translation_formulas if formula not in source_formulas]
+        problems.append(
+            Problem(
+                Category.FORMULA,
+                f"{where}: inline formulas differ from the source; missing from the translation "
+                f"{missing[:PROBLEM_PREVIEW_ITEMS]}, extra in the translation {extra[:PROBLEM_PREVIEW_ITEMS]}",
+            )
+        )
+    if not CJK_RE.search(translation):
+        return problems
+    source_text = searchable(source)
+    translation_text = searchable(translation)
+    for word, term_translation in terms.items():
+        if hits(word, source_text) and term_translation not in translation_text:
+            problems.append(
+                Problem(
+                    Category.GLOSSARY, f"{where}: the source has {word!r}, the translation lacks {term_translation!r}"
+                )
+            )
+    for word in do_not_translate:
+        if hits(word, source_text, exact=True) and not hits(word, translation_text, exact=True):
+            problems.append(
+                Problem(
+                    Category.GLOSSARY,
+                    f"{where}: the source has the do-not-translate word {word!r}, the translation does not keep it",
+                )
+            )
+    return problems
+
+
+def paragraphs(text: str) -> list[tuple[int, str]]:
+    found: list[tuple[int, str]] = []
+    line = 1
+    for part in re.split(f"({BLANK_LINE_RE.pattern})", text):
+        if part.strip() and not BLANK_LINE_RE.fullmatch(part):
+            lead = len(part) - len(part.lstrip("\n"))
+            found.append((line + part[:lead].count("\n"), part.strip()))
+        line += part.count("\n")
+    return found
+
+
+def _needs_translation(paragraph: str) -> bool:
+    return _english_words(without_headings(paragraph)) >= UNTRANSLATED_WORDS_MIN
+
+
+def _english_words(paragraph: str) -> int:
+    stripped = TOKEN_RE.sub("", paragraph)
+    stripped = INLINE_MATH_RE.sub("", stripped)
+    stripped = NON_TEXT_COMMAND_RE.sub("", stripped)
+    stripped = CONTROL_SEQUENCE_NAME_RE.sub("", stripped)
+    return len(ENGLISH_WORD_RE.findall(stripped))
+
+
+def _heading_spans(paragraph: str) -> list[tuple[int, int]]:
+    spans = []
+    for match in SECTION_HEADING_RE.finditer(paragraph):
+        depth = 1
+        position = match.end()
+        while position < len(paragraph) and depth:
+            character = paragraph[position]
+            if character == "\\":
+                position += 2
+                continue
+            depth += (character == OPEN_BRACE) - (character == CLOSE_BRACE)
+            position += 1
+        spans.append((match.start(), position))
+    return spans
+
+
+def heading_texts(paragraph: str) -> list[str]:
+    return [paragraph[start:end] for start, end in _heading_spans(paragraph)]
+
+
+def without_headings(paragraph: str) -> str:
+    for start, end in reversed(_heading_spans(paragraph)):
+        paragraph = paragraph[:start] + " " + paragraph[end:]
+    return paragraph
+
+
+def searchable(text: str) -> str:
+    stripped = INLINE_MATH_RE.sub(" ", without_headings(text))
+    return COMMAND_NAME_RE.sub(" ", REFERENCE_COMMAND_RE.sub(" ", stripped))
+
+
+def hits(word: str, text: str, exact: bool = False) -> bool:
+    case_sensitive = exact or (any(character.isalpha() for character in word) and word == word.upper())
+    body = r"\s+".join(re.escape(part) for part in word.split())
+    pattern = rf"(?<![0-9A-Za-z]){body}(?:es|s)?(?![0-9A-Za-z])"
+    return re.search(pattern, text, 0 if case_sensitive else re.IGNORECASE) is not None
+
+
+def term_key(word: str) -> str:
+    collapsed = " ".join(word.replace("-", " ").split()).casefold()
+    return PLURAL_SUFFIX_RE.sub("", collapsed)
+
+
+def kept_word_conflicts(terms: Mapping[str, str], do_not_translate: Sequence[str]) -> list[tuple[str, str, str]]:
+    return [
+        (word, translation, kept)
+        for word, translation in terms.items()
+        for kept in do_not_translate
+        if hits(kept, word, exact=True) and not hits(kept, translation, exact=True)
+    ]
+
+
+def parse_glossary(content: str, origin: str) -> Glossary:
+    try:
+        data = json.loads(content, object_pairs_hook=lambda pairs: _unique_object(pairs, origin))
+    except json.JSONDecodeError as error:
+        raise GlossaryFormatError(f"{origin} is not valid JSON: {error}") from error
+    if not isinstance(data, dict):
+        raise GlossaryFormatError(f"the top level of {origin} must be an object, got {type(data).__name__}")
+    unknown = [key for key in data if key not in GLOSSARY_FIELDS]
+    if unknown:
+        raise GlossaryFormatError(
+            f"{origin} has an unknown field {unknown[0]!r}; a glossary file only accepts {', '.join(GLOSSARY_FIELDS)}"
+        )
+    glossary = Glossary(
+        terms=_parse_terms(data.get(TERMS_FIELD), origin),
+        do_not_translate=_parse_do_not_translate(data.get(DO_NOT_TRANSLATE_FIELD), origin),
+        style=_parse_style(data.get(STYLE_FIELD), origin),
+    )
+    seen: dict[str, tuple[str, str | None]] = {}
+    for entry in glossary.entries():
+        previous = seen.setdefault(term_key(entry[0]), entry)
+        if previous != entry:
+            raise GlossaryFormatError(
+                f"{origin} gives two conflicting records for the same word: "
+                f"{_describe_entry(previous)} and {_describe_entry(entry)}"
+            )
+    return glossary
+
+
+def _unique_object(pairs: list[tuple[str, object]], origin: str) -> dict[str, object]:
+    data: dict[str, object] = {}
+    for key, value in pairs:
+        if key in data and data[key] != value:
+            raise GlossaryFormatError(f"{origin} gives the key {key!r} twice with different values")
+        data[key] = value
+    return data
+
+
+def _parse_terms(value: object, origin: str) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise GlossaryFormatError(
+            f"{TERMS_FIELD} in {origin} must be an object mapping words to translations, got {type(value).__name__}"
+        )
+    pairs: list[tuple[str, str]] = []
+    for raw_word, raw_translation in value.items():
+        word = raw_word.strip()
+        if not word:
+            raise GlossaryFormatError(f"{TERMS_FIELD} in {origin} contains an empty word")
+        if not isinstance(raw_translation, str):
+            raise GlossaryFormatError(
+                f"the translation of {TERMS_FIELD}[{word!r}] in {origin} must be a string, "
+                f"got {type(raw_translation).__name__}"
+            )
+        translation = raw_translation.strip()
+        if not translation:
+            raise GlossaryFormatError(
+                f"the translation of {TERMS_FIELD}[{word!r}] in {origin} is empty; "
+                f"to keep the original wording put the word into {DO_NOT_TRANSLATE_FIELD}"
+            )
+        pairs.append((word, translation))
+    return tuple(pairs)
+
+
+def _parse_do_not_translate(value: object, origin: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise GlossaryFormatError(
+            f"{DO_NOT_TRANSLATE_FIELD} in {origin} must be a list of strings, got {type(value).__name__}"
+        )
+    words: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise GlossaryFormatError(
+                f"{DO_NOT_TRANSLATE_FIELD}[{index}] in {origin} must be a string, got {type(item).__name__}"
+            )
+        word = item.strip()
+        if not word:
+            raise GlossaryFormatError(f"{DO_NOT_TRANSLATE_FIELD}[{index}] in {origin} is an empty word")
+        words.append(word)
+    return tuple(words)
+
+
+def _parse_style(value: object, origin: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise GlossaryFormatError(
+            f"{STYLE_FIELD} in {origin} must be a string (extra requirements addressed to the translator), "
+            f"got {type(value).__name__}"
+        )
+    return value.strip()
+
+
+def _describe_entry(entry: tuple[str, str | None]) -> str:
+    word, translation = entry
+    if translation is None:
+        return f"{word!r} in {DO_NOT_TRANSLATE_FIELD}"
+    return f"{word!r} -> {translation!r} in {TERMS_FIELD}"
+
+
+def merge_glossaries(glossaries: Sequence[Glossary]) -> Glossary:
+    entries: dict[str, tuple[str, str | None]] = {}
+    style: str | None = None
+    for glossary in glossaries:
+        for entry in glossary.entries():
+            key = term_key(entry[0])
+            entries.pop(key, None)
+            entries[key] = entry
+        if glossary.style is not None:
+            style = glossary.style or None
+    return Glossary(
+        terms=tuple((word, translation) for word, translation in entries.values() if translation is not None),
+        do_not_translate=tuple(word for word, translation in entries.values() if translation is None),
+        style=style,
+    )
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    files: list[str] = []
+    glossary_files: list[str] = []
+    arguments = iter(argv)
+    for argument in arguments:
+        if argument != GLOSSARY_OPTION:
+            files.append(argument)
+            continue
+        value = next(arguments, None)
+        if value is None:
+            print(USAGE)
+            return EXIT_FAILURE
+        glossary_files.append(value)
+    if len(files) != 2:
         print(USAGE)
         return EXIT_FAILURE
     try:
-        source = Path(argv[0]).read_text(encoding="utf-8")
-        translation = Path(argv[1]).read_text(encoding="utf-8")
+        source = Path(files[0]).read_text(encoding="utf-8")
+        translation = Path(files[1]).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         print(f"cannot read file: {error}")
         return EXIT_FAILURE
-    result = validate(source.strip(), translation.strip())
-    failures = {failure.check: failure.message for failure in result.failures}
-    for layer in CHECK_NAMES:
-        if layer in failures:
-            print(f"  [fail] {layer}: {failures[layer]}")
-        else:
-            print(f"  [pass] {layer}")
-    return EXIT_OK if result.ok else EXIT_FAILURE
+    glossaries: list[Glossary] = []
+    for path in glossary_files:
+        try:
+            glossaries.append(parse_glossary(Path(path).read_text(encoding="utf-8"), path))
+        except (OSError, UnicodeDecodeError) as error:
+            print(f"cannot read glossary {path}: {error}")
+            return EXIT_FAILURE
+        except GlossaryFormatError as error:
+            print(error)
+            return EXIT_FAILURE
+    glossary = merge_glossaries(glossaries)
+    report = check(source, translation, dict(glossary.terms), glossary.do_not_translate)
+    print(f"translated paragraphs {report.paragraphs_translated}/{report.paragraphs_total}")
+    for problem in report.problems:
+        print(f"[{problem.category}] {problem.message}")
+    print("check passed" if report.ok else f"{len(report.problems)} problems")
+    return EXIT_OK if report.ok else EXIT_FAILURE
 
 
 if __name__ == "__main__":

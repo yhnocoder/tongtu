@@ -16,7 +16,7 @@ import pytest
 from rich.progress import Progress
 from typer.testing import CliRunner
 
-from tongtu import __version__, cli, validation
+from tongtu import __version__, cli
 from tongtu.artifacts.common import CompileReport, FixSession, Manifest
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.artifacts.fetch import FetchManifest, FetchStatus
@@ -924,27 +924,44 @@ def test_status_json_keeps_the_usage_error_exit_and_stdout_empty(tmp_path: Path)
     assert result.stderr
 
 
-def test_validate_exits_zero_when_every_layer_passes(tmp_path: Path) -> None:
-    src = tmp_path / "c000.tex"
+VALIDATE_SOURCE = "We use the large language model with $x$ layers in every experiment.\n"
+
+
+def test_validate_exits_zero_when_the_check_passes(tmp_path: Path) -> None:
+    src = tmp_path / "en.tex"
     dst = tmp_path / "zh.tex"
-    src.write_text("We use $x$ here.\n", encoding="utf-8")
-    dst.write_text("我们这里用 $x$。\n", encoding="utf-8")
+    src.write_text(VALIDATE_SOURCE, encoding="utf-8")
+    dst.write_text("每个实验都使用 $x$ 层的大语言模型。\n", encoding="utf-8")
     result = runner.invoke(app, ["validate", str(src), str(dst)])
     assert result.exit_code == 0
-    output = squeeze(result.stdout)
-    assert all(f"[pass]{layer}" in output for layer in validation.CHECK_NAMES)
+    assert result.stdout.splitlines() == ["translated paragraphs 1/1", "check passed"]
 
 
-def test_validate_exits_one_when_a_layer_fails(tmp_path: Path) -> None:
-    src = tmp_path / "c000.tex"
+def test_validate_exits_one_when_the_check_reports_a_problem(tmp_path: Path) -> None:
+    src = tmp_path / "en.tex"
     dst = tmp_path / "zh.tex"
-    src.write_text("We use $x$ here.\n", encoding="utf-8")
-    dst.write_text("我们这里用 x。\n", encoding="utf-8")
+    src.write_text(VALIDATE_SOURCE, encoding="utf-8")
+    dst.write_text("每个实验都使用 x 层的大语言模型。\n", encoding="utf-8")
     result = runner.invoke(app, ["validate", str(src), str(dst)])
     assert result.exit_code == 1
-    output = squeeze(result.stdout)
-    assert "[fail]braces_and_math" in output
-    assert "[pass]placeholders" in output
+    assert "[structure] whole text, braces_and_math" in result.stdout
+    assert "[formula] " in result.stdout
+
+
+def test_validate_passes_repeated_glossaries_in_order(tmp_path: Path) -> None:
+    src = tmp_path / "en.tex"
+    dst = tmp_path / "zh.tex"
+    src.write_text(VALIDATE_SOURCE, encoding="utf-8")
+    dst.write_text("每个实验都使用 $x$ 层的大语言模型。\n", encoding="utf-8")
+    wrong = tmp_path / "wrong.json"
+    wrong.write_text('{"terms": {"large language model": "巨型模型"}}', encoding="utf-8")
+    right = tmp_path / "right.json"
+    right.write_text('{"terms": {"large language model": "大语言模型"}}', encoding="utf-8")
+    failing = runner.invoke(app, ["validate", str(src), str(dst), "--glossary", str(right), "--glossary", str(wrong)])
+    assert failing.exit_code == 1
+    assert "[glossary] " in failing.stdout
+    passing = runner.invoke(app, ["validate", str(src), str(dst), "--glossary", str(wrong), "--glossary", str(right)])
+    assert passing.exit_code == 0
 
 
 def test_version_flag() -> None:
