@@ -15,7 +15,7 @@ import {
   open,
 } from "@raycast/api";
 import { ReactNode, useEffect, useState } from "react";
-import { ASPECT, Paper, Prefs, STAGES, fetchMeta, prefs, quickLook, remove, scan, start, stop, thumbnail } from "./tongtu";
+import { ASPECT, Paper, Prefs, STAGES, prefs, quickLook, remove, scan, start, stop, thumbnail } from "./tongtu";
 
 const ICONS = {
   running: { source: Icon.CircleProgress50, tintColor: Color.Blue },
@@ -28,15 +28,25 @@ const TAG_COLORS = { running: Color.Blue, ok: Color.Green, failed: Color.Red, pa
 
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
+function elapsed(started: number): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${Math.floor(seconds / 3600)}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}`;
+}
+
+function running(p: Paper): string {
+  return p.started ? `${p.stage} running ${elapsed(p.started)}` : `${p.stage} running`;
+}
+
 function progress(p: Paper): string {
   if (p.status === "ok") return "done";
-  const step = p.translated ? `translate ${p.translated[0]}/${p.translated[1]}` : `${p.stage} ${p.done}/${STAGES.length}`;
+  const step = p.status === "running" ? running(p) : `${p.stage} ${p.done}/${STAGES.length}`;
   return p.message ? `${step} · ${oneLine(p.message)}` : step;
 }
 
 function tag(p: Paper): string {
   if (p.status === "ok") return "done";
-  return p.translated ? `translate ${p.translated[0]}/${p.translated[1]}` : p.stage;
+  return p.status === "running" ? running(p) : p.stage;
 }
 
 function stageText(p: Paper, name: string): { value: string; color: Color } {
@@ -65,7 +75,7 @@ function markdown(p: Paper): string {
 async function confirmRemove(p: Paper) {
   const ok = await confirmAlert({
     title: `Remove ${p.id}?`,
-    message: `Deletes ${p.dir} and its cached metadata.`,
+    message: `Deletes ${p.dir} and its cached status and thumbnails.`,
     primaryAction: { title: "Remove", style: Alert.ActionStyle.Destructive },
   });
   if (!ok) return;
@@ -137,7 +147,7 @@ export function usePapers(): Paper[] {
         busy = false;
       }
     };
-    refresh().then(async () => (await fetchMeta(scanned)) && refresh());
+    refresh();
     const timer = setInterval(refresh, 2000);
     return () => clearInterval(timer);
   }, []);
