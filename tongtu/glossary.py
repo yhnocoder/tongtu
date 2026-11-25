@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +28,8 @@ from .validation import (
 from .workdir import ENCODING
 
 LEARNED_FILENAME = "glossary.learned.json"
+
+LEARNED_LOCK_FILENAME = "glossary.learned.lock"
 
 FIXED_FILENAME = "glossary.fixed.json"
 
@@ -164,12 +169,25 @@ def publish(session_dir: Path, selection: Selection, out_path: Path, env: Mappin
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(paper_glossary(selection, session).model_dump_json(indent=2) + "\n", encoding=ENCODING)
     path = learned_path(env)
-    layer = _read_layer(path, required=False)
-    grown, added = grow(Glossary() if layer is None else layer.glossary, selection, session)
-    if added:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render(grown), encoding=ENCODING)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with (path.parent / LEARNED_LOCK_FILENAME).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        layer = _read_layer(path, required=False)
+        grown, added = grow(Glossary() if layer is None else layer.glossary, selection, session)
+        if added:
+            _replace_text(path, render(grown))
     return added
+
+
+def _replace_text(path: Path, content: str) -> None:
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding=ENCODING) as handle:
+            handle.write(content)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def render(glossary: Glossary) -> str:

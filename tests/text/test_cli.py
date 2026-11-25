@@ -999,7 +999,7 @@ def test_validate_exits_one_when_the_check_reports_a_problem(tmp_path: Path) -> 
     dst.write_text("每个实验都使用 x 层的大语言模型。\n", encoding="utf-8")
     result = runner.invoke(app, ["validate", str(src), str(dst)])
     assert result.exit_code == 1
-    assert "[structure] whole text, braces_and_math" in result.stdout
+    assert "[structure] paragraph starting at line 1 of the translation, braces_and_math" in result.stdout
     assert "[formula] " in result.stdout
 
 
@@ -1090,18 +1090,23 @@ def test_stage_display_action_pads_a_bare_status_to_the_same_width(terminal_cons
     assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
 
 
-def test_stage_display_action_prints_a_line_when_not_a_terminal(
+def test_stage_display_prints_steps_but_not_session_actions_when_not_a_terminal(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: False))
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
+    display.action("compiling", "main.tex")
+    display.action("fix session", "running")
     display.action("fix session", "Read: main.tex")
-    display.action("verifying")
-    out = capsys.readouterr().out
-    assert "    fix session: Read: main.tex" in out
-    assert "    verifying: " in out
+    display.action("fix session", "Edit: main.tex")
+    display.action("verifying", "main.tex")
+    assert capsys.readouterr().out.splitlines() == [
+        "    compiling: main.tex",
+        "    fix session: running",
+        "    verifying: main.tex",
+    ]
     assert progress.tasks[0].description == "precompile"
 
 
@@ -1315,8 +1320,8 @@ def test_run_with_workdir_takes_the_version_of_its_fetch_manifest(
     assert (captured[0].paper.version, captured[0].meta) == (2, None)
 
 
-@pytest.mark.parametrize("manifest", [None, ("1412.6980", 8), ("2106.04426", None)])
-def test_run_with_workdir_of_another_paper_asks_arxiv(
+@pytest.mark.parametrize("manifest", [None, ("2106.04426", None)])
+def test_run_with_workdir_without_a_fetched_version_asks_arxiv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest: tuple[str, int | None] | None
 ) -> None:
     urls = wire_api(monkeypatch)
@@ -1428,7 +1433,60 @@ def test_status_with_workdir_reads_the_version_of_its_fetch_manifest(
     snapshot = status_with_home(tmp_path, "1412.6980", "--workdir", str(workdir))
     assert urls == []
     assert (snapshot.workdir, snapshot.version) == (workdir, 8)
-    assert status_with_home(tmp_path, "1412.6980v9", "--workdir", str(workdir)).version == 9
+    assert status_with_home(tmp_path, "1412.6980v8", "--workdir", str(workdir)).version == 8
+
+
+MISMATCHED_WORKDIRS: list[tuple[tuple[str | None, int | None], list[str], str, str]] = [
+    (("1412.6980", 8), ["2106.04426"], "1412.6980v8", "2106.04426"),
+    (("1412.6980", 8), ["1412.6980v9"], "1412.6980v8", "1412.6980v9"),
+    (("2106.04426", 2), ["2106.04426", "--latest"], "2106.04426v2", "2106.04426v3"),
+    ((None, None), ["2106.04426v3"], "a local source directory", "2106.04426v3"),
+    (("2106.04426", 2), ["SOURCE"], "2106.04426v2", "a local source directory"),
+]
+
+
+@pytest.mark.parametrize(
+    ("command", "fetched", "arguments", "holds", "asks"),
+    [
+        (command, *case)
+        for command in ("run", "stage", "status")
+        for case in MISMATCHED_WORKDIRS
+        if command == "run" or "--latest" not in case[1]
+    ],
+)
+def test_workdir_holding_another_paper_is_a_usage_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    fetched: tuple[str | None, int | None],
+    arguments: list[str],
+    holds: str,
+    asks: str,
+) -> None:
+    wire_api(monkeypatch)
+    source = tmp_path / "article"
+    source.mkdir()
+    workdir = tmp_path / "chosen"
+    write_fetch_manifest(workdir, *fetched)
+    paper = [str(source) if argument == "SOURCE" else argument for argument in arguments]
+    head = ["stage", "fetch"] if command == "stage" else [command]
+    result, _, calls = run_with_home(tmp_path / "home", monkeypatch, *head, *paper, "--workdir", str(workdir))
+    assert result.exit_code == 2
+    assert calls == []
+    stderr = " ".join(result.stderr.replace("│", " ").split())
+    assert f"holds {holds}, but the command asks for {asks}" in stderr
+
+
+def test_workdir_of_a_local_source_accepts_the_same_kind_of_paper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "article"
+    source.mkdir()
+    workdir = tmp_path / "chosen"
+    write_fetch_manifest(workdir, None, None)
+    result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, "run", str(source), "--workdir", str(workdir))
+    assert result.exit_code == 0
+    assert captured[0].workdir.path == workdir
 
 
 def test_status_rejects_the_latest_option(tmp_path: Path) -> None:

@@ -252,6 +252,23 @@ def test_publish_writes_the_paper_glossary_and_the_learned_glossary(home: Path, 
     assert learned == {"terms": {"KV cache": "KV 缓存", "decoding": "解码"}, "do_not_translate": []}
 
 
+def test_publish_replaces_the_learned_glossary_with_a_complete_file(home: Path, paper: Path, tmp_path: Path) -> None:
+    learned_file = write(home / "glossary.learned.json", {"terms": {"KV cache": "KV 缓存"}})
+    previous_inode = learned_file.stat().st_ino
+    chosen = selection(home, paper)
+    session_dir = tmp_path / "session"
+    glossary.write_session_files(session_dir, chosen)
+    write(session_dir / "glossary.json", {"terms": {"KV cache": "KV 缓存", "decoding": "解码"}})
+    assert glossary.publish(session_dir, chosen, paper / "out" / "paper.glossary.json", env(home)) == 1
+    assert learned_file.stat().st_ino != previous_inode
+    assert json.loads(learned_file.read_text(encoding="utf-8")) == {
+        "terms": {"KV cache": "KV 缓存", "decoding": "解码"},
+        "do_not_translate": [],
+    }
+    assert [path.name for path in home.iterdir() if path.suffix == ".tmp"] == []
+    assert (home / glossary.LEARNED_LOCK_FILENAME).exists()
+
+
 def test_publish_leaves_the_learned_glossary_alone_when_nothing_is_new(home: Path, paper: Path, tmp_path: Path) -> None:
     chosen = selection(home, paper)
     session_dir = tmp_path / "session"

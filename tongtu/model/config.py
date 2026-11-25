@@ -146,7 +146,7 @@ def load_config() -> tuple[ModelsConfig | None, str]:
 
 CONFIG_TEMPLATE = """\
 # 模式：一次运行里的全部 agent 会话（翻译会话与两种修复会话）用同一个模式
-# fast：快速看一眼，费用最低；smart：准备用中文 PDF 代替原文来读
+# fast：初步查看译文，费用最低；smart：准备用中文 PDF 代替原文来读
 # 命令行的 --mode 优先；不给时用 default
 # model 写成「运行时/模型」，只在第一个 / 处切分；运行时是 agentrun 支持的 codex、claude-code、pi
 # 只写运行时名时用运行时自己的默认模型；effort 不写就不传给运行时

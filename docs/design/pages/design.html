@@ -90,7 +90,7 @@ tongtu          --version</code></pre>
       <tr><td><code>--latest</code></td><td>run</td><td class="wrap">向 arXiv 查询最新版本并使用它。见<a href="#versions">论文编号与版本</a>。</td></tr>
       <tr><td><code>--from STAGE</code></td><td>run</td><td class="wrap">从这个阶段起重跑，先删掉它及其下游的旧产物。</td></tr>
       <tr><td><code>--glossary FILE</code></td><td>run、stage、validate</td><td class="wrap">本次运行追加的术语表，可以给多个，靠后的优先。</td></tr>
-      <tr><td><code>--workdir DIR</code></td><td>run、stage、status</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。</td></tr>
+      <tr><td><code>--workdir DIR</code></td><td>run、stage、status</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同，或者同为本地源码目录。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
       <tr><td><code>--dev</code></td><td>run、stage、status、setup</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
     </tbody>
   </table>
@@ -114,7 +114,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
       <tr><td>某个阶段失败</td><td class="wrap">停在出错的阶段，终端输出原因与 manifest 路径。处理后再执行一次同样的命令，从这个阶段接着跑，前面的阶段不重做。</td><td>1</td></tr>
       <tr><td>运行被打断</td><td class="wrap">再执行一次，从中断的阶段接着跑。</td><td>非 0</td></tr>
       <tr><td>五个阶段都已完成</td><td class="wrap">不做任何事，提示用 <code>--from</code>。</td><td>0</td></tr>
-      <tr><td>参数不合法</td><td class="wrap"><code>PAPER</code> 无法识别，或者 <code>--latest</code> 与带版本号的编号同时出现。</td><td>2</td></tr>
+      <tr><td>参数不合法</td><td class="wrap"><code>PAPER</code> 无法识别，<code>--latest</code> 与带版本号的编号同时出现，或者 <code>--workdir</code> 里已有的论文与 <code>PAPER</code> 不一致。</td><td>2</td></tr>
     </tbody>
   </table>
   <p>通途不检测输入是否变化。不给 <code>--from</code> 就沿用旧产物。改了输入之后，按下表选择起点：</p>
@@ -232,7 +232,7 @@ crop_margins = false</code></pre>
           <li>按文件头判断格式并解包到 <code>src/</code>。格式可以是 tar.gz、tar、gz、单个 tex 或 PDF。tar 里的链接与设备文件不解包。</li>
           <li><code>PAPER</code> 是本地目录时不联网，把目录内容拷进 <code>src/</code>，不写论文信息。</li>
         </ol>
-        <p>任何非 <code>ok</code> 的状态都把 <code>src/</code> 清空，只保留 <code>build/e-print.bin</code> 供排查。</p>
+        <p>任何非 <code>ok</code> 的状态都把 <code>src/</code> 清空，只保留 <code>build/e-print.bin</code> 供排查。论文信息文件 <code>out/&lt;ID&gt;.meta.json</code> 在 API 请求成功后已经写出，也保留。</p>
       </dd>
       <dt>状态</dt>
       <dd>
@@ -305,7 +305,7 @@ crop_margins = false</code></pre>
       <dt>常量</dt>
       <dd>
         <p class="why"><b>理由</b>参数里的 <code>\input</code> 不展开。TeX 在执行到这条命令时才读文件；把文件内容内联进参数之后，内容按参数的方式读入，换行变成空格，依赖换行的内容（例如 pgfplots 的内联表格）读不出来，standalone 子文档的导言区也会进入主文件。这类文件里的文字不进入翻译，实际出现的都是图。</p>
-        <p>编译命令是 <code>latexmk -xelatex -interaction=nonstopmode -synctex=1 &lt;主文件&gt;</code>，与 compile 共用，超时 600 秒。latexpand 的超时是 10 秒。</p>
+        <p>编译命令是 <code>latexmk -norc -xelatex -interaction=nonstopmode -synctex=1 &lt;主文件&gt;</code>，与 compile 共用，超时 600 秒。latexpand 的超时是 10 秒。</p>
         <p class="why"><b>理由</b>中文排版设置在翻译之前加入。宏包与 xeCJK 的冲突在这一步暴露并修好，修复的结果留在编译目录里，compile 直接使用。</p>
         <p class="why"><b>理由</b>主文件在编译目录里不改名。jobname 因此不变，作者随源码上传、按 jobname 命名的文件在两次编译里都能找到。</p>
       </dd>
@@ -466,7 +466,7 @@ dropout 率为 $0.1$。</code></pre></div>
         <table>
           <thead><tr><th>类别</th><th>检查什么</th></tr></thead>
           <tbody>
-            <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。</td></tr>
+            <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。每个 <code>⟦CAP-n⟧</code> 位于行首，所在行没有其他占位符：compile 换回图表标题时取走 CAP 所在的整行。</td></tr>
             <tr><td>公式</td><td class="wrap">每段的行内公式与原文逐个相同。</td></tr>
             <tr><td>章节名</td><td class="wrap">三级章节命令的标题与原文逐字相同。</td></tr>
             <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。</td></tr>
@@ -481,7 +481,7 @@ dropout 率为 $0.1$。</code></pre></div>
         <table>
           <tbody>
             <tr><td><span class="st ok">ok</span></td><td class="wrap">会话外的校验没有报告问题。判定只看校验结果：会话超时或出错，但留下的 <code>zh.tex</code> 通过校验时，状态仍是 <code>ok</code>，另记一条 warning。</td></tr>
-            <tr><td><span class="st bad">glossary_invalid</span></td><td class="wrap">某一层术语表文件读不出来或格式不对。不启动会话。</td></tr>
+            <tr><td><span class="st bad">glossary_invalid</span></td><td class="wrap">某一层术语表文件读不出来或格式不对；或者用户术语表里本篇用到的术语与不译词冲突：一条术语的原词含有某个本篇用到的不译词（按大小写原样匹配），译法却没有原样保留这个词。不启动会话。</td></tr>
             <tr><td><span class="st bad">translate_failed</span></td><td class="wrap">会话没有写出 <code>zh.tex</code>，或者校验报告了问题。问题逐条记在 manifest 的 <code>problems</code> 里。不写 <code>build/translated.tex</code>，compile 不运行。</td></tr>
           </tbody>
         </table>
@@ -619,7 +619,7 @@ class PaperKeptWord(BaseModel):
   <table>
     <thead><tr><th>模式</th><th>模型</th><th>强度</th><th>用途</th></tr></thead>
     <tbody>
-      <tr><td><code>fast</code></td><td>Claude Sonnet</td><td>low</td><td class="wrap">快速看一眼，费用最低。</td></tr>
+      <tr><td><code>fast</code></td><td>Claude Sonnet</td><td>low</td><td class="wrap">初步查看译文，费用最低。</td></tr>
       <tr><td><code>smart</code></td><td>Claude Opus</td><td>medium</td><td class="wrap">准备用中文 PDF 代替原文来读</td></tr>
     </tbody>
   </table>
@@ -662,7 +662,7 @@ class Note(BaseModel):
 
 <section id="status">
   <h2>供其他程序读取的输出</h2>
-  <p>其他程序通过四种输出读取通途的结果：<code>tongtu status --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这四种格式可以修改，修改时读它们的程序一起改。其他程序不解析工作目录里的其余文件。</p>
+  <p>其他程序通过四种输出读取通途的结果：<code>tongtu status --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这四种格式可以修改，修改时读它们的程序一起改。仓库内的 Raycast 插件另外读 <code>logs/&lt;会话&gt;.jsonl</code>，显示会话最近的动作；这个文件是 agentrun 的事件格式。</p>
 
   <h3>out/&lt;ID&gt;.meta.json</h3>
   <p>内容来自 arXiv API 的同一次响应，是所选版本的信息。题目与摘要里的换行压成一个空格。</p>

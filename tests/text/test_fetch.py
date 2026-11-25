@@ -184,7 +184,7 @@ def test_remote_paper_without_a_version_is_a_program_error(tmp_path: Path) -> No
 def test_remote_empty_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire_download(monkeypatch, b"")
     manifest = fetch.run(PAPER, make_workdir(tmp_path))
-    assert manifest.status is FetchStatus.DOWNLOAD_FAILED
+    assert manifest.status is FetchStatus.EMPTY
     assert manifest.message == "download succeeded but the response body is empty."
 
 

@@ -4,7 +4,7 @@ import json
 import re
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -43,6 +43,7 @@ def read_control_sequence(text: str, position: int) -> tuple[str, int]:
 CHECK_PLACEHOLDERS = "placeholders"
 CHECK_CONTROL_SEQUENCES = "control_sequences"
 CHECK_BRACES_AND_MATH = "braces_and_math"
+CHECK_CAPTION_LINES = "caption_lines"
 
 CONTROL_SEQUENCE_NAME_RE = re.compile(r"\\(?:[A-Za-z]+\*?|.)", re.DOTALL)
 
@@ -61,9 +62,11 @@ NON_TEXT_ARGUMENT_COMMANDS: tuple[str, ...] = (
     "usepackage",
     "ref",
     "eqref",
-    "cite",
-    "citep",
-    "citet",
+    "autoref",
+    "cref",
+    "Cref",
+    "cite[A-Za-z]*",
+    "url",
 )
 
 NON_TEXT_COMMAND_RE = re.compile(
@@ -103,13 +106,12 @@ class Failure:
 def _structure_failures(source: str, translation: str) -> list[Failure]:
     scanned_source = scan(source)
     scanned_translation = scan(translation)
-    paragraphs = _paired_paragraphs(source, translation)
     return [
         failure
         for failure in (
             _check_placeholders(source, translation),
-            check_control_sequences(scanned_source, scanned_translation, paragraphs),
-            _check_braces_and_math(scanned_source, scanned_translation, paragraphs),
+            check_control_sequences(scanned_source, scanned_translation),
+            _check_braces_and_math(scanned_source, scanned_translation),
         )
         if failure is not None
     ]
@@ -142,9 +144,7 @@ def _check_placeholders(source: str, translation: str) -> Failure | None:
     return None
 
 
-def check_control_sequences(
-    source: Scan, translation: Scan, paragraphs: tuple[tuple[str, str], ...] = ()
-) -> Failure | None:
+def check_control_sequences(source: Scan, translation: Scan) -> Failure | None:
     expected = Counter(source.control_sequences)
     actual = Counter(translation.control_sequences)
     if expected == actual:
@@ -153,7 +153,6 @@ def check_control_sequences(
     differing = [name for name in names if expected[name] != actual[name]]
     listed = "; ".join(
         f"\\{name} appears {expected[name]} times in source, {actual[name]} in translation"
-        + _locate(paragraphs, lambda scanned, name=name: scanned.control_sequences.count(name))
         for name in differing[:DIFFERENCE_ITEMS_MAX]
     )
     if len(differing) > DIFFERENCE_ITEMS_MAX:
@@ -161,9 +160,7 @@ def check_control_sequences(
     return Failure(check=CHECK_CONTROL_SEQUENCES, message=listed)
 
 
-def _check_braces_and_math(
-    source: Scan, translation: Scan, paragraphs: tuple[tuple[str, str], ...] = ()
-) -> Failure | None:
+def _check_braces_and_math(source: Scan, translation: Scan) -> Failure | None:
     problems: list[str] = []
     position = _unbalanced_position(translation)
     if position is not None and _unbalanced_position(source) is None:
@@ -173,10 +170,7 @@ def _check_braces_and_math(
     if dollars % 2:
         problems.append(f"{DOLLAR} count in translation is {dollars}, an odd number, so they cannot pair up")
     if dollars < expected_dollars:
-        problems.append(
-            f"{DOLLAR} count differs: {expected_dollars} in source, {dollars} in translation"
-            + _locate(paragraphs, lambda scanned: scanned.count(DOLLAR))
-        )
+        problems.append(f"{DOLLAR} count differs: {expected_dollars} in source, {dollars} in translation")
     percents = translation.count(PERCENT)
     expected_percents = source.count(PERCENT)
     if percents > expected_percents:
@@ -187,38 +181,6 @@ def _check_braces_and_math(
     if not problems:
         return None
     return Failure(check=CHECK_BRACES_AND_MATH, message="; ".join(problems))
-
-
-def _paired_paragraphs(source: str, translation: str) -> tuple[tuple[str, str], ...]:
-    source_paragraphs = [part.strip() for part in BLANK_LINE_RE.split(source) if part.strip()]
-    translation_paragraphs = [part.strip() for part in BLANK_LINE_RE.split(translation) if part.strip()]
-    if len(source_paragraphs) != len(translation_paragraphs):
-        return ()
-    return tuple(zip(source_paragraphs, translation_paragraphs, strict=True))
-
-
-def _locate(paragraphs: tuple[tuple[str, str], ...], measure: Callable[[Scan], int]) -> str:
-    located = []
-    for number, (source, translation) in enumerate(paragraphs, start=1):
-        expected = measure(scan(source))
-        actual = measure(scan(translation))
-        if expected != actual:
-            located.append(
-                f'paragraph {number} beginning "{_preview(source)}" has {expected} in source, {actual} in translation'
-            )
-    if not located:
-        return ""
-    listed = "; ".join(located[:DIFFERENCE_ITEMS_MAX])
-    if len(located) > DIFFERENCE_ITEMS_MAX:
-        listed = f"{listed} and more ({len(located)} paragraphs in total)"
-    return f" ({listed})"
-
-
-def _preview(paragraph: str) -> str:
-    flattened = " ".join(paragraph.split())
-    if len(flattened) <= PARAGRAPH_PREVIEW_LENGTH:
-        return flattened
-    return flattened[:PARAGRAPH_PREVIEW_LENGTH] + "…"
 
 
 def _unbalanced_position(scanned: Scan) -> int | None:
@@ -280,10 +242,6 @@ CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 ENGLISH_WORD_RE = re.compile(r"(?<![A-Za-z])[a-z][A-Za-z]{2,}")
 
 INLINE_MATH_RE = re.compile(r"(?<!\\)\$(?:\\.|[^$\\])*\$")
-
-REFERENCE_COMMAND_RE = re.compile(
-    r"\\(?:label|ref|eqref|autoref|cref|Cref|cite[a-zA-Z]*|url|input|includegraphics)\*?(?:\[[^\]]*\])*\{[^{}]*\}"
-)
 
 COMMAND_NAME_RE = re.compile(r"\\[A-Za-z@]+")
 
@@ -349,18 +307,16 @@ def check(
             "the paragraph-by-paragraph checks run only after that",
         )
         return Report(problems=(problem,), paragraphs_total=total, paragraphs_translated=0)
-    whole = _structure_failures(source.strip(), translation.strip())
-    problems = [Problem(Category.STRUCTURE, f"whole text, {failure.check}: {failure.message}") for failure in whole]
+    problems = _caption_line_problems(translation)
     translated = 0
     for (_line, source_paragraph), (line, translation_paragraph) in zip(
         source_paragraphs, translation_paragraphs, strict=True
     ):
         where = f"paragraph starting at line {line} of the translation"
-        if whole:
-            problems.extend(
-                Problem(Category.STRUCTURE, f"{where}, {failure.check}: {failure.message}")
-                for failure in _structure_failures(source_paragraph, translation_paragraph)
-            )
+        problems.extend(
+            Problem(Category.STRUCTURE, f"{where}, {failure.check}: {failure.message}")
+            for failure in _structure_failures(source_paragraph, translation_paragraph)
+        )
         problems.extend(_paragraph_problems(where, source_paragraph, translation_paragraph, terms, do_not_translate))
         if not _needs_translation(source_paragraph):
             continue
@@ -378,6 +334,35 @@ def check(
         for word, term_translation, kept in kept_word_conflicts(terms, do_not_translate)
     )
     return Report(problems=tuple(problems), paragraphs_total=total, paragraphs_translated=translated)
+
+
+def _caption_line_problems(translation: str) -> list[Problem]:
+    problems: list[Problem] = []
+    for number, line in enumerate(translation.split("\n"), start=1):
+        tokens = list(TOKEN_RE.finditer(line))
+        for match in tokens:
+            if match.group(1) != CAPTION_ID_PREFIX:
+                continue
+            token = match.group(0)
+            where = f"line {number} of the translation, {CHECK_CAPTION_LINES}"
+            if match.start() != 0:
+                problems.append(
+                    Problem(
+                        Category.STRUCTURE,
+                        f"{where}: {token} must start its line; compile replaces the whole line with the caption, "
+                        "so the text before it would be lost",
+                    )
+                )
+            others = [other.group(0) for other in tokens if other is not match]
+            if others:
+                problems.append(
+                    Problem(
+                        Category.STRUCTURE,
+                        f"{where}: the line of {token} also holds {', '.join(others)}; "
+                        "a caption line may hold no other placeholder",
+                    )
+                )
+    return problems
 
 
 def _paragraph_problems(
@@ -482,7 +467,7 @@ def without_headings(paragraph: str) -> str:
 
 def searchable(text: str) -> str:
     stripped = INLINE_MATH_RE.sub(" ", without_headings(text))
-    return COMMAND_NAME_RE.sub(" ", REFERENCE_COMMAND_RE.sub(" ", stripped))
+    return COMMAND_NAME_RE.sub(" ", NON_TEXT_COMMAND_RE.sub(" ", stripped))
 
 
 def hits(word: str, text: str, exact: bool = False) -> bool:

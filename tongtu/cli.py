@@ -114,13 +114,16 @@ class StageDisplay:
     progress: Progress
     task: TaskID
     name: str
+    printed_status: str = ""
 
     def line(self, status: str, summary: str) -> None:
         console.print(f"    {status}: {summary}")
 
     def action(self, status: str, summary: str = "") -> None:
         if not console.is_terminal:
-            self.line(status, summary)
+            if status != self.printed_status:
+                self.line(status, summary)
+            self.printed_status = status
             return
         width = STATUS_WIDTH + SUMMARY_WIDTH
         text = f"{status:<{STATUS_WIDTH}}{summary[:SUMMARY_WIDTH]}" if summary else status
@@ -222,13 +225,26 @@ def _workdir_name(paper_input: PaperInput) -> str:
     return paper_input.arxiv_id or ""
 
 
-def _local_version(arxiv_id: str, workdir: Path | None) -> int | None:
-    if workdir is None:
-        return arxiv.latest_local_version(papers_dir(), arxiv_id)
-    manifest = load_manifest(Workdir(resolve(workdir=workdir)).manifest_path("fetch"), FetchManifest)
-    if manifest is None or manifest.arxiv_id != arxiv_id:
-        return None
-    return manifest.version
+def _describe_paper(arxiv_id: str | None, version: int | None) -> str:
+    if arxiv_id is None:
+        return "a local source directory"
+    if version is None:
+        return arxiv_id
+    return arxiv.versioned_id(arxiv_id, version)
+
+
+def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: FetchManifest | None) -> None:
+    if fetched is None:
+        return
+    same_paper = paper_input.arxiv_id == fetched.arxiv_id
+    same_version = paper_input.version is None or fetched.version is None or paper_input.version == fetched.version
+    if same_paper and same_version:
+        return
+    raise typer.BadParameter(
+        f"--workdir {workdir} holds {_describe_paper(fetched.arxiv_id, fetched.version)}, "
+        f"but the command asks for {_describe_paper(paper_input.arxiv_id, paper_input.version)}; "
+        "name the paper that this directory holds, or choose another --workdir"
+    )
 
 
 def _query_latest(arxiv_id: str) -> PaperMeta:
@@ -249,12 +265,22 @@ def _paper_workdir(
     if latest and paper_input.version is not None:
         raise typer.BadParameter("--latest cannot be combined with an arXiv id that names a version")
     meta = None
+    fetched = None
+    if workdir is not None:
+        fetched = load_manifest(Workdir(resolve(workdir=workdir)).manifest_path(fetch.STAGE_NAME), FetchManifest)
+        _check_fetched(paper_input, workdir, fetched)
     if paper_input.arxiv_id is not None and paper_input.version is None:
-        version = None if latest else _local_version(paper_input.arxiv_id, workdir)
+        if latest:
+            version = None
+        elif workdir is None:
+            version = arxiv.latest_local_version(papers_dir(), paper_input.arxiv_id)
+        else:
+            version = None if fetched is None else fetched.version
         if version is None and may_query:
             meta = _query_latest(paper_input.arxiv_id)
             version = meta.version
         paper_input = replace(paper_input, version=version)
+        _check_fetched(paper_input, workdir, fetched)
     try:
         path = resolve(_workdir_name(paper_input), workdir)
     except WorkdirError as error:

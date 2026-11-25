@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -12,15 +13,22 @@ from tongtu import validation
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
-WHOLE_TEXT = "whole text, "
+PARAGRAPH_FAILURE_RE = re.compile(r"paragraph starting at line ([0-9]+) of the translation, ([a-z_]+): (.*)")
+
+
+def located(source: str, translation: str) -> list[tuple[int, str, str]]:
+    found = []
+    for problem in validation.check(source, translation).problems:
+        match = PARAGRAPH_FAILURE_RE.fullmatch(problem.message)
+        if problem.category is validation.Category.STRUCTURE and match:
+            found.append((int(match.group(1)), match.group(2), match.group(3)))
+    return found
 
 
 def structure(source: str, translation: str) -> dict[str, str]:
     found: dict[str, str] = {}
-    for problem in validation.check(source, translation).problems:
-        if problem.category is validation.Category.STRUCTURE and problem.message.startswith(WHOLE_TEXT):
-            name, _, text = problem.message.removeprefix(WHOLE_TEXT).partition(": ")
-            found.setdefault(name, text)
+    for _line, name, text in located(source, translation):
+        found.setdefault(name, text)
     return found
 
 
@@ -93,45 +101,48 @@ def test_star_variant_is_a_distinct_control_sequence() -> None:
     assert validation.CHECK_CONTROL_SEQUENCES in checks(SOURCE, translation)
     text = message(SOURCE, translation, validation.CHECK_CONTROL_SEQUENCES)
     assert text == (
-        "\\section appears 1 times in source, 0 in translation"
-        ' (paragraph 1 beginning "\\section{Introduction} \\label{sec:intro}" has 1 in source, 0 in translation); '
-        "\\section* appears 0 times in source, 1 in translation"
-        ' (paragraph 1 beginning "\\section{Introduction} \\label{sec:intro}" has 0 in source, 1 in translation)'
+        "\\section appears 1 times in source, 0 in translation; \\section* appears 0 times in source, 1 in translation"
     )
 
 
 def test_control_sequence_difference_reads_as_counts_on_both_sides() -> None:
     text = message("\\cite{a} \\cite{b} x", "\\cite{a} 甲", validation.CHECK_CONTROL_SEQUENCES)
-    assert text == (
-        "\\cite appears 2 times in source, 1 in translation"
-        ' (paragraph 1 beginning "\\cite{a} \\cite{b} x" has 2 in source, 1 in translation)'
-    )
+    assert text == "\\cite appears 2 times in source, 1 in translation"
 
 
-def test_control_sequence_difference_is_located_in_the_differing_paragraph() -> None:
+def test_control_sequence_difference_is_reported_in_the_differing_paragraph() -> None:
     source = "\\emph{a} one\n\n\\emph{b} two\n\n\\emph{c} three"
     translation = "\\emph{甲} 一\n\n乙 二\n\n\\emph{丙} 三"
-    assert message(source, translation, validation.CHECK_CONTROL_SEQUENCES) == (
-        "\\emph appears 3 times in source, 2 in translation"
-        ' (paragraph 2 beginning "\\emph{b} two" has 1 in source, 0 in translation)'
-    )
+    assert located(source, translation) == [
+        (3, validation.CHECK_CONTROL_SEQUENCES, "\\emph appears 1 times in source, 0 in translation")
+    ]
 
 
-def test_control_sequence_differences_in_several_paragraphs_are_listed_in_order() -> None:
+def test_control_sequence_differences_in_several_paragraphs_are_reported_in_order() -> None:
     source = "a \\& b\n\nc\n\nd \\& e\n\ne \\& f"
     translation = "甲 和 乙\n\n丙\n\n丁 \\& 戊\n\n戊 \\& \\& \\& 己"
-    assert message(source, translation, validation.CHECK_CONTROL_SEQUENCES) == (
-        "\\& appears 3 times in source, 4 in translation"
-        ' (paragraph 1 beginning "a \\& b" has 1 in source, 0 in translation; '
-        'paragraph 4 beginning "e \\& f" has 1 in source, 3 in translation)'
-    )
+    assert located(source, translation) == [
+        (1, validation.CHECK_CONTROL_SEQUENCES, "\\& appears 1 times in source, 0 in translation"),
+        (7, validation.CHECK_CONTROL_SEQUENCES, "\\& appears 1 times in source, 3 in translation"),
+    ]
 
 
-def test_paragraph_preview_is_flattened_and_cut_short() -> None:
-    source = "\\emph{x}\n" + "word " * 20
-    text = message(source, "甲", validation.CHECK_CONTROL_SEQUENCES)
-    flattened = "\\emph{x} " + "word " * 20
-    assert f'beginning "{flattened[: validation.PARAGRAPH_PREVIEW_LENGTH]}…"' in text
+def test_a_control_sequence_moved_to_another_paragraph_fails_both_paragraphs() -> None:
+    source = "\\emph{a} one\n\ntwo"
+    translation = "一\n\n\\emph{甲} 二"
+    assert [(line, name) for line, name, _text in located(source, translation)] == [
+        (1, validation.CHECK_CONTROL_SEQUENCES),
+        (3, validation.CHECK_CONTROL_SEQUENCES),
+    ]
+
+
+def test_placeholders_swapped_between_paragraphs_fail_both_paragraphs() -> None:
+    source = "⟦BLK-0⟧\nfirst\n\n⟦BLK-1⟧\nsecond"
+    translation = "⟦BLK-1⟧\n一\n\n⟦BLK-0⟧\n二"
+    assert located(source, translation) == [
+        (1, validation.CHECK_PLACEHOLDERS, "translation is missing ⟦BLK-0⟧; translation has extra ⟦BLK-1⟧"),
+        (4, validation.CHECK_PLACEHOLDERS, "translation is missing ⟦BLK-1⟧; translation has extra ⟦BLK-0⟧"),
+    ]
 
 
 def test_escaped_brace_is_a_control_sequence_not_a_brace() -> None:
@@ -167,16 +178,13 @@ def test_fewer_dollars_than_the_source_fails() -> None:
     assert (
         message("$x$ and $y$", "$x$ 与 y", validation.CHECK_BRACES_AND_MATH)
         == "$ count differs: 4 in source, 2 in translation"
-        ' (paragraph 1 beginning "$x$ and $y$" has 4 in source, 2 in translation)'
     )
 
 
-def test_dollar_difference_is_located_in_the_differing_paragraph() -> None:
-    assert (
-        message("$x$\n\n$y$ and $z$", "$x$\n\n$y$ 与 z", validation.CHECK_BRACES_AND_MATH)
-        == "$ count differs: 6 in source, 4 in translation"
-        ' (paragraph 2 beginning "$y$ and $z$" has 4 in source, 2 in translation)'
-    )
+def test_dollar_difference_is_reported_in_the_differing_paragraph() -> None:
+    assert located("$x$\n\n$y$ and $z$", "$x$\n\n$y$ 与 z") == [
+        (3, validation.CHECK_BRACES_AND_MATH, "$ count differs: 4 in source, 2 in translation")
+    ]
 
 
 def test_an_unescaped_percent_beyond_the_source_fails() -> None:
@@ -243,13 +251,42 @@ def test_a_different_paragraph_count_is_the_only_problem_reported() -> None:
     assert (report.paragraphs_total, report.paragraphs_translated) == (3, 0)
 
 
-def test_a_structural_difference_is_reported_for_the_whole_text_and_for_its_paragraph() -> None:
+def test_a_structural_difference_is_reported_for_its_paragraph_only() -> None:
     report = validation.check(EN, ZH.replace("⟦BLK-12⟧\n", ""))
-    assert set(categories(report)) == {validation.Category.STRUCTURE}
-    messages = [problem.message for problem in report.problems]
-    assert messages[0].startswith("whole text, placeholders:")
-    assert any(
-        message.startswith("paragraph starting at line 4 of the translation, placeholders") for message in messages
+    assert categories(report) == [validation.Category.STRUCTURE]
+    assert report.problems[0].message.startswith("paragraph starting at line 4 of the translation, placeholders")
+
+
+def caption_line_problems(translation: str) -> list[str]:
+    return [
+        problem.message
+        for problem in validation.check(EN, translation).problems
+        if validation.CHECK_CAPTION_LINES in problem.message
+    ]
+
+
+def test_a_caption_line_that_starts_with_its_token_passes() -> None:
+    assert caption_line_problems(ZH) == []
+
+
+def test_text_before_a_caption_token_is_a_structure_problem() -> None:
+    translation = ZH.replace("⟦CAP-3⟧ 全部", "图中 ⟦CAP-3⟧ 全部")
+    report = validation.check(EN, translation)
+    assert validation.Category.STRUCTURE in categories(report)
+    assert caption_line_problems(translation) == [
+        "line 5 of the translation, caption_lines: ⟦CAP-3⟧ must start its line; compile replaces the whole line "
+        "with the caption, so the text before it would be lost"
+    ]
+
+
+def test_a_placeholder_on_a_caption_line_is_a_structure_problem() -> None:
+    source = EN.replace("⟦BLK-12⟧\n⟦CAP-3⟧", "⟦CAP-3⟧ ⟦BLK-12⟧")
+    translation = ZH.replace("⟦BLK-12⟧\n⟦CAP-3⟧ 全部实验所用流程的概览。", "⟦CAP-3⟧ 全部实验所用流程的概览。⟦BLK-12⟧")
+    report = validation.check(source, translation)
+    assert [problem.category for problem in report.problems] == [validation.Category.STRUCTURE]
+    assert report.problems[0].message == (
+        "line 4 of the translation, caption_lines: the line of ⟦CAP-3⟧ also holds ⟦BLK-12⟧; "
+        "a caption line may hold no other placeholder"
     )
 
 
@@ -299,6 +336,20 @@ def test_an_english_paragraph_is_reported_as_untranslated() -> None:
 def test_a_paragraph_of_names_needs_no_translation() -> None:
     names = "Alice Zhang, Bob Li, Carol Wang, Dave Chen\nTsinghua University, Peking University, DeepSeek-AI"
     report = validation.check(f"{names}\n\n{EN}", f"{names}\n\n{ZH}")
+    assert report.ok
+    assert report.paragraphs_total == 3
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        "\\url{https://github.com/example/the-large-language-model-training-code}",
+        "\\cref{fig:the-overview-of-our-large-language-model-pipeline}",
+        "\\citealp{smith-and-jones-large-language-model-scaling-laws}",
+    ],
+)
+def test_a_paragraph_of_only_a_reference_command_is_not_untranslated(paragraph: str) -> None:
+    report = validation.check(f"{paragraph}\n\n{EN}", f"{paragraph}\n\n{ZH}")
     assert report.ok
     assert report.paragraphs_total == 3
 

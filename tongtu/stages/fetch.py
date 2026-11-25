@@ -65,7 +65,7 @@ def _fetch_remote(paper: PaperInput, paper_workdir: Workdir, meta: PaperMeta | N
         )
     if not payload:
         return FetchManifest(
-            status=FetchStatus.DOWNLOAD_FAILED,
+            status=FetchStatus.EMPTY,
             message="download succeeded but the response body is empty.",
             **identity,
         )
