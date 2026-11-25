@@ -146,7 +146,7 @@ def _translate_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return translate.run(
         options.workdir,
         mode=options.mode,
-        glossary=options.glossary,
+        glossary_files=options.glossary,
         report=display.action,
     )
 
@@ -279,6 +279,12 @@ def _paper_workdir(
         if version is None and may_query:
             meta = _query_latest(paper_input.arxiv_id)
             version = meta.version
+        if version is None and workdir is None:
+            error_console.print(
+                f"no working directory for {paper_input.arxiv_id} in {papers_dir()}; "
+                f"run tongtu run {paper_input.arxiv_id} first"
+            )
+            raise typer.Exit(EXIT_FAILURE)
         paper_input = replace(paper_input, version=version)
         _check_fetched(paper_input, workdir, fetched)
     try:

@@ -284,7 +284,7 @@ def test_a_missing_command_line_glossary_is_glossary_invalid(
     workdir: Workdir, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls = fake_session(monkeypatch, writes(GOOD))
-    manifest = run(workdir, glossary=[tmp_path / "absent.json"])
+    manifest = run(workdir, glossary_files=[tmp_path / "absent.json"])
     assert calls == []
     assert manifest.status is TranslateStatus.GLOSSARY_INVALID
 
@@ -293,7 +293,7 @@ def test_a_command_line_glossary_is_used(workdir: Workdir, monkeypatch: pytest.M
     extra = tmp_path / "extra.json"
     write_json(extra, {"terms": {"sequence": "序列"}})
     fake_session(monkeypatch, writes(GOOD))
-    manifest = run(workdir, glossary=[extra])
+    manifest = run(workdir, glossary_files=[extra])
     assert manifest.status is TranslateStatus.OK
     assert manifest.glossary.user == 2
 

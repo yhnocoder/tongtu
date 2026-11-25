@@ -127,12 +127,16 @@ jobs:
           start=$(date +%s)
           code=0
           uv run tongtu run "$target" "${args[@]}" || code=$?
-          workdir=$(uv run tongtu status "$target" --json | uv run python -c 'import json, sys; print(json.load(sys.stdin)["workdir"])')
-          echo "PAPER_WORKDIR=$workdir" >> "$GITHUB_ENV"
-          mkdir -p "$workdir"
-          printf '{"paper": "%s", "seconds": %d, "exit_code": %d}\n' "$PAPER" "$(( $(date +%s) - start ))" "$code" \
-            > "$workdir/ci.json"
-          cat "$workdir/ci.json"
+          if snapshot=$(uv run tongtu status "$target" --json); then
+            workdir=$(printf '%s' "$snapshot" | uv run python -c 'import json, sys; print(json.load(sys.stdin)["workdir"])')
+            echo "PAPER_WORKDIR=$workdir" >> "$GITHUB_ENV"
+            mkdir -p "$workdir"
+            printf '{"paper": "%s", "seconds": %d, "exit_code": %d}\n' "$PAPER" "$(( $(date +%s) - start ))" "$code" \
+              > "$workdir/ci.json"
+            cat "$workdir/ci.json"
+          else
+            echo "tongtu status found no working directory for $target; no artifact is uploaded" >&2
+          fi
           exit "$code"
 
       # 只给一个目录，artifact 根就是论文目录本身，report 作业按 paper-<paper>/build/manifests 读。

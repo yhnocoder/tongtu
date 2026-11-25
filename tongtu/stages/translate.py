@@ -42,13 +42,13 @@ def run(
     paper_workdir: Workdir,
     *,
     mode: str,
-    glossary: Sequence[Path] = (),
+    glossary_files: Sequence[Path] = (),
     report: Callable[[str, str], None] | None = None,
 ) -> TranslateManifest:
     paper_workdir.create()
     for path in (paper_workdir.manifest_path(STAGE_NAME), paper_workdir.translated, paper_workdir.paper_glossary):
         path.unlink(missing_ok=True)
-    manifest = _execute(paper_workdir, mode, tuple(glossary), report or (lambda status, summary: None))
+    manifest = _execute(paper_workdir, mode, tuple(glossary_files), report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
