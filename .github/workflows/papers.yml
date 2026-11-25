@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/yhnocoder/tongtu:env
     environment: llm
-    timeout-minutes: 30
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
@@ -98,17 +98,16 @@ jobs:
         run: |
           mkdir -p "$TONGTU_HOME"
           cat > "$TONGTU_HOME/config.toml" <<'TOML'
-          # CI 专用的超时：作业上限 30 分钟，每次会话 600 秒，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
+          # 会话超时用默认的 1800 秒：translate 一次会话翻译整篇论文。作业上限 100 分钟，容得下 translate 与
+          # 两个修复会话各超时一次，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
           [modes]
           default = "smart"
 
           [modes.fast]
-          model           = "pi/deepseek/deepseek-v4-pro"
-          timeout_seconds = 600
+          model = "pi/deepseek/deepseek-v4-pro"
 
           [modes.smart]
-          model           = "pi/deepseek/deepseek-v4-pro"
-          timeout_seconds = 600
+          model = "pi/deepseek/deepseek-v4-pro"
           TOML
 
       - run: uv run tongtu doctor
