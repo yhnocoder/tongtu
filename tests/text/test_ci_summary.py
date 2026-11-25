@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 
 from scripts import ci_summary
+from tongtu.artifacts.common import Session
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.artifacts.fetch import FetchManifest, FetchStatus
-from tongtu.artifacts.translate import ChunkTranslateRecord, ChunkTranslateStatus, TranslateManifest, TranslateStatus
+from tongtu.artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
 from tongtu.manifests import write_manifest
 from tongtu.workdir import Workdir
 
@@ -30,10 +31,11 @@ def test_rows_and_render(tmp_path: Path) -> None:
         good.manifest_path("translate"),
         TranslateManifest(
             status=TranslateStatus.OK,
-            chunks={
-                "c1": ChunkTranslateRecord(status=ChunkTranslateStatus.TRANSLATED, attempts=1),
-                "c2": ChunkTranslateRecord(status=ChunkTranslateStatus.FALLBACK, attempts=2),
-            },
+            mode="fast",
+            session=Session(stop_reason="finished", model="claude-code/m", duration_seconds=1.0),
+            paragraphs_total=12,
+            paragraphs_translated=12,
+            glossary=GlossaryCounts(added=3),
         ),
     )
     bad = write_paper(tmp_path, "2002.05202", None)
@@ -55,7 +57,7 @@ def test_rows_and_render(tmp_path: Path) -> None:
     assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/12)" in text
     assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/13)" in text
     assert "| 2002.05202 |" in text
-    assert "| ok | — | — | — | ok | — | — | local, 1 tex files; 2 chunks, 1 fallback |" in text
+    assert "| ok | — | — | ok | — | local, 1 tex files; 12 paragraphs, 3 new terms |" in text
     assert "| 38m12s |" in text
     assert "| compile_failed |" in text
     assert "- **2002.05202 / compile**: xelatex exited 1" in text

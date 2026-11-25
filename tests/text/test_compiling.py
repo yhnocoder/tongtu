@@ -8,8 +8,9 @@ import pytest
 
 import tongtu.model
 from tongtu import compiling, fonts, processes
-from tongtu.artifacts.common import FixSession
-from tongtu.model.work import StopReason, WorkOutcome
+from tongtu.artifacts.common import NotesFile, Session, StopReason
+from tongtu.manifests import load_manifest
+from tongtu.model.work import WorkOutcome
 from tongtu.processes import ProcessOutcome
 
 LOG_OK = "Output written on zh.xdv (7 pages, 12345 bytes).\n"
@@ -125,29 +126,39 @@ def test_clean_tree_without_problems(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert compiling.clean_tree(tmp_path, "zh.tex") == []
 
 
-def wire_work(monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=None) -> list[dict]:
+NOTES = '{"notes": [{"where": "zh.tex:3", "problem": "p", "resolution": "r", "suggestion": "s"}]}'
+
+
+def wire_work(
+    monkeypatch: pytest.MonkeyPatch, stop_reason: StopReason, edit=None, notes: str | None = '{"notes": []}'
+) -> list[dict]:
     calls: list[dict] = []
 
     def fake_work(
-        role: str,
-        workdir: Path,
+        skill: str,
+        session_dir: Path,
         *,
-        trace_path: Path,
+        mode: str,
+        log_path: Path,
         report=None,
-        prompt=None,
+        extra_prompt: str = "",
     ):
         calls.append(
             {
-                "role": role,
-                "workdir": workdir,
-                "trace_path": trace_path,
+                "skill": skill,
+                "session_dir": session_dir,
+                "mode": mode,
+                "log_path": log_path,
                 "report": report,
-                "prompt": prompt,
+                "extra_prompt": extra_prompt,
             }
         )
         if edit is not None:
-            edit(workdir)
-        return WorkOutcome(stop_reason=stop_reason, detail="runtime missing", model="rt/m1")
+            edit(session_dir)
+        if notes is not None:
+            (session_dir / "notes.json").write_text(notes, encoding="utf-8")
+        session = Session(stop_reason=stop_reason, model="rt/m1", effort="low", duration_seconds=3.0)
+        return WorkOutcome(session=session, detail="runtime missing")
 
     monkeypatch.setattr(tongtu.model, "work", fake_work)
     return calls
@@ -164,25 +175,59 @@ def make_tree(tmp_path: Path) -> tuple[Path, Path]:
     return src, tree
 
 
-def test_fix_passes_the_role_and_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def fix(tmp_path: Path, tree: Path, warnings: list[str], **kwargs: object) -> Session:
+    return compiling.fix(
+        "compile_fix",
+        tree,
+        tmp_path / "compile-fix.jsonl",
+        "zh.tex",
+        warnings,
+        mode="fast",
+        notes_path=tmp_path / "out" / "paper.notes.json",
+        **kwargs,
+    )
+
+
+def test_fix_passes_the_skill_mode_and_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     src, tree = make_tree(tmp_path)
     calls = wire_work(monkeypatch, StopReason.FINISHED)
     warnings: list[str] = []
-    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings)
-    assert session.stop_reason == "finished"
-    assert session.model == "rt/m1"
-    assert session.duration_seconds >= 0
+    session = fix(tmp_path, tree, warnings)
+    assert session == Session(stop_reason=StopReason.FINISHED, model="rt/m1", effort="low", duration_seconds=3.0)
     assert warnings == []
     assert calls == [
         {
-            "role": "compile_fix",
-            "workdir": tree,
-            "trace_path": tmp_path / "trace.jsonl",
+            "skill": "compile_fix",
+            "session_dir": tree,
+            "mode": "fast",
+            "log_path": tmp_path / "compile-fix.jsonl",
             "report": None,
-            "prompt": "读 .skills/compile_fix/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
-            "主文件是 zh.tex，编译日志是 zh.log。",
+            "extra_prompt": "主文件是 zh.tex，编译日志是 zh.log。",
         }
     ]
+
+
+def test_fix_collects_the_notes_of_the_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src, tree = make_tree(tmp_path)
+    wire_work(monkeypatch, StopReason.FINISHED, notes=NOTES)
+    warnings: list[str] = []
+    fix(tmp_path, tree, warnings)
+    notes_file = load_manifest(tmp_path / "out" / "paper.notes.json", NotesFile)
+    assert notes_file is not None
+    assert [(note.session, note.where) for note in notes_file.notes] == [("compile_fix", "zh.tex:3")]
+    assert not (tree / "notes.json").exists()
+    assert warnings == []
+
+
+def test_fix_warns_when_the_session_wrote_no_notes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src, tree = make_tree(tmp_path)
+    wire_work(monkeypatch, StopReason.FINISHED, notes=None)
+    warnings: list[str] = []
+    session = fix(tmp_path, tree, warnings)
+    assert session.stop_reason is StopReason.FINISHED
+    assert len(warnings) == 1 and "notes.json" in warnings[0]
+    notes_file = load_manifest(tmp_path / "out" / "paper.notes.json", NotesFile)
+    assert notes_file == NotesFile(notes=[])
 
 
 def test_fix_forwards_the_report_callback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,7 +238,7 @@ def test_fix_forwards_the_report_callback(tmp_path: Path, monkeypatch: pytest.Mo
     def report(action: str) -> None:
         return None
 
-    compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings, report=report)
+    fix(tmp_path, tree, warnings, report=report)
     assert calls[0]["report"] is report
 
 
@@ -204,8 +249,8 @@ def test_fix_warns_on_error_and_timeout(
     src, tree = make_tree(tmp_path)
     wire_work(monkeypatch, stop_reason)
     warnings: list[str] = []
-    session = compiling.fix("compile_fix", tree, tmp_path / "trace.jsonl", "zh.tex", warnings)
-    assert session.stop_reason == str(stop_reason)
+    session = fix(tmp_path, tree, warnings)
+    assert session.stop_reason is stop_reason
     assert session.model == "rt/m1"
     assert len(warnings) == 1
     assert str(stop_reason) in warnings[0]
@@ -238,15 +283,17 @@ def test_copy_src_tree_drops_shipped_outputs_of_the_jobname(tmp_path: Path) -> N
 
 def call_compile_with_fix(
     tmp_path: Path, warnings: list[str], report: Callable[[str, str], None] | None = None
-) -> tuple[compiling.CompileAttempt | None, FixSession | None, str]:
+) -> tuple[compiling.CompileAttempt | None, Session | None, str]:
     src, tree = make_tree(tmp_path)
     return compiling.compile_with_fix(
         "compile_fix",
         tree,
         "zh.tex",
-        tmp_path / "trace.jsonl",
+        tmp_path / "compile-fix.jsonl",
         warnings,
         report or (lambda status, summary: None),
+        mode="smart",
+        notes_path=tmp_path / "out" / "paper.notes.json",
     )
 
 
@@ -290,9 +337,10 @@ def test_compile_with_fix_fix_then_verify_passes(tmp_path: Path, monkeypatch: py
         tmp_path, warnings, lambda status, summary: events.append((status, summary))
     )
     assert failure == ""
-    assert session is not None and session.stop_reason == "finished"
+    assert session is not None and session.stop_reason is StopReason.FINISHED
     assert attempt is not None and attempt.passed and attempt.report.pages == 7
     assert len(calls) == 1
+    assert calls[0]["mode"] == "smart"
     assert ["-C" in command for command in commands] == [False, True, False]
     assert events == [("compiling", "zh.tex"), ("fix session", "running"), ("verifying", "zh.tex")]
 

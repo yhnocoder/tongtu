@@ -30,6 +30,8 @@ FIXED_FILENAME = "glossary.fixed.json"
 
 SESSION_FILENAME = GLOSSARY_FILENAME
 
+READ_ONLY_MODE = 0o444
+
 
 class GlossaryError(Exception):
     pass
@@ -109,8 +111,13 @@ def load_selection(
 
 def write_session_files(session_dir: Path, selection: Selection) -> None:
     session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / FIXED_FILENAME).write_text(render(selection.fixed), encoding=ENCODING)
-    (session_dir / SESSION_FILENAME).write_text(render(selection.learned), encoding=ENCODING)
+    fixed = session_dir / FIXED_FILENAME
+    fixed.unlink(missing_ok=True)
+    fixed.write_text(render(selection.fixed), encoding=ENCODING)
+    fixed.chmod(READ_ONLY_MODE)
+    session = session_dir / SESSION_FILENAME
+    if not session.exists():
+        session.write_text(render(selection.learned), encoding=ENCODING)
 
 
 def read_session_glossary(session_dir: Path) -> Glossary:

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .. import comments, compiling, fonts, pipeline, preamble, processes
-from ..artifacts.common import FixSession
+from ..artifacts.common import Session
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..conditionals import strip_dead_branches
 from ..fonts import FONT_FILE_SUFFIXES, FONTS_DIR, family_files
@@ -28,7 +28,7 @@ from ..workdir import Workdir
 
 STAGE_NAME = "precompile"
 
-ROLE = "precompile_fix"
+SKILL = "precompile_fix"
 
 TREE_NAME = "tex"
 
@@ -139,16 +139,17 @@ class ArgumentInput:
 def run(
     paper_workdir: Workdir,
     *,
+    mode: str,
     report: Callable[[str, str], None] | None = None,
 ) -> PrecompileManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(paper_workdir, report or (lambda status, summary: None))
+    manifest = _execute(paper_workdir, mode, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> PrecompileManifest:
+def _execute(paper_workdir: Workdir, mode: str, report: Callable[[str, str], None]) -> PrecompileManifest:
     src = paper_workdir.src
     warnings: list[str] = []
     candidates = _scan_candidates(src, warnings)
@@ -177,11 +178,13 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
         _write_expand_diagnostic(tree, main_file, failure, missing_diagnostic, warnings)
         report("fix session", "running")
         fix_session = compiling.fix(
-            ROLE,
+            SKILL,
             tree,
             paper_workdir.precompile_fix_log,
             main_file,
             warnings,
+            mode=mode,
+            notes_path=paper_workdir.notes,
             report=lambda action: report("fix session", action),
         )
         src = tree
@@ -221,12 +224,14 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
     (tree / main_file).write_bytes(injected)
 
     final, fix_session, failure = compiling.compile_with_fix(
-        ROLE,
+        SKILL,
         tree,
         main_file,
         paper_workdir.precompile_fix_log,
         warnings,
         report,
+        mode=mode,
+        notes_path=paper_workdir.notes,
         fix_session=fix_session,
     )
     if final is None or failure:
@@ -245,7 +250,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
 
 
 def _compile_failed(
-    main_file: str, warnings: list[str], message: str, fix_session: FixSession | None = None
+    main_file: str, warnings: list[str], message: str, fix_session: Session | None = None
 ) -> PrecompileManifest:
     return PrecompileManifest(
         status=PrecompileStatus.COMPILE_FAILED,

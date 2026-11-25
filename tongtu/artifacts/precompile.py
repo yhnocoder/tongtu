@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from .common import CompileReport, FixSession, Manifest
+from .common import CompileReport, Manifest, Session
 
 
 class PrecompileStatus(StrEnum):
@@ -17,4 +17,4 @@ class PrecompileManifest(Manifest):
     status: PrecompileStatus
     main_file: str = ""
     report: CompileReport | None = None
-    fix_session: FixSession | None = None
+    fix_session: Session | None = None

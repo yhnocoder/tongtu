@@ -15,7 +15,11 @@ def test_configured_falls_back_to_defaults_without_config(tmp_path: Path, monkey
 
 def test_configured_reads_the_fonts_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
-    (tmp_path / "config.toml").write_text('[fonts]\nmain = "MyFont.ttf"\nmono = "Mono.otf"\n', encoding="utf-8")
+    (tmp_path / "config.toml").write_text(
+        '[modes.fast]\nmodel = "claude-code/m"\n\n[modes.smart]\nmodel = "claude-code/m"\n\n'
+        '[fonts]\nmain = "MyFont.ttf"\nmono = "Mono.otf"\n',
+        encoding="utf-8",
+    )
     assert fonts.configured() == FontsConfig(main="MyFont.ttf", mono="Mono.otf")
 
 

@@ -786,6 +786,8 @@ def _restore_blocks(
         parts.append(stream[cursor : match.start()])
         length += match.start() - cursor
         body, slots = _fill_slots(block.tex, filled)
+        if block.category is BlockCategory.COMMENT and _text_follows_on_line(stream, match.end()):
+            body += "\n"
         placements.append(Placement(token_id, length, length + len(body)))
         placements.extend(Placement(slot.token_id, length + slot.start, length + slot.end) for slot in slots)
         parts.append(body)
@@ -799,6 +801,11 @@ def _restore_blocks(
                 f"{block_token(block.id)} is used {count} times in the stream; each block token must be used exactly once"
             )
     return "".join(parts), placements
+
+
+def _text_follows_on_line(stream: str, position: int) -> bool:
+    line_end = stream.find("\n", position)
+    return bool(stream[position : len(stream) if line_end < 0 else line_end].strip())
 
 
 def _fill_slots(tex: str, filled: Mapping[str, str]) -> tuple[str, list[Placement]]:

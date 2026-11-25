@@ -12,14 +12,26 @@ from tongtu import validation
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
+WHOLE_TEXT = "whole text, "
+
+
+def structure(source: str, translation: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for problem in validation.check(source, translation).problems:
+        if problem.category is validation.Category.STRUCTURE and problem.message.startswith(WHOLE_TEXT):
+            name, _, text = problem.message.removeprefix(WHOLE_TEXT).partition(": ")
+            found.setdefault(name, text)
+    return found
+
+
 def checks(source: str, translation: str) -> tuple[str, ...]:
-    return tuple(failure.check for failure in validation.validate(source, translation).failures)
+    return tuple(structure(source, translation))
 
 
 def message(source: str, translation: str, check: str) -> str:
-    found = [failure.message for failure in validation.validate(source, translation).failures if failure.check == check]
-    assert found, f"{check} did not fail"
-    return found[0]
+    found = structure(source, translation)
+    assert check in found, f"{check} did not fail"
+    return found[check]
 
 
 SOURCE = """\
@@ -37,7 +49,7 @@ The second paragraph uses \\textbf{bold} text.\
 """
 
 TRANSLATION = """\
-\\section{引言}
+\\section{Introduction}
 \\label{sec:intro}
 
 我们提出一个有 $n$ 层的模型，见 \\citet{ref} 与图~\\ref{fig:one}。
@@ -51,18 +63,8 @@ TRANSLATION = """\
 """
 
 
-def test_check_names_are_the_four_layers() -> None:
-    assert validation.CHECK_NAMES == (
-        "placeholders",
-        "control_sequences",
-        "braces_and_math",
-        "paragraph_count",
-    )
-
-
-def test_structurally_identical_translation_passes_all_four_checks() -> None:
-    assert validation.validate(SOURCE, TRANSLATION).ok
-    assert checks(SOURCE, TRANSLATION) == ()
+def test_structurally_identical_translation_passes_every_check() -> None:
+    assert validation.check(SOURCE, TRANSLATION).ok
 
 
 def test_missing_placeholder_fails_only_the_placeholder_check() -> None:
@@ -83,7 +85,7 @@ def test_broken_placeholder_fragment_is_caught_by_the_self_check() -> None:
 
 
 def test_identical_control_sequences_pass() -> None:
-    assert validation.validate("a \\emph{x} b", "甲 \\emph{乙} 丙").ok
+    assert validation.check("a \\emph{x} b", "甲 \\emph{乙} 丙").ok
 
 
 def test_star_variant_is_a_distinct_control_sequence() -> None:
@@ -132,18 +134,13 @@ def test_paragraph_preview_is_flattened_and_cut_short() -> None:
     assert f'beginning "{flattened[: validation.PARAGRAPH_PREVIEW_LENGTH]}…"' in text
 
 
-def test_differences_are_not_located_when_paragraph_counts_differ() -> None:
-    text = message("\\emph{a}\n\nb", "甲 乙", validation.CHECK_CONTROL_SEQUENCES)
-    assert text == "\\emph appears 1 times in source, 0 in translation"
-
-
 def test_escaped_brace_is_a_control_sequence_not_a_brace() -> None:
-    assert validation.validate("a \\{ b", "a \\{ b").ok
+    assert validation.check("a \\{ b", "a \\{ b").ok
     assert checks("a { b", "a \\{ b") == (validation.CHECK_CONTROL_SEQUENCES,)
 
 
 def test_balanced_braces_with_a_different_count_pass() -> None:
-    assert validation.validate("a {b} c", "甲 {乙} 丙 {丁}").ok
+    assert validation.check("a {b} c", "甲 {乙} 丙 {丁}").ok
 
 
 def test_a_closing_brace_before_any_opening_one_fails() -> None:
@@ -156,7 +153,7 @@ def test_an_unclosed_brace_at_the_end_fails() -> None:
 
 
 def test_an_unbalanced_source_does_not_force_a_failure() -> None:
-    assert validation.validate("{a", "{甲").ok
+    assert validation.check("{a", "{甲").ok
 
 
 def test_an_odd_number_of_dollars_fails() -> None:
@@ -182,53 +179,26 @@ def test_dollar_difference_is_located_in_the_differing_paragraph() -> None:
     )
 
 
-def test_more_dollars_than_the_source_pass_when_even() -> None:
-    assert validation.validate("$x$", "$x$ 与 $y$").ok
-
-
 def test_an_unescaped_percent_beyond_the_source_fails() -> None:
     assert checks("我们取 50 个样本。", "我们取 50% 个样本。") == (validation.CHECK_BRACES_AND_MATH,)
     assert "%" in message("我们取 50 个样本。", "我们取 50% 个样本。", validation.CHECK_BRACES_AND_MATH)
 
 
 def test_an_escaped_percent_stays_in_the_control_sequence_check() -> None:
-    assert validation.validate("取 50\\% 的样本", "取 50\\% 的样本").ok
+    assert validation.check("取 50\\% 的样本", "取 50\\% 的样本").ok
     assert checks("取 50 的样本", "取 50\\% 的样本") == (validation.CHECK_CONTROL_SEQUENCES,)
 
 
-def test_merged_paragraph_fails_the_paragraph_count_check() -> None:
-    translation = TRANSLATION.replace("\n\n⟦BLK-0⟧", " ⟦BLK-0⟧")
-    assert validation.CHECK_PARAGRAPH_COUNT in checks(SOURCE, translation)
-    text = message(SOURCE, translation, validation.CHECK_PARAGRAPH_COUNT)
-    assert text.startswith("paragraphs with translatable text: 4 in source, 3 in translation")
-
-
-def test_blank_line_around_a_command_only_paragraph_may_be_merged() -> None:
-    assert validation.validate(SOURCE, TRANSLATION.replace("\n\n第二段", " 第二段")).ok
-
-
 @pytest.mark.parametrize(
-    "paragraph",
-    ["⟦BLK-3⟧", "\\maketitle", "\\newpage", "\\begin{abstract}", "\\includegraphics[width=\\linewidth]{f}", "   "],
+    ("text", "expected"),
+    [
+        ("⟦BLK-3⟧\n\n\\maketitle\n\n\\includegraphics[width=\\linewidth]{f}\n\n   ", 0),
+        ("\\section{Training and evaluation of the large models in this work}", 0),
+        ("We train the model on a large corpus of text.\n\nShort one.", 1),
+    ],
 )
-def test_paragraphs_without_translatable_text_are_not_counted(paragraph: str) -> None:
-    assert validation.translatable_paragraphs(paragraph) == 0
-
-
-def test_paragraph_with_command_argument_is_counted() -> None:
-    assert validation.translatable_paragraphs("\\section{Introduction}") == 1
-
-
-def test_blank_lines_after_a_heading_do_not_change_the_paragraph_count() -> None:
-    source = "\\subsection{Model \\dsviii{} as a judge}\n\n\nSome text here.\n"
-    translation = "\\subsection{以 \\dsviii{} 为评审的模型}\n一些文本。\n"
-    assert validation.validate(source, translation).ok
-
-
-def test_a_heading_moved_off_the_prose_line_does_not_change_the_paragraph_count() -> None:
-    source = "Prose ends here. \\section{Architecture}\n⟦BLK-0⟧ tail text.\n"
-    translation = "正文到此结束。\n\n\\section{Architecture}\n⟦BLK-0⟧ 尾部文本。\n"
-    assert validation.validate(source, translation).ok
+def test_paragraphs_to_translate_counts_paragraphs_with_enough_english_words(text: str, expected: int) -> None:
+    assert validation.paragraphs_to_translate(text) == expected
 
 
 EN = """\

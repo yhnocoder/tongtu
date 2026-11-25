@@ -1,692 +1,376 @@
 from __future__ import annotations
 
 import json
-import os
-from collections.abc import Callable, Mapping, Sequence
+import stat
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from tongtu import masking
-from tongtu.artifacts.status import ChunkCounts
-from tongtu.artifacts.survey import (
-    BriefFile,
-    ChunkRecord,
-    DecidedBy,
-    DoNotTranslateEntry,
-    Heading,
-    Part,
-    TermEntry,
-)
-from tongtu.artifacts.translate import ChunkTranslateStatus, TranslateManifest, TranslateStatus
-from tongtu.model.ask import AskOutcome, AskStatus, CallLog
-from tongtu.model.config import ModelsConfig, ProviderConfig, RoleConfig
-from tongtu.pipeline import outputs_present
+from tongtu import model, validation
+from tongtu.artifacts.common import Note, NotesFile, Session, StopReason
+from tongtu.artifacts.translate import PaperGlossary, TranslateManifest, TranslateStatus
+from tongtu.manifests import load_manifest, write_manifest
+from tongtu.model.work import WorkOutcome
 from tongtu.stages import translate
-from tongtu.stages.translate import ChunkProgress, ChunkProgressState
 from tongtu.workdir import Workdir
 
-Reply = Callable[[Mapping[str, object], int], AskOutcome]
+MASKED = """\
+\\section{Training Setup}
 
-MODEL = "p/m"
+We train the language model with the KV cache on long sequences of text.
+"""
+
+GOOD = """\
+\\section{Training Setup}
+
+我们在长文本序列上使用 KV cache 训练语言模型。
+"""
+
+WITHOUT_KEPT_WORD = """\
+\\section{Training Setup}
+
+我们在长文本序列上使用键值缓存训练语言模型。
+"""
+
+SESSION_GLOSSARY = {"terms": {"language model": "语言模型"}, "do_not_translate": []}
+
+NOTE = {"where": "zh.tex:3", "problem": "拿不准的译法", "resolution": "沿用术语表", "suggestion": ""}
+
+Writer = Callable[[Path], None]
 
 
-def role_config() -> ModelsConfig:
-    return ModelsConfig(
-        provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
-        roles={translate.ROLE: RoleConfig(model="p/m", effort="low")},
-    )
+@pytest.fixture
+def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Workdir:
+    home = tmp_path / "home"
+    monkeypatch.setenv("TONGTU_HOME", str(home))
+    write_json(home / "glossary.json", {"do_not_translate": ["KV cache"]})
+    paper = Workdir(tmp_path / "paper")
+    paper.create()
+    paper.masked.write_text(MASKED, encoding="utf-8")
+    return paper
 
 
-def forbidden_ask(**kwargs: object) -> AskOutcome:
-    raise AssertionError("本用例不应调用模型")
+def write_json(path: Path, content: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
 
 
-@pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (role_config(), ""))
-    monkeypatch.setattr(translate, "ask", forbidden_ask)
+def session(stop_reason: StopReason = StopReason.FINISHED) -> Session:
+    return Session(stop_reason=stop_reason, model="claude-code/m", effort="low", duration_seconds=2.0)
 
 
-def echo(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-    return AskOutcome(status=AskStatus.OK, text=unwrapped(str(kwargs["messages"][0][1])), model=MODEL)
-
-
-def wire_ask(monkeypatch: pytest.MonkeyPatch, reply: Reply = echo) -> list[dict]:
+def fake_session(
+    monkeypatch: pytest.MonkeyPatch,
+    write: Writer | None,
+    stop_reason: StopReason = StopReason.FINISHED,
+    detail: str = "",
+) -> list[dict]:
     calls: list[dict] = []
 
-    def fake_ask(**kwargs: object) -> AskOutcome:
-        calls.append(kwargs)
-        return reply(kwargs, len(calls))
+    def fake_work(skill: str, session_dir: Path, **kwargs: object) -> WorkOutcome:
+        calls.append({"skill": skill, "session_dir": session_dir, **kwargs})
+        if write is not None:
+            write(session_dir)
+        return WorkOutcome(session=session(stop_reason), detail=detail)
 
-    monkeypatch.setattr(translate, "ask", fake_ask)
+    monkeypatch.setattr(model, "work", fake_work)
     return calls
 
 
-def make_workdir(
-    tmp_path: Path,
-    bodies: Sequence[str],
-    *,
-    parts: Mapping[int, Part] | None = None,
-    brief: BriefFile | None = None,
-) -> Workdir:
-    workdir = Workdir(tmp_path / "paper")
-    workdir.create()
-    chunks_dir = workdir.chunks
-    chunks_dir.mkdir(parents=True, exist_ok=True)
-    records = []
-    for index, body in enumerate(bodies):
-        chunk_id = f"c{index:03d}"
-        (chunks_dir / f"{chunk_id}.tex").write_text(body, encoding="utf-8")
-        records.append(
-            ChunkRecord(
-                id=chunk_id,
-                start=0,
-                end=len(body),
-                part=(parts or {}).get(index, Part.BODY),
-                tokens=1,
-                paragraphs=1,
-                translatable_chars=sum(1 for ch in masking.TOKEN_RE.sub("", body) if not ch.isspace()),
-            )
-        )
-    content = (brief or BriefFile()).model_copy(update={"chunks": records})
-    (workdir.brief).write_text(content.model_dump_json(indent=2), encoding="utf-8")
-    return workdir
+def writes(translation: str, glossary: object = SESSION_GLOSSARY, notes: object = None) -> Writer:
+    def write(session_dir: Path) -> None:
+        (session_dir / "zh.tex").write_text(translation, encoding="utf-8")
+        write_json(session_dir / "glossary.json", glossary)
+        write_json(session_dir / "notes.json", {"notes": [NOTE]} if notes is None else notes)
+
+    return write
 
 
-def read_manifest(workdir: Workdir) -> TranslateManifest:
-    path = workdir.manifest_path(translate.STAGE_NAME)
-    return TranslateManifest.model_validate_json(path.read_text(encoding="utf-8"))
+def run(workdir: Workdir, **kwargs: object) -> TranslateManifest:
+    manifest = translate.run(workdir, mode="fast", **kwargs)
+    assert load_manifest(workdir.manifest_path("translate"), TranslateManifest) == manifest
+    return manifest
 
 
-def translated(workdir: Workdir, chunk_id: str) -> str:
-    return (workdir.translated / f"{chunk_id}.tex").read_text(encoding="utf-8")
+def session_dir(workdir: Workdir) -> Path:
+    return workdir.sandbox("translate")
 
 
-def test_a_chunk_without_translatable_text_is_skipped(tmp_path: Path) -> None:
-    workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n"])
-    manifest = translate.run(workdir, jobs=1)
+def read_notes(workdir: Workdir) -> list[Note]:
+    notes_file = load_manifest(workdir.notes, NotesFile)
+    assert notes_file is not None
+    return notes_file.notes
+
+
+def test_a_session_that_passes_the_checks_is_ok(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = fake_session(monkeypatch, writes(GOOD))
+    manifest = run(workdir)
     assert manifest.status is TranslateStatus.OK
-    assert manifest == read_manifest(workdir)
-    record = manifest.chunks["c000"]
-    assert record.status is ChunkTranslateStatus.SKIPPED
-    assert record.attempts == 0
-    assert record.failures == []
-    assert translated(workdir, "c000") == "⟦BLK-0⟧\n"
-    assert (manifest.model, manifest.effort) == ("", "")
-    assert outputs_present(workdir, "translate")
-
-
-def test_a_chunk_translated_on_the_first_try(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    record = manifest.chunks["c000"]
-    assert record.status is ChunkTranslateStatus.TRANSLATED
-    assert record.attempts == 1
-    assert record.failures == []
-    assert translated(workdir, "c000") == "你好世界。\n"
-    assert len(calls) == 1
-    assert calls[0]["role"] == translate.ROLE
-    assert calls[0]["messages"] == [("user", wrapped("Hello world."))]
-    assert calls[0]["log_path"] == workdir.logs / "translate-c000-1.json"
-    assert (manifest.model, manifest.effort) == (MODEL, "low")
-    assert manifest.prompt_version
-    assert manifest.jobs == 1
-    assert manifest.warnings == []
-
-
-def test_the_first_attempt_uses_the_configured_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch)
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert "model" not in calls[0]
-    assert calls[0]["effort"] is None
-    assert (manifest.model, manifest.effort) == (MODEL, "low")
-
-
-def test_a_role_without_effort_records_an_empty_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = ModelsConfig(
-        provider={"p": ProviderConfig(base_url="https://provider.example", api="chat")},
-        roles={translate.ROLE: RoleConfig(model="p/m")},
-    )
-    monkeypatch.setattr(translate, "load_config", lambda: (config, ""))
-    wire_ask(monkeypatch)
-    manifest = translate.run(make_workdir(tmp_path, ["Hello world.\n"]), jobs=1)
-    assert (manifest.model, manifest.effort) == (MODEL, "")
-
-
-def test_a_failed_check_is_retried_in_the_same_conversation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def reply(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-        return AskOutcome(status=AskStatus.OK, text="你好 x 世界。" if index == 1 else "你好 $x$ 世界。", model=MODEL)
-
-    calls = wire_ask(monkeypatch, reply)
-    workdir = make_workdir(tmp_path, ["Hello $x$ world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    record = manifest.chunks["c000"]
-    assert record.status is ChunkTranslateStatus.TRANSLATED
-    assert record.attempts == 2
-    assert record.failures == []
-    assert len(calls) == 2
-    assert calls[1]["messages"][0] == ("user", wrapped("Hello $x$ world."))
-    assert calls[1]["messages"][1] == ("assistant", "你好 x 世界。")
-    role, retry = calls[1]["messages"][2]
-    assert role == "user"
-    assert (
-        "- braces_and_math: $ count differs: 2 in source, 0 in translation"
-        ' (paragraph 1 beginning "Hello $x$ world." has 2 in source, 0 in translation)'
-    ) in retry
-    assert "只输出译文本身" in retry
-    assert calls[1]["log_path"] == workdir.logs / "translate-c000-2.json"
-    assert calls[1]["system"] == calls[0]["system"]
-    assert calls[0]["effort"] is None
-    assert calls[1]["effort"] == translate.RETRY_EFFORT == "low"
-    assert translated(workdir, "c000") == "你好 $x$ 世界。\n"
-
-
-def sentences(count: int) -> list[str]:
-    return [f"Sentence {index} $x$.\n" for index in range(count)]
-
-
-def wrapped(body: str) -> str:
-    return f"请翻译：\n\n```\n{body}\n```"
-
-
-def unwrapped(message: str) -> str:
-    return message.split("```\n", 1)[1].rsplit("\n```", 1)[0]
-
-
-def failing_after(first_bad: int) -> Reply:
-    def reply(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-        body = unwrapped(str(kwargs["messages"][0][1]))
-        number = int(body.split()[1])
-        if number >= first_bad:
-            return AskOutcome(status=AskStatus.OK, text=f"句子 {number}。", model=MODEL)
-        return AskOutcome(status=AskStatus.OK, text=body.replace("Sentence", "句子"), model=MODEL)
-
-    return reply
-
-
-def test_two_failed_checks_fall_back_to_the_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, failing_after(4))
-    workdir = make_workdir(tmp_path, sentences(5))
-    manifest = translate.run(workdir, jobs=2)
-    assert manifest.status is TranslateStatus.OK
-    record = manifest.chunks["c004"]
-    assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.attempts == 2
-    assert record.failures == [
-        "braces_and_math: $ count differs: 2 in source, 0 in translation"
-        ' (paragraph 1 beginning "Sentence 4 $x$." has 2 in source, 0 in translation)'
-    ]
-    assert translated(workdir, "c004") == "Sentence 4 $x$.\n"
-    assert translated(workdir, "c000") == "句子 0 $x$.\n"
-    assert len(calls) == 6
-    assert outputs_present(workdir, "translate")
-
-
-def test_every_fallback_chunk_is_reported_as_a_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, failing_after(3))
-    workdir = make_workdir(tmp_path, sentences(5))
-    manifest = translate.run(workdir, jobs=2)
-    assert manifest.status is TranslateStatus.OK
+    assert manifest.mode == "fast"
+    assert manifest.session == session()
     assert manifest.message == ""
-    assert manifest.chunks["c003"].status is ChunkTranslateStatus.FALLBACK
-    assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
-    assert manifest.warnings == [
-        f"c00{number} fell back to the English source; the last attempt failed: "
-        "braces_and_math: $ count differs: 2 in source, 0 in translation"
-        f' (paragraph 1 beginning "Sentence {number} $x$." has 2 in source, 0 in translation)'
-        for number in (3, 4)
-    ]
-    assert translated(workdir, "c003") == "Sentence 3 $x$.\n"
-    assert outputs_present(workdir, "translate")
-    assert manifest == read_manifest(workdir)
+    assert manifest.problems == []
+    assert (manifest.paragraphs_total, manifest.paragraphs_translated) == (1, 1)
+    assert manifest.glossary.model_dump() == {"user": 1, "learned": 0, "added": 1}
+    assert workdir.translated.read_text(encoding="utf-8") == GOOD
+    published = PaperGlossary.model_validate_json(workdir.paper_glossary.read_text(encoding="utf-8"))
+    assert [(term.word, term.source) for term in published.terms] == [("language model", "new")]
+    assert [(word.word, word.source) for word in published.do_not_translate] == [("KV cache", "user")]
+    learned = json.loads((workdir.path.parent / "home" / "glossary.learned.json").read_text(encoding="utf-8"))
+    assert learned["terms"] == {"language model": "语言模型"}
+    assert read_notes(workdir) == [Note(session="translate", **NOTE)]
+    assert not (session_dir(workdir) / "notes.json").exists()
+    assert len(calls) == 1
+    assert calls[0]["skill"] == "translate"
+    assert calls[0]["session_dir"] == session_dir(workdir)
+    assert calls[0]["mode"] == "fast"
+    assert calls[0]["log_path"] == workdir.logs / "translate.jsonl"
 
 
-def test_an_ask_error_is_retried_once_without_a_retry_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(
-        monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="服务商拒绝了请求", model=MODEL)
-    )
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    record = manifest.chunks["c000"]
-    assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.attempts == 2
-    assert record.failures == ["服务商拒绝了请求"]
-    assert manifest.model == MODEL
-    assert [call["log_path"].name for call in calls] == [f"translate-c000-{n}.json" for n in (1, 2)]
-    assert all(call["messages"] == [("user", wrapped("Hello world."))] for call in calls)
-
-
-def test_an_ask_error_then_a_failed_check_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def reply(kwargs: Mapping[str, object], index: int) -> AskOutcome:
-        if index == 1:
-            return AskOutcome(status=AskStatus.ERROR, detail="服务商拒绝了请求", model=MODEL)
-        return AskOutcome(status=AskStatus.OK, text="你好 x 世界。", model=MODEL)
-
-    calls = wire_ask(monkeypatch, reply)
-    workdir = make_workdir(tmp_path, ["Hello $x$ world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    record = manifest.chunks["c000"]
-    assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.attempts == 2
-    assert record.failures == [
-        "braces_and_math: $ count differs: 2 in source, 0 in translation"
-        ' (paragraph 1 beginning "Hello $x$ world." has 2 in source, 0 in translation)'
-    ]
-    assert len(calls) == 2
-    assert calls[1]["messages"] == [("user", wrapped("Hello $x$ world."))]
-    assert calls[1]["effort"] is None
-    assert translated(workdir, "c000") == "Hello $x$ world.\n"
-
-
-def test_a_resolution_error_falls_back_with_an_empty_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.ERROR, detail="读不到 config.toml"))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    record = manifest.chunks["c000"]
-    assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.failures == ["读不到 config.toml"]
-    assert manifest.model == ""
-    assert manifest.warnings
-
-
-def test_an_empty_reply_is_handled_like_an_ask_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="   \n", model=MODEL))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    record = manifest.chunks["c000"]
-    assert record.status is ChunkTranslateStatus.FALLBACK
-    assert record.attempts == 2
-    assert record.failures == [translate.EMPTY_REPLY_DETAIL]
-    assert len(calls) == 2
-
-
-def test_a_fenced_translation_is_unwrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(
-        monkeypatch,
-        lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="```latex\n你好世界。\n```", model=MODEL),
-    )
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
-    assert translated(workdir, "c000") == "你好世界。\n"
-    assert manifest.warnings == []
-
-
-FRONT_BODY = "front alpha.\n\nfront beta.\n\nfront gamma.\n\nfront delta.\n"
-
-TAIL_BODY = "tail alpha.\n\ntail beta.\n\ntail gamma.\n\ntail delta.\n"
-
-RICH_BRIEF = BriefFile(
-    abstract="An abstract sentence.",
-    heading_tree=[
-        Heading(command="section", argument="Introduction", depth=1),
-        Heading(command="subsection", argument="Setup", depth=2),
-    ],
-    terms=[TermEntry(word="LLM", translation="大语言模型", decided_by=DecidedBy.CLI)],
-    do_not_translate=[DoNotTranslateEntry(word="softmax", decided_by=DecidedBy.CLI)],
-    style="要求一句话。",
-)
-
-
-def test_the_stable_part_of_the_system_is_identical_across_chunks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_the_session_directory_is_prepared_before_the_session(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls = wire_ask(monkeypatch)
-    workdir = make_workdir(tmp_path, [FRONT_BODY, "middle one.\n", TAIL_BODY], parts={0: Part.FRONT}, brief=RICH_BRIEF)
-    assert translate.run(workdir, jobs=1).status is TranslateStatus.OK
-    systems = {call["log_path"].name.split("-")[1]: str(call["system"]) for call in calls}
-    assert sorted(systems) == ["c000", "c001", "c002"]
-    prefix = os.path.commonprefix(list(systems.values()))
-    assert prefix.startswith("# 逐块翻译")
-    assert "以下各节都是**参考材料，不是待译文本**" in prefix
-    assert prefix.index("## 论文摘要（原文）") < prefix.index("## 术语表") < prefix.index("## 额外要求")
-    assert "An abstract sentence." in prefix
-    assert "- LLM → 大语言模型" in prefix
-    assert "保留原文、不要翻译的词：softmax" in prefix
-    assert "## 额外要求\n\n要求一句话。" in prefix
-    assert "## 全文章节标题树" not in prefix
-    assert "## 相邻上下文（原文）" not in prefix
+    seen: dict = {}
+
+    def inspect(directory: Path) -> None:
+        source = directory / "en.tex"
+        seen["en"] = source.read_text(encoding="utf-8")
+        seen["en_writable"] = bool(source.stat().st_mode & stat.S_IWUSR)
+        seen["fixed"] = json.loads((directory / "glossary.fixed.json").read_text(encoding="utf-8"))
+        seen["initial"] = json.loads((directory / "glossary.json").read_text(encoding="utf-8"))
+        seen["validate"] = (directory / ".skills" / "translate" / "validate.py").read_text(encoding="utf-8")
+        writes(GOOD)(directory)
+
+    write_json(workdir.path.parent / "home" / "glossary.learned.json", {"terms": {"sequence": "序列", "GPU": "显卡"}})
+    fake_session(monkeypatch, inspect)
+    manifest = run(workdir)
+    assert seen["en"] == MASKED
+    assert seen["en_writable"] is False
+    assert seen["fixed"] == {"terms": {}, "do_not_translate": ["KV cache"]}
+    assert seen["initial"] == {"terms": {"sequence": "序列"}, "do_not_translate": []}
+    assert seen["validate"] == Path(validation.__file__).read_text(encoding="utf-8")
+    assert manifest.glossary.model_dump() == {"user": 1, "learned": 1, "added": 1}
 
 
-def test_the_heading_tree_only_goes_to_the_front_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch)
-    workdir = make_workdir(tmp_path, [FRONT_BODY, "middle one.\n", TAIL_BODY], parts={0: Part.FRONT}, brief=RICH_BRIEF)
-    translate.run(workdir, jobs=1)
-    systems = {call["log_path"].name.split("-")[1]: str(call["system"]) for call in calls}
-    assert "## 全文章节标题树\n\n供理解缩写与专名在全文中的含义。\n\n- Introduction\n  - Setup" in systems["c000"]
-    assert "## 全文章节标题树" not in systems["c001"]
-    assert "## 全文章节标题树" not in systems["c002"]
-
-
-def test_neighbours_take_three_paragraphs_from_each_side(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch)
-    workdir = make_workdir(tmp_path, [FRONT_BODY, "middle one.\n", TAIL_BODY], parts={0: Part.FRONT}, brief=RICH_BRIEF)
-    translate.run(workdir, jobs=1)
-    systems = {call["log_path"].name.split("-")[1]: str(call["system"]) for call in calls}
-    assert "### 前一块的结尾\n\n```\n（这是全文的第一块，前面没有内容）\n```" in systems["c000"]
-    assert "### 后一块的开头\n\n```\nmiddle one.\n```" in systems["c000"]
-    assert "### 前一块的结尾\n\n```\nfront beta.\n\nfront gamma.\n\nfront delta.\n```" in systems["c001"]
-    assert "### 后一块的开头\n\n```\ntail alpha.\n\ntail beta.\n\ntail gamma.\n```" in systems["c001"]
-    assert "### 前一块的结尾\n\n```\nmiddle one.\n```" in systems["c002"]
-    assert "### 后一块的开头\n\n```\n（这是全文的最后一块，后面没有内容）\n```" in systems["c002"]
-
-
-def test_an_unreadable_model_config_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 config.toml"))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=2)
-    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert manifest.message == "读不到 config.toml"
-    assert (manifest.model, manifest.effort) == ("", "")
-    assert manifest.chunks == {}
-    assert manifest.jobs == 2
-    assert manifest.prompt_version
-    assert not (workdir.translated).exists()
-
-
-def test_an_unresolvable_role_calls_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (ModelsConfig(), ""))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert translate.ROLE in manifest.message
-    assert manifest.chunks == {}
-
-
-def test_a_model_config_is_not_needed_when_every_chunk_is_skipped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_translation_that_fails_the_checks_is_translate_failed(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(translate, "load_config", lambda: (None, "读不到 config.toml"))
-    workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n"])
-    assert translate.run(workdir, jobs=1).status is TranslateStatus.OK
-
-
-def test_an_unreadable_brief_fails_the_stage(tmp_path: Path) -> None:
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    (workdir.brief).write_text("{not json", encoding="utf-8")
-    manifest = translate.run(workdir, jobs=1)
+    fake_session(monkeypatch, writes(MASKED))
+    manifest = run(workdir)
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert manifest.message
-    assert manifest.chunks == {}
-    assert manifest == read_manifest(workdir)
+    assert manifest.problems and all(problem.startswith("[") for problem in manifest.problems)
+    assert any(problem.startswith("[untranslated] ") for problem in manifest.problems)
+    assert f"{len(manifest.problems)} problems" in manifest.message
+    assert "finished" in manifest.message
+    assert str(session_dir(workdir)) in manifest.message
+    assert "tongtu run again" in manifest.message
+    assert manifest.session == session()
+    assert (manifest.paragraphs_total, manifest.paragraphs_translated) == (1, 0)
+    assert not workdir.translated.exists()
+    assert not workdir.paper_glossary.exists()
+    assert (session_dir(workdir) / "zh.tex").read_text(encoding="utf-8") == MASKED
+    assert read_notes(workdir) == [Note(session="translate", **NOTE)]
 
 
-def test_an_absent_chunk_file_fails_the_stage(tmp_path: Path) -> None:
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    (workdir.chunks / "c000.tex").unlink()
-    manifest = translate.run(workdir, jobs=1)
+def test_a_session_without_zh_tex_is_translate_failed(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_session(monkeypatch, None, StopReason.ERROR, "agentrun failed: boom")
+    manifest = run(workdir)
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert "c000.tex" in manifest.message
+    assert manifest.problems == []
+    assert "zh.tex was not written" in manifest.message
+    assert "ended with error" in manifest.message
+    assert (manifest.paragraphs_total, manifest.paragraphs_translated) == (1, 0)
+    assert any("agentrun failed: boom" in warning for warning in manifest.warnings)
+    assert any("notes.json" in warning for warning in manifest.warnings)
+    assert read_notes(workdir) == []
+    assert not workdir.translated.exists()
 
 
-def test_manifest_fields_match_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch)
-    workdir = make_workdir(tmp_path, sentences(4))
-    translate.run(workdir, jobs=4)
-    data = json.loads(workdir.manifest_path(translate.STAGE_NAME).read_text(encoding="utf-8"))
-    assert set(data) == {
-        "status",
-        "model",
-        "effort",
-        "prompt_version",
-        "jobs",
-        "chunks",
-        "warnings",
-        "message",
+def test_a_timed_out_session_whose_translation_passes_is_ok_with_a_warning(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_session(monkeypatch, writes(GOOD), StopReason.TIMEOUT)
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.session is not None and manifest.session.stop_reason is StopReason.TIMEOUT
+    assert any("timeout" in warning for warning in manifest.warnings)
+    assert workdir.translated.is_file()
+
+
+def test_an_existing_translation_that_passes_is_reused_without_a_session(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = session_dir(workdir)
+    directory.mkdir(parents=True)
+    (directory / "zh.tex").write_text(GOOD, encoding="utf-8")
+    write_json(directory / "glossary.json", SESSION_GLOSSARY)
+    earlier = Note(session="translate", **NOTE)
+    write_manifest(workdir.notes, NotesFile(notes=[earlier]))
+    workdir.translated.write_text("stale", encoding="utf-8")
+    calls = fake_session(monkeypatch, writes(MASKED))
+    manifest = run(workdir)
+    assert calls == []
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.session is None
+    assert manifest.glossary.added == 1
+    assert workdir.translated.read_text(encoding="utf-8") == GOOD
+    assert workdir.paper_glossary.is_file()
+    assert read_notes(workdir) == [earlier]
+
+
+def test_a_failing_existing_translation_is_continued_in_the_same_directory(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = session_dir(workdir)
+    (directory / "parts").mkdir(parents=True)
+    (directory / "parts" / "01.tex").write_text("第一节", encoding="utf-8")
+    (directory / "zh.tex").write_text(MASKED, encoding="utf-8")
+    (directory / "en.tex").write_text("changed by the last session", encoding="utf-8")
+    write_json(directory / "glossary.json", {"terms": {"text": "文本"}})
+    write_json(directory / "glossary.fixed.json", {"terms": {}})
+    earlier = Note(session="translate", **NOTE)
+    write_manifest(workdir.notes, NotesFile(notes=[earlier]))
+    seen: dict = {}
+
+    def inspect(current: Path) -> None:
+        seen["en"] = (current / "en.tex").read_text(encoding="utf-8")
+        seen["zh"] = (current / "zh.tex").read_text(encoding="utf-8")
+        seen["parts"] = (current / "parts" / "01.tex").read_text(encoding="utf-8")
+        seen["glossary"] = json.loads((current / "glossary.json").read_text(encoding="utf-8"))
+        seen["fixed"] = json.loads((current / "glossary.fixed.json").read_text(encoding="utf-8"))
+        (current / "zh.tex").write_text(GOOD, encoding="utf-8")
+        write_json(current / "notes.json", {"notes": [{**NOTE, "where": "zh.tex:5"}]})
+
+    calls = fake_session(monkeypatch, inspect)
+    manifest = run(workdir)
+    assert len(calls) == 1
+    assert seen == {
+        "en": MASKED,
+        "zh": MASKED,
+        "parts": "第一节",
+        "glossary": {"terms": {"text": "文本"}},
+        "fixed": {"terms": {}, "do_not_translate": ["KV cache"]},
     }
-    assert list(data["chunks"]) == ["c000", "c001", "c002", "c003"]
-    assert list(data["chunks"]["c000"]) == ["status", "attempts", "failures"]
-
-
-def test_leading_and_trailing_whitespace_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
-    workdir = make_workdir(tmp_path, ["\n\n  Hello world.  \n\n"])
-    translate.run(workdir, jobs=1)
-    assert calls[0]["messages"] == [("user", wrapped("Hello world."))]
-    assert translated(workdir, "c000") == "\n\n  你好世界。  \n\n"
-
-
-def test_a_rerun_clears_the_previous_translations_and_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch)
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    stale_dir = workdir.translated
-    stale_dir.mkdir(parents=True)
-    (stale_dir / "c999.tex").write_text("stale", encoding="utf-8")
-    (workdir.logs / "translate-c999-1.json").write_text("stale", encoding="utf-8")
-    assert translate.run(workdir, jobs=1).status is TranslateStatus.OK
-    assert not (stale_dir / "c999.tex").exists()
-    assert not (workdir.logs / "translate-c999-1.json").exists()
-    assert sorted(path.name for path in stale_dir.iterdir()) == ["c000.tex"]
-
-
-def test_progress_reports_every_chunk_in_document_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
-    workdir = make_workdir(tmp_path, ["⟦BLK-0⟧\n", "Hello one.\n", "Hello two.\n"])
-    snapshots: list[tuple[ChunkProgress, ...]] = []
-    lines: list[tuple[str, str]] = []
-
-    manifest = translate.run(workdir, jobs=2, report=lambda s, m: lines.append((s, m)), progress=snapshots.append)
     assert manifest.status is TranslateStatus.OK
-    assert all([chunk.id for chunk in snapshot] == ["c000", "c001", "c002"] for snapshot in snapshots)
-    assert all([chunk.tokens for chunk in snapshot] == [1, 1, 1] for snapshot in snapshots)
-    assert [chunk.state for chunk in snapshots[0]] == [
-        ChunkProgressState.DONE,
-        ChunkProgressState.PENDING,
-        ChunkProgressState.PENDING,
-    ]
-    assert any(ChunkProgressState.RUNNING in {chunk.state for chunk in snapshot} for snapshot in snapshots)
-    assert [chunk.state for chunk in snapshots[-1]] == [ChunkProgressState.DONE] * 3
-    assert lines == [("translate", f"{MODEL}, 3 chunks, 3 tok, jobs 2")]
+    assert manifest.glossary.added == 1
+    assert [note.where for note in read_notes(workdir)] == ["zh.tex:3", "zh.tex:5"]
 
 
-def test_a_fallback_chunk_reports_one_warning_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, failing_after(3))
-    workdir = make_workdir(tmp_path, sentences(5))
-    snapshots: list[tuple[ChunkProgress, ...]] = []
-    lines: list[tuple[str, str]] = []
-    manifest = translate.run(workdir, jobs=2, report=lambda s, m: lines.append((s, m)), progress=snapshots.append)
-    assert manifest.chunks["c003"].status is ChunkTranslateStatus.FALLBACK
-    assert [chunk.state for chunk in snapshots[-1]] == [
-        ChunkProgressState.DONE,
-        ChunkProgressState.DONE,
-        ChunkProgressState.DONE,
-        ChunkProgressState.WARNING,
-        ChunkProgressState.WARNING,
-    ]
-    assert sorted(line for line in lines if line[0] == "warning") == [
-        ("warning", f"c00{number} fell back to the English source after 2 attempts") for number in (3, 4)
-    ]
-
-
-def test_report_absent_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, lambda kwargs, index: AskOutcome(status=AskStatus.OK, text="你好世界。", model=MODEL))
-    workdir = make_workdir(tmp_path, ["Hello world.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    assert translated(workdir, "c000") == "你好世界。\n"
-
-
-def agent_config() -> ModelsConfig:
-    return ModelsConfig(roles={translate.ROLE: RoleConfig(model="codex/m", effort="high", timeout_seconds=60)})
-
-
-def test_agent_translation_retries_against_original_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from tongtu.model.work import StopReason, WorkOutcome
-
-    monkeypatch.setattr(translate, "load_config", lambda: (agent_config(), ""))
-    calls: list[dict] = []
-
-    def run_agent(**kwargs: object) -> WorkOutcome:
-        calls.append(kwargs)
-        site = kwargs["workdir"]
-        assert isinstance(site, Path)
-        task = (site / "task.md").read_text()
-        assert "Hello ⟦BLK-0⟧." in task
-        if len(calls) == 2:
-            assert "上一次的译文未通过机械校验" in task
-        (site / "translation.tex").write_text("你好。" if len(calls) == 1 else "你好 ⟦BLK-0⟧。")
-        (site / "task.md").write_text("tampered")
-        return WorkOutcome(stop_reason=StopReason.FINISHED, model="codex/gpt-6-astra")
-
-    monkeypatch.setattr(translate, "work", run_agent)
-    workdir = make_workdir(tmp_path, ["\nHello ⟦BLK-0⟧.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.status is TranslateStatus.OK
-    assert manifest.chunks["c000"].status is ChunkTranslateStatus.TRANSLATED
-    assert manifest.chunks["c000"].attempts == 2
-    assert manifest.model == "codex/gpt-6-astra"
-    assert manifest.effort == "high"
-    assert translated(workdir, "c000") == "\n你好 ⟦BLK-0⟧。\n"
-    assert "model" not in calls[0]
-    assert calls[0]["effort"] is None
-    assert calls[1]["effort"] == translate.RETRY_EFFORT
-    assert calls[0]["workdir"] != calls[1]["workdir"]
-    assert calls[0]["trace_path"] == workdir.logs / "translate-c000-1.jsonl"
-
-
-@pytest.mark.parametrize("failure", ["error", "timeout", "missing", "empty", "symlink", "invalid"])
-def test_agent_failure_falls_back_without_accepting_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+def test_a_continued_session_that_still_fails_starts_only_one_session(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tongtu.model.work import StopReason, WorkOutcome
-
-    monkeypatch.setattr(translate, "load_config", lambda: (agent_config(), ""))
-    external = tmp_path / "external.tex"
-    external.write_text("Hello.")
-
-    def run_agent(**kwargs: object) -> WorkOutcome:
-        output = kwargs["workdir"] / "translation.tex"
-        if failure == "symlink":
-            output.symlink_to(external)
-        elif failure != "missing":
-            output.write_text("" if failure == "empty" else "你好 ⟦BLK-99⟧。")
-        reason = StopReason(failure) if failure in ("error", "timeout") else StopReason.FINISHED
-        return WorkOutcome(stop_reason=reason, detail=failure, model="codex/gpt-6-astra")
-
-    monkeypatch.setattr(translate, "work", run_agent)
-    workdir = make_workdir(tmp_path, ["Hello.\n"])
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.chunks["c000"].status is ChunkTranslateStatus.FALLBACK
-    assert manifest.chunks["c000"].attempts == 2
-    assert manifest.warnings
-    assert translated(workdir, "c000") == "Hello.\n"
-
-
-def test_translate_rejects_an_undeclared_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = ModelsConfig(roles={translate.ROLE: RoleConfig(model="ghost/m")})
-    monkeypatch.setattr(translate, "load_config", lambda: (config, ""))
-    manifest = translate.run(make_workdir(tmp_path, ["Hello."]), jobs=1)
+    directory = session_dir(workdir)
+    directory.mkdir(parents=True)
+    (directory / "zh.tex").write_text(MASKED, encoding="utf-8")
+    calls = fake_session(monkeypatch, writes(MASKED))
+    manifest = run(workdir)
+    assert len(calls) == 1
     assert manifest.status is TranslateStatus.TRANSLATE_FAILED
-    assert "provider ghost" in manifest.message
 
 
-CHUNK_BODY = "\nHello ⟦BLK-0⟧.\n"
-
-VALID_REPLY = "你好 ⟦BLK-0⟧。"
-
-INVALID_REPLY = "你好。"
-
-
-def write_call_log(workdir: Workdir, attempt: int, status: AskStatus, response: str) -> None:
-    path = workdir.logs / f"translate-c000-{attempt}.json"
-    path.write_text(CallLog(status=status, response=response).model_dump_json(), encoding="utf-8")
-
-
-def write_session(workdir: Workdir, attempt: int, end: str | None, translation: str | None) -> None:
-    lines = [json.dumps({"schema": 1, "type": "tool", "name": "Bash", "summary": "ls"}), "not json"]
-    if end is not None:
-        lines.append(json.dumps({"schema": 1, "type": "end", "status": end, "detail": ""}))
-    (workdir.logs / f"translate-c000-{attempt}.jsonl").write_text("", encoding="utf-8")
-    (workdir.logs / f"translate-c000-{attempt}.events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    site = workdir.sandbox(translate.STAGE_NAME) / "c000" / str(attempt)
-    site.mkdir(parents=True, exist_ok=True)
-    if translation is not None:
-        (site / "translation.tex").write_text(translation, encoding="utf-8")
+def test_an_unreadable_glossary_layer_is_glossary_invalid(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    (workdir.path / "glossary.json").write_text("{", encoding="utf-8")
+    calls = fake_session(monkeypatch, writes(GOOD))
+    manifest = run(workdir)
+    assert calls == []
+    assert manifest.status is TranslateStatus.GLOSSARY_INVALID
+    assert str(workdir.path / "glossary.json") in manifest.message
+    assert manifest.session is None
+    assert not session_dir(workdir).exists()
 
 
-def test_chunk_counts_need_the_brief(tmp_path: Path) -> None:
-    workdir = Workdir(tmp_path / "paper")
-    assert translate.chunk_counts(workdir) is None
-    workdir.create()
-    workdir.brief.write_text("{", encoding="utf-8")
-    assert translate.chunk_counts(workdir) is None
-
-
-def test_chunk_counts_come_from_the_manifest_after_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_ask(monkeypatch, failing_after(1))
-    workdir = make_workdir(tmp_path, [*sentences(2), "⟦BLK-0⟧\n"])
-    assert translate.chunk_counts(workdir) == ChunkCounts(total=2, done=0)
-    manifest = translate.run(workdir, jobs=1)
-    assert manifest.chunks["c001"].status is ChunkTranslateStatus.FALLBACK
-    assert manifest.chunks["c002"].status is ChunkTranslateStatus.SKIPPED
-    assert translate.chunk_counts(workdir) == ChunkCounts(total=2, done=2)
-
-
-def test_chunk_counts_of_a_failed_stage_are_zero(tmp_path: Path) -> None:
-    workdir = make_workdir(tmp_path, ["Hello.\n"])
-    write_call_log(workdir, 1, AskStatus.OK, "你好。")
-    failed = TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, message="config")
-    workdir.manifest_path(translate.STAGE_NAME).write_text(failed.model_dump_json(), encoding="utf-8")
-    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=0)
-
-
-@pytest.mark.parametrize(
-    ("attempts", "done"),
-    [
-        ((), 0),
-        (((AskStatus.OK, VALID_REPLY),), 1),
-        (((AskStatus.OK, f"```latex\n{VALID_REPLY}\n```"),), 1),
-        (((AskStatus.OK, INVALID_REPLY),), 0),
-        (((AskStatus.OK, ""),), 0),
-        (((AskStatus.ERROR, ""),), 0),
-        (((AskStatus.OK, INVALID_REPLY), (AskStatus.OK, INVALID_REPLY)), 1),
-        (((AskStatus.ERROR, ""), (AskStatus.OK, VALID_REPLY)), 1),
-    ],
-)
-def test_chunk_counts_during_an_api_run_replay_the_check(
-    tmp_path: Path, attempts: tuple[tuple[AskStatus, str], ...], done: int
+def test_a_missing_command_line_glossary_is_glossary_invalid(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    workdir = make_workdir(tmp_path, [CHUNK_BODY])
-    for attempt, (status, response) in enumerate(attempts, start=1):
-        write_call_log(workdir, attempt, status, response)
-    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=done)
+    calls = fake_session(monkeypatch, writes(GOOD))
+    manifest = run(workdir, glossary=[tmp_path / "absent.json"])
+    assert calls == []
+    assert manifest.status is TranslateStatus.GLOSSARY_INVALID
 
 
-@pytest.mark.parametrize(
-    ("sessions", "done"),
-    [
-        (((None, VALID_REPLY),), 0),
-        ((("finished", VALID_REPLY),), 1),
-        ((("finished", INVALID_REPLY),), 0),
-        ((("finished", None),), 0),
-        ((("timeout", VALID_REPLY),), 0),
-        ((("error", VALID_REPLY),), 0),
-        ((("finished", INVALID_REPLY), (None, None)), 0),
-        ((("finished", INVALID_REPLY), ("error", None)), 1),
-    ],
-)
-def test_chunk_counts_during_an_agent_run_replay_the_check(
-    tmp_path: Path, sessions: tuple[tuple[str | None, str | None], ...], done: int
+def test_a_command_line_glossary_is_used(workdir: Workdir, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    extra = tmp_path / "extra.json"
+    write_json(extra, {"terms": {"sequence": "序列"}})
+    fake_session(monkeypatch, writes(GOOD))
+    manifest = run(workdir, glossary=[extra])
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.glossary.user == 2
+
+
+def test_unmatched_user_terms_become_warnings(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_json(workdir.path / "glossary.json", {"terms": {"transformer": "变换器"}})
+    fake_session(monkeypatch, writes(GOOD))
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.OK
+    assert any("'transformer'" in warning for warning in manifest.warnings)
+
+
+def test_a_broken_session_glossary_is_a_problem(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    def write(directory: Path) -> None:
+        writes(GOOD)(directory)
+        (directory / "glossary.json").write_text("{", encoding="utf-8")
+
+    fake_session(monkeypatch, write)
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert len(manifest.problems) == 1
+    assert manifest.problems[0].startswith("[glossary] ")
+    assert "glossary.json" in manifest.problems[0]
+    assert not workdir.translated.exists()
+
+
+def test_session_edits_to_its_inputs_do_not_change_the_verdict(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    workdir = make_workdir(tmp_path, [CHUNK_BODY])
-    for attempt, (end, translation) in enumerate(sessions, start=1):
-        write_session(workdir, attempt, end, translation)
-    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=done)
+    def write(directory: Path) -> None:
+        for name in ("en.tex", "glossary.fixed.json"):
+            (directory / name).chmod(0o644)
+        (directory / "en.tex").write_text(WITHOUT_KEPT_WORD, encoding="utf-8")
+        write_json(directory / "glossary.fixed.json", {})
+        (directory / ".skills" / "translate").mkdir(parents=True, exist_ok=True)
+        (directory / ".skills" / "translate" / "validate.py").write_text("def check(*a): ...", encoding="utf-8")
+        writes(WITHOUT_KEPT_WORD)(directory)
+
+    fake_session(monkeypatch, write)
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert any(problem.startswith("[glossary] ") and "KV cache" in problem for problem in manifest.problems)
 
 
-def test_chunk_counts_reject_a_symlinked_agent_translation(tmp_path: Path) -> None:
-    workdir = make_workdir(tmp_path, [CHUNK_BODY])
-    write_session(workdir, 1, "finished", None)
-    external = tmp_path / "external.tex"
-    external.write_text(VALID_REPLY, encoding="utf-8")
-    (workdir.sandbox(translate.STAGE_NAME) / "c000" / "1" / "translation.tex").symlink_to(external)
-    assert translate.chunk_counts(workdir) == ChunkCounts(total=1, done=0)
+def test_a_fixed_entry_wins_over_the_session_glossary(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_session(monkeypatch, writes(WITHOUT_KEPT_WORD, {"terms": {"KV cache": "键值缓存"}}))
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert any("KV cache" in problem for problem in manifest.problems)
+
+
+def test_a_missing_masked_file_is_translate_failed(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir.masked.unlink()
+    calls = fake_session(monkeypatch, writes(GOOD))
+    manifest = run(workdir)
+    assert calls == []
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert "masked.tex" in manifest.message
+
+
+def test_the_stage_removes_its_previous_outputs_but_keeps_the_session_directory(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workdir.translated.write_text(GOOD, encoding="utf-8")
+    workdir.paper_glossary.write_text("{}", encoding="utf-8")
+    (session_dir(workdir) / "parts").mkdir(parents=True)
+    fake_session(monkeypatch, None)
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert not workdir.translated.exists()
+    assert not workdir.paper_glossary.exists()
+    assert (session_dir(workdir) / "parts").is_dir()
+
+
+def test_the_report_names_the_session_action(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = fake_session(monkeypatch, writes(GOOD))
+    reported: list[tuple[str, str]] = []
+    run(workdir, report=lambda status, summary: reported.append((status, summary)))
+    calls[0]["report"]("Write: zh.tex")
+    assert reported == [("session", "running"), ("session", "Write: zh.tex")]

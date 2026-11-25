@@ -1,40 +1,36 @@
 from __future__ import annotations
 
-import time
+import shutil
 from pathlib import Path
 
 import pytest
 
-from tongtu.artifacts.survey import SurveyStatus
-from tongtu.artifacts.translate import ChunkTranslateStatus, TranslateStatus
-from tongtu.stages import mask, survey, translate
+from tongtu.artifacts.common import NotesFile, StopReason
+from tongtu.artifacts.precompile import PrecompileStatus
+from tongtu.artifacts.translate import TranslateStatus
+from tongtu.manifests import load_manifest
+from tongtu.model.config import ModeName
+from tongtu.stages import mask, precompile, translate
 from tongtu.workdir import Workdir
 
 from ..conftest import paper_dir
 
 pytestmark = pytest.mark.llm
 
-PAPER = "revtex"
-
-JOBS = 4
+PAPER = "article"
 
 
-def test_translate_revtex_with_a_real_model(tmp_path: Path) -> None:
+def test_translate_article_in_fast_mode(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / PAPER)
+    shutil.copytree(paper_dir(PAPER), workdir.src)
     workdir.create()
-    (workdir.precompile_tex).write_text((paper_dir(PAPER) / "main.tex").read_text(encoding="utf-8"), encoding="utf-8")
+    assert precompile.run(workdir, mode=ModeName.FAST).status is PrecompileStatus.OK
     assert mask.run(workdir).status.value == "ok"
-    assert survey.run(workdir).status is SurveyStatus.OK
-    started = time.monotonic()
-    manifest = translate.run(workdir, jobs=JOBS)
-    duration = time.monotonic() - started
-    print(f"model {manifest.model} effort {manifest.effort} prompt_version {manifest.prompt_version}")
-    print(f"status {manifest.status} duration {duration:.1f}s")
-    for chunk_id, record in manifest.chunks.items():
-        print(f"  {chunk_id} {record.status} attempts {record.attempts} failures {record.failures}")
-    print(f"warnings {manifest.warnings}")
+    manifest = translate.run(workdir, mode=ModeName.FAST)
+    print(manifest.model_dump_json(indent=2))
     assert manifest.status is TranslateStatus.OK, manifest.message
-    assert manifest.chunks
-    assert all(record.status is not ChunkTranslateStatus.FALLBACK for record in manifest.chunks.values())
-    for chunk_id in manifest.chunks:
-        assert (workdir.translated / f"{chunk_id}.tex").read_text(encoding="utf-8").strip()
+    assert manifest.session is not None and manifest.session.stop_reason is StopReason.FINISHED
+    assert manifest.paragraphs_translated == manifest.paragraphs_total > 0
+    assert workdir.translated.read_text(encoding="utf-8").strip()
+    assert workdir.translate_log.stat().st_size > 0
+    assert load_manifest(workdir.notes, NotesFile) is not None

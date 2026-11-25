@@ -151,6 +151,22 @@ def test_session_files_are_written_in_the_glossary_format(home: Path, paper: Pat
     assert fixed == {"terms": {}, "do_not_translate": ["LLM"], "style": "全局风格"}
     initial = json.loads((session / "glossary.json").read_text(encoding="utf-8"))
     assert initial == {"terms": {"KV cache": "KV 缓存"}, "do_not_translate": []}
+    assert not (session / "glossary.fixed.json").stat().st_mode & 0o222
+
+
+def test_session_files_rewrite_the_fixed_glossary_and_keep_the_session_glossary(
+    home: Path, paper: Path, tmp_path: Path
+) -> None:
+    write(home / "glossary.learned.json", {"terms": {"KV cache": "KV 缓存"}})
+    write(home / "glossary.json", {"do_not_translate": ["LLM"]})
+    session = tmp_path / "session"
+    glossary.write_session_files(session, selection(home, paper))
+    write(session / "glossary.json", {"terms": {"decoding": "解码"}})
+    write(home / "glossary.json", {"do_not_translate": ["RL"]})
+    glossary.write_session_files(session, selection(home, paper))
+    fixed = json.loads((session / "glossary.fixed.json").read_text(encoding="utf-8"))
+    assert fixed == {"terms": {}, "do_not_translate": ["RL"]}
+    assert json.loads((session / "glossary.json").read_text(encoding="utf-8")) == {"terms": {"decoding": "解码"}}
 
 
 def test_a_fixed_term_that_drops_a_kept_word_is_invalid(home: Path, paper: Path) -> None:

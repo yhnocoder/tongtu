@@ -242,6 +242,37 @@ def test_unmask_records_where_blocks_and_captions_land(paper: str, environments_
                 assert landed == blocks[place.token_id].tex
 
 
+COMMENT_PAPER = "\\begin{document}\nFirst line. % note here\nSecond line.\n\\end{document}\n"
+
+
+@pytest.mark.parametrize(
+    ("translated_line", "expected_line"),
+    [
+        ("第一行。⟦BLK-1⟧第二行。", "第一行。% note here\n第二行。"),
+        ("第一行。⟦BLK-1⟧\n第二行。", "第一行。% note here\n第二行。"),
+        ("第一行。⟦BLK-1⟧  \t\n第二行。", "第一行。% note here  \t\n第二行。"),
+    ],
+)
+def test_unmask_ends_the_line_after_a_comment_followed_by_text(
+    translated_line: str, expected_line: str, environments_table
+) -> None:
+    outcome = masking.mask_document(COMMENT_PAPER, environments_table)
+    blocks = {block.id: block for block in outcome.blocks}
+    assert blocks["BLK-1"].category is BlockCategory.COMMENT
+    masked = outcome.masked.replace("First line. ⟦BLK-1⟧\nSecond line.", translated_line)
+    unmasked = masking.unmask(masked, outcome.blocks, outcome.captions)
+    assert unmasked.text == f"\\begin{{document}}\n{expected_line}\n\\end{{document}}\n"
+    placements = {place.token_id: place for place in unmasked.placements}
+    landed = unmasked.text[placements["BLK-1"].start : placements["BLK-1"].end]
+    assert landed.rstrip("\n") == "% note here"
+
+
+def test_unmask_keeps_a_comment_at_the_end_of_the_text(environments_table) -> None:
+    outcome = masking.mask_document("\\begin{document}\nText. % last", environments_table)
+    unmasked = masking.unmask(outcome.masked.replace("Text.", "文字。"), outcome.blocks, outcome.captions)
+    assert unmasked.text == "\\begin{document}\n文字。 % last"
+
+
 @pytest.mark.parametrize("character", SENTINEL_CHARACTERS)
 def test_sentinel_in_source_is_rejected(character: str, environments_table) -> None:
     with pytest.raises(masking.MaskError):

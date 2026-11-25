@@ -6,20 +6,24 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable
-from dataclasses import dataclass, replace
-from enum import StrEnum
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from pydantic import ValidationError
+
 from .. import fonts
+from ..artifacts.common import Session, StopReason, Usage
 from ..assets import asset_path
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
-from .config import ModelsConfig, Target, load_config, role_target
+from ..workdir import raw_log_path
+from .config import Target, load_config, mode_target
 
 SKILL_ROOT = asset_path("skill")
 
-SKILL_DIR = ".skills/{role}"
+SKILL_DIR = ".skills/{skill}"
 
 PROMPT = "读 {skill_path}/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
 
@@ -27,60 +31,80 @@ AGENTRUN_EXECUTABLE = "agentrun"
 
 AGENTRUN_GRACE_SECONDS = 120
 
-EVENTS_SUFFIX = ".events.jsonl"
-
 PYTHON_EXECUTABLE = "python3"
 
+COST_RUNTIME = "claude-code"
 
-class StopReason(StrEnum):
-    FINISHED = "finished"
-    TIMEOUT = "timeout"
-    ERROR = "error"
+COST_RESULT_TYPE = "result"
+
+COST_FIELD = "total_cost_usd"
 
 
 @dataclass(frozen=True)
 class WorkOutcome:
-    stop_reason: StopReason
+    session: Session
     detail: str = ""
-    model: str = ""
+
+
+@dataclass
+class _Events:
+    ends: list[dict]
+    turns: int = 0
 
 
 def work(
-    role: str,
-    workdir: Path,
+    skill: str,
+    session_dir: Path,
     *,
-    trace_path: Path,
-    effort: str | None = None,
+    mode: str,
+    log_path: Path,
     report: Callable[[str], None] | None = None,
-    prompt: str | None = None,
+    extra_prompt: str = "",
 ) -> WorkOutcome:
-    config, target, detail = _runtime_target(role, effort)
-    if config is None or target is None:
-        return _error(detail)
-    outcome = _launch(config, target, role, workdir, trace_path, report, prompt)
-    return replace(outcome, model=str(target))
+    started = time.monotonic()
+    config, detail = load_config()
+    if config is None:
+        return _outcome(started, "", None, StopReason.ERROR, None, detail)
+    target, detail = mode_target(config, mode)
+    if target is None:
+        return _outcome(started, "", None, StopReason.ERROR, None, detail)
+    stop_reason, usage, detail = _launch(target, skill, session_dir, log_path, report, extra_prompt)
+    return _outcome(started, str(target), target.effort, stop_reason, usage, detail)
+
+
+def _outcome(
+    started: float, model: str, effort: str | None, stop_reason: StopReason, usage: Usage | None, detail: str
+) -> WorkOutcome:
+    session = Session(
+        stop_reason=stop_reason,
+        model=model,
+        effort=effort,
+        duration_seconds=time.monotonic() - started,
+        usage=usage,
+    )
+    return WorkOutcome(session=session, detail=detail)
 
 
 def _launch(
-    config: ModelsConfig,
     target: Target,
-    role: str,
-    workdir: Path,
-    trace_path: Path,
+    skill: str,
+    session_dir: Path,
+    log_path: Path,
     report: Callable[[str], None] | None,
-    prompt: str | None,
-) -> WorkOutcome:
-    entry = config.roles[role]
+    extra_prompt: str,
+) -> tuple[StopReason, Usage | None, str]:
     executable = shutil.which(AGENTRUN_EXECUTABLE)
     if executable is None:
-        return _error(f"{AGENTRUN_EXECUTABLE} is not in PATH; work runs every runtime through it.")
+        return StopReason.ERROR, None, f"{AGENTRUN_EXECUTABLE} is not in PATH; every session runs through it."
 
-    skill_path = skill_dir(role)
-    source = SKILL_ROOT / role
+    skill_path = skill_dir(skill)
+    source = SKILL_ROOT / skill
     if not source.is_dir():
-        return _error(f"skill directory {source} does not exist; role {role} has no skill to copy into the worksite.")
-    shutil.copytree(source, workdir / skill_path, dirs_exist_ok=True)
+        return StopReason.ERROR, None, f"skill directory {source} does not exist; skill {skill} has nothing to copy."
+    shutil.copytree(source, session_dir / skill_path, dirs_exist_ok=True)
 
+    raw_path = raw_log_path(log_path)
+    events = _Events(ends=[])
     with tempfile.TemporaryDirectory(prefix="tongtu-work-") as tmp_dir:
         python_bin = Path(tmp_dir) / "bin"
         interpreter = Path(sys.base_prefix) / "bin" / PYTHON_EXECUTABLE
@@ -88,23 +112,25 @@ def _launch(
             python_bin.mkdir()
             (python_bin / PYTHON_EXECUTABLE).symlink_to(interpreter)
         except OSError as error:
-            return _error(
+            return (
+                StopReason.ERROR,
+                None,
                 f"failed to prepare the {PYTHON_EXECUTABLE} link to {interpreter} for the session"
-                f" ({type(error).__name__}: {error})."
+                f" ({type(error).__name__}: {error}).",
             )
         command = [
             executable,
-            target.backend,
+            target.runtime,
             "--cwd",
-            str(workdir),
+            str(session_dir),
             "--format",
             "jsonl",
             "--timeout",
-            str(math.ceil(entry.timeout_seconds)),
+            str(math.ceil(target.timeout_seconds)),
             "--path",
             str(python_bin),
             "--raw",
-            str(trace_path),
+            str(raw_path),
             "--no-subagents",
         ]
         if target.model:
@@ -112,85 +138,86 @@ def _launch(
         if target.effort:
             command += ["--effort", target.effort]
         environment = fonts.environment(fonts.configured(), os.environ) | {"TONGTU_DISABLE": "1"}
-        ends: list[dict] = []
         try:
-            trace_path.parent.mkdir(parents=True, exist_ok=True)
-            with events_path(trace_path).open("wb") as events_file:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("wb") as events_file:
                 outcome = run_in_process_group(
                     command,
-                    workdir,
-                    entry.timeout_seconds + AGENTRUN_GRACE_SECONDS,
-                    input_bytes=(prompt or PROMPT.format(skill_path=skill_path)).encode("utf-8"),
+                    session_dir,
+                    target.timeout_seconds + AGENTRUN_GRACE_SECONDS,
+                    input_bytes=(PROMPT.format(skill_path=skill_path) + extra_prompt).encode("utf-8"),
                     env=environment,
-                    on_stdout_line=_event_line(events_file, report, ends),
+                    on_stdout_line=_event_line(events_file, report, events),
                 )
         except OSError as error:
-            return _error(
-                f"failed to open {events_path(trace_path)} or launch {executable} ({type(error).__name__}: {error})."
+            return (
+                StopReason.ERROR,
+                None,
+                f"failed to open {log_path} or launch {executable} ({type(error).__name__}: {error}).",
             )
     if outcome.timed_out:
-        return _error(
-            f"{executable} did not stop within {AGENTRUN_GRACE_SECONDS} seconds after its own timeout; tongtu killed it."
+        return (
+            StopReason.ERROR,
+            None,
+            f"{executable} did not stop within {AGENTRUN_GRACE_SECONDS} seconds after its own timeout; tongtu killed it.",
         )
-    if not ends:
+    if not events.ends:
         stderr = outcome.stderr_text.strip()[-OUTPUT_EXCERPT_CHARS:]
-        return _error(
-            f"{executable} exited with code {outcome.returncode} without an end event; stderr: {stderr or '(empty)'}"
+        return (
+            StopReason.ERROR,
+            None,
+            f"{executable} exited with code {outcome.returncode} without an end event; stderr: {stderr or '(empty)'}",
         )
-    stop_reason = _stop_reason(ends[-1])
+    end = events.ends[-1]
+    usage = session_usage(end, events.turns, _cost(target.runtime, raw_path))
+    stop_reason = _stop_reason(end)
     if stop_reason is not StopReason.ERROR:
-        return WorkOutcome(stop_reason=stop_reason)
-    return _error(f"{AGENTRUN_EXECUTABLE} {ends[-1].get('status')}: {ends[-1].get('detail') or '(no detail)'}")
+        return stop_reason, usage, ""
+    return StopReason.ERROR, usage, f"{AGENTRUN_EXECUTABLE} {end.get('status')}: {end.get('detail') or '(no detail)'}"
 
 
-def session_end(trace_path: Path) -> StopReason | None:
+def session_usage(end: dict, turns: int, cost_usd: float | None) -> Usage | None:
+    reported = end.get("usage")
+    if not isinstance(reported, dict):
+        return None
     try:
-        lines = events_path(trace_path).read_bytes().splitlines()
+        return Usage.model_validate({**reported, "turns": turns, "cost_usd": cost_usd})
+    except ValidationError:
+        return None
+
+
+def result_cost(raw_lines: Sequence[bytes]) -> float | None:
+    results = [record for record in map(_parse_event, raw_lines) if record and record.get("type") == COST_RESULT_TYPE]
+    if not results:
+        return None
+    cost = results[-1].get(COST_FIELD)
+    if isinstance(cost, bool) or not isinstance(cost, int | float):
+        return None
+    return float(cost)
+
+
+def _cost(runtime: str, raw_path: Path) -> float | None:
+    if runtime != COST_RUNTIME:
+        return None
+    try:
+        return result_cost(raw_path.read_bytes().splitlines())
     except OSError:
         return None
-    ends = [event for event in map(_parse_event, lines) if event is not None and _is_end(event)]
-    return _stop_reason(ends[-1]) if ends else None
 
 
 def _stop_reason(end: dict) -> StopReason:
     status = end.get("status")
-    if status == "finished":
-        return StopReason.FINISHED
-    if status == "timeout":
-        return StopReason.TIMEOUT
+    if status in (StopReason.FINISHED, StopReason.TIMEOUT):
+        return StopReason(status)
     return StopReason.ERROR
 
 
-def skill_dir(role: str) -> str:
-    return SKILL_DIR.format(role=role)
-
-
-def events_path(trace_path: Path) -> Path:
-    return trace_path.with_name(trace_path.name.removesuffix(".jsonl") + EVENTS_SUFFIX)
-
-
-def _runtime_target(role: str, effort: str | None = None) -> tuple[ModelsConfig | None, Target | None, str]:
-    config, detail = load_config()
-    if config is None:
-        return None, None, detail
-    target, detail = role_target(config, role, effort)
-    if target is None:
-        return None, None, detail
-    if not target.is_runtime:
-        return (
-            None,
-            None,
-            f"role {role} points at provider {target.backend}; work needs a runtime (codex, claude-code or pi).",
-        )
-    return config, target, ""
-
-
-def _error(detail: str) -> WorkOutcome:
-    return WorkOutcome(stop_reason=StopReason.ERROR, detail=detail)
+def skill_dir(skill: str) -> str:
+    return SKILL_DIR.format(skill=skill)
 
 
 def _event_line(
-    events_file: IO[bytes], report: Callable[[str], None] | None, ends: list[dict]
+    events_file: IO[bytes], report: Callable[[str], None] | None, events: _Events
 ) -> Callable[[bytes], None]:
     def handle(line: bytes) -> None:
         events_file.write(line)
@@ -198,10 +225,13 @@ def _event_line(
         event = _parse_event(line)
         if event is None:
             return
-        if event.get("type") == "tool" and report is not None and isinstance(event.get("summary"), str):
+        kind = event.get("type")
+        if kind == "tool" and report is not None and isinstance(event.get("summary"), str):
             report(event["summary"])
-        if _is_end(event):
-            ends.append(event)
+        if kind == "usage" and event.get("parent") is None:
+            events.turns += 1
+        if kind == "end":
+            events.ends.append(event)
 
     return handle
 
@@ -212,7 +242,3 @@ def _parse_event(line: bytes) -> dict | None:
     except ValueError:
         return None
     return event if isinstance(event, dict) else None
-
-
-def _is_end(event: dict) -> bool:
-    return event.get("type") == "end"

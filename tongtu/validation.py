@@ -43,18 +43,6 @@ def read_control_sequence(text: str, position: int) -> tuple[str, int]:
 CHECK_PLACEHOLDERS = "placeholders"
 CHECK_CONTROL_SEQUENCES = "control_sequences"
 CHECK_BRACES_AND_MATH = "braces_and_math"
-CHECK_PARAGRAPH_COUNT = "paragraph_count"
-CHECK_NAMES: tuple[str, ...] = (
-    CHECK_PLACEHOLDERS,
-    CHECK_CONTROL_SEQUENCES,
-    CHECK_BRACES_AND_MATH,
-    CHECK_PARAGRAPH_COUNT,
-)
-
-ENVIRONMENT_DELIMITER_RE = re.compile(
-    r"\\begin\s*\{" + ENVIRONMENT_NAME_RE.pattern + r"\}(?:\[[^\]]*\])*(?:\{[^{}]*\})*"
-    r"|\\end\s*\{" + ENVIRONMENT_NAME_RE.pattern + r"\}"
-)
 
 CONTROL_SEQUENCE_NAME_RE = re.compile(r"\\(?:[A-Za-z]+\*?|.)", re.DOTALL)
 
@@ -86,15 +74,6 @@ DIFFERENCE_ITEMS_MAX = 8
 
 PARAGRAPH_PREVIEW_LENGTH = 60
 
-HEADING_COMMAND = (
-    r"\\(?:part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?"
-    r"(?:\[[^\]]*\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}"
-)
-
-HEADING_LINE_RE = re.compile(rf"({HEADING_COMMAND})[ \t]*\n(?:[ \t]*\n)+")
-
-RUN_IN_HEADING_RE = re.compile(rf"(\S[ \t]*)({HEADING_COMMAND})")
-
 OPEN_BRACE = "{"
 
 CLOSE_BRACE = "}"
@@ -119,23 +98,6 @@ class Scan:
 class Failure:
     check: str
     message: str
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    failures: tuple[Failure, ...] = ()
-
-    @property
-    def ok(self) -> bool:
-        return not self.failures
-
-
-def validate(source: str, translation: str) -> ValidationResult:
-    failures = [*_structure_failures(source, translation)]
-    paragraph_count = _check_paragraph_count(source, translation)
-    if paragraph_count is not None:
-        failures.append(paragraph_count)
-    return ValidationResult(failures=tuple(failures))
 
 
 def _structure_failures(source: str, translation: str) -> list[Failure]:
@@ -271,20 +233,6 @@ def _unbalanced_position(scanned: Scan) -> int | None:
     return opened[0] if opened else None
 
 
-def _check_paragraph_count(source: str, translation: str) -> Failure | None:
-    expected = translatable_paragraphs(_attach_headings(source))
-    actual = translatable_paragraphs(_attach_headings(translation))
-    if expected == actual:
-        return None
-    return Failure(
-        check=CHECK_PARAGRAPH_COUNT,
-        message=(
-            f"paragraphs with translatable text: {expected} in source, {actual} in translation. "
-            "Blank lines delimit paragraphs; do not merge, split, skip or add any"
-        ),
-    )
-
-
 def scan(text: str) -> Scan:
     sequences: list[str] = []
     specials: list[tuple[str, int]] = []
@@ -303,25 +251,6 @@ def scan(text: str) -> Scan:
             specials.append((character, position))
         position += 1
     return Scan(control_sequences=tuple(sequences), specials=tuple(specials))
-
-
-def _attach_headings(text: str) -> str:
-    detached = RUN_IN_HEADING_RE.sub(lambda match: f"{match.group(1)}\n\n{match.group(2)}", text)
-    return HEADING_LINE_RE.sub(lambda match: match.group(1) + "\n", detached)
-
-
-def translatable_paragraphs(text: str) -> int:
-    return sum(
-        1 for paragraph in BLANK_LINE_RE.split(text) if paragraph.strip() and _has_translatable_text(paragraph.strip())
-    )
-
-
-def _has_translatable_text(paragraph: str) -> bool:
-    stripped = TOKEN_RE.sub("", paragraph)
-    stripped = ENVIRONMENT_DELIMITER_RE.sub("", stripped)
-    stripped = NON_TEXT_COMMAND_RE.sub("", stripped)
-    stripped = CONTROL_SEQUENCE_NAME_RE.sub("", stripped)
-    return bool(stripped.strip())
 
 
 def _describe_counter(counter: Counter[str]) -> str:
@@ -411,7 +340,7 @@ def check(
     terms = dict(terms or {})
     source_paragraphs = paragraphs(source)
     translation_paragraphs = paragraphs(translation)
-    total = sum(1 for _line, paragraph in source_paragraphs if _needs_translation(paragraph))
+    total = paragraphs_to_translate(source)
     if len(source_paragraphs) != len(translation_paragraphs):
         problem = Problem(
             Category.STRUCTURE,
@@ -507,6 +436,10 @@ def paragraphs(text: str) -> list[tuple[int, str]]:
             found.append((line + part[:lead].count("\n"), part.strip()))
         line += part.count("\n")
     return found
+
+
+def paragraphs_to_translate(text: str) -> int:
+    return sum(1 for _line, paragraph in paragraphs(text) if _needs_translation(paragraph))
 
 
 def _needs_translation(paragraph: str) -> bool:

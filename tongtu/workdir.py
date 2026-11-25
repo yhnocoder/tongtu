@@ -15,6 +15,10 @@ RUN_MARKER_FILENAME = "running.json"
 
 ENCODING = "utf-8"
 
+LOG_SUFFIX = ".jsonl"
+
+RAW_LOG_SUFFIX = ".raw.jsonl"
+
 
 class WorkdirError(ValueError):
     pass
@@ -39,6 +43,10 @@ def resolve(
     if arxiv_id is None:
         raise WorkdirError("either an arXiv id or --workdir is required")
     return (papers_dir(env) / normalize_arxiv_id(arxiv_id)).absolute()
+
+
+def raw_log_path(log_path: Path) -> Path:
+    return log_path.with_name(log_path.name.removesuffix(LOG_SUFFIX) + RAW_LOG_SUFFIX)
 
 
 @dataclass(frozen=True)
@@ -100,28 +108,12 @@ class Workdir:
         return self.build / "blocks.json"
 
     @property
-    def brief(self) -> Path:
-        return self.build / "brief.json"
-
-    @property
-    def chunks(self) -> Path:
-        return self.build / "chunks"
-
-    @property
-    def survey_terms_log(self) -> Path:
-        return self.logs / "survey-terms.json"
-
-    @property
     def translated(self) -> Path:
-        return self.build / "translated"
+        return self.build / "translated.tex"
 
     @property
-    def reviewed(self) -> Path:
-        return self.build / "reviewed"
-
-    @property
-    def review_log(self) -> Path:
-        return self.logs / "review.jsonl"
+    def translate_log(self) -> Path:
+        return self.logs / "translate.jsonl"
 
     @property
     def zh_tex(self) -> Path:
@@ -142,6 +134,14 @@ class Workdir:
     @property
     def zh_synctex(self) -> Path:
         return self.build / "zh.synctex.gz"
+
+    @property
+    def paper_glossary(self) -> Path:
+        return self.out / f"{self.path.name}.glossary.json"
+
+    @property
+    def notes(self) -> Path:
+        return self.out / f"{self.path.name}.notes.json"
 
     @property
     def compile_fix_log(self) -> Path:

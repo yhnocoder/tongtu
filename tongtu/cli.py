@@ -7,7 +7,7 @@ import shutil
 import signal
 import subprocess
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -17,18 +17,14 @@ from types import FrameType
 from typing import Annotated
 
 import typer
-from rich.console import Console, ConsoleOptions, RenderResult
 from rich.progress import (
     Progress,
-    ProgressColumn,
     SpinnerColumn,
-    Task,
     TaskID,
     TextColumn,
     TimeElapsedColumn,
 )
 from rich.table import Column
-from rich.text import Text
 
 from . import __version__, arxiv, validation
 from .artifacts.common import Manifest
@@ -37,19 +33,17 @@ from .artifacts.fetch import FetchManifest, PaperMeta
 from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
 from .artifacts.status import ABSENT_STATUS, PaperStatus, RunCommand, RunMarker, StageState
-from .artifacts.survey import SurveyManifest
-from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
+from .artifacts.translate import TranslateManifest
 from .arxiv import PaperArgumentError, PaperInput, parse_paper_argument
 from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present, papers_dir
 from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest, write_manifest
-from .model.config import CONFIG_TEMPLATE, FontsConfig, Target, load_config, provider_key, role_target
+from .model.config import CONFIG_TEMPLATE, FontsConfig, ModeName, Target, load_config, mode_target
 from .model.work import AGENTRUN_EXECUTABLE
-from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
+from .pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
-from .stages import compile, fetch, mask, precompile, review, survey, translate
-from .stages.translate import ChunkProgress, ChunkProgressState
+from .stages import compile, fetch, mask, precompile, translate
 from .workdir import ENCODING, Workdir, WorkdirError, resolve
 
 EXIT_FAILURE = 1
@@ -57,26 +51,6 @@ EXIT_FAILURE = 1
 EXIT_USAGE = 2
 
 EXIT_NOT_CONFIGURED = 3
-
-DEFAULT_JOBS = 4
-
-CHUNKED_STAGES = frozenset({"translate"})
-
-MIN_CHUNK_LINE_WIDTH = 20
-
-CHUNK_GLYPHS: dict[ChunkProgressState, tuple[str, str, str]] = {
-    ChunkProgressState.PENDING: ("─", "-", "dim"),
-    ChunkProgressState.RUNNING: ("─", "~", "cyan"),
-    ChunkProgressState.DONE: ("━", "=", "green"),
-    ChunkProgressState.WARNING: ("━", "!", "yellow"),
-}
-
-CHUNK_SEVERITY: tuple[ChunkProgressState, ...] = (
-    ChunkProgressState.DONE,
-    ChunkProgressState.PENDING,
-    ChunkProgressState.RUNNING,
-    ChunkProgressState.WARNING,
-)
 
 HEADER_STYLE = "bold"
 
@@ -132,74 +106,7 @@ class RunOptions:
     workdir: Workdir
     meta: PaperMeta | None
     glossary: tuple[Path, ...]
-    jobs: int
-    no_terms: bool
-    no_review: bool
-
-
-def _kilo(tokens: int) -> str:
-    return f"{tokens / 1000:.1f}k"
-
-
-class TokenEtaColumn(ProgressColumn):
-    def get_table_column(self) -> Column:
-        return Column(no_wrap=True)
-
-    def render(self, task: Task) -> Text:
-        start = task.fields.get("rate_start")
-        start_tokens = task.fields.get("rate_start_tokens")
-        if start is None or task.total is None:
-            return Text("eta -:--:--")
-        advanced = task.completed - start_tokens
-        elapsed = time.monotonic() - start
-        if advanced <= 0 or elapsed <= 0:
-            return Text("eta -:--:--")
-        remaining = max(0.0, task.total - task.completed)
-        return Text(f"eta {timedelta(seconds=int(remaining * elapsed / advanced))}")
-
-
-def _cells(chunks: Sequence[ChunkProgress], width: int) -> list[tuple[int, ChunkProgressState]]:
-    if len(chunks) > width:
-        groups: list[ChunkProgressState] = [ChunkProgressState.DONE] * width
-        for index, chunk in enumerate(chunks):
-            cell = index * width // len(chunks)
-            groups[cell] = max(groups[cell], chunk.state, key=CHUNK_SEVERITY.index)
-        return [(1, state) for state in groups]
-    total = sum(chunk.tokens for chunk in chunks) or len(chunks)
-    shares = [chunk.tokens * width / total for chunk in chunks]
-    counts = [max(1, int(share)) for share in shares]
-    by_remainder = sorted(range(len(chunks)), key=lambda index: shares[index] - int(shares[index]), reverse=True)
-    for index in by_remainder[: max(0, width - sum(counts))]:
-        counts[index] += 1
-    for index in sorted(range(len(chunks)), key=counts.__getitem__, reverse=True)[: max(0, sum(counts) - width)]:
-        counts[index] -= 1
-    return [(count, chunk.state) for count, chunk in zip(counts, chunks, strict=True)]
-
-
-def _chunk_line(chunks: Sequence[ChunkProgress], width: int, ascii_only: bool) -> Text:
-    text = Text()
-    if not chunks or width < MIN_CHUNK_LINE_WIDTH:
-        return text
-    for count, state in _cells(chunks, width):
-        wide, narrow, style = CHUNK_GLYPHS[state]
-        text.append((narrow if ascii_only else wide) * count, style=style)
-    return text
-
-
-@dataclass
-class _ChunkLine:
-    chunks: tuple[ChunkProgress, ...]
-
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        yield _chunk_line(self.chunks, options.max_width, options.ascii_only or options.legacy_windows)
-
-
-class ChunkLineColumn(ProgressColumn):
-    def get_table_column(self) -> Column:
-        return Column(ratio=1, no_wrap=True)
-
-    def render(self, task: Task) -> _ChunkLine:
-        return _ChunkLine(task.fields.get("chunk_progress", ()))
+    mode: str
 
 
 @dataclass
@@ -207,27 +114,6 @@ class StageDisplay:
     progress: Progress
     task: TaskID
     name: str
-    rate_baseline: tuple[float, int] | None = None
-
-    def chunks(self, chunks: tuple[ChunkProgress, ...]) -> None:
-        finished = [chunk for chunk in chunks if chunk.state in (ChunkProgressState.DONE, ChunkProgressState.WARNING)]
-        done_tokens = sum(chunk.tokens for chunk in finished)
-        total_tokens = sum(chunk.tokens for chunk in chunks)
-        if self.rate_baseline is None:
-            self.rate_baseline = (time.monotonic(), done_tokens)
-        if not console.is_terminal:
-            console.print(f"    chunks {len(finished)}/{len(chunks)}, {_kilo(done_tokens)}/{_kilo(total_tokens)} tok")
-            return
-        self.progress.update(
-            self.task,
-            completed=done_tokens,
-            total=total_tokens,
-            chunks=f"{len(finished)}/{len(chunks)}",
-            tokens=f"{_kilo(done_tokens)}/{_kilo(total_tokens)} tok",
-            chunk_progress=chunks,
-            rate_start=self.rate_baseline[0],
-            rate_start_tokens=self.rate_baseline[1],
-        )
 
     def line(self, status: str, summary: str) -> None:
         console.print(f"    {status}: {summary}")
@@ -246,50 +132,31 @@ def _fetch_entry(options: RunOptions, display: StageDisplay) -> Manifest:
 
 
 def _precompile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
-    return precompile.run(options.workdir, report=display.action)
+    return precompile.run(options.workdir, mode=options.mode, report=display.action)
 
 
 def _mask_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return mask.run(options.workdir)
 
 
-def _survey_entry(options: RunOptions, display: StageDisplay) -> Manifest:
-    return survey.run(
-        options.workdir,
-        glossary=options.glossary,
-        no_terms=options.no_terms,
-        report=display.action,
-    )
-
-
 def _translate_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return translate.run(
         options.workdir,
-        jobs=options.jobs,
-        report=display.line,
-        progress=display.chunks,
-    )
-
-
-def _review_entry(options: RunOptions, display: StageDisplay) -> Manifest:
-    return review.run(
-        options.workdir,
-        skip=options.no_review,
+        mode=options.mode,
+        glossary=options.glossary,
         report=display.action,
     )
 
 
 def _compile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
-    return compile.run(options.workdir, report=display.action)
+    return compile.run(options.workdir, mode=options.mode, report=display.action)
 
 
 STAGE_ENTRIES: dict[str, Callable[[RunOptions, StageDisplay], Manifest]] = {
     "fetch": _fetch_entry,
     "precompile": _precompile_entry,
     "mask": _mask_entry,
-    "survey": _survey_entry,
     "translate": _translate_entry,
-    "review": _review_entry,
     "compile": _compile_entry,
 }
 
@@ -300,8 +167,8 @@ FromOpt = Annotated[
     typer.Option(
         "--from",
         help=(
-            "redo everything from this stage on, removing downstream outputs first; without it the run "
-            f"starts at the first stage whose outputs are absent. Stage order: {' → '.join(STAGES)}"
+            "redo everything from this stage on, removing its outputs and those downstream first; without it "
+            f"the run starts at the first stage that has not finished ok. Stage order: {' → '.join(STAGES)}"
         ),
     ),
 ]
@@ -317,13 +184,9 @@ WorkdirOpt = Annotated[
         help="paper working directory (default $TONGTU_HOME/papers/<id>, $TONGTU_HOME defaults to ~/.tongtu)",
     ),
 ]
-JobsOpt = Annotated[int, typer.Option("--jobs", min=1, metavar="N", help="translate concurrency")]
-NoTermsOpt = Annotated[
-    bool,
-    typer.Option("--no-terms", help="survey skips model term proposals and uses only your three glossary layers"),
-]
-NoReviewOpt = Annotated[
-    bool, typer.Option("--no-review", help="skip the review session; the translation enters compile unchanged")
+ModeOpt = Annotated[
+    ModeName | None,
+    typer.Option("--mode", help="mode of the agent sessions in this run; defaults to [modes] default in config.toml"),
 ]
 LatestOpt = Annotated[bool, typer.Option("--latest", help="query arXiv for the latest version and use it")]
 DevOpt = Annotated[
@@ -403,9 +266,7 @@ def _options(
     paper: str,
     workdir: Path | None,
     glossary: list[Path] | None,
-    jobs: int,
-    no_terms: bool,
-    no_review: bool = False,
+    mode: str,
     *,
     latest: bool = False,
     may_query: bool = False,
@@ -416,10 +277,22 @@ def _options(
         workdir=paper_workdir,
         meta=meta,
         glossary=tuple(glossary or ()),
-        jobs=jobs,
-        no_terms=no_terms,
-        no_review=no_review,
+        mode=mode,
     )
+
+
+def _mode(option: ModeName | None) -> tuple[str, str]:
+    config, detail = load_config()
+    if option is not None:
+        name = option.value
+    elif config is not None:
+        name = config.modes.default.value
+    else:
+        name = ModeName.SMART.value
+    if config is None:
+        return name, f"{name}  ({detail})"
+    target, _detail = mode_target(config, name)
+    return name, "  ".join(part for part in (name, str(target), target.effort) if part)
 
 
 def _elapsed_text(seconds: float) -> str:
@@ -440,12 +313,9 @@ def stage_summary(manifest: Manifest) -> str:
         return ", ".join(parts)
     if isinstance(manifest, MaskManifest):
         return f"{manifest.blocks_total} blocks masked"
-    if isinstance(manifest, SurveyManifest):
-        return f"{manifest.chunks_total} chunks, {manifest.terms_total} terms"
     if isinstance(manifest, TranslateManifest):
-        fallback = sum(1 for record in manifest.chunks.values() if record.status is ChunkTranslateStatus.FALLBACK)
-        chunks = f"{len(manifest.chunks)} chunks"
-        return f"{chunks}, {fallback} fallback" if fallback else chunks
+        summary = f"{manifest.paragraphs_translated} paragraphs, {manifest.glossary.added} new terms"
+        return summary if manifest.session is not None else f"{summary}, reused existing translation"
     if isinstance(manifest, CompileManifest):
         parts = [f"{manifest.report.pages} pages"] if manifest.report else []
         if manifest.baseline is not None:
@@ -480,26 +350,17 @@ def _text_column(template: str) -> TextColumn:
     return TextColumn(template, table_column=Column(no_wrap=True))
 
 
-def _progress_columns(name: str) -> tuple:
-    columns = [SpinnerColumn(), _text_column("{task.description}")]
-    if name in CHUNKED_STAGES:
-        columns += [ChunkLineColumn(), _text_column("{task.fields[chunks]}"), _text_column("{task.fields[tokens]}")]
-    columns.append(TimeElapsedColumn(table_column=Column(no_wrap=True)))
-    if name in CHUNKED_STAGES:
-        columns.append(TokenEtaColumn())
-    return tuple(columns)
-
-
 def _run_stage(name: str, options: RunOptions) -> Manifest:
     started = time.monotonic()
     with Progress(
-        *_progress_columns(name),
+        SpinnerColumn(),
+        _text_column("{task.description}"),
+        TimeElapsedColumn(table_column=Column(no_wrap=True)),
         console=console,
         transient=True,
         disable=not console.is_terminal,
-        expand=name in CHUNKED_STAGES,
     ) as progress:
-        task = progress.add_task(name, total=None, chunks="", tokens="", chunk_progress=())
+        task = progress.add_task(name, total=None)
         display = StageDisplay(progress=progress, task=task, name=name)
         manifest = STAGE_ENTRIES[name](options, display)
     _print_stage_result(name, manifest, options.workdir, time.monotonic() - started)
@@ -519,16 +380,16 @@ def run(
     from_stage: FromOpt = None,
     glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
-    jobs: JobsOpt = DEFAULT_JOBS,
-    no_terms: NoTermsOpt = False,
-    no_review: NoReviewOpt = False,
+    mode: ModeOpt = None,
     latest: LatestOpt = False,
     dev: DevOpt = False,
 ) -> None:
     _apply_dev(dev)
-    options = _options(paper, workdir, glossary, jobs, no_terms, no_review, latest=latest, may_query=True)
+    mode_name, mode_line = _mode(mode)
+    options = _options(paper, workdir, glossary, mode_name, latest=latest, may_query=True)
     console.print(f"workdir {options.workdir.path}")
-    with _running(options.workdir, RunCommand.RUN):
+    console.print(f"mode    {mode_line}")
+    with _running(options.workdir, RunCommand.RUN, mode_name):
         if from_stage is not None:
             clean_from(options.workdir, from_stage.value)
             start = from_stage.value
@@ -536,11 +397,11 @@ def run(
         else:
             pending = first_pending(options.workdir)
             if pending is None:
-                console.print("all seven stage outputs are present; nothing to run. Use --from STAGE to redo.")
+                console.print("all five stages have finished ok; nothing to run. Use --from STAGE to redo.")
                 return
             start = pending
             if start != STAGES[0]:
-                console.print(f"resuming from {start} (upstream outputs present)")
+                console.print(f"resuming from {start} (upstream stages finished ok)")
         console.print("")
         _print_stage_header()
         raise _run_stages(start, options)
@@ -556,8 +417,7 @@ def stage(
     ] = None,
     glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
-    jobs: JobsOpt = DEFAULT_JOBS,
-    no_terms: NoTermsOpt = False,
+    mode: ModeOpt = None,
     dev: DevOpt = False,
 ) -> None:
     _apply_dev(dev)
@@ -566,7 +426,7 @@ def stage(
         return
     if paper is None:
         raise typer.BadParameter("missing argument PAPER (arXiv id / arXiv URL / local source directory)")
-    options = _options(paper, workdir, glossary, jobs, no_terms, may_query=name.value == "fetch")
+    options = _options(paper, workdir, glossary, _mode(mode)[0], may_query=name.value == "fetch")
     missing = [
         upstream for upstream in STAGES[: STAGES.index(name.value)] if not outputs_present(options.workdir, upstream)
     ]
@@ -576,15 +436,18 @@ def stage(
             f"Run tongtu run first, or tongtu run --from {missing[0]} to redo."
         )
         raise typer.Exit(EXIT_USAGE)
-    with _running(options.workdir, RunCommand.STAGE):
+    with _running(options.workdir, RunCommand.STAGE, options.mode):
+        clean(options.workdir, name.value)
         _print_stage_header()
         manifest = _run_stage(name.value, options)
     raise typer.Exit(0 if manifest.ok else EXIT_FAILURE)
 
 
 @contextmanager
-def _running(workdir: Workdir, command: RunCommand) -> Iterator[None]:
-    write_manifest(workdir.run_marker, RunMarker(pid=os.getpid(), started_at=datetime.now(UTC), command=command))
+def _running(workdir: Workdir, command: RunCommand, mode: str) -> Iterator[None]:
+    write_manifest(
+        workdir.run_marker, RunMarker(pid=os.getpid(), started_at=datetime.now(UTC), command=command, mode=mode)
+    )
 
     def terminate(signum: int, frame: FrameType | None) -> None:
         _remove_run_marker(workdir)
@@ -605,17 +468,17 @@ def _remove_run_marker(workdir: Workdir) -> None:
         workdir.run_marker.unlink(missing_ok=True)
 
 
-def _running_pid(workdir: Workdir) -> int | None:
+def _live_marker(workdir: Workdir) -> RunMarker | None:
     marker = load_manifest(workdir.run_marker, RunMarker)
     if marker is None:
         return None
     try:
         os.kill(marker.pid, 0)
     except PermissionError:
-        return marker.pid
+        return marker
     except (ProcessLookupError, OverflowError):
         return None
-    return marker.pid
+    return marker
 
 
 JsonOpt = Annotated[
@@ -641,23 +504,34 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_
                 manifest=manifest_path if manifest_path.is_file() else None,
             )
         )
-    pid = _running_pid(paper_workdir)
+    marker = _live_marker(paper_workdir)
+    translate_manifest = load_manifest(paper_workdir.manifest_path(translate.STAGE_NAME), TranslateManifest)
+    if marker is not None:
+        mode = marker.mode
+    else:
+        mode = translate_manifest.mode if translate_manifest is not None else None
     snapshot = PaperStatus(
         workdir=paper_workdir.path,
         arxiv_id=paper_input.arxiv_id,
         version=paper_input.version,
-        running=pid is not None,
-        pid=pid,
+        running=marker is not None,
+        pid=marker.pid if marker is not None else None,
+        started_at=marker.started_at if marker is not None else None,
+        mode=mode,
         stages=stages,
-        translate_chunks=translate.chunk_counts(paper_workdir),
-        pdf=paper_workdir.zh_pdf if paper_workdir.zh_pdf.is_file() else None,
+        pdf=_existing(paper_workdir.zh_pdf),
+        meta=_existing(paper_workdir.meta),
+        glossary=_existing(paper_workdir.paper_glossary),
+        notes=_existing(paper_workdir.notes),
     )
     if as_json:
         typer.echo(snapshot.model_dump_json(indent=2).encode(ENCODING))
         return
     console.print(f"workdir {snapshot.workdir}")
-    if snapshot.running:
-        console.print(f"running pid {snapshot.pid}")
+    if snapshot.mode is not None:
+        console.print(f"mode    {snapshot.mode}")
+    if snapshot.running and snapshot.started_at is not None:
+        console.print(f"running pid {snapshot.pid}, started {snapshot.started_at.isoformat(timespec='seconds')}")
     console.print("")
     console.print(
         f"{'stage':<{NAME_WIDTH}}{'status':<{STATUS_WIDTH}}{'outputs':<{OUTPUTS_WIDTH}}manifest", style=HEADER_STYLE
@@ -674,9 +548,13 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_
                 console.print(f"{'':<{NAME_WIDTH}}  {note}")
 
 
+def _existing(path: Path) -> Path | None:
+    return path if path.is_file() else None
+
+
 @app.command()
 def validate(
-    src: Annotated[Path, typer.Argument(help="source chunk file")],
+    src: Annotated[Path, typer.Argument(help="masked source file")],
     dst: Annotated[Path, typer.Argument(help="translated file")],
     glossary: Annotated[
         list[Path] | None,
@@ -711,8 +589,8 @@ def doctor(dev: DevOpt = False) -> None:
         raise typer.Exit(EXIT_FAILURE)
     if absent_config:
         console.print(
-            f"toolchain and fonts complete; {', '.join(absent_config)} not configured, "
-            "stages from survey on cannot run."
+            f"toolchain and fonts complete; {', '.join(absent_config)} not usable, so translate and the fix "
+            "sessions cannot run; fetch, precompile and mask still can."
         )
         raise typer.Exit(EXIT_NOT_CONFIGURED)
     console.print("environment complete.")
@@ -739,23 +617,16 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
     config, detail = load_config()
     if config is None:
         return [
-            (CONFIG_CHECK_NAME, "providers, chunking, fonts and roles", False, detail),
-            ("keys", "provider API keys", False, "cannot check: config.toml is unreadable"),
-            ("runtimes", "runtime executables", False, "cannot check: config.toml is unreadable"),
+            (CONFIG_CHECK_NAME, "modes, fonts and pdf options", False, detail),
+            ("runtimes", "runtimes and models of the modes", False, "cannot check: config.toml is unreadable"),
         ]
-    rows = [(CONFIG_CHECK_NAME, "providers, chunking, fonts and roles", True, str(config_path()))]
-    targets: dict[tuple[str, str], Target] = {}
-    for role in config.roles:
-        target, detail = role_target(config, role)
-        if target is None:
-            rows.append((f"role {role}", "role entry", False, detail))
-            continue
-        targets.setdefault((target.backend, target.model if target.is_runtime else ""), target)
+    rows = [(CONFIG_CHECK_NAME, "modes, fonts and pdf options", True, str(config_path()))]
+    targets: dict[str, Target] = {}
+    for name in ModeName:
+        target, _detail = mode_target(config, name)
+        if target is not None:
+            targets.setdefault(str(target), target)
     for target in targets.values():
-        if not target.is_runtime:
-            key, detail = provider_key(target.backend, config.provider[target.backend])
-            rows.append((f"key {target.backend}", "provider API key", key is not None, detail))
-            continue
         rows += _runtime_rows(target)
     return rows
 
@@ -764,7 +635,7 @@ def _runtime_rows(target: Target) -> list[tuple[str, str, bool, str]]:
     found, detail = _check_executable(AGENTRUN_EXECUTABLE)
     if not found:
         return [(str(target), "agentrun, which starts every runtime", False, detail)]
-    command = [detail, "doctor", target.backend, "--json"] + (["--model", target.model] if target.model else [])
+    command = [detail, "doctor", target.runtime, "--json"] + (["--model", target.model] if target.model else [])
     try:
         completed = subprocess.run(command, capture_output=True, text=True)
     except OSError as error:

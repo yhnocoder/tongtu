@@ -9,9 +9,9 @@ version: 8
 你在一个一次性编译目录里（当前目录），内容是一篇 arXiv 论文的源码拷贝。启动提示里给出主文件与它的编译日志的文件名，下文记作 `<主文件>` 与 `<日志>`。先判断现场模式：
 
 - **存在 `precompile-expand.log`：源码展开修复。** 先读该文件，其中记录主文件相对路径、严格展开命令、完整 stderr、源码中 `\input` / `\include` 的文件和行号。此时尚未生成可用的单文件，`<主文件>` 还是作者的原始主文件。修复原始主文件及必要的附属文件，让日志中的 `latexpand --keep-comments --fatal` 命令成功。必须保留 `--fatal`；失败输出不完整，不可用于编译。发现后续缺失引用时在本次会话继续处理。
-- **不存在 `precompile-expand.log`：单文件编译修复。** `<主文件>` 已被驱动器改写成单文件：多文件源码已展开、参考文献已内联，导言区带有 xeCJK 中文排版设置，位于 `% ---- injected by tongtu (precompile) ----` 与 `% ---- end tongtu (precompile) ----` 之间。编译错误见 `<日志>`，任务是让 `latexmk -norc -xelatex -interaction=nonstopmode <主文件>` 通过。作者的原始主文件不在当前目录，修复不需要它。
+- **不存在 `precompile-expand.log`：单文件编译修复。** `<主文件>` 已被通途改写成单文件：多文件源码已展开、参考文献已内联，导言区带有 xeCJK 中文排版设置，位于 `% ---- injected by tongtu (precompile) ----` 与 `% ---- end tongtu (precompile) ----` 之间。编译错误见 `<日志>`，任务是让 `latexmk -norc -xelatex -interaction=nonstopmode <主文件>` 通过。作者的原始主文件不在当前目录，修复不需要它。
 
-**你负责判断，脚本负责验证。** 整个预编译阶段最多一次修复会话，展开修复与编译修复共用此次预算。源码模式中修复缺失引用后，还要用 XeLaTeX 编译验证修复后的原文，必要的引擎兼容改动也留在源码里；临时展开结果另取文件名，不覆盖原始主文件。主文件同名 `.bbl` 应保留供驱动器内联。驱动器结束后会重新严格展开源码、内联 `.bbl`、注入中文排版设置，清理编译产物再校验编译；不会再启动第二次修复会话。单文件模式结束后同样清理再校验编译。模型超时或报错都不能代替脚本判定。
+**你负责判断，脚本负责验证。** 整个预编译阶段最多一次修复会话，展开修复与编译修复共用此次预算。源码模式中修复缺失引用后，还要用 XeLaTeX 编译验证修复后的原文，必要的引擎兼容改动也留在源码里；临时展开结果另取文件名，不覆盖原始主文件。主文件同名 `.bbl` 应保留供通途内联。会话结束后通途会重新严格展开源码、内联 `.bbl`、注入中文排版设置，清理编译产物再校验编译；不会再启动第二次修复会话。单文件模式结束后同样清理再校验编译。模型超时或报错都不能代替脚本判定。
 
 ## 边界
 
@@ -21,7 +21,7 @@ version: 8
 4. 单文件模式优先只改 `<主文件>`；源码模式修改诊断指出的主文件或附属源码。确有必要才改目录内其他文件（如 `.sty`），并在结束时单独说明。
 5. 最小改动：一次改一处，编一次，看日志变化；注释掉一行优于删除一行。
 6. 引擎固定 xelatex，不许改用 pdflatex，也不许改动编译命令来绕过问题。
-7. 手动编译一律用上面这条带 `-norc` 的命令。目录里若有 `latexmkrc`、`.latexmkrc` 或编译脚本（`Makefile`、`build.sh` 一类），只读取内容作为诊断依据，不直接执行，也不去掉 `-norc`。其中编译需要的设置（例如额外的宏包搜索路径）改写进源码或目录内的文件，驱动器的校验编译只用上面这条命令，不会带上你在命令行里加的设置。
+7. 手动编译一律用上面这条带 `-norc` 的命令。目录里若有 `latexmkrc`、`.latexmkrc` 或编译脚本（`Makefile`、`build.sh` 一类），只读取内容作为诊断依据，不直接执行，也不去掉 `-norc`。其中编译需要的设置（例如额外的宏包搜索路径）改写进源码或目录内的文件，通途的校验编译只用上面这条命令，不会带上你在命令行里加的设置。
 8. **Bash 跑不起来就不修**：第一条 Bash 命令若报沙箱错误、命令找不到一类与论文无关的失败，不要凭猜测改文件。立刻结束会话，说明「无法编译验证」，写出你判断的原因与建议改法，不落任何编辑。
 
 ## 缺失源码引用的判断
@@ -41,11 +41,11 @@ version: 8
 
 以下模式在真实论文上出现过，处置方式经过验证：
 
-1. **pdfTeX 专有原语**：驱动器已在注入前删掉赋值形态的 `\pdfoutput=1`、`\pdfcompresslevel`、`\pdfminorversion`、`\pdfobjcompresslevel`（`DROPPED_ASSIGNMENTS`）与 `\pdfinfo{…}`（`DROPPED_COMMANDS`）。仍出现 `Undefined control sequence`（常连锁出 `Missing \begin{document}`）说明是变体漏网（写在别的宏里、别的 pdfTeX 原语）。处置：把该行注释掉（行首加 `%`），并在结束报告里点名这个变体，好让名单补上。
-2. **残留的 CJKutf8 机制**：驱动器已在注入前删掉 `CJKutf8` `CJK` `CJKspace` `CJKpunct` 这些宏包（`DROPPED_PACKAGES`）并剥掉 `\begin{CJK*}` 包裹与 `\CJKfamily`，但个别变体写法（自定义包装命令、`\AtBeginDocument` 里的加载）可能漏网，xelatex 下报 `Package CJK Error` 或 `Undefined control sequence`。处置：注释掉残留的 CJK 机制命令，正文原样保留；中文排版由注入的 xeCJK 配置负责；在结束报告里点名漏网的写法。
+1. **pdfTeX 专有原语**：通途已在注入前删掉赋值形态的 `\pdfoutput=1`、`\pdfcompresslevel`、`\pdfminorversion`、`\pdfobjcompresslevel`（`DROPPED_ASSIGNMENTS`）与 `\pdfinfo{…}`（`DROPPED_COMMANDS`）。仍出现 `Undefined control sequence`（常连锁出 `Missing \begin{document}`）说明是变体漏网（写在别的宏里、别的 pdfTeX 原语）。处置：把该行注释掉（行首加 `%`），并在结束报告里点名这个变体，好让名单补上。
+2. **残留的 CJKutf8 机制**：通途已在注入前删掉 `CJKutf8` `CJK` `CJKspace` `CJKpunct` 这些宏包（`DROPPED_PACKAGES`）并剥掉 `\begin{CJK*}` 包裹与 `\CJKfamily`，但个别变体写法（自定义包装命令、`\AtBeginDocument` 里的加载）可能漏网，xelatex 下报 `Package CJK Error` 或 `Undefined control sequence`。处置：注释掉残留的 CJK 机制命令，正文原样保留；中文排版由注入的 xeCJK 配置负责；在结束报告里点名漏网的写法。
 3. **图引用带显式扩展名但文件缺失**：如 `\includegraphics{fig.eps}` 而树里只有 `fig.pdf`，报 `File 'fig.eps' not found`。处置：确认同主干、其他扩展名的图文件确实存在，然后把引用改成存在的扩展名（或去掉扩展名交给 LaTeX 按默认顺序找）。
-4. **宏包与 xeCJK / fontspec 冲突**：驱动器已在注入前删掉 pdfTeX 专用旧宏包 `ucs` `bxcjkjatype`（`DROPPED_PACKAGES`）与 `\usepackage` 里的驱动选项 `pdftex` `dvips` `dvipdfm` `dvipdfmx`（`DROPPED_DRIVER_OPTIONS`），并给注入块加了 `\PassOptionsToPackage{no-math}{fontspec}`，避免 fontspec 与 fdsymbol 一类争 `\mathdollar`。仍出现这些模式说明是变体漏网（写在 `\RequirePackage` 之外的加载方式、`\documentclass` 的选项），按日志处理并在结束报告里点名。其余如重复定义字体命令、`inputenc`/`fontenc` 与 XeTeX 引擎不兼容：注释掉 `\usepackage[utf8]{inputenc}` 一类在 xelatex 下多余的行；其余冲突按日志逐个处理。
-5. **fontspec 按字体名找不到 texmf 里的字体**：XeTeX 按字体名查找时只问系统字体库，TeX Live 自带的字体文件不在其中，报 `Package fontspec Error: The font "..." cannot be found`，随后连锁 `Font TU/... not loadable`。按文件名（带 `.otf`/`.ttf` 扩展名）加载则经 kpsewhich 查找，`kpsewhich <文件名>` 能找到就能用。字体名写在宏包内部时，要在宏包加载前用文件名定义好同名字体命令，并让宏包内部那次定义落空。`fontawesome`（v4）内部的 `\newfontfamily{\FA}{FontAwesome}` 驱动器已在注入前处理（`PACKAGE_PRELUDES`，在 `\usepackage{fontawesome}` 前插入下面三行）；别的宏包再出这个错，照同样的写法处理，并在结束报告里点名该宏包，好让名单补上：
+4. **宏包与 xeCJK / fontspec 冲突**：通途已在注入前删掉 pdfTeX 专用旧宏包 `ucs` `bxcjkjatype`（`DROPPED_PACKAGES`）与 `\usepackage` 里的驱动选项 `pdftex` `dvips` `dvipdfm` `dvipdfmx`（`DROPPED_DRIVER_OPTIONS`），并给注入块加了 `\PassOptionsToPackage{no-math}{fontspec}`，避免 fontspec 与 fdsymbol 一类争 `\mathdollar`。仍出现这些模式说明是变体漏网（写在 `\RequirePackage` 之外的加载方式、`\documentclass` 的选项），按日志处理并在结束报告里点名。其余如重复定义字体命令、`inputenc`/`fontenc` 与 XeTeX 引擎不兼容：注释掉 `\usepackage[utf8]{inputenc}` 一类在 xelatex 下多余的行；其余冲突按日志逐个处理。
+5. **fontspec 按字体名找不到 texmf 里的字体**：XeTeX 按字体名查找时只问系统字体库，TeX Live 自带的字体文件不在其中，报 `Package fontspec Error: The font "..." cannot be found`，随后连锁 `Font TU/... not loadable`。按文件名（带 `.otf`/`.ttf` 扩展名）加载则经 kpsewhich 查找，`kpsewhich <文件名>` 能找到就能用。字体名写在宏包内部时，要在宏包加载前用文件名定义好同名字体命令，并让宏包内部那次定义落空。`fontawesome`（v4）内部的 `\newfontfamily{\FA}{FontAwesome}` 通途已在注入前处理（`PACKAGE_PRELUDES`，在 `\usepackage{fontawesome}` 前插入下面三行）；别的宏包再出这个错，照同样的写法处理，并在结束报告里点名该宏包，好让名单补上：
 
    ```latex
    \newfontfamily\FA{FontAwesome.otf}
@@ -55,8 +55,21 @@ version: 8
    ```
 
    不要用 `\let` 保存后 `\RenewDocumentCommand` 重定义 fontspec 的命令：它们的主体存在内部宏里，会被一并替换，`\let` 的拷贝仍指向它，结果是无限递归（`TeX capacity exceeded [parameter stack size]`）。
-6. **microtype 的 protrusion 遇到 TFM 字体**：XeTeX 下 microtype 对部分编码（如 `TS1`）用字形名描述突出量，需要 `\XeTeXglyph`，而传统 Type1 字体（Times 的 `ptm` 等，会议模板常把 `\rmdefault` 设成它）是 TFM 字体，报 `Cannot use XeTeXglyph with <字体名>; not a native platform font`，紧接着 `Missing number, treated as zero`。驱动器已在注入前给 `\usepackage{microtype}` 补上 `protrusion=false`（`ADDED_OPTIONS`；作者自己写了 `protrusion=…` 的不动）。仍出现说明是变体漏网（作者写了 `protrusion=true`、模板 `.sty` 内部加载 microtype、`\microtypesetup`）。处置：改成 `protrusion=false`，并在结束报告里点名漏网的写法。
+6. **microtype 的 protrusion 遇到 TFM 字体**：XeTeX 下 microtype 对部分编码（如 `TS1`）用字形名描述突出量，需要 `\XeTeXglyph`，而传统 Type1 字体（Times 的 `ptm` 等，会议模板常把 `\rmdefault` 设成它）是 TFM 字体，报 `Cannot use XeTeXglyph with <字体名>; not a native platform font`，紧接着 `Missing number, treated as zero`。通途已在注入前给 `\usepackage{microtype}` 补上 `protrusion=false`（`ADDED_OPTIONS`；作者自己写了 `protrusion=…` 的不动）。仍出现说明是变体漏网（作者写了 `protrusion=true`、模板 `.sty` 内部加载 microtype、`\microtypesetup`）。处置：改成 `protrusion=false`，并在结束报告里点名漏网的写法。
 
 ## 结束时
 
-用一段话说清楚：改了哪些文件的哪几处、为什么、你自己最后一次编译的结论。改了 `<主文件>` 之外的文件要单独点名。不要粘贴命令输出，transcript 已由驱动器落盘。
+结束前在当前目录写 `notes.json`，逐条记下这次遇到的问题：
+
+```json
+{"notes": [{"where": "...", "problem": "...", "resolution": "...", "suggestion": "..."}]}
+```
+
+- `where`：问题的位置，写文件名与行号，或者一段原文。
+- `problem`：遇到的问题，例如编译错误的原因、规则没有覆盖的写法。
+- `resolution`：这次怎样处理的。
+- `suggestion`：预期的解决方法，写明应该修改 skill、规则或校验脚本的哪一处；没有时写空串。
+
+没有遇到问题时写 `{"notes": []}`。
+
+最后用一段话说清楚：改了哪些文件的哪几处、为什么、你自己最后一次编译的结论。改了 `<主文件>` 之外的文件要单独点名。不要粘贴命令输出，会话记录已由通途写进日志。

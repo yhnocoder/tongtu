@@ -4,7 +4,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from .common import CompileReport, FixSession, Manifest
+from .common import CompileReport, Manifest, Session
 
 
 class CompileStatus(StrEnum):
@@ -16,7 +16,7 @@ class CompileManifest(Manifest):
     status: CompileStatus
     report: CompileReport | None = None
     baseline: CompileReport | None = None
-    fix_session: FixSession | None = None
+    fix_session: Session | None = None
 
 
 class AnchorKind(StrEnum):

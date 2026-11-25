@@ -12,8 +12,6 @@ from tongtu.artifacts.compile import CompileManifest
 from tongtu.artifacts.fetch import FetchManifest
 from tongtu.artifacts.mask import MaskManifest
 from tongtu.artifacts.precompile import PrecompileManifest
-from tongtu.artifacts.review import ReviewManifest
-from tongtu.artifacts.survey import SurveyManifest
 from tongtu.artifacts.translate import TranslateManifest
 from tongtu.cli import stage_summary
 from tongtu.manifests import load_manifest
@@ -24,9 +22,7 @@ MANIFEST_CLASSES: dict[str, type[Manifest]] = {
     "fetch": FetchManifest,
     "precompile": PrecompileManifest,
     "mask": MaskManifest,
-    "survey": SurveyManifest,
     "translate": TranslateManifest,
-    "review": ReviewManifest,
     "compile": CompileManifest,
 }
 
