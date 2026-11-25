@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -1207,6 +1208,9 @@ def wire_api(monkeypatch: pytest.MonkeyPatch, feed: str = LATEST_FEED, status_co
     return urls
 
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def run_with_home(
     home: Path, monkeypatch: pytest.MonkeyPatch, *arguments: str
 ) -> tuple[object, list[RunOptions], list[str]]:
@@ -1473,7 +1477,7 @@ def test_workdir_holding_another_paper_is_a_usage_error(
     result, _, calls = run_with_home(tmp_path / "home", monkeypatch, *head, *paper, "--workdir", str(workdir))
     assert result.exit_code == 2
     assert calls == []
-    stderr = " ".join(result.stderr.replace("│", " ").split())
+    stderr = " ".join(ANSI_ESCAPE_RE.sub("", result.stderr).replace("│", " ").split())
     assert f"holds {holds}, but the command asks for {asks}" in stderr
 
 
