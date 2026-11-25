@@ -5,11 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-export const STAGES = ["fetch", "precompile", "mask", "survey", "translate", "review", "compile"] as const;
+export const STAGES = ["fetch", "precompile", "mask", "translate", "compile"] as const;
 export const ROOT = path.join(process.env.TONGTU_HOME || path.join(os.homedir(), ".tongtu"), "papers");
 const CACHE = path.join(os.homedir(), ".cache/tongtu-raycast");
 const ARXIV_ID = /\d{4}\.\d{4,5}(v\d+)?/;
-const SESSION_LOGS: Record<string, string> = { precompile: "precompile-fix.jsonl", review: "review.jsonl", compile: "compile-fix.jsonl" };
+const ARXIV_DIR = /^(\d{4}\.\d{4,5}|[a-z-]+(\.[A-Z]{2})?_\d{7})(v\d+)?$/;
+const SESSION_LOGS: Record<string, string> = { precompile: "precompile-fix.jsonl", translate: "translate.jsonl", compile: "compile-fix.jsonl" };
 export const ASPECT: Record<string, "3/4" | "3/2" | "16/9"> = { full: "3/4", half: "3/2", third: "16/9" };
 const HEIGHT_PER_WIDTH: Record<string, number> = { full: 4 / 3, half: 2 / 3, third: 9 / 16 };
 const ENV = {
@@ -41,12 +42,19 @@ type StageState = Stage & { outputs_present: boolean; manifest: string | null };
 type PaperStatus = {
   workdir: string;
   arxiv_id: string | null;
+  version: number | null;
   running: boolean;
   pid: number | null;
+  started_at: string | null;
+  mode: string | null;
   stages: StageState[];
-  translate_chunks: { total: number; done: number } | null;
   pdf: string | null;
+  meta: string | null;
+  glossary: string | null;
+  notes: string | null;
 };
+
+type PaperMeta = { title: string; authors: string[]; primary_category: string; published: string };
 
 const ABSENT = "absent";
 const RUN_MARKER = "running.json";
@@ -64,26 +72,35 @@ export type Paper = Meta & {
   message: string;
   stages: Stage[];
   events: string[];
-  translated: [number, number] | null;
+  started: number | null;
   added: number;
   mtime: number;
 };
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const metaPath = (id: string) => path.join(CACHE, `${id}.json`);
 const statusPath = (id: string) => path.join(CACHE, `${id}.status.json`);
 const run = promisify(execFile);
 const repoDir = () => prefs().repo.replace(/^~/, os.homedir());
 export const normalize = (paper: string) => paper.match(ARXIV_ID)?.[0] ?? paper.trim();
 
+function unversioned(name: string): boolean {
+  const match = ARXIV_DIR.exec(name);
+  return match !== null && match[3] === undefined;
+}
+
 export function start(paper: string) {
   const id = normalize(paper);
   const repo = repoDir();
-  const dir = path.join(ROOT, id);
+  const name = id.replace(/\//g, "_");
+  const locate = unversioned(name)
+    ? `dirs=(${q(ROOT)}/${q(name)}v*(N/n)); dir=\${dirs[-1]:-${q(ROOT)}}`
+    : `dir=${q(path.join(ROOT, name))}`;
   const script = [
-    `if uv run --directory ${q(repo)} tongtu run ${q(id)} > /dev/null 2>&1`,
-    `then terminal-notifier -title Tongtu -message ${q(`${id} translated`)} -open ${q(`file://${dir}/out`)}`,
-    `else terminal-notifier -title Tongtu -message ${q(`${id} failed`)} -open ${q(`file://${dir}`)}; fi`,
+    `uv run --directory ${q(repo)} tongtu run ${q(id)} > /dev/null 2>&1; code=$?`,
+    locate,
+    `if [ $code -eq 0 ]`,
+    `then terminal-notifier -title Tongtu -message ${q(`${id} translated`)} -open "file://$dir/out"`,
+    `else terminal-notifier -title Tongtu -message ${q(`${id} failed`)} -open "file://$dir"; fi`,
   ].join("; ");
   spawn("/bin/zsh", ["-c", script], { detached: true, stdio: "ignore", env: ENV }).unref();
 }
@@ -122,11 +139,10 @@ function mtime(file: string): number {
   }
 }
 
-function pdfPath(dir: string): string {
-  const pdf = path.join(dir, "out", `${path.basename(dir)}.zh.pdf`);
-  const legacy = path.join(dir, "out", "zh.pdf");
-  // why(#119): 改名前编译的论文只有 out/zh.pdf
-  return !fs.existsSync(pdf) && fs.existsSync(legacy) ? legacy : pdf;
+function readMeta(file: string | null | undefined): Meta {
+  const meta = JSON.parse((file && read(file)) || "null") as PaperMeta | null;
+  if (!meta) return { title: "", authors: [], category: "", published: "" };
+  return { title: meta.title, authors: meta.authors, category: meta.primary_category, published: meta.published.slice(0, 10) };
 }
 
 function manifestsKey(dir: string): string {
@@ -152,11 +168,11 @@ function sessionEvents(dir: string, stage: string): string[] {
   if (!file) return [];
   const events: string[] = [];
   for (const line of read(path.join(dir, "logs", file)).split("\n")) {
-    if (!line.startsWith('{"type":"assistant"')) continue;
-    for (const block of JSON.parse(line).message?.content ?? []) {
-      if (block.type === "text" && block.text.trim()) events.push(block.text.trim());
-      if (block.type === "tool_use") events.push(`${block.name}: ${block.input.command ?? block.input.file_path ?? block.input.description ?? ""}`);
-    }
+    if (!line.startsWith("{")) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event.type === "tool" && typeof event.summary === "string") events.push(event.summary);
+    } catch {}
   }
   return events.slice(-8);
 }
@@ -184,13 +200,12 @@ async function inspect(id: string): Promise<Paper> {
   }
   const done = stages.length - (failed ? 1 : 0);
   const stage = failed?.name ?? STAGES[done] ?? "compile";
-  const meta: Meta = { title: "", authors: [], category: "", published: "", ...JSON.parse(read(metaPath(id)) || "{}") };
   const pid = status?.running ? status.pid : null;
   return {
-    ...meta,
+    ...readMeta(status?.meta),
     id,
     dir,
-    pdf: pdfPath(dir),
+    pdf: status?.pdf ?? "",
     pid,
     status: pid ? "running" : failed ? "failed" : done === STAGES.length ? "ok" : "partial",
     stage,
@@ -198,7 +213,7 @@ async function inspect(id: string): Promise<Paper> {
     message: failed ? `${failed.status} ${failed.message}`.trim() : error,
     stages,
     events: sessionEvents(dir, stage),
-    translated: stage === "translate" && status?.translate_chunks ? [status.translate_chunks.done, status.translate_chunks.total] : null,
+    started: pid && status?.started_at ? Date.parse(status.started_at) : null,
     added: mtime(path.join(dir, "build/manifests/fetch.json")) || mtime(dir),
     mtime: latest || mtime(dir),
   };
@@ -207,7 +222,7 @@ async function inspect(id: string): Promise<Paper> {
 export async function scan(): Promise<Paper[]> {
   let ids: string[] = [];
   try {
-    ids = fs.readdirSync(ROOT, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    ids = fs.readdirSync(ROOT, { withFileTypes: true }).filter((e) => e.isDirectory() && !unversioned(e.name)).map((e) => e.name);
   } catch {}
   const papers = await Promise.all(ids.map((id) => inspect(id)));
   return papers.sort((a, b) => b.mtime - a.mtime);
@@ -221,27 +236,6 @@ export function groupKey(p: Paper, by: Prefs["groupBy"]): string {
   }
   if (by === "category") return p.category || "unknown";
   return "";
-}
-
-export async function fetchMeta(papers: Paper[]): Promise<boolean> {
-  const missing = papers.filter((p) => !p.title && ARXIV_ID.test(p.id)).map((p) => p.id);
-  if (!missing.length) return false;
-  const xml = await (await fetch(`https://export.arxiv.org/api/query?id_list=${missing.join(",")}&max_results=${missing.length}`)).text();
-  fs.mkdirSync(CACHE, { recursive: true });
-  for (const entry of xml.split("<entry>").slice(1)) {
-    const id = entry.match(/<id>http:\/\/arxiv\.org\/abs\/([^<]+)<\/id>/)?.[1] ?? "";
-    const match = missing.find((m) => id === m || id.startsWith(m + "v"));
-    const title = entry.match(/<title>([\s\S]*?)<\/title>/)?.[1].replace(/\s+/g, " ").trim();
-    if (!match || !title) continue;
-    const meta: Meta = {
-      title,
-      authors: [...entry.matchAll(/<name>([^<]*)<\/name>/g)].map((m) => m[1].trim()),
-      category: entry.match(/<arxiv:primary_category[^>]*term="([^"]+)"/)?.[1] ?? "",
-      published: entry.match(/<published>([^<]*)<\/published>/)?.[1].slice(0, 10) ?? "",
-    };
-    fs.writeFileSync(metaPath(match), JSON.stringify(meta));
-  }
-  return true;
 }
 
 const rendering = new Set<string>();

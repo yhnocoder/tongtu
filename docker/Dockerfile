@@ -164,7 +164,7 @@ RUN curl -fL --retry 3 -o /usr/local/bin/agentrun \
     && agentrun --version
 ENV AGENTRUN_SANDBOX=off
 
-# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/papers/<arxiv_id>，宿主挂进来即可续跑。
+# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/papers/<编号加版本号>，宿主挂进来即可续跑。
 ENV PATH="/opt/tongtu/.venv/bin:${PATH}" \
     TONGTU_HOME=/work
 

@@ -58,7 +58,7 @@ docker pull ghcr.io/yhnocoder/tongtu:0.1.0      # 某个 tag（git tag 即版本
 ## 运行
 
 论文工作目录不在仓库里。镜像内 `TONGTU_HOME=/work`，把宿主的 `~/.tongtu` 挂到 `/work`
-即可，论文落在 `/work/papers/<arxiv_id>`；`build/` 与 `out/` 都在挂载卷上，容器随时可丢、
+即可，论文落在 `/work/papers/<编号加版本号>`（例如 `/work/papers/2401.01234v2`）；`build/` 与 `out/` 都在挂载卷上，容器随时可丢、
 下次原样重跑即断点续跑。
 
 ```bash
