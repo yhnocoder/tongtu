@@ -37,6 +37,7 @@ class RunMarker(BaseModel):
 class PaperStatus(BaseModel):
     workdir: Path
     arxiv_id: str | None = None
+    version: int | None = None
     running: bool
     pid: int | None = None
     stages: list[StageState]

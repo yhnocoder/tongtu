@@ -136,6 +136,10 @@ class Workdir:
         return self.out / f"{self.path.name}.zh.anchors.json"
 
     @property
+    def meta(self) -> Path:
+        return self.out / f"{self.path.name}.meta.json"
+
+    @property
     def zh_synctex(self) -> Path:
         return self.build / "zh.synctex.gz"
 

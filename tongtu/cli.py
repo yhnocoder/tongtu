@@ -9,7 +9,7 @@ import subprocess
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -30,16 +30,17 @@ from rich.progress import (
 from rich.table import Column
 from rich.text import Text
 
-from . import __version__, validation
+from . import __version__, arxiv, validation
 from .artifacts.common import Manifest
 from .artifacts.compile import CompileManifest
-from .artifacts.fetch import FetchManifest
+from .artifacts.fetch import FetchManifest, PaperMeta
 from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
 from .artifacts.status import ABSENT_STATUS, PaperStatus, RunCommand, RunMarker, StageState
 from .artifacts.survey import SurveyManifest
 from .artifacts.translate import ChunkTranslateStatus, TranslateManifest
-from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present
+from .arxiv import PaperArgumentError, PaperInput, parse_paper_argument
+from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present, papers_dir
 from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest, write_manifest
@@ -48,7 +49,6 @@ from .model.work import AGENTRUN_EXECUTABLE
 from .pipeline import STAGES, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, review, survey, translate
-from .stages.fetch import PaperArgumentError, PaperInput, parse_paper_argument
 from .stages.translate import ChunkProgress, ChunkProgressState
 from .workdir import ENCODING, Workdir, WorkdirError, resolve
 
@@ -130,6 +130,7 @@ app = typer.Typer(
 class RunOptions:
     paper: PaperInput
     workdir: Workdir
+    meta: PaperMeta | None
     glossary: tuple[Path, ...]
     jobs: int
     no_terms: bool
@@ -241,7 +242,7 @@ class StageDisplay:
 
 
 def _fetch_entry(options: RunOptions, display: StageDisplay) -> Manifest:
-    return fetch.run(options.paper, options.workdir)
+    return fetch.run(options.paper, options.workdir, options.meta)
 
 
 def _precompile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
@@ -324,6 +325,7 @@ NoTermsOpt = Annotated[
 NoReviewOpt = Annotated[
     bool, typer.Option("--no-review", help="skip the review session; the translation enters compile unchanged")
 ]
+LatestOpt = Annotated[bool, typer.Option("--latest", help="query arXiv for the latest version and use it")]
 DevOpt = Annotated[
     bool, typer.Option("--dev", help="use ~/.tongtu-dev as TONGTU_HOME (config.toml, glossary.json and papers/)")
 ]
@@ -352,16 +354,49 @@ def _apply_dev(dev: bool) -> None:
 def _workdir_name(paper_input: PaperInput) -> str:
     if paper_input.source_dir is not None:
         return paper_input.source_dir.name
+    if paper_input.arxiv_id is not None and paper_input.version is not None:
+        return arxiv.versioned_id(paper_input.arxiv_id, paper_input.version)
     return paper_input.arxiv_id or ""
 
 
-def _paper_workdir(paper: str, workdir: Path | None) -> tuple[PaperInput, Workdir]:
+def _local_version(arxiv_id: str, workdir: Path | None) -> int | None:
+    if workdir is None:
+        return arxiv.latest_local_version(papers_dir(), arxiv_id)
+    manifest = load_manifest(Workdir(resolve(workdir=workdir)).manifest_path("fetch"), FetchManifest)
+    if manifest is None or manifest.arxiv_id != arxiv_id:
+        return None
+    return manifest.version
+
+
+def _query_latest(arxiv_id: str) -> PaperMeta:
+    try:
+        return arxiv.query(arxiv_id)
+    except arxiv.ArxivError as error:
+        error_console.print(f"cannot determine the version of {arxiv_id}: {error}")
+        raise typer.Exit(EXIT_FAILURE) from error
+
+
+def _paper_workdir(
+    paper: str, workdir: Path | None, *, latest: bool = False, may_query: bool = False
+) -> tuple[PaperInput, Workdir, PaperMeta | None]:
     try:
         paper_input = parse_paper_argument(paper)
-        path = resolve(_workdir_name(paper_input), workdir)
     except (PaperArgumentError, WorkdirError) as error:
         raise typer.BadParameter(str(error)) from error
-    return paper_input, Workdir(path)
+    if latest and paper_input.version is not None:
+        raise typer.BadParameter("--latest cannot be combined with an arXiv id that names a version")
+    meta = None
+    if paper_input.arxiv_id is not None and paper_input.version is None:
+        version = None if latest else _local_version(paper_input.arxiv_id, workdir)
+        if version is None and may_query:
+            meta = _query_latest(paper_input.arxiv_id)
+            version = meta.version
+        paper_input = replace(paper_input, version=version)
+    try:
+        path = resolve(_workdir_name(paper_input), workdir)
+    except WorkdirError as error:
+        raise typer.BadParameter(str(error)) from error
+    return paper_input, Workdir(path), meta
 
 
 def _options(
@@ -371,11 +406,15 @@ def _options(
     jobs: int,
     no_terms: bool,
     no_review: bool = False,
+    *,
+    latest: bool = False,
+    may_query: bool = False,
 ) -> RunOptions:
-    paper_input, paper_workdir = _paper_workdir(paper, workdir)
+    paper_input, paper_workdir, meta = _paper_workdir(paper, workdir, latest=latest, may_query=may_query)
     return RunOptions(
         paper=paper_input,
         workdir=paper_workdir,
+        meta=meta,
         glossary=tuple(glossary or ()),
         jobs=jobs,
         no_terms=no_terms,
@@ -389,8 +428,11 @@ def _elapsed_text(seconds: float) -> str:
 
 def stage_summary(manifest: Manifest) -> str:
     if isinstance(manifest, FetchManifest):
-        files = f"{len(manifest.tex_files)} tex files"
-        return f"{manifest.kind}, {files}" if manifest.kind else files
+        parts = [f"v{manifest.version}"] if manifest.version is not None else []
+        if manifest.kind:
+            parts.append(manifest.kind)
+        parts.append(f"{len(manifest.tex_files)} tex files")
+        return ", ".join(parts)
     if isinstance(manifest, PrecompileManifest):
         parts = [f"{manifest.report.pages} pages"] if manifest.report else []
         if manifest.fix_session is not None:
@@ -480,10 +522,11 @@ def run(
     jobs: JobsOpt = DEFAULT_JOBS,
     no_terms: NoTermsOpt = False,
     no_review: NoReviewOpt = False,
+    latest: LatestOpt = False,
     dev: DevOpt = False,
 ) -> None:
     _apply_dev(dev)
-    options = _options(paper, workdir, glossary, jobs, no_terms, no_review)
+    options = _options(paper, workdir, glossary, jobs, no_terms, no_review, latest=latest, may_query=True)
     console.print(f"workdir {options.workdir.path}")
     with _running(options.workdir, RunCommand.RUN):
         if from_stage is not None:
@@ -523,7 +566,7 @@ def stage(
         return
     if paper is None:
         raise typer.BadParameter("missing argument PAPER (arXiv id / arXiv URL / local source directory)")
-    options = _options(paper, workdir, glossary, jobs, no_terms)
+    options = _options(paper, workdir, glossary, jobs, no_terms, may_query=name.value == "fetch")
     missing = [
         upstream for upstream in STAGES[: STAGES.index(name.value)] if not outputs_present(options.workdir, upstream)
     ]
@@ -583,7 +626,7 @@ JsonOpt = Annotated[
 @app.command()
 def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_json: JsonOpt = False) -> None:
     _apply_dev(dev)
-    paper_input, paper_workdir = _paper_workdir(paper, workdir)
+    paper_input, paper_workdir, _ = _paper_workdir(paper, workdir)
     stages = []
     for name in STAGES:
         manifest_path = paper_workdir.manifest_path(name)
@@ -602,6 +645,7 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_
     snapshot = PaperStatus(
         workdir=paper_workdir.path,
         arxiv_id=paper_input.arxiv_id,
+        version=paper_input.version,
         running=pid is not None,
         pid=pid,
         stages=stages,

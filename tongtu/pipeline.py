@@ -19,7 +19,7 @@ STAGE_OUTPUTS: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
 }
 
 STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path] | str, ...]] = {
-    "fetch": (lambda w: w.src, lambda w: w.eprint),
+    "fetch": (lambda w: w.src, lambda w: w.eprint, lambda w: w.meta),
     "precompile": (
         lambda w: w.sandbox("tex"),
         lambda w: w.precompile_tex,
