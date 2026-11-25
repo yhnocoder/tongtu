@@ -466,7 +466,7 @@ dropout 率为 $0.1$。</code></pre></div>
         <table>
           <thead><tr><th>类别</th><th>检查什么</th></tr></thead>
           <tbody>
-            <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。每个 <code>⟦CAP-n⟧</code> 位于行首，所在行没有其他占位符：compile 换回图表标题时取走 CAP 所在的整行。</td></tr>
+            <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。每个 <code>⟦CAP-n⟧</code> 位于行首，所在行没有其他占位符，含 CAP 的段落行数与原文相同：compile 换回图表标题时取走 CAP 所在的整行。不含 CAP 的段落不检查行数。</td></tr>
             <tr><td>公式</td><td class="wrap">每段的行内公式与原文逐个相同。</td></tr>
             <tr><td>章节名</td><td class="wrap">三级章节命令的标题与原文逐字相同。</td></tr>
             <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。</td></tr>

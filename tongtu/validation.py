@@ -317,6 +317,7 @@ def check(
             Problem(Category.STRUCTURE, f"{where}, {failure.check}: {failure.message}")
             for failure in _structure_failures(source_paragraph, translation_paragraph)
         )
+        problems.extend(_caption_paragraph_problems(where, source_paragraph, translation_paragraph))
         problems.extend(_paragraph_problems(where, source_paragraph, translation_paragraph, terms, do_not_translate))
         if not _needs_translation(source_paragraph):
             continue
@@ -363,6 +364,23 @@ def _caption_line_problems(translation: str) -> list[Problem]:
                     )
                 )
     return problems
+
+
+def _caption_paragraph_problems(where: str, source: str, translation: str) -> list[Problem]:
+    if not any(match.group(1) == CAPTION_ID_PREFIX for match in TOKEN_RE.finditer(source)):
+        return []
+    source_lines = source.count("\n") + 1
+    translation_lines = translation.count("\n") + 1
+    if source_lines == translation_lines:
+        return []
+    return [
+        Problem(
+            Category.STRUCTURE,
+            f"{where}, {CHECK_CAPTION_LINES}: a caption must be written on one line, because compile takes the whole "
+            "line of the caption placeholder as the caption; this paragraph must have as many lines as the source, "
+            f"which has {source_lines} lines, the translation has {translation_lines}",
+        )
+    ]
 
 
 def _paragraph_problems(

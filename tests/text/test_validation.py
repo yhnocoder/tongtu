@@ -76,7 +76,7 @@ def test_structurally_identical_translation_passes_every_check() -> None:
 
 
 def test_missing_placeholder_fails_only_the_placeholder_check() -> None:
-    translation = TRANSLATION.replace("⟦BLK-0⟧\n", "")
+    translation = TRANSLATION.replace("⟦BLK-0⟧", "图")
     assert checks(SOURCE, translation) == (validation.CHECK_PLACEHOLDERS,)
     assert message(SOURCE, translation, validation.CHECK_PLACEHOLDERS) == "translation is missing ⟦BLK-0⟧"
 
@@ -252,7 +252,7 @@ def test_a_different_paragraph_count_is_the_only_problem_reported() -> None:
 
 
 def test_a_structural_difference_is_reported_for_its_paragraph_only() -> None:
-    report = validation.check(EN, ZH.replace("⟦BLK-12⟧\n", ""))
+    report = validation.check(EN, ZH.replace("⟦BLK-12⟧", "图"))
     assert categories(report) == [validation.Category.STRUCTURE]
     assert report.problems[0].message.startswith("paragraph starting at line 4 of the translation, placeholders")
 
@@ -288,6 +288,50 @@ def test_a_placeholder_on_a_caption_line_is_a_structure_problem() -> None:
         "line 4 of the translation, caption_lines: the line of ⟦CAP-3⟧ also holds ⟦BLK-12⟧; "
         "a caption line may hold no other placeholder"
     )
+
+
+CAPTION_PARAGRAPHS: list[tuple[str, str, str]] = [
+    (
+        "⟦BLK-1⟧\n⟦CAP-0⟧ Overview of the whole training pipeline.\n\n⟦BLK-3⟧",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程的概览。\n\n⟦BLK-3⟧",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程\n的概览。\n\n⟦BLK-3⟧",
+    ),
+    (
+        "⟦BLK-1⟧\n⟦CAP-0⟧ Overview of the whole training pipeline.\n⟦BLK-2⟧\nWe train the model on a large corpus of text.",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程的概览。\n⟦BLK-2⟧\n我们在大规模文本语料上训练模型。",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程\n的概览。\n⟦BLK-2⟧\n我们在大规模文本语料上训练模型。",
+    ),
+    (
+        "⟦BLK-1⟧\n⟦CAP-0⟧ Overview of the whole training pipeline.\nWe train the model on a large corpus of text.",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程的概览。\n我们在大规模文本语料上训练模型。",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程\n的概览。\n我们在大规模文本语料上训练模型。",
+    ),
+    (
+        "⟦BLK-1⟧\n⟦CAP-0⟧ Overview of the whole training pipeline.\n⟦BLK-2⟧\n⟦CAP-1⟧ Results on the held out benchmarks.",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程的概览。\n⟦BLK-2⟧\n⟦CAP-1⟧ 在留出基准上的结果。",
+        "⟦BLK-1⟧\n⟦CAP-0⟧ 整个训练流程的概览。\n⟦BLK-2⟧\n⟦CAP-1⟧ 在留出基准\n上的结果。",
+    ),
+]
+
+
+def first_paragraph_lines(text: str) -> int:
+    return text.split("\n\n")[0].count("\n") + 1
+
+
+@pytest.mark.parametrize(("source", "correct", "split"), CAPTION_PARAGRAPHS)
+def test_a_caption_split_over_two_lines_is_a_structure_problem(source: str, correct: str, split: str) -> None:
+    assert validation.check(source, correct).ok
+    report = validation.check(source, split)
+    assert [problem.category for problem in report.problems] == [validation.Category.STRUCTURE]
+    message = report.problems[0].message
+    assert message.startswith("paragraph starting at line 1 of the translation, caption_lines: ")
+    expected = f"which has {first_paragraph_lines(source)} lines, the translation has {first_paragraph_lines(split)}"
+    assert message.endswith(expected)
+
+
+def test_line_counts_of_paragraphs_without_captions_are_free() -> None:
+    source = "We train the model on a large corpus of text.\nThen we evaluate it on many benchmarks."
+    assert validation.check(source, "我们在大规模文本语料上训练模型，然后在许多基准上评测。").ok
 
 
 def test_the_paragraph_line_counts_lines_of_the_translation() -> None:
