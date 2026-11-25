@@ -1062,454 +1062,329 @@ figcaption {
 }
 
 /* ========================================================================
-   通途新增组件（模板之外）。写法见 pages/model.html 与 pages/cli.html。
-   .panel      紧凑卡片：一个模块一块，内部用 .label 分节
-   .panel-head 卡片标题行：.name 名称、.one 一句话说明
-   .label      小号大写的节标题
-   .cols       卡片内两列，760px 以下变单列
-   .io         术语 / 说明两列表（dl）
-   .fine       灰色小字说明
-   .rules      带编号的约束条目
-   pre .k/.c   签名代码块里的关键字与注释着色（不经 Prism 的 pre 用）
-   .man        手册体：h2 小号等宽、dl 缩进、.ex 示例
-   .term .*    终端 mockup 里的补充着色：.p 提示行 .h 表头 .ok .bad .run
-   .v2         pages/model.v2.html 专用的视觉风格：米白底、衬线标题、陶土色强调；
-               只作用于 body.v2 下，其他页面不受影响
-   .v2 .sheet  单栏卡片：h2 标题 + .sheet-sub 副标题，h3 分节
-   .v2 .params 签名代码块下面的参数表：参数 | 含义
+   通途新增组件（模板之外）。写法见 pages/design.html。
+   main.doc    左侧目录栏加正文的两栏布局；1040px 以下单列，目录排在正文前
+   .toc        目录：.toc-label 标题，li.sub 二级条目
+   .flow       阶段流程条：.n 序号、.name 阶段名、.what 做什么、.who 由谁做；
+               li.agent 标出启动 agent 会话的阶段
+   .stage      一个阶段的规格：header 写阶段名与一句话说明，dl.spec 左列标签、右列内容
+   .st         状态值：.ok 成功，.bad 失败
+   .why        「理由」说明，b 是标签
+   .pair       两列对照，.pair-label 写每列的名字；760px 以下单列
+   td.wrap     表格里允许换行的单元格；main.doc 的表格首列不换行
+   pre .c      不经 Prism 的代码块里的说明文字
+   .term .ok   终端 mockup 里的成功标记
    ======================================================================== */
 
-.panel {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 1.1rem 1.3rem 1.2rem;
-  margin: 0 0 1.25rem;
-  font-size: 0.9375rem;
-  line-height: 1.7;
+main.doc {
+  max-width: 76rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2rem;
 }
 
-.panel p,
-.panel ol,
-.panel ul {
+.doc-body {
+  min-width: 0;
+}
+
+.toc {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.toc-label {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
   margin: 0 0 0.6rem;
 }
 
-.panel > :last-child,
-.panel .cols > div > :last-child {
-  margin-bottom: 0;
+.toc ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
-.panel-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.6rem;
+.toc li {
+  margin: 0;
 }
 
-.panel-head .name {
-  font-family: var(--kai);
-  font-size: 1.25rem;
-  font-weight: 700;
-}
-
-.panel-head .one {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.label {
+.toc a {
   display: block;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  padding: 0.2rem 0;
+  color: var(--fg);
+  border-bottom: 0;
+}
+
+.toc a:hover {
+  color: var(--accent);
+}
+
+.toc .sub a {
+  padding-left: 1rem;
   color: var(--muted);
-  margin: 1rem 0 0.35rem;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
 }
 
-.panel-head + .label,
-.panel > .label:first-child,
-.cols > div > .label:first-child {
-  margin-top: 0;
+.toc .sub a:hover {
+  color: var(--accent);
 }
 
-.cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 1.5rem;
-}
-
-@media (max-width: 760px) {
-  .cols {
-    grid-template-columns: minmax(0, 1fr);
+@media (min-width: 1040px) {
+  main.doc {
+    grid-template-columns: 13rem minmax(0, 1fr);
+    gap: 3.5rem;
+  }
+  .toc {
+    position: sticky;
+    top: 1.5rem;
+    align-self: start;
+    max-height: calc(100vh - 3rem);
+    overflow-y: auto;
+    padding-top: 4.5rem;
   }
 }
 
-.panel pre,
-.panel .code-scroll {
-  margin: 0 0 0.8rem;
+@media (max-width: 1039px) {
+  .toc {
+    order: 1;
+    border-block: 1px solid var(--line);
+    padding-block: 1rem;
+  }
+  .doc-body {
+    display: contents;
+  }
+  .doc-body > .nav,
+  .doc-body > h1 {
+    order: 0;
+  }
+  .doc-body > section {
+    order: 2;
+  }
+  .toc ol {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.1rem 1.1rem;
+  }
+  .toc .sub a {
+    padding-left: 0;
+  }
 }
 
-.panel pre {
-  background: var(--code-bg);
-  font-size: 0.8rem;
-  line-height: 1.55;
-  padding: 0.8rem 1rem;
+main.doc h1 {
+  margin-bottom: 0;
 }
 
-pre .k {
+main.doc section {
+  scroll-margin-top: 1.5rem;
+}
+
+main.doc td:first-child {
+  white-space: nowrap;
+}
+
+main.doc td.wrap {
+  white-space: normal;
+  min-width: 14em;
+}
+
+.flow {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.5rem;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.flow li {
+  margin: 0;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.8rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.flow .n {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.flow .name {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.flow .what {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.flow .who {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted);
+  margin-top: auto;
+  padding-top: 0.35rem;
+}
+
+.flow li.agent {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.flow li.agent .who {
   color: var(--accent);
   font-weight: 700;
 }
 
-pre .c {
-  color: var(--muted);
-  font-style: italic;
+@media (max-width: 760px) {
+  .flow {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
-.io {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.3rem 0.9rem;
-  margin: 0 0 0.6rem;
-  font-size: 0.875rem;
+.stage {
+  border-top: 1px solid var(--line);
+  margin-top: 2rem;
 }
 
-.io dt {
+.stage > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.9rem;
+  padding: 1rem 0 0.4rem;
+}
+
+.stage > header h3 {
+  margin: 0;
   font-family: var(--mono);
-  font-size: 0.8rem;
-  padding-top: 0.15em;
+  font-size: 1.25rem;
 }
 
-.io dd {
+.stage > header p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.spec {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
   margin: 0;
 }
 
-.fine {
+.spec > dt {
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
 }
 
-.rules {
-  padding-left: 1.4rem;
-  font-size: 0.9rem;
+.spec > dd {
+  margin: 0;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
-.rules li {
-  margin-bottom: 0.45rem;
+.spec > dd > * {
+  margin: 0;
 }
 
-.man h2 {
+@media (max-width: 640px) {
+  .spec {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .spec > dt {
+    padding-bottom: 0.2rem;
+  }
+  .spec > dd {
+    border-top: 0;
+    padding-top: 0;
+  }
+}
+
+.st {
   font-family: var(--mono);
-  font-size: 0.8rem;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  font-weight: 500;
-  margin: 2.5rem 0 0.5rem;
-}
-
-.man h2::before {
-  content: none;
-}
-
-.man h2 small {
-  font-family: var(--font);
-  font-size: 0.8rem;
-  letter-spacing: 0;
-  font-weight: 400;
-  margin-left: 0.5rem;
-}
-
-.man p {
-  font-size: 0.9rem;
-  margin: 0.3rem 0 0.3rem 2em;
-}
-
-.man .lead {
-  margin-left: 0;
-}
-
-.man dl {
-  margin: 0 0 0 2em;
-  font-size: 0.9rem;
-}
-
-.man dt {
-  font-family: var(--mono);
-  font-size: 0.85rem;
-  margin-top: 0.6rem;
-}
-
-.man dd {
-  margin: 0.15rem 0 0 2em;
-}
-
-.man dd p {
-  margin-left: 0;
-}
-
-.man dd table {
-  font-size: 0.875rem;
-  margin: 0.3rem 0;
-}
-
-.man dd td {
-  padding: 0.15rem 0.9rem 0.15rem 0;
-  border: 0;
-}
-
-.man dd td:first-child {
-  color: var(--muted);
+  font-size: 0.8125rem;
+  padding: 0.05em 0.45em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
   white-space: nowrap;
 }
 
-.man pre,
-.man .code-scroll {
-  margin: 0 0 0.5rem;
+.st.ok {
+  color: var(--diff-ins-edge);
+  border-color: var(--diff-ins-edge);
 }
 
-.man pre {
-  font-size: 0.8rem;
-  line-height: 1.6;
-  padding: 0.8rem 1rem;
+.st.bad {
+  color: var(--diff-del-edge);
+  border-color: var(--diff-del-edge);
 }
 
-.ex {
-  margin: 0.8rem 0 0.4rem 2em;
+.why {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  font-size: 0.9375rem;
 }
 
-.man dd .ex {
-  margin-left: 0;
-}
-
-.ex .cap {
-  font-size: 0.875rem;
-  margin: 0 0 0.3rem;
-}
-
-.ex .term {
-  font-size: 0.8rem;
-  line-height: 1.6;
-  padding: 0.8rem 1rem;
-}
-
-.term .p {
-  color: var(--term-dim);
-}
-
-.term .h {
+.why b {
+  font-family: var(--kai);
   font-weight: 700;
+  color: var(--accent);
+  margin-right: 0.6em;
+  letter-spacing: 0.08em;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.pair > div {
+  min-width: 0;
+}
+
+.pair .code-scroll {
+  margin: 0;
+}
+
+.pair-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+
+@media (max-width: 760px) {
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+pre .c {
+  color: var(--muted);
 }
 
 .term .ok {
   color: #8fcf9a;
-}
-
-.term .bad {
-  color: #f0796a;
-}
-
-.term .run {
-  color: #7fc7d9;
-}
-
-@media (max-width: 600px) {
-  .man p,
-  .man dl,
-  .ex {
-    margin-left: 0;
-  }
-  .man dd {
-    margin-left: 1em;
-  }
-  .man dd td:first-child {
-    white-space: normal;
-  }
-}
-
-.v2 {
-  --bg: #faf9f5;
-  --fg: #141413;
-  --muted: #5e5d59;
-  --line: rgba(20, 20, 19, 0.1);
-  --surface: #f0eee6;
-  --code-bg: #f0eee6;
-  --accent: #c6613f;
-  --accent-soft: #ebc9b7;
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.04), 0 4px 20px rgba(0, 0, 0, 0.04);
-  --code-str: #3f7050;
-  --code-num: #8a5a00;
-  --sheet-bg: #ffffff;
-  --sheet-line: rgba(20, 20, 19, 0.12);
-  --sheet-code: #f5f4ed;
-  --serif: "Source Serif 4", "Songti SC", "Noto Serif CJK SC", Georgia, serif;
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, "Noto Sans Mono CJK SC", monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  .v2 {
-    --bg: #141413;
-    --fg: #f0eee6;
-    --muted: #b0aea5;
-    --line: rgba(250, 249, 245, 0.12);
-    --surface: #262624;
-    --code-bg: #262624;
-    --accent: #d97757;
-    --accent-soft: #4a2e1c;
-    --shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 4px 20px rgba(0, 0, 0, 0.25);
-    --code-str: #9cc49a;
-    --code-num: #e0b566;
-    --sheet-bg: #1f1e1d;
-    --sheet-line: rgba(250, 249, 245, 0.14);
-    --sheet-code: #2a2927;
-  }
-}
-
-.v2 main {
-  max-width: 60rem;
-}
-
-.v2 h1,
-.v2 h2,
-.v2 h3 {
-  font-family: var(--serif);
-  letter-spacing: -0.01em;
-}
-
-.v2 h1 {
-  font-size: 3rem;
-  font-weight: 500;
-  margin: 0.5rem 0 1.25rem;
-}
-
-.v2 .lead {
-  color: var(--muted);
-  font-size: 1.0625rem;
-  line-height: 1.75;
-  max-width: 44rem;
-  padding-bottom: 2rem;
-  margin-bottom: 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.v2 .nav {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  letter-spacing: 0.02em;
-}
-
-.v2 code {
-  font-size: 0.85em;
-  border-radius: 4px;
-}
-
-.v2 .sheet {
-  background: var(--sheet-bg);
-  border: 1px solid var(--sheet-line);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
-  padding: 1.75rem 2rem 1.9rem;
-  margin: 0 0 1.75rem;
-  font-size: 0.9375rem;
-  line-height: 1.75;
-}
-
-.v2 .sheet h2 {
-  font-size: 1.75rem;
-  font-weight: 500;
-  line-height: 1.25;
-  margin: 0;
-}
-
-.v2 .sheet h2::before {
-  content: none;
-}
-
-.v2 .sheet-sub {
-  color: var(--muted);
-  font-size: 0.9375rem;
-  margin: 0.25rem 0 1.25rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--line);
-}
-
-.v2 .sheet h3 {
-  font-size: 1.15rem;
-  font-weight: 600;
-  margin: 1.7rem 0 0.55rem;
-}
-
-.v2 .sheet p,
-.v2 .sheet ul,
-.v2 .sheet ol,
-.v2 .sheet table {
-  margin: 0 0 0.9rem;
-}
-
-.v2 .sheet li {
-  margin-bottom: 0.4rem;
-}
-
-.v2 .sheet li > ul {
-  margin: 0.3rem 0 0;
-}
-
-.v2 .sheet > :last-child {
-  margin-bottom: 0;
-}
-
-.v2 .sheet code {
-  background: var(--sheet-code);
-}
-
-.v2 .sheet pre,
-.v2 .sheet .code-scroll {
-  margin: 0 0 0.9rem;
-}
-
-.v2 .sheet pre {
-  background: var(--sheet-code);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  padding: 0.9rem 1.1rem;
-}
-
-.v2 .sheet table {
-  font-size: 0.9rem;
-}
-
-.v2 .sheet th {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.v2 .sheet th,
-.v2 .sheet td {
-  padding: 0.45rem 0.7rem;
-}
-
-.v2 .params td:first-child {
-  white-space: nowrap;
-}
-
-@media (max-width: 600px) {
-  .v2 h1 {
-    font-size: 2.25rem;
-  }
-  .v2 .sheet {
-    padding: 1.1rem 1rem 1.2rem;
-    border-radius: 12px;
-  }
-  .v2 .sheet h2 {
-    font-size: 1.5rem;
-  }
-  .v2 .params td:first-child {
-    white-space: normal;
-  }
 }
