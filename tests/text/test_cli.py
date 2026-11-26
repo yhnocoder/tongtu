@@ -20,10 +20,18 @@ from rich.progress import Progress
 from typer.testing import CliRunner
 
 from tongtu import __version__, cli
-from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session, StopReason
+from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session, StopReason, Usage
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
-from tongtu.artifacts.fetch import FetchManifest, FetchStatus
-from tongtu.artifacts.status import ABSENT_STATUS, PaperStatus, RunCommand, RunMarker
+from tongtu.artifacts.fetch import FetchManifest, FetchStatus, PaperMeta
+from tongtu.artifacts.status import (
+    ABSENT_STATUS,
+    PaperEntry,
+    PaperListing,
+    PaperState,
+    PaperStatus,
+    RunCommand,
+    RunMarker,
+)
 from tongtu.artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
 from tongtu.manifests import load_manifest, write_manifest
@@ -1848,3 +1856,369 @@ def test_fetch_entry_passes_the_meta(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert (paper.arxiv_id, paper.version) == ("1412.6980", 8)
     assert workdir.path == tmp_path / "papers" / "1412.6980v8"
     assert meta is not None and meta.title == "Adam: A Method for Stochastic Optimization"
+
+
+def papers_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    return tmp_path / "home" / "papers"
+
+
+def arxiv_fetch_manifest(arxiv_id: str, version: int | None) -> FetchManifest:
+    return FetchManifest(status=FetchStatus.OK, source=arxiv_id, arxiv_id=arxiv_id, version=version)
+
+
+def paper_meta(title: str) -> PaperMeta:
+    return PaperMeta(
+        arxiv_id="2412.19437",
+        version=2,
+        title=title,
+        authors=["作者"],
+        abstract="摘要",
+        primary_category="cs.CL",
+        categories=["cs.CL"],
+        published=STARTED_AT,
+        updated=STARTED_AT,
+        comment=None,
+        journal_ref=None,
+        doi=None,
+        abs_url="https://arxiv.org/abs/2412.19437v2",
+        pdf_url="https://arxiv.org/pdf/2412.19437v2",
+    )
+
+
+COMPILE_REPORT = CompileReport(
+    pages=56,
+    pdf_bytes=1,
+    overfull_hboxes=0,
+    undefined_references=0,
+    undefined_citations=0,
+    missing_characters=0,
+    duration_seconds=1.0,
+)
+
+
+def write_paper(
+    papers: Path, name: str, fetched: FetchManifest, statuses: dict[str, str], mtime: float = 1_800_000_000
+) -> cli.Workdir:
+    workdir = cli.Workdir(papers / name)
+    workdir.path.mkdir(parents=True)
+    write_manifest(workdir.manifest_path("fetch"), fetched)
+    for stage_name, stage_status in statuses.items():
+        write_manifest(workdir.manifest_path(stage_name), Manifest(status=stage_status))
+    for path in workdir.manifests.iterdir():
+        os.utime(path, (mtime, mtime))
+    return workdir
+
+
+ALL_OK = {name: "ok" for name in STAGES[1:]}
+
+
+def list_json(*arguments: str) -> PaperListing:
+    result = runner.invoke(app, ["list", *arguments, "--json"])
+    assert result.exit_code == 0
+    return PaperListing.model_validate_json(result.stdout)
+
+
+def entries_by_name(listing: PaperListing) -> dict[str, PaperEntry]:
+    return {entry.name: entry for entry in listing.papers}
+
+
+def exited_pid() -> int:
+    finished = subprocess.Popen([sys.executable, "-c", ""])
+    finished.wait()
+    return finished.pid
+
+
+def test_list_json_without_a_papers_directory_is_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers_home(tmp_path, monkeypatch)
+    assert list_json().papers == []
+
+
+def test_list_json_of_an_empty_papers_directory_is_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers_home(tmp_path, monkeypatch).mkdir(parents=True)
+    assert list_json().papers == []
+
+
+def test_list_json_reports_a_finished_paper_with_its_numbers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    workdir = write_paper(papers, "2412.19437v2", arxiv_fetch_manifest("2412.19437", 2), {})
+    for name in ("precompile", "mask"):
+        write_manifest(workdir.manifest_path(name), Manifest(status="ok"))
+    usage = Usage(turns=3, input_tokens=1, output_tokens=1, cache_read_tokens=0, cache_write_tokens=0, cost_usd=4.25)
+    session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=595.5, usage=usage)
+    write_manifest(
+        workdir.manifest_path("translate"), TranslateManifest(status=TranslateStatus.OK, mode="smart", session=session)
+    )
+    baseline = COMPILE_REPORT.model_copy(update={"pages": 66})
+    write_manifest(
+        workdir.manifest_path("compile"),
+        CompileManifest(status=CompileStatus.OK, report=COMPILE_REPORT, baseline=baseline),
+    )
+    write_manifest(workdir.meta, paper_meta("DeepSeek-V3 技术报告"))
+    fetch_time = 1_700_000_000
+    os.utime(workdir.manifest_path("fetch"), (fetch_time, fetch_time))
+    latest_time = 1_900_000_000
+    os.utime(workdir.manifest_path("compile"), (latest_time, latest_time))
+    entry = entries_by_name(list_json())["2412.19437v2"]
+    assert (entry.state, entry.stage) == (PaperState.OK, None)
+    assert entry.info is not None and entry.info.title == "DeepSeek-V3 技术报告"
+    assert (entry.pages, entry.source_pages) == (56, 66)
+    assert (entry.translate_seconds, entry.translate_cost_usd) == (595.5, 4.25)
+    assert entry.added_at == datetime.fromtimestamp(fetch_time, UTC)
+    assert entry.updated_at == datetime.fromtimestamp(latest_time, UTC)
+    assert entry.recent_actions == []
+    assert entry.status.workdir == workdir.path
+    assert (entry.status.arxiv_id, entry.status.version, entry.status.running) == ("2412.19437", 2, False)
+    assert [state.status for state in entry.status.stages] == ["ok"] * len(STAGES)
+
+
+def test_list_json_reports_the_failed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    statuses = {"precompile": "ok", "mask": "mask_failed"}
+    write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), statuses)
+    entry = entries_by_name(list_json())["1412.6980v8"]
+    assert (entry.state, entry.stage) == (PaperState.FAILED, "mask")
+    assert (entry.info, entry.pages, entry.source_pages) == (None, None, None)
+    assert (entry.translate_seconds, entry.translate_cost_usd) == (None, None)
+
+
+def test_list_json_reports_an_interrupted_paper_at_the_first_absent_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"precompile": "ok", "translate": "ok"})
+    entry = entries_by_name(list_json())["1412.6980v8"]
+    assert (entry.state, entry.stage) == (PaperState.INTERRUPTED, "mask")
+
+
+def write_events(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(line.encode("utf-8", errors="surrogateescape") + b"\n" for line in lines))
+
+
+def tool_event(summary: object) -> str:
+    return json.dumps({"type": "tool", "summary": summary}, ensure_ascii=False)
+
+
+def test_list_json_reports_a_running_paper_with_its_recent_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    statuses = {"precompile": "ok", "mask": "ok"}
+    workdir = write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), statuses)
+    write_run_marker(workdir, os.getpid())
+    summaries = [f"读取第 {index} 段" for index in range(10)]
+    events = [tool_event(summary) for summary in summaries[:5]]
+    events += ["{", json.dumps({"type": "usage"}), tool_event(7), json.dumps(["tool"]), "\udcff"]
+    events += [tool_event(summary) for summary in summaries[5:]]
+    write_events(workdir.translate_log, events)
+    write_events(workdir.compile_fix_log, [tool_event("另一个会话")])
+    entry = entries_by_name(list_json())["1412.6980v8"]
+    assert (entry.state, entry.stage) == (PaperState.RUNNING, "translate")
+    assert entry.recent_actions == summaries[-cli.RECENT_ACTIONS :]
+    assert (entry.status.running, entry.status.pid) == (True, os.getpid())
+
+
+def test_list_json_gives_no_recent_actions_without_a_session_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    workdir = write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"precompile": "ok"})
+    write_run_marker(workdir, os.getpid())
+    entry = entries_by_name(list_json())["1412.6980v8"]
+    assert (entry.state, entry.stage, entry.recent_actions) == (PaperState.RUNNING, "mask", [])
+
+
+def test_list_json_gives_no_recent_actions_for_a_paper_that_is_not_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    statuses = {"precompile": "ok", "mask": "ok"}
+    workdir = write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), statuses)
+    write_events(workdir.translate_log, [tool_event("读取原文")])
+    entry = entries_by_name(list_json())["1412.6980v8"]
+    assert (entry.state, entry.recent_actions) == (PaperState.INTERRUPTED, [])
+
+
+def test_list_json_selects_the_directories_of_papers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    write_paper(papers, "2002.05202v1", arxiv_fetch_manifest("2002.05202", 1), ALL_OK)
+    write_paper(papers, "2002.05202", arxiv_fetch_manifest("2002.05202", None), ALL_OK)
+    write_paper(papers, "2002.05202v2", arxiv_fetch_manifest("2002.05202", 1), ALL_OK)
+    write_paper(papers, "hep-th_9901001v1", arxiv_fetch_manifest("hep-th/9901001", 1), ALL_OK)
+    local = FetchManifest(status=FetchStatus.OK, source=str(tmp_path / "my-paper"), kind="local")
+    write_paper(papers, "my-paper", local, ALL_OK)
+    running = cli.Workdir(papers / "1412.6980v8")
+    write_run_marker(running, os.getpid())
+    (papers / "unrelated").mkdir()
+    write_run_marker(cli.Workdir(papers / "stale"), exited_pid())
+    broken = cli.Workdir(papers / "broken")
+    broken.manifests.mkdir(parents=True)
+    broken.manifest_path("fetch").write_text("{", encoding="utf-8")
+    (papers / "a-file").write_text("", encoding="utf-8")
+    entries = entries_by_name(list_json())
+    assert set(entries) == {"2002.05202v1", "hep-th_9901001v1", "my-paper", "1412.6980v8"}
+    assert (entries["my-paper"].status.arxiv_id, entries["my-paper"].state) == (None, PaperState.OK)
+    fresh = entries["1412.6980v8"]
+    assert (fresh.state, fresh.stage, fresh.status.arxiv_id) == (PaperState.RUNNING, "fetch", None)
+    directory_time = datetime.fromtimestamp(running.path.stat().st_mtime, UTC)
+    assert (fresh.added_at, fresh.updated_at) == (directory_time, directory_time)
+
+
+def test_list_json_sorts_by_the_latest_manifest_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), ALL_OK, mtime=1_700_000_000)
+    write_paper(papers, "2002.05202v1", arxiv_fetch_manifest("2002.05202", 1), ALL_OK, mtime=1_900_000_000)
+    write_paper(papers, "1701.06538v1", arxiv_fetch_manifest("1701.06538", 1), ALL_OK, mtime=1_800_000_000)
+    assert [entry.name for entry in list_json().papers] == ["2002.05202v1", "1701.06538v1", "1412.6980v8"]
+
+
+def test_list_prints_one_row_per_paper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COLUMNS", "400")
+    papers = papers_home(tmp_path, monkeypatch)
+    finished = write_paper(papers, "2412.19437v2", arxiv_fetch_manifest("2412.19437", 2), ALL_OK)
+    write_manifest(finished.meta, paper_meta("DeepSeek-V3 技术报告"))
+    write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"precompile": "precompile_failed"})
+    result = runner.invoke(app, ["list"])
+    assert result.exit_code == 0
+    rows = [line.split() for line in result.stdout.splitlines()]
+    assert rows[0] == ["paper", "state", "stage", "title"]
+    assert sorted(rows[1:]) == [
+        ["1412.6980v8", "failed", "precompile"],
+        ["2412.19437v2", "ok", cli.ABSENT_CELL, "DeepSeek-V3", "技术报告"],
+    ]
+
+
+def test_list_dev_reads_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
+    write_paper(tmp_path / "dev" / "papers", "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), ALL_OK)
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    assert [entry.name for entry in list_json("--dev").papers] == ["1412.6980v8"]
+
+
+def test_stop_of_a_paper_that_is_not_running(tmp_path: Path) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    write_run_marker(workdir, exited_pid())
+    result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert result.stdout == "paper is not running\n"
+
+
+def test_stop_ends_a_running_paper(tmp_path: Path) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    child = start_blocking_run(workdir)
+    try:
+        result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
+        assert result.exit_code == 0
+        assert result.stdout == "stopped paper\n"
+        assert child.wait(timeout=60) == -signal.SIGTERM
+    finally:
+        child.kill()
+        child.wait()
+    assert not workdir.run_marker.exists()
+
+
+IGNORE_SIGTERM = """\
+import signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print("ready", flush=True)
+time.sleep(60)
+"""
+
+
+def test_stop_gives_up_on_a_process_that_ignores_sigterm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "STOP_WAIT_SECONDS", 0.3)
+    child = subprocess.Popen([sys.executable, "-c", IGNORE_SIGTERM], stdout=subprocess.PIPE)
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline() == b"ready\n"
+        workdir = cli.Workdir(tmp_path / "paper")
+        write_run_marker(workdir, child.pid)
+        result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
+        assert result.exit_code == cli.EXIT_FAILURE
+        assert child.poll() is None
+        assert f"paper (pid {child.pid}) did not stop within" in result.stderr
+        assert workdir.run_marker.exists()
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_stop_treats_a_vanished_process_as_stopped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    write_run_marker(workdir, os.getpid())
+
+    def vanished(pid: int, signum: int) -> None:
+        if signum == signal.SIGTERM:
+            raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(cli.os, "kill", vanished)
+    result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert result.stdout == "stopped paper\n"
+
+
+def test_config_list_json_gives_every_key_in_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(TABLE.replace("timeout_seconds = 60", "timeout_seconds = 90.5"), encoding="utf-8")
+    result = runner.invoke(app, ["config", "list", "--json"])
+    assert result.exit_code == 0
+    values = json.loads(result.stdout)
+    assert list(values) == [key for key, _value in config_entries(loaded_config())]
+    assert values["modes.default"] == "smart"
+    assert values["modes.smart.timeout_seconds"] == 90.5
+    assert values["modes.fast.timeout_seconds"] == 3600
+    assert values["pdf.crop_margins"] is False
+    assert values["fonts.mono"] is None
+    assert isinstance(values["fonts.main.regular"], str)
+
+
+def counted_writes(monkeypatch: pytest.MonkeyPatch) -> list[ModelsConfig]:
+    writes: list[ModelsConfig] = []
+
+    def write(config: ModelsConfig) -> Path:
+        writes.append(config)
+        return write_config(config)
+
+    monkeypatch.setattr(cli, "write_config", write)
+    return writes
+
+
+def test_config_set_writes_several_keys_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    write_config(ModelsConfig())
+    writes = counted_writes(monkeypatch)
+    pairs = ["modes.default", "fast", "pdf.crop_margins", "true", "modes.fast.effort", "high"]
+    result = runner.invoke(app, ["config", "set", *pairs])
+    assert result.exit_code == 0
+    assert result.stdout == "modes.default = fast\npdf.crop_margins = true\nmodes.fast.effort = high\n"
+    assert len(writes) == 1
+    config = loaded_config()
+    assert (config.modes.default, config.pdf.crop_margins, config.modes.fast.effort) == (ModeName.FAST, True, "high")
+
+
+@pytest.mark.parametrize(
+    ("pairs", "message"),
+    [
+        (["pdf.crop_margins", "true", "modes.fast.jobs", "4"], "configkeymodes.fast.jobsdoesnotexist"),
+        (["pdf.crop_margins", "true", "modes.fast.model", "ghost/m"], "modes.fast.model:"),
+    ],
+)
+def test_config_set_writes_nothing_when_one_pair_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pairs: list[str], message: str
+) -> None:
+    path = written_config(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", *pairs])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert message in squeeze(result.stderr)
+    assert path.read_text(encoding="utf-8") == TABLE
+
+
+@pytest.mark.parametrize("pairs", [["pdf.crop_margins", "true", "modes.default"], []])
+def test_config_set_rejects_an_incomplete_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pairs: list[str]
+) -> None:
+    path = written_config(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", *pairs])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert path.read_text(encoding="utf-8") == TABLE

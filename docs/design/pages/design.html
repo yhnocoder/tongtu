@@ -76,9 +76,11 @@
   <pre><code>tongtu run      PAPER [--mode fast|smart] [--latest] [--from STAGE] [--glossary FILE]... [--workdir DIR] [--dev]
 tongtu stage    STAGE PAPER [--mode fast|smart] [--glossary FILE]... [--workdir DIR] [--dev]
 tongtu status   PAPER [--json] [--workdir DIR] [--dev]
+tongtu list     [--json] [--dev]
+tongtu stop     PAPER [--workdir DIR] [--dev]
 tongtu validate SRC DST [--glossary FILE]...
 tongtu doctor
-tongtu config   [list | set KEY VALUE | open] [--dev]
+tongtu config   [list [--json] | set KEY VALUE [KEY VALUE ...] | open] [--dev]
 tongtu          --version</code></pre>
   <p><code>PAPER</code> 是 arXiv 编号、arXiv 链接或本地源码目录。<code>STAGE</code> 取 <code>fetch</code>、<code>precompile</code>、<code>mask</code>、<code>translate</code>、<code>compile</code> 之一。终端输出、manifest 的 <code>message</code> 与 <code>warnings</code> 一律用英文。</p>
 
@@ -90,8 +92,8 @@ tongtu          --version</code></pre>
       <tr><td><code>--latest</code></td><td>run</td><td class="wrap">向 arXiv 查询最新版本并使用它。见<a href="#versions">论文编号与版本</a>。</td></tr>
       <tr><td><code>--from STAGE</code></td><td>run</td><td class="wrap">从这个阶段起重跑，先删掉它及其下游的旧产物。</td></tr>
       <tr><td><code>--glossary FILE</code></td><td>run、stage、validate</td><td class="wrap">本次运行追加的术语表，可以给多个，靠后的优先。</td></tr>
-      <tr><td><code>--workdir DIR</code></td><td>run、stage、status</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同；或者 manifest 记的是本地源码目录，<code>PAPER</code> 是同一个目录，或者是这个目录的名字。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
-      <tr><td><code>--dev</code></td><td>run、stage、status、config</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
+      <tr><td><code>--workdir DIR</code></td><td>run、stage、status、stop</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同；或者 manifest 记的是本地源码目录，<code>PAPER</code> 是同一个目录，或者是这个目录的名字。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
+      <tr><td><code>--dev</code></td><td>run、stage、status、list、stop、config</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
     </tbody>
   </table>
 
@@ -132,13 +134,15 @@ mode    smart  claude-code/claude-opus-5-5  medium
   <ul>
     <li><code>stage STAGE PAPER</code> 只运行一个阶段。它先删掉本阶段的旧产物再运行，不改动其他阶段的产物。上游产物不存在时拒绝执行，退出 2。</li>
     <li><code>status PAPER</code> 只读，列出每个阶段的状态、产物是否存在和 manifest 路径。它不联网。<code>--json</code> 的格式见<a href="#status">供其他程序读取的输出</a>。</li>
+    <li><code>list</code> 只读，列出 <code>$TONGTU_HOME/papers/</code> 下的论文，每篇一行，列出目录名、状态、所在阶段和题目，按最近更新的时间从新到旧排列。它不联网，退出 0。哪些目录会被列出、各列怎样取值，见<a href="#listing">tongtu list --json</a>。</li>
+    <li><code>stop PAPER</code> 结束正在运行这篇论文的 <code>run</code> 或 <code>stage</code>，按与 <code>status</code> 相同的规则解析工作目录。运行标记无效时输出「<code>&lt;目录名&gt; is not running</code>」，退出 0。否则向运行标记里的进程发 SIGTERM，每 0.1 秒检查一次运行标记，最多等 <code>STOP_WAIT_SECONDS = 10</code> 秒；标记失效后输出「<code>stopped &lt;目录名&gt;</code>」，退出 0；超时仍有效时把目录名与 pid 写到 stderr，退出 1。发信号时进程已经不存在，按已停止处理。tongtu 收到 SIGTERM 时的处理见<a href="#run-marker">运行标记</a>，所以直接用 <code>kill</code> 结束 tongtu 进程与 <code>stop</code> 的效果相同。</li>
     <li><code>validate SRC DST</code> 对一对掩码文件运行 translate 判定时使用的同一套校验，逐类输出问题，有问题时退出 1。给了 <code>--glossary</code> 才检查术语。手工修改译文后用它确认。</li>
     <li><code>doctor</code> 逐项检查环境：TeX 工具链（xelatex、latexmk、latexpand）、默认字体、<code>config.toml</code>、agentrun，以及每个模式引用的运行时与模型（对每个组合运行一次 <code>agentrun doctor</code>）。工具链或字体缺失时退出 1。<code>config.toml</code> 不存在不算缺失，这时检查默认的模式。工具链齐全时，退出 3 只在配置文件有错或运行时不可用时出现，这时 fetch、precompile、mask 仍然可以运行。</li>
     <li><code>config</code> 查看和修改 <code>$TONGTU_HOME/config.toml</code>，有四种用法：
       <ul>
         <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。标准输入不是终端时退出 2。</li>
-        <li><code>tongtu config list</code> 每行列出一个配置项及其当前值。配置文件不存在时列出默认值，不写文件。</li>
-        <li><code>tongtu config set KEY VALUE</code> 修改一项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。键不存在或值不合法时退出 2，不写文件。</li>
+        <li><code>tongtu config list</code> 每行列出一个配置项及其当前值。配置文件不存在时列出默认值，不写文件。<code>--json</code> 改为输出一个 JSON 对象，格式见<a href="#config-json">tongtu config list --json</a>。</li>
+        <li><code>tongtu config set KEY VALUE [KEY VALUE ...]</code> 修改一项或多项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。各组按顺序应用到同一份配置上，全部通过后写一次文件，每个改动的键输出一行「键 = 新值」。参数个数为 0 或奇数、任何一组的键不存在或值不合法时退出 2，不写文件。</li>
         <li><code>tongtu config open</code> 输出配置文件的路径并打开它。环境变量 <code>EDITOR</code> 非空时用它打开，否则用系统默认的程序。</li>
       </ul>
       <p>配置文件不存在时，<code>tongtu config</code> 与 <code>open</code> 先写出一份包含全部默认值的文件；<code>set</code> 在默认值上修改，修改成功时写出文件。校验失败时每条错误输出一行，格式是「键: 原因」。配置文件存在但加载失败时，<code>config</code>、<code>list</code>、<code>set</code> 输出错误并退出 1。<code>config</code> 与 <code>set</code> 每次修改都整份重写文件，文件里原有的注释不保留。</p>
@@ -669,7 +673,7 @@ class Note(BaseModel):
 
 <section id="status">
   <h2>供其他程序读取的输出</h2>
-  <p>其他程序通过四种输出读取通途的结果：<code>tongtu status --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这四种格式可以修改，修改时读它们的程序一起改。仓库内的 Raycast 插件另外读 <code>logs/&lt;会话&gt;.jsonl</code>，显示会话最近的动作；这个文件是 agentrun 的事件格式。</p>
+  <p>其他程序通过六种输出读取通途的结果：<code>tongtu status --json</code>、<code>tongtu list --json</code>、<code>tongtu config list --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这六种格式可以修改，修改时读它们的程序一起改。仓库内的 Raycast 插件另外读 <code>logs/&lt;会话&gt;.jsonl</code>，显示会话最近的动作；这个文件是 agentrun 的事件格式。</p>
 
   <h3>out/&lt;ID&gt;.meta.json</h3>
   <p>内容来自 arXiv API 的同一次响应，是所选版本的信息。题目与摘要里的换行压成一个空格。</p>
@@ -712,10 +716,54 @@ class StageState(BaseModel):
     message: str
     warnings: list[str]
     manifest: Path | None</code></pre>
-  <p>翻译会话运行期间，<code>status</code> 给出 <code>running</code>、开始时间和各阶段的状态，正在运行的是第一个状态为 <code>absent</code> 的阶段。其他程序据此显示「翻译中」与已用时间。会话当前的动作只显示在终端的进度行上。</p>
+  <p>翻译会话运行期间，<code>status</code> 给出 <code>running</code>、开始时间和各阶段的状态，正在运行的是第一个状态为 <code>absent</code> 的阶段。其他程序据此显示「翻译中」与已用时间。会话最近的动作由 <code>tongtu list --json</code> 的 <code>recent_actions</code> 给出。</p>
 
-  <h3>运行标记</h3>
-  <p><code>run</code> 与 <code>stage</code> 开始运行阶段前写 <code>&lt;工作目录&gt;/running.json</code>，结束时删除。正常结束、阶段失败、程序异常、Ctrl-C 与 SIGTERM 都在退出前删除它。<code>status</code> 读这个文件，再检查其中的进程是否还在；文件不存在、读不出或进程已经不在时，<code>running</code> 为 false。</p>
+  <h3 id="listing">tongtu list --json</h3>
+  <p>读一次 <code>$TONGTU_HOME/papers/</code> 下所有论文的状态，向 stdout 输出一个 JSON 对象后退出 0，写法与 <code>status --json</code> 相同。<code>papers/</code> 不存在时 <code>papers</code> 为空列表。对每个子目录读 fetch 的 manifest，按下面的规则决定是否列出：</p>
+  <ul>
+    <li>manifest 记的是本地源码目录（<code>arxiv_id</code> 为空）：列出。</li>
+    <li>manifest 记的是 arXiv 论文：<code>version</code> 不为空，且目录名等于带版本号的编号（编号里的 <code>/</code> 换成 <code>_</code>）时列出。v0.1 留下的不带版本号的目录因此不列出，与 <code>status</code> 的解析规则一致。</li>
+    <li>manifest 不存在或读不出：目录里有有效的运行标记时列出，这是 fetch 还没写出 manifest 的运行中论文；否则不列出。</li>
+  </ul>
+  <pre><code class="language-python">class PaperListing(BaseModel):
+    papers: list[PaperEntry]                    # 按 updated_at 从新到旧
+
+class PaperEntry(BaseModel):
+    name: str                                   # 工作目录名
+    state: PaperState
+    stage: str | None                           # 见下表
+    status: PaperStatus                         # 与 tongtu status --json 相同
+    info: PaperMeta | None                      # out/&lt;ID&gt;.meta.json 的内容；文件不存在时为 null
+    added_at: datetime                          # fetch manifest 的修改时间；没有时取工作目录的修改时间
+    updated_at: datetime                        # 已有 manifest 里最新的修改时间；没有时取工作目录的修改时间
+    pages: int | None                           # compile manifest 的 report.pages
+    source_pages: int | None                    # compile manifest 的 baseline.pages
+    translate_seconds: float | None             # translate manifest 的 session.duration_seconds
+    translate_cost_usd: float | None            # translate manifest 的 session.usage.cost_usd
+    recent_actions: list[str]                   # 只在 running 时填写，见下文
+
+class PaperState(StrEnum):
+    RUNNING = "running"
+    OK = "ok"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"</code></pre>
+  <table>
+    <thead><tr><th><code>state</code></th><th>条件</th><th><code>stage</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>running</code></td><td class="wrap">运行标记有效。</td><td class="wrap">第一个 manifest 不存在或状态不是 ok 的阶段。</td></tr>
+      <tr><td><code>interrupted</code></td><td class="wrap">没有运行，按阶段顺序遇到的第一个非 ok 阶段没有 manifest。</td><td class="wrap">这个阶段。</td></tr>
+      <tr><td><code>failed</code></td><td class="wrap">没有运行，按阶段顺序遇到的第一个非 ok 阶段有 manifest，状态不是 ok。</td><td class="wrap">失败的阶段。</td></tr>
+      <tr><td><code>ok</code></td><td class="wrap">没有运行，五个阶段的 manifest 都是 ok。</td><td>null</td></tr>
+    </tbody>
+  </table>
+  <p>manifest 里取不到的字段为 null，不报错。<code>recent_actions</code> 取 <code>stage</code> 对应的会话日志：precompile 是 <code>logs/precompile-fix.jsonl</code>，translate 是 <code>logs/translate.jsonl</code>，compile 是 <code>logs/compile-fix.jsonl</code>，其余阶段没有会话日志。日志逐行按 JSON 解析，取 <code>type</code> 为 <code>"tool"</code> 且 <code>summary</code> 是字符串的事件，保留最后 <code>RECENT_ACTIONS = 8</code> 条的 <code>summary</code>；解析不了的行跳过，文件不存在时为空列表。</p>
+
+  <h3 id="config-json">tongtu config list --json</h3>
+  <p>向 stdout 输出一个 JSON 对象。键是 <code>tongtu config list</code> 列出的带点的键，顺序相同；值是字符串、数字或布尔，模式名取它的字符串值，未设置的可选字段为 null。配置文件不存在时输出默认值；配置文件加载失败时不输出 JSON，错误写到 stderr，退出 1。</p>
+
+  <h3 id="run-marker">运行标记</h3>
+  <p><code>run</code> 与 <code>stage</code> 开始运行阶段前写 <code>&lt;工作目录&gt;/running.json</code>，结束时删除。正常结束、阶段失败、程序异常、Ctrl-C 与 SIGTERM 都在退出前删除它。<code>status</code>、<code>list</code> 与 <code>stop</code> 读这个文件，再检查其中的进程是否还在；文件不存在、读不出或进程已经不在时，运行标记无效，<code>running</code> 为 false。</p>
+  <p>收到 SIGTERM 时，tongtu 先向当前运行中的子进程（agentrun、latexmk、latexpand）各自的进程组发 SIGTERM，再删除运行标记并退出。这些子进程在独立的进程组里启动，tongtu 退出时不会随之结束；不转发信号的话，被停止的论文在后台继续运行 agent 会话，消耗 token，并且会与下一次运行同时写同一个工作目录。</p>
   <pre><code class="language-python">class RunMarker(BaseModel):
     pid: PositiveInt
     started_at: datetime       # UTC
