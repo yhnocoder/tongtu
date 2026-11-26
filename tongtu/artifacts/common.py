@@ -33,6 +33,7 @@ class Usage(BaseModel):
     cache_read_tokens: int
     cache_write_tokens: int
     cost_usd: float | None = None
+    thinking_tokens: int | None = None
 
 
 class StopReason(StrEnum):
