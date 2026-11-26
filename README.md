@@ -39,6 +39,28 @@ make format          # 自动修：ruff check --fix + ruff format
 
 agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动，安装方式见上一节。`uv run tongtu doctor` 对配置里用到的运行时运行 `agentrun doctor`。
 
+## 启动器插件
+
+`raycast/` 是一个启动器插件，可以装进 Raycast 或 Tinycast。它有三个命令：「翻译论文」在后台运行 `tongtu run`，结束时发系统通知；「论文」列出全部论文的状态，打开译文，重试或停止翻译；「设置」修改 `config.toml`。
+
+1. 安装 `tongtu` 命令。插件直接执行 `tongtu`，在 `~/.local/bin`、`~/.cargo/bin`、`/opt/homebrew/bin` 里查找。在仓库根目录执行下面的命令，装出的命令指向仓库里的代码，仓库更新后不需要重新安装：
+
+   ```
+   uv tool install --editable .
+   ```
+
+2. 构建插件，产物在 `raycast/dist/`：
+
+   ```
+   cd raycast && npm install && npm run build
+   ```
+
+3. 装进启动器：
+   - Tinycast：Settings → Extensions → Install → Add from folder，选 `raycast/dist`。
+   - Raycast：在 `raycast/` 下执行 `npm run dev`。
+
+「翻译论文」没有填编号时，依次从浏览器当前标签页的地址和剪贴板里取 arXiv 编号。第一次读取浏览器地址时，系统会询问是否允许启动器控制浏览器，选择允许。
+
 ## 发版
 
 先开 PR 把 `tongtu/__init__.py` 的 `__version__` 升到新版本（SemVer，版本号只写这一处）并 merge，然后在 main 上打 tag：
