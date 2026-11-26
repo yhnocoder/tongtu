@@ -1,13 +1,14 @@
-export const STAGES = ["fetch", "precompile", "mask", "translate", "compile"];
+const STAGES = ["fetch", "precompile", "mask", "translate", "compile"];
 export const NOT_INSTALLED = "没有找到 tongtu 命令，安装方法见 README";
 export const DEFAULT_RECENT_DAYS = 7;
-export const ACTIVE_REFRESH_SECONDS = 5;
-export const IDLE_REFRESH_SECONDS = 60;
+const ACTIVE_REFRESH_SECONDS = 5;
+const IDLE_REFRESH_SECONDS = 60;
 export const DETAIL_REFRESH_SECONDS = 2;
 export const START_REFRESH_DELAY_SECONDS = 2;
+export const START_WAIT_SECONDS = 20;
 export const INPUT_DEBOUNCE_SECONDS = 0.3;
 
-export type StageState = {
+type StageState = {
   name: string;
   status: string;
   outputs_present: boolean;
@@ -67,7 +68,7 @@ export type PaperSummary = {
 export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "mode" | "pdf">;
 export type PaperDetail = { name: string; addedAt: string | null; status: PaperStatus; meta: PaperMeta | null };
 export type PaperSource = "argument" | "browser" | "clipboard";
-export type ConfigValue = string | number | boolean | null;
+type ConfigValue = string | number | boolean | null;
 export type Config = Record<string, ConfigValue>;
 export type FormValues = Record<string, string | boolean>;
 export type Row = { title: string; text: string; link?: string };
@@ -184,7 +185,7 @@ export function launchScript(
   return [`${run} > ${shellQuote(logFile)} 2>&1`, workdir === null ? notify : `${notify} ${shellQuote(workdir)}`].join("\n");
 }
 
-export type RetryAction = "retry" | "retryFast" | "retrySmart";
+type RetryAction = "retry" | "retryFast" | "retrySmart";
 export type RunAction = RetryAction | "redoFast" | "redoSmart" | "recompile";
 
 const RUN_TITLES: Record<RunAction, string> = {
@@ -247,7 +248,7 @@ export function infoFailure(paper: string, stderr: string): string {
   return lines[lines.length - 1] ?? `tongtu info ${paper} 没有给出结果`;
 }
 
-export function recentTitle(days: number): string {
+function recentTitle(days: number): string {
   return `最近 ${days} 天`;
 }
 
@@ -404,7 +405,7 @@ export function runningMarkdown(detail: PaperDetail): string {
   return parts.join("\n\n");
 }
 
-export function unfinishedNextSteps(mode: string | null): string[] {
+function unfinishedNextSteps(mode: string | null): string[] {
   return [...retryActions(mode).map((action) => runTitle(action, mode)), "查看日志"];
 }
 
@@ -490,8 +491,14 @@ export function unfinishedRows(detail: PaperDetail): Row[] {
   return rows;
 }
 
-export type LocalState = "none" | PaperState;
-export type Lookup = { paper: string; status: PaperStatus | null; meta: PaperMeta | null; infoError: string };
+type LocalState = "none" | PaperState;
+export type Lookup = {
+  paper: string;
+  status: PaperStatus | null;
+  meta: PaperMeta | null;
+  infoError: string;
+  directoryMissing: boolean;
+};
 export type EntryAction = "start" | "startFast" | "startSmart" | "detail" | "openPdf" | "arxiv" | "stop" | RetryAction;
 
 export const LOCAL_STATE_TEXT: Record<LocalState, string> = {
@@ -502,13 +509,13 @@ export const LOCAL_STATE_TEXT: Record<LocalState, string> = {
   interrupted: "翻译中断",
 };
 
-export const SOURCE_TEXT: Record<PaperSource, string> = {
+const SOURCE_TEXT: Record<PaperSource, string> = {
   argument: "来自参数",
   browser: "来自浏览器",
   clipboard: "来自剪贴板",
 };
 
-export const ENTRY_ACTION_TITLES: Record<EntryAction, string> = {
+export const ENTRY_ACTION_TITLES: Record<Exclude<EntryAction, RetryAction>, string> = {
   start: "开始翻译",
   startFast: "用 fast 翻译",
   startSmart: "用 smart 翻译",
@@ -516,9 +523,6 @@ export const ENTRY_ACTION_TITLES: Record<EntryAction, string> = {
   openPdf: "打开中文 PDF",
   arxiv: "打开 arXiv 页面",
   stop: "停止",
-  retry: "重试",
-  retryFast: "用 fast 重试",
-  retrySmart: "用 smart 重试",
 };
 
 export function isPathArgument(paper: string): boolean {
@@ -531,7 +535,23 @@ export function localState(status: PaperStatus | null): LocalState {
   return status.state;
 }
 
+export function expandedPath(paper: string, home: string): string {
+  return paper.replace(/^~(?=\/|$)/, home);
+}
+
+export function shownLookup(lookup: Lookup | null, text: string): Lookup | null {
+  return lookup && lookup.paper === typedPaper(text) ? lookup : null;
+}
+
+export function localInfoId(paper: string, status: PaperStatus | null, meta: PaperMeta | null): string | null {
+  if (!status?.arxiv_id || status.version === null) return null;
+  const local = `${status.arxiv_id}v${status.version}`;
+  if (local === paper || (meta && arxivVersion(meta) === local)) return null;
+  return local;
+}
+
 export function lookupFailure(lookup: Lookup): string | null {
+  if (lookup.directoryMissing) return "没有这个目录";
   if (isPathArgument(lookup.paper) || lookup.meta || localState(lookup.status) !== "none") return null;
   return infoFailure(lookup.paper, lookup.infoError);
 }
@@ -593,10 +613,18 @@ export function startingMarkdown(paper: string): string {
   return `# ${paper}\n\n正在启动`;
 }
 
+export function startFailedMarkdown(paper: string): string {
+  return `# ${paper}\n\n没有启动成功，原因见系统通知`;
+}
+
+export function startSettled(status: PaperStatus | null): boolean {
+  return status !== null && (status.running || status.stages.some((stage) => stage.status !== "absent"));
+}
+
 export const MODES = ["fast", "smart"];
-export const MODEL_PRESETS = ["claude-code/claude-sonnet-5-5", "claude-code/claude-opus-5-5"];
+const MODEL_PRESETS = ["claude-code/claude-sonnet-5-5", "claude-code/claude-opus-5-5"];
 export const OTHER_MODEL = "other";
-export const EFFORTS = ["low", "medium", "high"];
+const EFFORTS = ["low", "medium", "high"];
 export const DEFAULT_MODE_KEY = "modes.default";
 export const CROP_KEY = "pdf.crop_margins";
 export const FONT_FIELDS: [string, string][] = [
@@ -612,7 +640,7 @@ export const ABSTRACT_FIELDS: [string, string][] = [
   ["abstract.model", "模型"],
 ];
 export const API_KEY_KEY = "abstract.api_key";
-export const CLEAR_API_KEY_PAIR = [API_KEY_KEY, '""'];
+export const CLEAR_API_KEY_PAIR = [API_KEY_KEY, ""];
 
 export const modelKey = (mode: string) => `modes.${mode}.model`;
 export const customModelKey = (mode: string) => `modes.${mode}.model.custom`;
@@ -679,7 +707,7 @@ export function configChanges(config: Config, form: FormValues): { pairs: string
   for (const [key] of FONT_FIELDS) set(key, String(form[key]).trim());
   for (const [key] of ABSTRACT_FIELDS) set(key, String(form[key]).trim());
   const apiKey = String(form[API_KEY_KEY] ?? "").trim();
-  if (apiKey !== "") pairs.push(API_KEY_KEY, JSON.stringify(apiKey));
+  if (apiKey !== "") pairs.push(API_KEY_KEY, apiKey);
   if (form[CROP_KEY] !== (config[CROP_KEY] === true)) pairs.push(CROP_KEY, form[CROP_KEY] ? "true" : "false");
   return { pairs, errors };
 }

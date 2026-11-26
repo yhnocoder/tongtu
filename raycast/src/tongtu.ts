@@ -35,7 +35,7 @@ const ENV = {
 export const TONGTU_HOME = process.env.TONGTU_HOME;
 export const USER_HOME = HOME;
 
-export type Result = { code: number; stdout: string; stderr: string };
+type Result = { code: number; stdout: string; stderr: string };
 
 function executable(): string | null {
   return toolDirectories(HOME).map((directory) => path.join(directory, "tongtu")).find((file) => fs.existsSync(file)) ?? null;
