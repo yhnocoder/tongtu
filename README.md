@@ -43,7 +43,7 @@ agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动，安�
 
 `raycast/` 是一个启动器插件，可以装进 Raycast 或 Tinycast。它有三个命令：「翻译论文」在后台运行 `tongtu run`，结束时发系统通知；「论文」列出全部论文的状态，打开译文，重试或停止翻译；「设置」修改 `config.toml`。
 
-1. 安装 `tongtu` 命令。插件直接执行 `tongtu`，在 `~/.local/bin`、`~/.cargo/bin`、`/opt/homebrew/bin` 里查找。在仓库根目录执行下面的命令，装出的命令指向仓库里的代码，仓库更新后不需要重新安装：
+1. 安装 `tongtu` 命令。插件直接执行 `tongtu`，依次在 `~/.local/bin`、`~/.cargo/bin`、`/opt/homebrew/bin`、`/Library/TeX/texbin`、`/usr/bin`、`/bin` 里查找。在仓库根目录执行下面的命令，装出的命令指向仓库里的代码，仓库更新后不需要重新安装：
 
    ```
    uv tool install --editable .

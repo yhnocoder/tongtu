@@ -34,7 +34,7 @@ const BROWSER_TIMEOUT_MILLISECONDS = 2000;
 type Found = { paper: string; source: PaperSource };
 type Screen =
   | { kind: "loading" }
-  | { kind: "message"; text: string }
+  | { kind: "message"; text: string; hud: boolean }
   | { kind: "confirm"; paper: string; meta: PaperMeta; mode: string | null; shownMode: string };
 
 async function browserPaper(): Promise<string | null> {
@@ -65,54 +65,67 @@ async function findPaper(argument: string): Promise<Found | null> {
   return fromClipboard ? { paper: fromClipboard, source: "clipboard" } : null;
 }
 
-async function finish(text: string): Promise<void> {
-  await showHUD(text, { clearRootSearch: true, popToRootType: PopToRootType.Immediate });
+function done(text: string): Screen {
+  return { kind: "message", text, hud: true };
 }
 
-async function start(paper: string, mode: string | null, shownMode: string): Promise<void> {
+function start(paper: string, mode: string | null, shownMode: string): Screen {
   startRun(paper, mode ? ["--mode", mode] : [], null);
-  await finish(startMessage(paper, shownMode));
+  return done(startMessage(paper, shownMode));
 }
 
-async function prepare(paperArgumentText: string, modeArgument: string | undefined): Promise<Screen | null> {
-  if (!installed()) return { kind: "message", text: NOT_INSTALLED };
+function failure(error: unknown): Screen {
+  return { kind: "message", text: error instanceof Error ? error.message : String(error), hud: false };
+}
+
+async function prepare(paperArgumentText: string, modeArgument: string | undefined): Promise<Screen> {
+  if (!installed()) return { kind: "message", text: NOT_INSTALLED, hud: false };
   const found = await findPaper(paperArgumentText);
-  if (!found) {
-    await finish("没有找到 arXiv 编号");
-    return null;
-  }
+  if (!found) return done("没有找到 arXiv 编号");
   const result = await tongtu(["status", found.paper, "--json"]);
   const status = result.code === 0 ? parseJson<PaperStatus>(result.stdout) : null;
-  if (status?.running) {
-    await finish(`${workdirName(status.workdir)} 正在翻译`);
-    return null;
-  }
+  if (status?.running) return done(`${workdirName(status.workdir)} 正在翻译`);
   if (status?.pdf && isComplete(status)) {
     await markOpened(workdirName(status.workdir));
     await open(status.pdf);
-    await finish(`已有译文，打开 ${workdirName(status.workdir)}`);
-    return null;
+    return done(`已有译文，打开 ${workdirName(status.workdir)}`);
   }
   const mode = runMode(modeArgument);
   const shownMode = mode ?? (await defaultMode());
-  if (found.source !== "clipboard") {
-    await start(found.paper, mode, shownMode);
-    return null;
-  }
+  if (found.source !== "clipboard") return start(found.paper, mode, shownMode);
   const info = await tongtu(["info", found.paper, "--json"]);
   const meta = info.code === 0 ? parseJson<PaperMeta>(info.stdout) : null;
-  if (!meta) return { kind: "message", text: infoFailure(found.paper, info.stderr) };
+  if (!meta) return { kind: "message", text: infoFailure(found.paper, info.stderr), hud: false };
   return { kind: "confirm", paper: found.paper, meta, mode, shownMode };
 }
 
 export default function Translate(props: LaunchProps<{ arguments: { paper?: string; mode?: string } }>) {
   const [screen, setScreen] = useState<Screen>({ kind: "loading" });
-  const started = useRef(false);
+  const prepared = useRef(false);
+  const launched = useRef(false);
+
+  function show(next: Screen): void {
+    setScreen(next);
+    if (next.kind !== "message" || !next.hud) return;
+    showHUD(next.text, { clearRootSearch: true, popToRootType: PopToRootType.Immediate }).catch(() => undefined);
+  }
+
+  function launch(paper: string, mode: string | null, shownMode: string): void {
+    if (launched.current) return;
+    launched.current = true;
+    try {
+      show(start(paper, mode, shownMode));
+    } catch (error) {
+      show(failure(error));
+    }
+  }
+
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    prepare(props.arguments.paper ?? "", props.arguments.mode).then((next) => next && setScreen(next));
+    if (prepared.current) return;
+    prepared.current = true;
+    prepare(props.arguments.paper ?? "", props.arguments.mode).then(show, (error) => show(failure(error)));
   }, []);
+
   if (screen.kind === "loading") return <Detail isLoading markdown="" />;
   if (screen.kind === "message") return <Detail markdown={screen.text} />;
   const { paper, meta, mode, shownMode } = screen;
@@ -128,9 +141,9 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
       }
       actions={
         <ActionPanel>
-          <Action title="开始翻译" icon={Icon.Play} onAction={() => start(paper, mode, shownMode)} />
-          <Action title="用 fast 翻译" icon={Icon.Play} onAction={() => start(paper, "fast", "fast")} />
-          <Action title="用 smart 翻译" icon={Icon.Play} onAction={() => start(paper, "smart", "smart")} />
+          <Action title="开始翻译" icon={Icon.Play} onAction={() => launch(paper, mode, shownMode)} />
+          <Action title="用 fast 翻译" icon={Icon.Play} onAction={() => launch(paper, "fast", "fast")} />
+          <Action title="用 smart 翻译" icon={Icon.Play} onAction={() => launch(paper, "smart", "smart")} />
         </ActionPanel>
       }
     />

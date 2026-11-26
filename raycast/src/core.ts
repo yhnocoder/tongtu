@@ -76,7 +76,43 @@ export type Row = { title: string; text: string; link?: string };
 export type Section = { title: string; papers: PaperSummary[] };
 
 const NEW_ARXIV_ID = /(?<![\w.])\d{4}\.\d{4,5}(v\d+)?(?!\d|\.\d)/;
-const OLD_ARXIV_ID = /(?<![A-Za-z-])[a-z][a-z-]*(\.[A-Z]{2})?\/\d{7}(v\d+)?(?!\d)/;
+export const OLD_ARCHIVES = [
+  "acc-phys",
+  "adap-org",
+  "alg-geom",
+  "ao-sci",
+  "astro-ph",
+  "atom-ph",
+  "bayes-an",
+  "chao-dyn",
+  "chem-ph",
+  "cmp-lg",
+  "comp-gas",
+  "cond-mat",
+  "cs",
+  "dg-ga",
+  "funct-an",
+  "gr-qc",
+  "hep-ex",
+  "hep-lat",
+  "hep-ph",
+  "hep-th",
+  "math",
+  "math-ph",
+  "mtrl-th",
+  "nlin",
+  "nucl-ex",
+  "nucl-th",
+  "patt-sol",
+  "physics",
+  "plasm-ph",
+  "q-alg",
+  "q-bio",
+  "quant-ph",
+  "solv-int",
+  "supr-con",
+];
+const OLD_ARXIV_ID = new RegExp(`(?<![A-Za-z-])(?:${OLD_ARCHIVES.join("|")})(\\.[A-Z]{2})?/\\d{7}(v\\d+)?(?!\\d)`);
 const PATH_ARGUMENT = /^[/~.]/;
 const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i;
 const CHROMIUM_BROWSERS = ["Google Chrome", "Microsoft Edge", "Brave Browser", "Arc", "Chromium", "Vivaldi"];

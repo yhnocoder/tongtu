@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   FILTER_ALL,
   FILTER_UNREAD,
+  OLD_ARCHIVES,
   OTHER_MODEL,
   arxivId,
   arxivIdFromUrl,
@@ -168,6 +169,19 @@ test("arxivId needs a new-style id to start after a separator", () => {
   assert.equal(arxivId("read\t2611.15404 today"), "2611.15404");
   assert.equal(arxivId("line one\n2611.15404"), "2611.15404");
   assert.equal(arxivId("IMG_2024.12345.jpg hep-th/9901001"), "hep-th/9901001");
+});
+
+test("arxivId takes an old-style id only under an old arXiv archive name", () => {
+  assert.equal(arxivId("https://www.jstor.org/stable/1234567"), null);
+  assert.equal(arxivId("issues/1234567"), null);
+  assert.equal(arxivId("mathematics/0309136"), null);
+  assert.equal(arxivId("stat/0701001"), null);
+  assert.equal(arxivId("cs/0112017"), "cs/0112017");
+  assert.equal(arxivId("cs.CL/0112017"), "cs.CL/0112017");
+  assert.equal(arxivId("math-ph/0506203v2"), "math-ph/0506203v2");
+  assert.equal(arxivId("abs/cond-mat/9605103"), "cond-mat/9605103");
+  for (const archive of OLD_ARCHIVES) assert.equal(arxivId(`see ${archive}/9901001`), `${archive}/9901001`);
+  assert.equal(OLD_ARCHIVES.length, 34);
 });
 
 test("arxivIdFromUrl requires an arxiv.org host", () => {

@@ -82,8 +82,8 @@ const STATE_COLORS = { running: Color.Blue, ok: Color.Green, failed: Color.Red, 
 type Shared = { papers: PaperSummary[] | null; missing: boolean; error: string; opened: string[] | null };
 
 let shared: Shared = { papers: null, missing: false, error: "", opened: null };
-let refreshing = false;
-let polling = false;
+let refreshing: Promise<void> | null = null;
+let refreshAgain = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
 
@@ -92,35 +92,55 @@ function publish(next: Partial<Shared>): void {
   for (const listener of listeners) listener();
 }
 
-async function refresh(): Promise<void> {
-  if (refreshing) return;
-  refreshing = true;
-  try {
-    if (!installed()) {
-      publish({ missing: true });
-      return;
-    }
-    const result = await tongtu(["list", "--json"]);
-    const listing = result.code === 0 ? parseJson<{ papers: PaperSummary[] }>(result.stdout) : null;
-    if (!listing) {
-      publish({ missing: false, error: result.stderr.trim() || "tongtu list --json 没有给出结果" });
-      return;
-    }
-    let opened = shared.opened;
-    if (opened === null) {
-      const stored = await loadOpened();
-      opened = stored ?? initialOpened(listing.papers);
-      if (!stored) await saveOpened(opened);
-    }
-    publish({ papers: listing.papers, missing: false, error: "", opened });
-  } finally {
-    refreshing = false;
+async function loadListing(): Promise<void> {
+  if (!installed()) {
+    publish({ missing: true });
+    return;
   }
+  const result = await tongtu(["list", "--json"]);
+  const listing = result.code === 0 ? parseJson<{ papers: PaperSummary[] }>(result.stdout) : null;
+  if (!listing) {
+    publish({ missing: false, error: result.stderr.trim() || "tongtu list --json 没有给出结果" });
+    return;
+  }
+  let opened = shared.opened;
+  if (opened === null) {
+    const stored = await loadOpened();
+    opened = stored ?? initialOpened(listing.papers);
+    if (!stored) await saveOpened(opened);
+  }
+  publish({ papers: listing.papers, missing: false, error: "", opened });
+}
+
+function clearTimer(): void {
+  if (timer !== null) clearTimeout(timer);
+  timer = null;
 }
 
 function schedule(): void {
-  if (!polling) return;
-  timer = setTimeout(() => refresh().then(schedule), refreshSeconds(shared.papers ?? []) * 1000);
+  clearTimer();
+  if (listeners.size === 0) return;
+  timer = setTimeout(refresh, refreshSeconds(shared.papers ?? []) * 1000);
+}
+
+async function refreshUntilSettled(): Promise<void> {
+  try {
+    do {
+      refreshAgain = false;
+      await loadListing();
+    } while (refreshAgain);
+  } catch (error) {
+    publish({ error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    refreshing = null;
+    schedule();
+  }
+}
+
+function refresh(): Promise<void> {
+  if (refreshing) refreshAgain = true;
+  else refreshing = Promise.resolve().then(refreshUntilSettled);
+  return refreshing;
 }
 
 function useShared(): Shared {
@@ -128,29 +148,23 @@ function useShared(): Shared {
   useEffect(() => {
     const listener = () => setVersion((version) => version + 1);
     listeners.add(listener);
-    if (!polling) {
-      polling = true;
-      refresh().then(schedule);
-    }
+    refresh();
     return () => {
       listeners.delete(listener);
-      if (listeners.size > 0) return;
-      polling = false;
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
+      if (listeners.size === 0) clearTimer();
     };
   }, []);
   return shared;
 }
 
 function useNow(active: boolean): number {
-  const [now, setNow] = useState(Date.now());
+  const [, setTicks] = useState(0);
   useEffect(() => {
     if (!active) return;
-    const clock = setInterval(() => setNow(Date.now()), CLOCK_MILLISECONDS);
+    const clock = setInterval(() => setTicks((ticks) => ticks + 1), CLOCK_MILLISECONDS);
     return () => clearInterval(clock);
   }, [active]);
-  return active ? now : Date.now();
+  return Date.now();
 }
 
 async function setOpened(change: (opened: string[]) => string[]): Promise<void> {
