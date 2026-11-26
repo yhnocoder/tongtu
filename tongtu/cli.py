@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -46,6 +47,7 @@ from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest, write_manifest
 from .model.config import (
+    FontFamily,
     FontsConfig,
     ModelsConfig,
     ModeName,
@@ -57,7 +59,7 @@ from .model.config import (
     updated_config,
     write_config,
 )
-from .model.work import AGENTRUN_EXECUTABLE
+from .model.work import AGENTRUN_EXECUTABLE, agentrun_executable
 from .pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, translate
@@ -87,26 +89,20 @@ OUTPUTS_WIDTH = 9
 
 XELATEX = "xelatex"
 
-TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
-    (XELATEX, "compile engine (latexmk -xelatex)"),
-    ("latexmk", "compile loop driver"),
-    ("latexpand", "flattens multi-file sources"),
-)
+TEX_EXECUTABLES: tuple[str, ...] = (XELATEX, "latexmk", "latexpand")
 
 MIN_TEXLIVE_YEAR = 2026
 
-VERSION_TIMEOUT_SECONDS = 30
+TEXLIVE_INSTALL_HINTS: dict[str, str] = {
+    "Darwin": "install MacTeX: brew install --cask mactex-no-gui",
+    "Linux": "install TeX Live scheme-full with install-tl: https://tug.org/texlive/quickinstall.html",
+}
 
-TEXLIVE_CHECK_NAME = "TeX Live"
+VERSION_TIMEOUT_SECONDS = 30
 
 TEXLIVE_YEAR_PATTERN = re.compile(r"\(TeX Live (\d{4})\)")
 
-FONT_CHECK_NAME = "CJK fonts"
 CONFIG_CHECK_NAME = "config.toml"
-
-REQUIRED_FONT_FILENAMES: tuple[str, ...] = tuple(
-    name for family in (FontsConfig().main, FontsConfig().sans) for name in family_files(family) if name
-)
 
 StageName = Enum("StageName", {name: name for name in STAGES}, type=str)
 
@@ -625,129 +621,227 @@ def validate(
 @app.command()
 def doctor(dev: DevOpt = False) -> None:
     _apply_dev(dev)
-    absent_toolchain = _print_doctor_rows(_toolchain_rows())
-    absent_config = _print_doctor_rows(_config_rows())
+    config, config_detail = load_config()
+    environment = [_tex_group(), _fonts_group(config)]
+    executable, agentrun_detail = agentrun_executable()
+    sessions = [
+        _config_group(config, config_detail),
+        _agentrun_group(executable, agentrun_detail),
+        _modes_group(config, executable),
+    ]
+    groups = environment + sessions
+    width = max(len(item.name) for group in groups for item in group.items)
+    for group in groups:
+        _print_doctor_group(group, width)
     home = home_dir()
     for path in legacy_dirs_present():
         if path.resolve() == home.resolve():
             console.print(
-                f"  {'note':<10}TONGTU_HOME points at the legacy directory {path}; papers now go to "
+                f"note: TONGTU_HOME points at the legacy directory {path}; papers now go to "
                 f"{path}/papers/<id>/ and the config is read from {path}/config.toml"
             )
         else:
             console.print(
-                f"  {'note':<10}legacy directory {path} exists and is no longer read; move its contents under "
+                f"note: legacy directory {path} exists and is no longer read; move its contents under "
                 f"{home} (config.toml, glossary.json, papers/<id>/) and delete it"
             )
-    if absent_toolchain:
-        console.print(f"environment incomplete: {', '.join(absent_toolchain)}")
+    absent_environment = _failed(environment)
+    absent_sessions = _failed(sessions)
+    if absent_environment:
+        console.print(f"environment incomplete: {', '.join(absent_environment)}")
         raise typer.Exit(EXIT_FAILURE)
-    if absent_config:
+    if absent_sessions:
         console.print(
-            f"toolchain and fonts complete; {', '.join(absent_config)} not usable, so translate and the fix "
+            f"toolchain and fonts complete; {', '.join(absent_sessions)} not usable, so translate and the fix "
             "sessions cannot run; fetch, precompile and mask still can."
         )
         raise typer.Exit(EXIT_NOT_CONFIGURED)
     console.print("environment complete.")
 
 
-def _print_doctor_rows(rows: list[tuple[str, str, bool, str]]) -> list[str]:
-    for name, purpose, found, detail in rows:
-        mark = "[ok]" if found else "[missing]"
-        console.print(f"  {mark:<10}{name:<14}{purpose:<42}{detail}")
-    return [name for name, _purpose, found, _detail in rows if not found]
+class DoctorMark(StrEnum):
+    OK = "✓"
+    FAILED = "✗"
+    SKIPPED = "-"
 
 
-def _toolchain_rows() -> list[tuple[str, str, bool, str]]:
-    rows: list[tuple[str, str, bool, str]] = []
-    for name, purpose in TOOLCHAIN_CHECKS:
-        rows.append((name, purpose, *_check_executable(name)))
-        if name == XELATEX:
-            rows.append((TEXLIVE_CHECK_NAME, f"distribution year >= {MIN_TEXLIVE_YEAR}", *_check_texlive()))
-    rows.append((FONT_CHECK_NAME, "bundled font files (LXGW WenKai, Source Han Sans SC)", *_check_fonts()))
-    return rows
+DOCTOR_MARK_STYLES: dict[DoctorMark, str] = {
+    DoctorMark.OK: "green",
+    DoctorMark.FAILED: "bold red",
+    DoctorMark.SKIPPED: "dim",
+}
 
 
-def _config_rows() -> list[tuple[str, str, bool, str]]:
-    config, detail = load_config()
-    if config is None:
-        return [
-            (CONFIG_CHECK_NAME, "modes, fonts and pdf options", False, detail),
-            ("runtimes", "runtimes and models of the modes", False, "cannot check: config.toml is unreadable"),
-        ]
-    path = config_path()
-    detail = str(path) if path.exists() else f"{path} absent; using the defaults"
-    rows = [(CONFIG_CHECK_NAME, "modes, fonts and pdf options", True, detail)]
-    targets: dict[str, Target] = {}
-    for name in ModeName:
-        target, _detail = mode_target(config, name)
-        if target is not None:
-            targets.setdefault(str(target), target)
-    for target in targets.values():
-        rows += _runtime_rows(target)
-    return rows
+@dataclass(frozen=True)
+class DoctorItem:
+    name: str
+    mark: DoctorMark
+    detail: str
+    problems: tuple[str, ...] = ()
 
 
-def _runtime_rows(target: Target) -> list[tuple[str, str, bool, str]]:
-    found, detail = _check_executable(AGENTRUN_EXECUTABLE)
-    if not found:
-        return [(str(target), "agentrun, which starts every runtime", False, detail)]
-    command = [detail, "doctor", target.runtime, "--json"] + (["--model", target.model] if target.model else [])
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True)
-    except OSError as error:
-        return [(str(target), "agentrun doctor", False, describe_error(error))]
-    try:
-        checks = json.loads(completed.stdout)
-        return [
-            (
-                str(target),
-                f"agentrun doctor: {check['check']}",
-                check["status"] != "fail",
-                check["detail"] if check["status"] != "skip" else f"skipped: {check['detail']}",
-            )
-            for check in checks
-        ]
-    except (ValueError, TypeError, KeyError):
-        stderr = completed.stderr.strip()[:OUTPUT_EXCERPT_CHARS]
-        return [(str(target), "agentrun doctor", False, stderr or "agentrun doctor printed no check list")]
+@dataclass(frozen=True)
+class DoctorGroup:
+    title: str
+    items: list[DoctorItem]
+    qualified: bool = False
 
 
-def _check_executable(name: str) -> tuple[bool, str]:
-    path = shutil.which(name)
-    if path is None:
-        return False, f"{name} not found in PATH"
-    return True, path
+def _print_doctor_group(group: DoctorGroup, width: int) -> None:
+    console.print(Text(group.title, style="bold"))
+    for item in group.items:
+        line = Text("  ")
+        line.append(item.mark.value, style=DOCTOR_MARK_STYLES[item.mark])
+        line.append(f" {item.name:<{width}}")
+        if item.detail:
+            line.append(f"  {item.detail}")
+        console.print(line)
+        for problem in item.problems:
+            console.print(Text(f"      {problem}", style="red"))
 
 
-def _check_texlive() -> tuple[bool, str]:
-    if shutil.which(XELATEX) is None:
-        return False, f"{XELATEX} is not in PATH; cannot check"
+def _failed(groups: list[DoctorGroup]) -> list[str]:
+    return [
+        f"{group.title} {item.name}" if group.qualified else item.name
+        for group in groups
+        for item in group.items
+        if item.mark is DoctorMark.FAILED
+    ]
+
+
+def _home_relative(path: str) -> str:
+    home = str(Path.home())
+    if path == home or path.startswith(home + os.sep):
+        return "~" + path[len(home) :]
+    return path
+
+
+def _tex_group() -> DoctorGroup:
+    items = []
+    hint = TEXLIVE_INSTALL_HINTS.get(platform.system())
+    for name in TEX_EXECUTABLES:
+        path = shutil.which(name)
+        if path is None:
+            problem = f"not found in PATH; {hint}" if hint else "not found in PATH"
+            items.append(DoctorItem(name, DoctorMark.FAILED, "", (problem,)))
+            continue
+        if name != XELATEX:
+            items.append(DoctorItem(name, DoctorMark.OK, path))
+            continue
+        year, problem = _texlive_year()
+        if year is None:
+            items.append(DoctorItem(name, DoctorMark.FAILED, path, (problem,)))
+        else:
+            items.append(DoctorItem(name, DoctorMark.OK, f"{path} (TeX Live {year})"))
+    return DoctorGroup("TeX", items)
+
+
+def _texlive_year() -> tuple[int | None, str]:
     try:
         completed = subprocess.run(
             [XELATEX, "--version"], capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS
         )
     except (subprocess.TimeoutExpired, OSError) as error:
-        return False, f"failed to run {XELATEX} --version: {describe_error(error)}"
+        return None, f"failed to run {XELATEX} --version: {describe_error(error)}"
     text = completed.stdout.strip()
     first_line = text.splitlines()[0] if text else ""
     match = TEXLIVE_YEAR_PATTERN.search(first_line)
     if match is None:
-        return False, f"no TeX Live year in the {XELATEX} --version output; output: {text[:OUTPUT_EXCERPT_CHARS]}"
+        return None, f"no TeX Live year in the {XELATEX} --version output; output: {text[:OUTPUT_EXCERPT_CHARS]}"
     year = int(match.group(1))
     if year < MIN_TEXLIVE_YEAR:
-        return False, (
+        return None, (
             f"TeX Live {year} is below the required {MIN_TEXLIVE_YEAR}; "
             "install with install-tl, not the distro apt package"
         )
-    return True, first_line
+    return year, ""
 
 
-def _check_fonts() -> tuple[bool, str]:
-    absent = [name for name in REQUIRED_FONT_FILENAMES if not (FONTS_DIR / name).is_file()]
+def _fonts_group(config: ModelsConfig | None) -> DoctorGroup:
+    fonts = config.fonts if config is not None else FontsConfig()
+    roles: tuple[tuple[str, str | FontFamily | None], ...] = (
+        ("main", fonts.main),
+        ("sans", fonts.sans),
+        ("mono", fonts.mono),
+    )
+    return DoctorGroup("fonts", [_font_item(role, value) for role, value in roles], qualified=True)
+
+
+def _font_item(role: str, value: str | FontFamily | None) -> DoctorItem:
+    if value is None:
+        return DoctorItem(role, DoctorMark.SKIPPED, "not set; TeX default")
+    files = [name for name in family_files(value) if name]
+    shown = []
+    absent = []
+    for name in files:
+        path = Path(name).expanduser()
+        bundled = len(path.parts) == 1
+        located = FONTS_DIR / name if bundled else path
+        shown.append(name if bundled else _home_relative(str(path)))
+        if not located.is_file():
+            absent.append(
+                f"{name} not found under {FONTS_DIR}" if bundled else f"{_home_relative(str(path))} not found"
+            )
+    detail = " / ".join(shown)
+    if all(len(Path(name).expanduser().parts) == 1 for name in files):
+        detail += " (bundled)"
     if absent:
-        return False, f"missing {', '.join(absent)} under {FONTS_DIR}"
-    return True, str(FONTS_DIR)
+        return DoctorItem(role, DoctorMark.FAILED, detail, tuple(absent))
+    return DoctorItem(role, DoctorMark.OK, detail)
+
+
+def _config_group(config: ModelsConfig | None, detail: str) -> DoctorGroup:
+    path = config_path()
+    if config is None:
+        return DoctorGroup("config", [DoctorItem(CONFIG_CHECK_NAME, DoctorMark.FAILED, "", (detail,))])
+    shown = _home_relative(str(path))
+    if not path.exists():
+        shown += " absent; using the defaults"
+    return DoctorGroup("config", [DoctorItem(CONFIG_CHECK_NAME, DoctorMark.OK, shown)])
+
+
+def _agentrun_group(executable: str | None, detail: str) -> DoctorGroup:
+    if executable is None:
+        return DoctorGroup("agentrun", [DoctorItem(AGENTRUN_EXECUTABLE, DoctorMark.FAILED, "", (detail,))])
+    shown = detail if detail != executable else _home_relative(executable)
+    return DoctorGroup("agentrun", [DoctorItem(AGENTRUN_EXECUTABLE, DoctorMark.OK, shown)])
+
+
+def _modes_group(config: ModelsConfig | None, agentrun: str | None) -> DoctorGroup:
+    items = []
+    problems_by_target: dict[str, tuple[str, ...]] = {}
+    for name in ModeName:
+        if config is None:
+            items.append(DoctorItem(name, DoctorMark.SKIPPED, "not checked: config.toml is unreadable"))
+            continue
+        target, detail = mode_target(config, name)
+        if target is None:
+            items.append(DoctorItem(name, DoctorMark.FAILED, "", (detail,)))
+            continue
+        if agentrun is None:
+            items.append(DoctorItem(name, DoctorMark.SKIPPED, f"{target}  not checked: agentrun is missing"))
+            continue
+        key = str(target)
+        if key not in problems_by_target:
+            problems_by_target[key] = _runtime_problems(target, executable=agentrun)
+        problems = problems_by_target[key]
+        mark = DoctorMark.FAILED if problems else DoctorMark.OK
+        items.append(DoctorItem(name, mark, key, problems))
+    return DoctorGroup("modes", items, qualified=True)
+
+
+def _runtime_problems(target: Target, executable: str) -> tuple[str, ...]:
+    command = [executable, "doctor", target.runtime, "--json"] + (["--model", target.model] if target.model else [])
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True)
+    except OSError as error:
+        return (f"agentrun doctor: {describe_error(error)}",)
+    try:
+        checks = json.loads(completed.stdout)
+        return tuple(f"{check['check']}: {check['detail']}" for check in checks if check["status"] == "fail")
+    except (ValueError, TypeError, KeyError):
+        stderr = completed.stderr.strip()[:OUTPUT_EXCERPT_CHARS]
+        return (f"agentrun doctor: {stderr or 'printed no check list'}",)
 
 
 config_app = typer.Typer(

@@ -12,6 +12,22 @@
 - [`CLAUDE.md`](CLAUDE.md)：项目的目标、判断与协作约定
 - [Issues](https://github.com/yhnocoder/tongtu/issues)：后续方向
 
+## 安装
+
+```sh
+uv tool install git+https://github.com/yhnocoder/tongtu
+tongtu doctor
+```
+
+默认安装 main 分支，地址后加 `@分支名`、`@tag` 或 `@提交号` 安装其他版本。升级用 `uv tool upgrade tongtu`。`~/.local/bin` 不在 `PATH` 里时运行一次 `uv tool update-shell`。
+
+`tongtu doctor` 检查下面的依赖，缺什么就在那一行给出安装命令：
+
+- TeX Live 2026 的完整安装（xelatex、latexmk、latexpand）。macOS 用 `brew install --cask mactex-no-gui`；Linux 用 [install-tl](https://tug.org/texlive/quickinstall.html) 装 scheme-full。
+- claude-code 及其登录，由 `agentrun doctor` 检查。
+- Linux 上的 bubblewrap 与 socat，同样由 `agentrun doctor` 检查。
+- agentrun 不需要手动安装：`PATH` 与 `~/.local/bin` 里都没有时，通途从它的 GitHub release 下载固定版本到 `~/.local/bin/agentrun`。
+
 ## 开发
 
 ```
@@ -21,7 +37,7 @@ make lint            # 检查：ruff check + ruff format --check + comment lint
 make format          # 自动修：ruff check --fix + ruff format
 ```
 
-agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动 codex、claude-code 与 pi：`cargo binstall agentrun` 或下载它的 release 文件放进 `PATH`；Linux 上另装 bubblewrap 与 socat。`uv run tongtu doctor` 对配置里用到的运行时运行 `agentrun doctor`。
+agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动，安装方式见上一节。`uv run tongtu doctor` 对配置里用到的运行时运行 `agentrun doctor`。
 
 ## 发版
 

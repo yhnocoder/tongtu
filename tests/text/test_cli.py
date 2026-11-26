@@ -121,7 +121,7 @@ def test_doctor_without_config_uses_the_defaults(tmp_path: Path, monkeypatch: py
     calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
-    assert f"[ok]config.tomlmodes,fontsandpdfoptions{path}absent;usingthedefaults" in squeeze(result.stdout)
+    assert f"✓config.toml{path}absent;usingthedefaults" in squeeze(result.stdout)
     assert [command[1:] for command in calls if command[1:2] == ["doctor"]] == [
         ["doctor", "claude-code", "--json", "--model", "claude-sonnet-5-5"],
         ["doctor", "claude-code", "--json", "--model", "claude-opus-5-5"],
@@ -136,8 +136,9 @@ def test_doctor_with_unreadable_config_exits_not_configured(tmp_path: Path, monk
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
-    assert "[missing]config.toml" in output
-    assert "toolchainandfontscomplete" in output
+    assert "✗config.toml" in output
+    assert "-fastnotchecked:config.tomlisunreadable" in output
+    assert "toolchainandfontscomplete;config.tomlnotusable" in output
     assert "fetch,precompileandmaskstillcan" in output
     assert calls == [[cli.XELATEX, "--version"]]
 
@@ -151,7 +152,7 @@ def test_doctor_reports_an_old_roles_config_as_not_configured(tmp_path: Path, mo
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
-    assert "[missing]config.toml" in output
+    assert "✗config.toml" in output
     assert "roles" in output
     assert calls == [[cli.XELATEX, "--version"]]
 
@@ -163,7 +164,47 @@ def test_doctor_missing_fonts_exits_one(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(cli, "FONTS_DIR", tmp_path / "no-fonts")
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_FAILURE
-    assert f"environmentincomplete:{squeeze(cli.FONT_CHECK_NAME)}" in squeeze(result.stdout)
+    output = squeeze(result.stdout)
+    assert (
+        f"✗mainLXGWWenKai-Light.ttf/LXGWWenKai-Medium.ttf(bundled)LXGWWenKai-Light.ttfnotfoundunder{tmp_path}/no-fonts"
+        in output
+    )
+    assert "environmentincomplete:fontsmain,fontssans" in output
+
+
+def test_doctor_checks_the_configured_font_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sans = tmp_path / "Sans-Regular.otf"
+    sans.write_bytes(b"font")
+    missing = tmp_path / "Serif-Regular.otf"
+    config_path(tmp_path, monkeypatch).write_text(
+        TABLE + f'\n[fonts]\nmain = "{missing}"\nsans = "{sans}"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    output = squeeze(result.stdout)
+    assert f"✗main{missing}{missing}notfound" in output
+    assert f"✓sans{sans}-mononotset;TeXdefault" in output
+    assert "environmentincomplete:fontsmain" in output
+
+
+def test_doctor_runs_agentrun_from_its_full_path_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agentrun = f"{tmp_path}/.cargo/bin/agentrun"
+    monkeypatch.setattr(shutil, "which", lambda name: agentrun if name == "agentrun" else f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert "✓agentrun~/.cargo/bin/agentrun" in squeeze(result.stdout)
+    assert {command[0] for command in calls if command[1:2] == ["doctor"]} == {agentrun}
+
+
+def test_doctor_writes_paths_under_home_with_a_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert cli._home_relative(str(tmp_path / ".tongtu" / "config.toml")) == "~/.tongtu/config.toml"
+    assert cli._home_relative(f"{tmp_path}-other/config.toml") == f"{tmp_path}-other/config.toml"
 
 
 def test_doctor_missing_toolchain_and_config_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,7 +214,7 @@ def test_doctor_missing_toolchain_and_config_exits_one(tmp_path: Path, monkeypat
     assert result.exit_code == cli.EXIT_FAILURE
 
 
-@pytest.mark.parametrize("tool", [name for name, _purpose in cli.TOOLCHAIN_CHECKS])
+@pytest.mark.parametrize("tool", cli.TEX_EXECUTABLES)
 def test_doctor_missing_one_tool_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: None if name == tool else f"/usr/bin/{name}")
@@ -182,15 +223,27 @@ def test_doctor_missing_one_tool_exits_one(tmp_path: Path, monkeypatch: pytest.M
     assert result.exit_code == cli.EXIT_FAILURE
 
 
+@pytest.mark.parametrize(("system", "hint"), sorted(cli.TEXLIVE_INSTALL_HINTS.items()))
+def test_doctor_missing_tool_shows_the_install_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, hint: str
+) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "latexpand" else f"/usr/bin/{name}")
+    monkeypatch.setattr(cli.platform, "system", lambda: system)
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert squeeze(f"✗ latexpand not found in PATH; {hint}") in squeeze(result.stdout)
+
+
 def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: None)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     output = squeeze(result.stdout)
-    assert "environmentincomplete:xelatex" in output
-    assert "[missing]TeXLive" in output
-    assert "xelatexisnotinPATH;cannotcheck" in output
+    assert "environmentincomplete:xelatex,latexmk,latexpand" in output
+    assert "✗xelatexnotfoundinPATH" in output
 
 
 def test_doctor_accepts_the_required_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,8 +253,7 @@ def test_doctor_accepts_the_required_texlive_year(tmp_path: Path, monkeypatch: p
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    assert "[ok]TeXLive" in output
-    assert "(TeXLive2026)" in output
+    assert "✓xelatex/usr/bin/xelatex(TeXLive2026)" in output
 
 
 def test_doctor_rejects_an_older_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,9 +263,8 @@ def test_doctor_rejects_an_older_texlive_year(tmp_path: Path, monkeypatch: pytes
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     output = squeeze(result.stdout)
-    assert "[missing]TeXLive" in output
-    assert "TeXLive2022isbelowtherequired2026" in output
-    assert "environmentincomplete:TeXLive" in output
+    assert "✗xelatex/usr/bin/xelatexTeXLive2022isbelowtherequired2026" in output
+    assert "environmentincomplete:xelatex" in output
 
 
 def test_doctor_rejects_output_without_a_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,7 +274,7 @@ def test_doctor_rejects_output_without_a_texlive_year(tmp_path: Path, monkeypatc
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     output = squeeze(result.stdout)
-    assert "[missing]TeXLive" in output
+    assert "✗xelatex/usr/bin/xelatexnoTeXLiveyear" in output
     assert "(MiKTeX24.1)" in output
 
 
@@ -237,11 +288,8 @@ def test_doctor_checks_the_runtime_of_each_mode_through_agentrun(
     assert result.exit_code == 0
     output = squeeze(result.stdout)
     assert "environmentcomplete." in output
-    assert "[ok]config.toml" in output
-    for runtime, name in (("codex", "codex/m1"), ("pi", "pi/deepseek/m1")):
-        assert f"[ok]{name}agentrundoctor:executable/usr/bin/{runtime}" in output
-        assert f"[ok]{name}agentrundoctor:login{runtime}loggedin" in output
-        assert f"[ok]{name}agentrundoctor:networkskipped:--networknone" in output
+    assert "✓config.toml" in output
+    assert "modes✓fastcodex/m1✓smartpi/deepseek/m1environmentcomplete." in output
     assert [command[1:] for command in calls if command[1:2] == ["doctor"]] == [
         ["doctor", "codex", "--json", "--model", "m1"],
         ["doctor", "pi", "--json", "--model", "deepseek/m1"],
@@ -266,9 +314,8 @@ def test_doctor_reports_a_failed_agentrun_check(tmp_path: Path, monkeypatch: pyt
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
-    assert "[missing]codex/m1agentrundoctor:logincodexloginfilenotfound" in output
-    assert "[ok]pi/deepseek/m1agentrundoctor:login" in output
-    assert "codex/m1notusable" in output
+    assert "✗fastcodex/m1login:codexloginfilenotfound✓smartpi/deepseek/m1" in output
+    assert "modesfastnotusable" in output
 
 
 def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -278,7 +325,8 @@ def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: 
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
-    assert "[missing]pi/deepseek/m1agentrun,whichstartseveryruntimeagentrunnotfoundinPATH" in output
+    assert "✗agentrunagentrunisnotinPATHanddownloading" in output
+    assert "-fastcodex/m1notchecked:agentrunismissing" in output
     assert calls == [[cli.XELATEX, "--version"]]
     assert "toolchainandfontscomplete" in output
 
@@ -295,7 +343,7 @@ def test_doctor_reports_agentrun_output_that_is_not_json(tmp_path: Path, monkeyp
     monkeypatch.setattr(cli.subprocess, "run", run)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
-    assert "[missing]piagentrundoctoragentrun:unexpectedargument" in squeeze(result.stdout)
+    assert "✗fastpiagentrundoctor:agentrun:unexpectedargument" in squeeze(result.stdout)
 
 
 def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,11 +358,11 @@ def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, m
     monkeypatch.setattr(cli.subprocess, "run", run)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
-    assert "[missing]piagentrundoctoragentrundoctorprintednochecklist" in squeeze(result.stdout)
+    assert "✗fastpiagentrundoctor:printednochecklist" in squeeze(result.stdout)
 
 
 def note_lines(output: str) -> list[str]:
-    return [line for line in output.splitlines() if line.lstrip().startswith("note")]
+    return [line for line in output.splitlines() if line.startswith("note:")]
 
 
 def test_doctor_notes_legacy_directories_without_changing_the_exit_code(

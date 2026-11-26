@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
+import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 
 from tongtu import fonts
@@ -17,6 +20,8 @@ from tongtu.model.work import PROMPT, ResultUsage, result_usage, session_usage, 
 from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
 work_module = importlib.import_module("tongtu.model.work")
+
+real_download_executable = work_module._download_executable
 
 AGENTRUN = "/fake/bin/agentrun"
 
@@ -270,12 +275,92 @@ def test_report_receives_tool_summaries(configured: Path, monkeypatch: pytest.Mo
     assert actions == ["Bash: latexmk -xelatex flat.tex", "Read: a.tex"]
 
 
-def test_agentrun_not_on_path_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_agentrun_that_cannot_be_downloaded_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     outcome = run_work(configured)
     assert outcome.session.stop_reason is StopReason.ERROR
     assert outcome.session.model == "codex/m1"
-    assert "agentrun is not in PATH" in outcome.detail
+    assert "agentrun is not in PATH and downloading" in outcome.detail
+
+
+def test_agentrun_executable_prefers_path(agentrun_download_disabled: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: AGENTRUN)
+    assert work_module.agentrun_executable() == (AGENTRUN, AGENTRUN)
+
+
+def test_agentrun_executable_uses_an_earlier_install(
+    agentrun_download_disabled: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    agentrun_download_disabled.parent.mkdir(parents=True)
+    agentrun_download_disabled.write_bytes(b"binary")
+    agentrun_download_disabled.chmod(0o755)
+    assert work_module.agentrun_executable() == (str(agentrun_download_disabled), str(agentrun_download_disabled))
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "release"),
+    [
+        ("Darwin", "arm64", "macos-arm64"),
+        ("Darwin", "x86_64", "macos-x86_64"),
+        ("Linux", "x86_64", "linux-x86_64"),
+        ("Linux", "aarch64", "linux-arm64"),
+    ],
+)
+def test_agentrun_executable_downloads_the_release_for_the_platform(
+    agentrun_download_disabled: Path, monkeypatch: pytest.MonkeyPatch, system: str, machine: str, release: str
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(work_module.platform, "system", lambda: system)
+    monkeypatch.setattr(work_module.platform, "machine", lambda: machine)
+    downloads: list[tuple[str, Path]] = []
+    monkeypatch.setattr(work_module, "_download_executable", lambda url, path: downloads.append((url, path)))
+    executable, detail = work_module.agentrun_executable()
+    version = work_module.AGENTRUN_VERSION
+    assert downloads == [
+        (
+            f"https://github.com/yhnocoder/agentrun/releases/download/v{version}/agentrun-{version}-{release}",
+            agentrun_download_disabled,
+        )
+    ]
+    assert executable == str(agentrun_download_disabled)
+    assert detail == f"installed agentrun {version} to {agentrun_download_disabled}"
+
+
+def test_agentrun_executable_without_a_release_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(work_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(work_module.platform, "machine", lambda: "AMD64")
+    executable, detail = work_module.agentrun_executable()
+    assert executable is None
+    assert "no release file for Windows AMD64" in detail
+
+
+def fake_stream(monkeypatch: pytest.MonkeyPatch, status: int, content: bytes) -> None:
+    @contextlib.contextmanager
+    def stream(method: str, url: str, **kwargs: object) -> Iterator[httpx.Response]:
+        yield httpx.Response(status, content=content, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(work_module.httpx, "stream", stream)
+
+
+def test_download_executable_writes_an_executable_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "bin" / "agentrun"
+    fake_stream(monkeypatch, 200, b"binary")
+    real_download_executable("https://example.invalid/agentrun", destination)
+    assert destination.read_bytes() == b"binary"
+    assert os.access(destination, os.X_OK)
+    assert sorted(path.name for path in destination.parent.iterdir()) == ["agentrun"]
+
+
+def test_download_executable_leaves_nothing_after_an_http_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "bin" / "agentrun"
+    fake_stream(monkeypatch, 404, b"Not Found")
+    with pytest.raises(httpx.HTTPStatusError):
+        real_download_executable("https://example.invalid/agentrun", destination)
+    assert list(destination.parent.iterdir()) == []
 
 
 def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
