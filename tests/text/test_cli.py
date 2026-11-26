@@ -19,10 +19,10 @@ import typer.testing
 from rich.progress import Progress
 from typer.testing import CliRunner
 
-from tongtu import __version__, cli
+from tongtu import __version__, arxiv, cli
 from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session, StopReason, Usage
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
-from tongtu.artifacts.fetch import FetchManifest, FetchStatus, PaperMeta
+from tongtu.artifacts.fetch import CachedMeta, FetchManifest, FetchStatus, PaperMeta
 from tongtu.artifacts.status import (
     ABSENT_STATUS,
     PaperListing,
@@ -38,7 +38,7 @@ from tongtu.manifests import load_manifest, write_manifest
 from tongtu.model.config import ModelsConfig, ModeName, config_entries, load_config, write_config
 from tongtu.pipeline import STAGES
 
-from .test_arxiv import ERROR_FEED, LATEST_FEED, VERSIONED_FEED
+from .test_arxiv import ERROR_FEED, LATEST_FEED, OLD_STYLE_FEED, VERSIONED_FEED
 from .test_pipeline import write_outputs
 
 runner = CliRunner()
@@ -1603,6 +1603,34 @@ def test_run_latest_asks_arxiv_even_with_a_local_version(
     assert (tmp_path / "papers" / local / "kept").is_file()
 
 
+def write_cache_entry(home: Path, key: str, meta: PaperMeta, fetched_at: datetime) -> Path:
+    path = home / "cache" / "arxiv" / f"{key}.json"
+    write_manifest(path, CachedMeta(fetched_at=fetched_at, meta=meta))
+    return path
+
+
+def test_run_takes_the_latest_version_from_a_fresh_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    write_cache_entry(tmp_path, "2412.19437", paper_meta("缓存里的题目"), datetime.now(UTC))
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2412.19437")
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == tmp_path / "papers" / "2412.19437v2"
+    assert captured[0].meta is not None and captured[0].meta.title == "缓存里的题目"
+
+
+def test_run_latest_asks_arxiv_and_updates_the_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    old = paper_meta("旧题目").model_copy(update={"arxiv_id": "2106.04426", "version": 2})
+    path = write_cache_entry(tmp_path, "2106.04426", old, datetime.now(UTC))
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426", "--latest")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].paper.version == 3
+    cached = load_manifest(path, CachedMeta)
+    assert cached is not None and cached.meta.version == 3
+
+
 def test_run_latest_with_a_version_is_a_usage_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     urls = wire_api(monkeypatch)
     result, _, calls = run_with_home(tmp_path, monkeypatch, "run", "2106.04426v2", "--latest")
@@ -2367,3 +2395,142 @@ def test_config_set_rejects_an_incomplete_pair(
     result = runner.invoke(app, ["config", "set", *pairs])
     assert result.exit_code == cli.EXIT_USAGE
     assert path.read_text(encoding="utf-8") == TABLE
+
+
+def info_rows(output: str) -> dict[str, str]:
+    rows = {}
+    for line in output.split("\n\nabstract\n")[0].splitlines():
+        label, _, value = line.partition(" ")
+        rows[label] = value.strip()
+    return rows
+
+
+def test_info_json_prints_the_meta_file_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_api(monkeypatch, VERSIONED_FEED)
+    result = runner.invoke(app, ["info", "1412.6980v8", "--json"])
+    assert result.exit_code == 0
+    meta = arxiv.parse_feed(VERSIONED_FEED, "1412.6980v8")
+    assert result.stdout == meta.model_dump_json(indent=2) + "\n"
+
+
+def test_info_prints_one_row_per_field(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COLUMNS", "400")
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    result = runner.invoke(app, ["info", "https://arxiv.org/abs/1412.6980v8"])
+    assert result.exit_code == 0
+    assert urls == [f"{arxiv.API_URL}?id_list=1412.6980v8"]
+    lines = result.stdout.splitlines()
+    labels = ["paper", "title", "authors", "category", "published", "updated", "comment", "url", "source"]
+    assert [line.split()[0] for line in lines[:9]] == labels
+    assert len({line.index(line.split()[1]) for line in lines[:9]}) == 1
+    rows = info_rows(result.stdout)
+    assert rows["paper"] == "1412.6980v8"
+    assert rows["title"] == "Adam: A Method for Stochastic Optimization"
+    assert rows["authors"] == "Diederik Kingma, Jimmy Ba"
+    assert rows["category"] == "cs.LG"
+    assert (rows["published"], rows["updated"]) == ("2014-12-22", "2015-07-23")
+    assert rows["comment"].startswith("Published as a conference paper")
+    assert rows["url"] == "https://arxiv.org/abs/1412.6980v8"
+    assert rows["source"] == "arXiv"
+    assert lines[9:] == [
+        "",
+        "abstract",
+        "  We introduce Adam, an algorithm for first-order gradient-based optimization.",
+    ]
+
+
+def test_info_lists_the_other_categories_and_the_optional_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COLUMNS", "400")
+    wire_api(monkeypatch, LATEST_FEED)
+    rows = info_rows(runner.invoke(app, ["info", "2106.04426"]).stdout)
+    assert rows["category"] == "cs.LG (cs.CL)"
+    assert not {"comment", "journal", "doi"} & set(rows)
+    wire_api(monkeypatch, OLD_STYLE_FEED)
+    rows = info_rows(runner.invoke(app, ["info", "hep-th/9901001"]).stdout)
+    assert rows["journal"] == "Prog.Theor.Phys.101:1155-1164,1999"
+    assert rows["doi"] == "10.1143/PTP.101.1155"
+    assert list(rows)[-5:] == ["comment", "journal", "doi", "url", "source"]
+
+
+def test_info_wraps_the_abstract_to_the_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COLUMNS", "30")
+    wire_api(monkeypatch, VERSIONED_FEED)
+    result = runner.invoke(app, ["info", "1412.6980v8"])
+    abstract = result.stdout.split("\nabstract\n")[1].splitlines()
+    assert len(abstract) > 1
+    assert all(line.startswith("  ") and len(line) <= 30 for line in abstract)
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        (timedelta(minutes=5), "cache, fetched 5 minutes ago"),
+        (timedelta(hours=3, minutes=10), "cache, fetched 3 hours ago"),
+        (timedelta(days=2, hours=1), "cache, fetched 2 days ago"),
+    ],
+)
+def test_info_reports_the_age_of_a_cache_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, age: timedelta, expected: str
+) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存"), datetime.now(UTC) - age)
+    urls = wire_api(monkeypatch)
+    result = runner.invoke(app, ["info", "2412.19437v2"])
+    assert result.exit_code == 0
+    assert urls == []
+    assert info_rows(result.stdout)["source"] == expected
+
+
+def test_info_reads_the_meta_file_of_the_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    write_manifest(cli.Workdir(papers / "2412.19437v2").meta, paper_meta("工作目录里的题目"))
+    urls = wire_api(monkeypatch)
+    rows = info_rows(runner.invoke(app, ["info", "2412.19437v2"]).stdout)
+    assert (rows["source"], rows["title"]) == ("working directory", "工作目录里的题目")
+    assert urls == []
+
+
+def test_info_refresh_asks_arxiv_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    cached = paper_meta("缓存").model_copy(update={"arxiv_id": "1412.6980", "version": 8})
+    write_cache_entry(home, "1412.6980v8", cached, datetime.now(UTC))
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    rows = info_rows(runner.invoke(app, ["info", "1412.6980v8", "--refresh"]).stdout)
+    assert (rows["source"], rows["title"]) == ("arXiv", "Adam: A Method for Stochastic Optimization")
+    assert len(urls) == 1
+
+
+@pytest.mark.parametrize(("feed", "status_code"), [(ERROR_FEED, 200), ("", 503)])
+def test_info_exits_one_when_arxiv_has_no_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feed: str, status_code: int
+) -> None:
+    wire_api(monkeypatch, feed, status_code)
+    result = runner.invoke(app, ["info", "2106.99999"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert result.stdout == ""
+    assert result.stderr.startswith("cannot get info for 2106.99999: ")
+    assert len(result.stderr.splitlines()) == 1
+
+
+@pytest.mark.parametrize("paper", ["not an id", "https://example.com/abs/1412.6980"])
+def test_info_rejects_a_malformed_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paper: str) -> None:
+    urls = wire_api(monkeypatch)
+    result = runner.invoke(app, ["info", paper])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert urls == []
+
+
+def test_info_rejects_a_local_source_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result = runner.invoke(app, ["info", str(tmp_path)])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert "noarXivinfo" in squeeze(result.stderr)
+    assert urls == []
+
+
+def test_info_dev_writes_the_cache_under_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
+    wire_api(monkeypatch, VERSIONED_FEED)
+    result = runner.invoke(app, ["info", "1412.6980v8", "--dev"])
+    assert result.exit_code == 0
+    assert (tmp_path / "dev" / "cache" / "arxiv" / "1412.6980v8.json").is_file()

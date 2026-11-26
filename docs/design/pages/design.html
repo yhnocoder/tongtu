@@ -78,6 +78,7 @@ tongtu stage    STAGE PAPER [--mode fast|smart] [--glossary FILE]... [--workdir 
 tongtu status   PAPER [--json] [--workdir DIR] [--dev]
 tongtu list     [--json] [--dev]
 tongtu stop     PAPER [--workdir DIR] [--dev]
+tongtu info     PAPER [--json] [--refresh] [--dev]
 tongtu validate SRC DST [--glossary FILE]...
 tongtu doctor
 tongtu config   [list [--json] | set KEY VALUE [KEY VALUE ...] | open] [--dev]
@@ -93,7 +94,7 @@ tongtu          --version</code></pre>
       <tr><td><code>--from STAGE</code></td><td>run</td><td class="wrap">从这个阶段起重跑，先删掉它及其下游的旧产物。</td></tr>
       <tr><td><code>--glossary FILE</code></td><td>run、stage、validate</td><td class="wrap">本次运行追加的术语表，可以给多个，靠后的优先。</td></tr>
       <tr><td><code>--workdir DIR</code></td><td>run、stage、status、stop</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同；或者 manifest 记的是本地源码目录，<code>PAPER</code> 是同一个目录，或者是这个目录的名字。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
-      <tr><td><code>--dev</code></td><td>run、stage、status、list、stop、config</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
+      <tr><td><code>--dev</code></td><td>run、stage、status、list、stop、info、config</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
     </tbody>
   </table>
 
@@ -136,6 +137,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
     <li><code>status PAPER</code> 只读，列出每个阶段的状态、产物是否存在和 manifest 路径。它不联网。<code>--json</code> 的格式见<a href="#status">供其他程序读取的输出</a>。</li>
     <li><code>list</code> 只读，列出 <code>$TONGTU_HOME/papers/</code> 下的论文，每篇一行，列出目录名、状态、所在阶段和题目，按最近更新的时间从新到旧排列。它不联网，退出 0。哪些目录会被列出、各列怎样取值，见<a href="#listing">tongtu list --json</a>。</li>
     <li><code>stop PAPER</code> 结束正在运行这篇论文的 <code>run</code> 或 <code>stage</code>，按与 <code>status</code> 相同的规则解析工作目录。运行标记无效时输出「<code>&lt;目录名&gt; is not running</code>」，退出 0。否则向运行标记里的进程发 SIGTERM，每 0.1 秒检查一次运行标记，最多等 <code>STOP_WAIT_SECONDS = 10</code> 秒；标记失效后输出「<code>stopped &lt;目录名&gt;</code>」，退出 0；超时仍有效时把目录名与 pid 写到 stderr，退出 1。发信号时进程已经不存在，按已停止处理。进程属于其他用户、无权发信号时，把目录名与 pid 写到 stderr，退出 1。tongtu 收到 SIGTERM 时的处理见<a href="#run-marker">运行标记</a>，所以直接用 <code>kill</code> 结束 tongtu 进程与 <code>stop</code> 的效果相同。</li>
+    <li><code>info PAPER</code> 显示一篇 arXiv 论文的信息，不建立工作目录。<code>PAPER</code> 是 arXiv 编号或链接，带不带版本号都可以；给的是本地源码目录时是用法错误，退出 2。论文信息的来源依次是工作目录里的 <code>out/&lt;ID&gt;.meta.json</code>（只在带版本号时）、arXiv 查询缓存、arXiv，规则见<a href="#arxiv-cache">arXiv 查询缓存</a>；<code>--refresh</code> 跳过前两者，直接访问 arXiv 并更新缓存。输出每行一个字段，依次是 <code>paper</code>、<code>title</code>、<code>authors</code>、<code>category</code>（主分类，其余分类放在括号里）、<code>published</code>、<code>updated</code>、<code>comment</code>、<code>journal</code>、<code>doi</code>（后三行只在有值时出现）、<code>url</code>、<code>source</code>，空一行后是缩进两格、按终端宽度折行的摘要。<code>source</code> 是 <code>arXiv</code>、<code>cache, fetched &lt;N&gt; minutes|hours|days ago</code>（不足 1 小时用分钟，不足 1 天用小时，其余用天）或 <code>working directory</code>。arXiv 上没有这篇论文或请求失败时，stderr 输出一行 <code>cannot get info for &lt;编号&gt;: &lt;原因&gt;</code>，退出 1。<code>--json</code> 的格式见<a href="#info-json">tongtu info PAPER --json</a>。</li>
     <li><code>validate SRC DST</code> 对一对掩码文件运行 translate 判定时使用的同一套校验，逐类输出问题，有问题时退出 1。给了 <code>--glossary</code> 才检查术语。手工修改译文后用它确认。</li>
     <li><code>doctor</code> 逐项检查环境：TeX 工具链（xelatex、latexmk、latexpand）、默认字体、<code>config.toml</code>、agentrun，以及每个模式引用的运行时与模型（对每个组合运行一次 <code>agentrun doctor</code>）。工具链或字体缺失时退出 1。<code>config.toml</code> 不存在不算缺失，这时检查默认的模式。工具链齐全时，退出 3 只在配置文件有错或运行时不可用时出现，这时 fetch、precompile、mask 仍然可以运行。</li>
     <li><code>config</code> 查看和修改 <code>$TONGTU_HOME/config.toml</code>，有四种用法：
@@ -164,6 +166,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
       <tr><td>本地源码目录</td><td class="wrap">没有版本号，也不写论文信息。工作目录名取源码目录的名字。</td></tr>
     </tbody>
   </table>
+  <p>查询最新版本时（不带版本号且本地没有工作目录），通途先读 1 天内的 arXiv 查询缓存，缓存无效时才访问 arXiv；<code>--latest</code> 不用缓存，总是访问 arXiv 并更新缓存。缓存的规则见<a href="#arxiv-cache">arXiv 查询缓存</a>。</p>
   <p>版本要靠查询才能确定时，查询发生在建立工作目录之前，查询结果随后交给 fetch 写论文信息，一次运行只请求一次。这次查询失败时版本无法确定，<code>run</code> 把原因输出到终端并退出 1，不建立工作目录，也不写 manifest。版本已经确定时（命令里写明，或取自本地的目录名），API 请求由 fetch 发出，失败记为 fetch 的 <code>download_failed</code>。<code>status</code> 与 fetch 以外的 <code>stage</code> 不联网，遇到不带版本号的编号又没有 <code>--workdir</code> 时，只按本地已有的带版本号的工作目录解析。本地没有这样的目录时，命令把编号与 <code>papers/</code> 的路径写到 stderr，提示先运行 <code>tongtu run &lt;编号&gt;</code>，退出 1。v0.1 留下的不带版本号的目录不被识别。</p>
   <p>选定的版本没有 TeX 源码时，fetch 的状态是 <code>pdf_only</code>，运行停在 fetch。<code>message</code> 写明是哪个版本没有 TeX 源码，并提示其他版本可能有源码，要试的话在命令里写明版本号。通途不自动改用别的版本。</p>
   <p class="why"><b>理由</b>读者需要确切知道自己读的是哪个版本。版本只在两种情况下确定：命令里写明，或者由通途查询后写进目录名、文件名和论文信息。</p>
@@ -176,6 +179,8 @@ mode    smart  claude-code/claude-opus-5-5  medium
 ├── config.toml                      <span class="c">模式、字体、PDF 选项</span>
 ├── glossary.json                    <span class="c">全局术语表，用户维护</span>
 ├── glossary.learned.json            <span class="c">已学术语表，通途维护</span>
+├── cache/
+│   └── arxiv/                       <span class="c">arXiv 查询缓存，见下文</span>
 └── papers/
     └── 2412.19437v2/                <span class="c">工作目录，名字是 &lt;ID&gt;</span>
         ├── glossary.json            <span class="c">论文级术语表，可选，用户维护</span>
@@ -200,6 +205,18 @@ mode    smart  claude-code/claude-opus-5-5  medium
             ├── translate.raw.jsonl  <span class="c">运行时的原始输出，每个会话各有一份</span>
             ├── precompile-fix.jsonl <span class="c">启动过修复会话才有</span>
             └── compile-fix.jsonl</code></pre>
+
+  <h3 id="arxiv-cache">arXiv 查询缓存</h3>
+  <p><code>info</code>、<code>run</code> 与 fetch 阶段用同一套规则取论文信息，结果来源记为 <code>arxiv</code>、<code>cache</code> 或 <code>workdir</code>：</p>
+  <ul>
+    <li>带版本号：这个版本的工作目录里有 <code>out/&lt;ID&gt;.meta.json</code> 时读它；否则读缓存；否则访问 arXiv 并写缓存。</li>
+    <li>不带版本号：缓存有效时读缓存；否则访问 arXiv 并写缓存。</li>
+    <li>要求刷新（<code>info --refresh</code>、<code>run --latest</code>）：跳过前两步，直接访问 arXiv 并写缓存。</li>
+  </ul>
+  <p>缓存文件是 <code>$TONGTU_HOME/cache/arxiv/&lt;键&gt;.json</code>。不带版本号的查询，键是规范化后的编号（编号里的 <code>/</code> 换成 <code>_</code>，例如 <code>2611.15404</code>、<code>hep-th_9901001</code>）；带版本号的查询，键是 <code>&lt;编号&gt;v&lt;N&gt;</code>。一次不带版本号的查询访问 arXiv 后，同时写不带版本号和带版本号两个条目。不带版本号的条目在 <code>fetched_at</code> 之后 <code>LATEST_CACHE_SECONDS = 86400</code> 秒内有效，因为哪个版本是最新的会变；带版本号的条目不过期，因为某个版本的信息不再变。缓存文件读不出或校验不通过时按不存在处理。通途不清理缓存。</p>
+  <pre><code class="language-python">class CachedMeta(BaseModel):
+    fetched_at: datetime       # 访问 arXiv 的时间，UTC
+    meta: PaperMeta</code></pre>
 
   <h3>config.toml</h3>
   <pre><code class="language-toml">[modes]
@@ -673,7 +690,7 @@ class Note(BaseModel):
 
 <section id="status">
   <h2>供其他程序读取的输出</h2>
-  <p>其他程序通过六种输出读取通途的结果：<code>tongtu status --json</code>、<code>tongtu list --json</code>、<code>tongtu config list --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这六种格式可以修改，修改时读它们的程序一起改。仓库内的 Raycast 插件另外读 <code>logs/&lt;会话&gt;.jsonl</code>，显示会话最近的动作；这个文件是 agentrun 的事件格式。</p>
+  <p>其他程序通过七种输出读取通途的结果：<code>tongtu status --json</code>、<code>tongtu list --json</code>、<code>tongtu info --json</code>、<code>tongtu config list --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这七种格式可以修改，修改时读它们的程序一起改。仓库内的 Raycast 插件另外读 <code>logs/&lt;会话&gt;.jsonl</code>，显示会话最近的动作；这个文件是 agentrun 的事件格式。</p>
 
   <h3>out/&lt;ID&gt;.meta.json</h3>
   <p>内容来自 arXiv API 的同一次响应，是所选版本的信息。题目与摘要里的换行压成一个空格。</p>
@@ -766,6 +783,9 @@ class PaperSummary(BaseModel):
     updated_at: datetime                        # 已有 manifest 里最新的修改时间；没有时取工作目录的修改时间
     started_at: datetime | None                 # 有效运行标记里的开始时间；没有时为 null
     pdf: Path | None                            # 中文 PDF 的绝对路径；文件不存在时为 null</code></pre>
+
+  <h3 id="info-json">tongtu info PAPER --json</h3>
+  <p>向 stdout 输出一个 <code>PaperMeta</code> 的 JSON 对象，格式与 <code>out/&lt;ID&gt;.meta.json</code> 完全相同，写法与 <code>status --json</code> 相同。论文信息的来源与退出码与不带 <code>--json</code> 时相同，见<a href="#cli">命令行</a>；失败时不输出 JSON。</p>
 
   <h3 id="config-json">tongtu config list --json</h3>
   <p>向 stdout 输出一个 JSON 对象。键是 <code>tongtu config list</code> 列出的带点的键，顺序相同；值是字符串、数字或布尔，模式名取它的字符串值，未设置的可选字段为 null。配置文件不存在时输出默认值；配置文件加载失败时不输出 JSON，错误写到 stderr，退出 1。</p>

@@ -48,3 +48,8 @@ class PaperMeta(BaseModel):
     doi: str | None
     abs_url: str
     pdf_url: str
+
+
+class CachedMeta(BaseModel):
+    fetched_at: datetime
+    meta: PaperMeta

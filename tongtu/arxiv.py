@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -10,8 +12,10 @@ import httpx
 from pydantic import ValidationError
 
 from . import __version__
-from .artifacts.fetch import PaperMeta
-from .workdir import normalize_arxiv_id
+from .artifacts.fetch import CachedMeta, PaperMeta
+from .config import arxiv_cache_dir, papers_dir
+from .manifests import load_manifest, write_manifest
+from .workdir import Workdir, normalize_arxiv_id
 
 API_URL = "https://export.arxiv.org/api/query"
 
@@ -35,6 +39,8 @@ ARXIV = "{http://arxiv.org/schemas/atom}"
 
 PATH_NAVIGATION_LITERALS = frozenset({"", ".", "..", "~"})
 
+LATEST_CACHE_SECONDS = 86400
+
 
 class PaperArgumentError(ValueError):
     pass
@@ -42,6 +48,19 @@ class PaperArgumentError(ValueError):
 
 class ArxivError(Exception):
     pass
+
+
+class MetaSource(StrEnum):
+    ARXIV = "arxiv"
+    CACHE = "cache"
+    WORKDIR = "workdir"
+
+
+@dataclass(frozen=True)
+class FoundMeta:
+    meta: PaperMeta
+    source: MetaSource
+    fetched_at: datetime
 
 
 @dataclass(frozen=True)
@@ -106,6 +125,33 @@ def latest_local_version(papers: Path, arxiv_id: str) -> int | None:
         if entry.is_dir() and (match := pattern.fullmatch(entry.name)) is not None
     ]
     return max(versions, default=None)
+
+
+def find_meta(arxiv_id: str, version: int | None = None, *, refresh: bool = False) -> FoundMeta:
+    normalized = normalize_arxiv_id(arxiv_id)
+    key = normalized if version is None else versioned_id(normalized, version)
+    if not refresh:
+        if version is not None:
+            meta_path = Workdir(papers_dir() / key).meta
+            meta = load_manifest(meta_path, PaperMeta)
+            if meta is not None:
+                return FoundMeta(meta, MetaSource.WORKDIR, datetime.fromtimestamp(meta_path.stat().st_mtime, UTC))
+        cached = load_manifest(_cache_path(key), CachedMeta)
+        if cached is not None and (version is not None or _fresh(cached.fetched_at)):
+            return FoundMeta(cached.meta, MetaSource.CACHE, cached.fetched_at)
+    meta = query(arxiv_id, version)
+    fetched_at = datetime.now(UTC)
+    for cache_key in dict.fromkeys((key, versioned_id(normalized, meta.version))):
+        write_manifest(_cache_path(cache_key), CachedMeta(fetched_at=fetched_at, meta=meta))
+    return FoundMeta(meta, MetaSource.ARXIV, fetched_at)
+
+
+def _cache_path(key: str) -> Path:
+    return arxiv_cache_dir() / f"{key}.json"
+
+
+def _fresh(fetched_at: datetime) -> bool:
+    return datetime.now(UTC) - fetched_at < timedelta(seconds=LATEST_CACHE_SECONDS)
 
 
 def query(arxiv_id: str, version: int | None = None) -> PaperMeta:

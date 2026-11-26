@@ -28,6 +28,11 @@ API_URL = "https://export.arxiv.org/api/query?id_list=1412.6980v8"
 EPRINT_URL = "https://export.arxiv.org/e-print/1412.6980v8"
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+
+
 def make_workdir(tmp_path: Path) -> Workdir:
     return Workdir(tmp_path / "1412.6980v8")
 
@@ -118,6 +123,18 @@ def test_given_meta_is_written_without_asking_the_api(tmp_path: Path, monkeypatc
     assert manifest.status is FetchStatus.OK
     assert urls == [EPRINT_URL]
     assert read_meta(workdir) == meta
+
+
+def test_fetch_reads_the_paper_info_from_the_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_download(monkeypatch, tar_payload({"main.tex": BIG_TEX}))
+    first = fetch.run(PAPER, make_workdir(tmp_path))
+    assert first.status is FetchStatus.OK
+    assert (tmp_path / "home" / "cache" / "arxiv" / "1412.6980v8.json").is_file()
+    urls.clear()
+    second_workdir = Workdir(tmp_path / "again")
+    assert fetch.run(PAPER, second_workdir).status is FetchStatus.OK
+    assert urls == [EPRINT_URL]
+    assert read_meta(second_workdir).title == "Adam: A Method for Stochastic Optimization"
 
 
 @pytest.mark.parametrize(

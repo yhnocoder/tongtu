@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import textwrap
 import time
 import tomllib
 from collections.abc import Callable, Iterator
@@ -289,9 +290,9 @@ def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: Fetch
     )
 
 
-def _query_latest(arxiv_id: str) -> PaperMeta:
+def _query_latest(arxiv_id: str, refresh: bool) -> PaperMeta:
     try:
-        return arxiv.query(arxiv_id)
+        return arxiv.find_meta(arxiv_id, refresh=refresh).meta
     except arxiv.ArxivError as error:
         error_console.print(f"cannot determine the version of {arxiv_id}: {error}")
         raise typer.Exit(EXIT_FAILURE) from error
@@ -321,7 +322,7 @@ def _paper_workdir(
         else:
             version = None if fetched is None else fetched.version
         if version is None and may_query:
-            meta = _query_latest(paper_input.arxiv_id)
+            meta = _query_latest(paper_input.arxiv_id, latest)
             version = meta.version
         if version is None and workdir is None:
             error_console.print(
@@ -791,6 +792,75 @@ def stop(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False) -> No
             raise typer.Exit(EXIT_FAILURE)
         time.sleep(STOP_POLL_SECONDS)
     console.print(f"stopped {name}")
+
+
+@app.command()
+def info(
+    paper: Annotated[str, typer.Argument(metavar="PAPER", help="arXiv id or arXiv URL, with or without a version")],
+    as_json: Annotated[
+        bool, typer.Option("--json", help="print the paper info as one JSON object (UTF-8), the format of meta.json")
+    ] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="ask arXiv again instead of reading the cache")] = False,
+    dev: DevOpt = False,
+) -> None:
+    _apply_dev(dev)
+    try:
+        paper_input = parse_paper_argument(paper)
+    except (PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    if paper_input.arxiv_id is None:
+        raise typer.BadParameter(f"{paper} is a local source directory, which has no arXiv info")
+    try:
+        found = arxiv.find_meta(paper_input.arxiv_id, paper_input.version, refresh=refresh)
+    except arxiv.ArxivError as error:
+        name = _describe_paper(paper_input.arxiv_id, paper_input.version)
+        reason = " ".join(str(error).split())
+        error_console.print(f"cannot get info for {name}: {reason}", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(EXIT_FAILURE) from error
+    if as_json:
+        typer.echo(found.meta.model_dump_json(indent=2).encode(ENCODING))
+        return
+    for line in _info_lines(found, datetime.now(UTC), console.width):
+        console.print(line, markup=False, highlight=False, soft_wrap=True)
+
+
+def _info_lines(found: arxiv.FoundMeta, now: datetime, width: int) -> list[str]:
+    meta = found.meta
+    others = [category for category in meta.categories if category != meta.primary_category]
+    category = f"{meta.primary_category} ({', '.join(others)})" if others else meta.primary_category
+    rows = [
+        ("paper", arxiv.versioned_id(meta.arxiv_id, meta.version)),
+        ("title", meta.title),
+        ("authors", ", ".join(meta.authors)),
+        ("category", category),
+        ("published", meta.published.date().isoformat()),
+        ("updated", meta.updated.date().isoformat()),
+        ("comment", meta.comment),
+        ("journal", meta.journal_ref),
+        ("doi", meta.doi),
+        ("url", meta.abs_url),
+        ("source", _source_text(found, now)),
+    ]
+    present = [(label, value) for label, value in rows if value]
+    label_width = max(len(label) for label, _value in present) + COLUMN_GAP
+    lines = [f"{label:<{label_width}}{value}" for label, value in present]
+    abstract = textwrap.fill(meta.abstract, width=width, initial_indent="  ", subsequent_indent="  ")
+    return [*lines, "", "abstract", abstract]
+
+
+def _source_text(found: arxiv.FoundMeta, now: datetime) -> str:
+    if found.source == arxiv.MetaSource.ARXIV:
+        return "arXiv"
+    if found.source == arxiv.MetaSource.WORKDIR:
+        return "working directory"
+    minutes = int((now - found.fetched_at).total_seconds() // 60)
+    if minutes < 60:
+        age = f"{minutes} minutes"
+    elif minutes < 60 * 24:
+        age = f"{minutes // 60} hours"
+    else:
+        age = f"{minutes // (60 * 24)} days"
+    return f"cache, fetched {age} ago"
 
 
 @app.command()
