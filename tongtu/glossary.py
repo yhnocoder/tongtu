@@ -54,7 +54,12 @@ class Layer:
 @dataclass(frozen=True)
 class Layers:
     learned: Layer | None
-    user: tuple[Layer, ...]
+    general: Layer | None
+    specific: tuple[Layer, ...]
+
+    @property
+    def user(self) -> tuple[Layer, ...]:
+        return self.specific if self.general is None else (self.general, *self.specific)
 
 
 @dataclass(frozen=True)
@@ -77,11 +82,13 @@ def learned_path(env: Mapping[str, str] | None = None) -> Path:
 
 
 def read_layers(paper_dir: Path, cli_paths: Sequence[Path], env: Mapping[str, str] | None = None) -> Layers:
-    optional = [_read_layer(path, required=False) for path in (glossary_path(env), paper_dir / GLOSSARY_FILENAME)]
+    general = _read_layer(glossary_path(env), required=False)
+    paper = _read_layer(paper_dir / GLOSSARY_FILENAME, required=False)
     required = [_read_layer(path, required=True) for path in cli_paths]
     return Layers(
         learned=_read_layer(learned_path(env), required=False),
-        user=tuple(layer for layer in (*optional, *required) if layer is not None),
+        general=general,
+        specific=tuple(layer for layer in (paper, *required) if layer is not None),
     )
 
 
@@ -89,17 +96,24 @@ def select(layers: Layers, masked: str) -> Selection:
     text = searchable(masked)
     user = merge_glossaries([layer.glossary for layer in layers.user])
     user_forms = {form for word, _translation in user.entries() for form in term_forms(word)}
-    unmatched = tuple(
-        f"{_origin(layers.user, word)}: {word!r} does not occur in this paper"
-        for word, translation in user.entries()
-        if not _occurs(word, translation, text)
-    )
+    unmatched: list[str] = []
+    if layers.general is not None:
+        entries = list(dict.fromkeys(layers.general.glossary.entries()))
+        missing = sum(1 for word, translation in entries if not _occurs(word, translation, text))
+        if missing:
+            unmatched.append(
+                f"{layers.general.path}: {missing} of its {len(entries)} entries do not occur in this paper"
+            )
+    for word, translation in user.entries():
+        origin = _origin(layers.user, word)
+        if origin is not layers.general and not _occurs(word, translation, text):
+            unmatched.append(f"{origin.path}: {word!r} does not occur in this paper")
     fixed = _matching(user, text)
     conflicts = kept_word_conflicts(dict(fixed.terms), fixed.do_not_translate)
     if conflicts:
         listed = "; ".join(
-            f"term {word!r} -> {translation!r} ({_origin(layers.user, word)}) does not keep the "
-            f"{DO_NOT_TRANSLATE_FIELD} word {kept!r} ({_origin(layers.user, kept)}) verbatim"
+            f"term {word!r} -> {translation!r} ({_origin(layers.user, word).path}) does not keep the "
+            f"{DO_NOT_TRANSLATE_FIELD} word {kept!r} ({_origin(layers.user, kept).path}) verbatim"
             for word, translation, kept in conflicts
         )
         raise GlossaryError(f"the translation of a term must keep the do-not-translate words it contains: {listed}")
@@ -108,7 +122,7 @@ def select(layers: Layers, masked: str) -> Selection:
         terms=tuple(entry for entry in learned.terms if normalized_term(entry[0]) not in user_forms),
         do_not_translate=tuple(word for word in learned.do_not_translate if normalized_term(word) not in user_forms),
     )
-    return Selection(fixed=fixed, learned=_matching(unshadowed, text), unmatched=unmatched)
+    return Selection(fixed=fixed, learned=_matching(unshadowed, text), unmatched=tuple(unmatched))
 
 
 def load_selection(
@@ -232,9 +246,9 @@ def _occurs(word: str, translation: str | None, text: str) -> bool:
     return hits(word, text) if translation is not None else kept_word_in_source(word, text)
 
 
-def _origin(layers: Sequence[Layer], word: str) -> Path:
+def _origin(layers: Sequence[Layer], word: str) -> Layer:
     return next(
-        layer.path
+        layer
         for layer in reversed(layers)
         if any(same_term(entry_word, word) for entry_word, _translation in layer.glossary.entries())
     )

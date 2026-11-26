@@ -145,23 +145,42 @@ def test_a_lower_layer_style_survives_when_higher_layers_write_none(home: Path, 
     assert selection(home, paper).fixed.style == "全局风格"
 
 
-def test_only_entries_found_in_the_paper_are_selected(home: Path, paper: Path) -> None:
-    write(
+def test_only_entries_found_in_the_paper_are_selected(home: Path, paper: Path, tmp_path: Path) -> None:
+    general = write(
         home / "glossary.json",
         {
             "terms": {"large language model": "大语言模型", "tokenizer": "分词器", "Experimental Setup": "实验设置"},
             "do_not_translate": ["LLM", "vLLM", "transformer"],
         },
     )
+    paper_file = write(paper / "glossary.json", {"terms": {"pruning": "剪枝", "decoding": "解码"}})
+    cli = write(tmp_path / "cli.json", {"do_not_translate": ["Adam", "RL"]})
+    chosen = selection(home, paper, cli)
+    assert chosen.fixed.terms == (("large language model", "大语言模型"), ("decoding", "解码"))
+    assert chosen.fixed.do_not_translate == ("LLM", "vLLM", "RL")
+    assert chosen.unmatched == (
+        f"{general}: 3 of its 6 entries do not occur in this paper",
+        f"{cli}: 'Adam' does not occur in this paper",
+        f"{paper_file}: 'pruning' does not occur in this paper",
+    )
+
+
+def test_a_global_glossary_found_in_full_adds_no_warning(home: Path, paper: Path) -> None:
+    write(home / "glossary.json", {"terms": {"KV cache": "键值缓存"}, "do_not_translate": ["LLM", "LLM"]})
+    write(paper / "glossary.json", {"terms": {"transformer": "变换器"}})
     chosen = selection(home, paper)
-    assert chosen.fixed.terms == (("large language model", "大语言模型"),)
-    assert chosen.fixed.do_not_translate == ("LLM", "vLLM")
-    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == [
-        "'transformer' does not occur in this paper",
-        "'tokenizer' does not occur in this paper",
-        "'Experimental Setup' does not occur in this paper",
-    ]
-    assert all(warning.startswith(str(home / "glossary.json")) for warning in chosen.unmatched)
+    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == ["'transformer' does not occur in this paper"]
+
+
+def test_a_global_entry_overridden_by_the_paper_glossary_is_reported_by_the_paper_glossary(
+    home: Path, paper: Path
+) -> None:
+    general = write(home / "glossary.json", {"terms": {"transformer": "变换器", "KV cache": "键值缓存"}})
+    paper_file = write(paper / "glossary.json", {"terms": {"Transformers": "Transformer 模型"}})
+    assert selection(home, paper).unmatched == (
+        f"{general}: 1 of its 2 entries do not occur in this paper",
+        f"{paper_file}: 'Transformers' does not occur in this paper",
+    )
 
 
 def test_kept_words_are_selected_by_the_same_rule_as_the_validation(home: Path, paper: Path) -> None:
