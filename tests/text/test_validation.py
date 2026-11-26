@@ -257,6 +257,14 @@ def test_a_structural_difference_is_reported_for_its_paragraph_only() -> None:
     assert report.problems[0].message.startswith("paragraph starting at line 4 of the translation, placeholders")
 
 
+@pytest.mark.parametrize("boundary", ["\n \n", "\n\t \n", "\n\n \n", "\n \n\n"])
+def test_a_line_of_only_whitespace_is_a_paragraph_boundary(boundary: str) -> None:
+    source = EN.replace("\n\n⟦BLK-12⟧", f"{boundary}⟦BLK-12⟧")
+    report = validation.check(source, ZH)
+    assert report.ok
+    assert len(validation.paragraphs(source)) == len(validation.paragraphs(ZH)) == 3
+
+
 def caption_line_problems(translation: str) -> list[str]:
     return [
         problem.message
