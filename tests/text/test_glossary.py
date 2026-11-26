@@ -7,7 +7,7 @@ import pytest
 
 from tongtu import glossary
 from tongtu.artifacts.translate import PaperGlossary, PaperKeptWord, PaperTerm
-from tongtu.validation import Glossary, merge_glossaries
+from tongtu.validation import Glossary, check, merge_glossaries
 
 MASKED = """\
 \\section{Experimental Setup}
@@ -183,17 +183,20 @@ def test_a_global_entry_overridden_by_the_paper_glossary_is_reported_by_the_pape
     )
 
 
-def test_kept_words_are_selected_by_the_same_rule_as_the_validation(home: Path, paper: Path) -> None:
-    write(home / "glossary.learned.json", {"do_not_translate": ["rank", "PP", "KV-cache"]})
-    write(paper / "glossary.json", {"do_not_translate": ["RL", "SFT", "Adapter"]})
-    masked = "We train a low-rank adapter with RL-based tuning and a KV-cache, then run SFT with one PP group.\n"
+def test_kept_words_are_selected_regardless_of_case_and_hyphens(home: Path, paper: Path, tmp_path: Path) -> None:
+    write(home / "glossary.learned.json", {"do_not_translate": ["rank", "PP"]})
+    write(paper / "glossary.json", {"do_not_translate": ["RL", "Adapter", "SFT"]})
+    masked = "We train a low-rank adapter with RL-based tuning on every layer of the large model.\n"
     chosen = glossary.load_selection(masked, paper, (), env(home))
-    assert chosen.fixed.do_not_translate == ("SFT",)
-    assert chosen.learned.do_not_translate == ("PP", "KV-cache")
-    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == [
-        "'RL' does not occur in this paper",
-        "'Adapter' does not occur in this paper",
-    ]
+    assert chosen.fixed.do_not_translate == ("RL", "Adapter")
+    assert chosen.learned.do_not_translate == ("rank",)
+    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == ["'SFT' does not occur in this paper"]
+    session = tmp_path / "session"
+    glossary.write_session_files(session, chosen)
+    initial = json.loads((session / "glossary.json").read_text(encoding="utf-8"))
+    assert initial["do_not_translate"] == ["rank"]
+    report = check(masked, "我们用低秩 adapter 和基于 RL 的方法调整大模型的每一层。", do_not_translate=["rank"])
+    assert report.ok
 
 
 def test_learned_entries_go_to_the_session_glossary_unless_a_user_layer_covers_them(home: Path, paper: Path) -> None:

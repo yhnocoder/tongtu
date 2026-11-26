@@ -20,7 +20,6 @@ from .validation import (
     GlossaryFormatError,
     hits,
     kept_word_conflicts,
-    kept_word_in_source,
     merge_glossaries,
     normalized_term,
     parse_glossary,
@@ -99,14 +98,14 @@ def select(layers: Layers, masked: str) -> Selection:
     unmatched: list[str] = []
     if layers.general is not None:
         entries = list(dict.fromkeys(layers.general.glossary.entries()))
-        missing = sum(1 for word, translation in entries if not _occurs(word, translation, text))
+        missing = sum(1 for word, _translation in entries if not hits(word, text))
         if missing:
             unmatched.append(
                 f"{layers.general.path}: {missing} of its {len(entries)} entries do not occur in this paper"
             )
-    for word, translation in user.entries():
+    for word, _translation in user.entries():
         origin = _origin(layers.user, word)
-        if origin is not layers.general and not _occurs(word, translation, text):
+        if origin is not layers.general and not hits(word, text):
             unmatched.append(f"{origin.path}: {word!r} does not occur in this paper")
     fixed = _matching(user, text)
     conflicts = kept_word_conflicts(dict(fixed.terms), fixed.do_not_translate)
@@ -236,14 +235,10 @@ def _read_layer(path: Path, *, required: bool) -> Layer | None:
 
 def _matching(glossary: Glossary, text: str) -> Glossary:
     return Glossary(
-        terms=tuple(entry for entry in glossary.terms if _occurs(*entry, text)),
-        do_not_translate=tuple(word for word in glossary.do_not_translate if _occurs(word, None, text)),
+        terms=tuple(entry for entry in glossary.terms if hits(entry[0], text)),
+        do_not_translate=tuple(word for word in glossary.do_not_translate if hits(word, text)),
         style=glossary.style,
     )
-
-
-def _occurs(word: str, translation: str | None, text: str) -> bool:
-    return hits(word, text) if translation is not None else kept_word_in_source(word, text)
 
 
 def _origin(layers: Sequence[Layer], word: str) -> Layer:

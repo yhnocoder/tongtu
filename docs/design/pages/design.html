@@ -586,7 +586,7 @@ class GlossaryCounts(BaseModel):
   </table>
   <p>两个词条去掉大小写与连字符的差别之后，一个等于另一个，或者等于另一个加 s 或 es，就算同一个词：KV cache 与 kv-caches 是同一个词，plan 与 plane 不是。同一个文件里，同一个词的两条记录不同时，这个文件格式不对；两条都是不译词、只是拼写不同时（seq2seq 与 Seq2Seq）两条都保留，因为不译词按大小写原样匹配，两种写法各自有效。同一个词出现在多层时，取最高一层的条目。<code>style</code> 取最高一层写出的那一段。translate 只把本篇原文里命中的条目放进会话目录：三层用户术语表的命中条目与 <code>style</code> 合成 <code>glossary.fixed.json</code>，已学术语表的命中条目是 <code>glossary.json</code> 的初始内容。</p>
   <ul>
-    <li>命中按整词匹配，认单复数（词尾的 s 与 es）。术语里全大写的词区分大小写，其余不区分：<code>LLM</code> 命中 LLMs，不命中 vLLM。不译词与校验用同一个判断：区分大小写，紧贴连字符的出现不算命中。</li>
+    <li>命中按整词匹配，认单复数（词尾的 s 与 es）。全大写的词区分大小写，其余不区分：<code>LLM</code> 命中 LLMs，不命中 vLLM。</li>
     <li>一条术语的原词里含有某个不译词时，译法里必须原样保留它：mixed RL training 写作「混合 RL 训练」。</li>
     <li>用户术语表里没有命中本篇的词记进 manifest 的 warnings，方便发现拼错的词。论文级与命令行的术语表每个未命中的词记一条；全局术语表收的是各篇通用的词，大部分不会出现在某一篇里，所以整个文件只记一条，写明共有多少条、其中多少条本篇没有出现，全部出现时不记。</li>
   </ul>
