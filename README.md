@@ -55,15 +55,23 @@ agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动，安�
    uv tool install --reinstall git+https://github.com/yhnocoder/tongtu
    ```
 
-2. 在仓库根目录构建插件。命令安装依赖并构建，最后打印产物目录 `raycast/dist/` 的绝对路径：
+2. 装进 Tinycast：Settings → Extensions → Install → Install from GitHub，填入：
 
    ```
-   make raycast
+   https://github.com/yhnocoder/tongtu/tree/main/raycast
    ```
 
-3. 装进启动器：
-   - Tinycast：Settings → Extensions → Install → Add from folder，选 `raycast/dist`。
-   - Raycast：在 `raycast/` 下执行 `npm run dev`。
+   这种安装方式需要本机有 Node 和包管理器（例如 npm）。用 nvm 安装 Node 时，Tinycast 0.12 查找的是 `~/.nvm/versions/node/current/bin`，nvm 默认不建这个目录；在同一个面板的 Custom search paths 里填入实际的目录，形如 `~/.nvm/versions/node/v<版本号>/bin`。
+
+   这样安装的插件不会自动更新。更新时重新执行一次安装，同时按第 1 步更新 `tongtu` 命令。
+
+修改插件代码时，在本地构建。在仓库根目录执行下面的命令，它安装依赖并构建，最后打印产物目录 `raycast/dist/` 的绝对路径：
+
+```
+make raycast
+```
+
+产物在 Tinycast 里用 Settings → Extensions → Install → Add from folder 安装，选 `raycast/dist`。装进 Raycast 时在 `raycast/` 下执行 `npm run dev`。
 
 「翻译论文」打开后停在一个带输入框的界面。输入框里预先填好编号，依次取命令参数、浏览器当前标签页的地址、剪贴板，三处都没有时为空，可以随时修改。下面显示这篇论文的标题、摘要、作者和状态。回车的动作随状态变化：还没有翻译的论文开始翻译并进入详情页，其余状态直接进入详情页。它不会自己开始翻译，也不会自己关闭面板。第一次读取浏览器地址时，系统会询问是否允许启动器控制浏览器，选择允许。
 
