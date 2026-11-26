@@ -11,6 +11,7 @@ from tongtu.config import config_path
 from tongtu.model.config import (
     DEFAULT_TIMEOUT_SECONDS,
     RUNTIME_NAMES,
+    SECRET_MASK,
     FontFamily,
     FontsConfig,
     ModelsConfig,
@@ -20,6 +21,7 @@ from tongtu.model.config import (
     ensure_config_file,
     load_config,
     mode_target,
+    shown_entries,
     updated_config,
     write_config,
 )
@@ -313,6 +315,9 @@ DEFAULT_KEYS = [
     "fonts.sans.bold",
     "fonts.mono",
     "pdf.crop_margins",
+    "abstract.base_url",
+    "abstract.model",
+    "abstract.api_key",
 ]
 
 
@@ -323,6 +328,18 @@ def test_config_entries_of_the_defaults() -> None:
     assert values["modes.default"] is ModeName.SMART
     assert values["fonts.mono"] is None
     assert values["pdf.crop_margins"] is False
+    assert values["abstract.base_url"] == "https://api.deepseek.com"
+    assert values["abstract.model"] == "deepseek-flash"
+    assert values["abstract.api_key"] == ""
+
+
+def test_shown_entries_mask_a_set_api_key() -> None:
+    config = updated_config(ModelsConfig(), "abstract.api_key", "sk-secret")
+    shown = dict(shown_entries(config))
+    assert shown["abstract.api_key"] == SECRET_MASK
+    assert dict(config_entries(config))["abstract.api_key"] == "sk-secret"
+    assert dict(shown_entries(ModelsConfig()))["abstract.api_key"] == ""
+    assert [key for key, _value in shown_entries(config)] == DEFAULT_KEYS
 
 
 def test_config_entries_of_a_single_font_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

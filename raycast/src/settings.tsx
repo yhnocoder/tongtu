@@ -2,6 +2,9 @@ import { Action, ActionPanel, Alert, Detail, Form, Icon, LocalStorage, Toast, co
 import fs from "node:fs";
 import { useEffect, useState } from "react";
 import {
+  ABSTRACT_FIELDS,
+  API_KEY_KEY,
+  CLEAR_API_KEY_PAIR,
   CROP_KEY,
   Config,
   DEFAULT_MODE_KEY,
@@ -10,6 +13,8 @@ import {
   MODES,
   NOT_INSTALLED,
   OTHER_MODEL,
+  apiKeyPlaceholder,
+  apiKeySet,
   configChanges,
   configErrors,
   configFile,
@@ -85,6 +90,7 @@ export default function Settings() {
       }
     }
     setLoaded({ config, recentDays: daysChanged && days !== null ? days : loaded.recentDays });
+    if (!rejected && pairs.includes(API_KEY_KEY)) setValues((current) => ({ ...current, [API_KEY_KEY]: "" }));
     setErrors(found);
     if (rejected) {
       await showToast({ style: Toast.Style.Failure, title: rejected });
@@ -95,6 +101,19 @@ export default function Settings() {
     } else {
       await showToast({ style: Toast.Style.Success, title: "已保存" });
     }
+  }
+
+  async function clearApiKey(): Promise<void> {
+    if (!loaded) return;
+    const result = await tongtu(["config", "set", "--", ...CLEAR_API_KEY_PAIR]);
+    if (result.code !== 0) {
+      await showToast({ style: Toast.Style.Failure, title: result.stderr.trim() || "tongtu config set 失败" });
+      return;
+    }
+    const config = (await readConfig()) ?? loaded.config;
+    setLoaded({ ...loaded, config });
+    setValues((current) => ({ ...current, [API_KEY_KEY]: "" }));
+    await showToast({ style: Toast.Style.Success, title: "已清除摘要翻译的密钥" });
   }
 
   async function openConfig(): Promise<void> {
@@ -120,6 +139,7 @@ export default function Settings() {
       actions={
         <ActionPanel>
           <Action.SubmitForm title="保存" icon={Icon.Check} onSubmit={save} />
+          {apiKeySet(loaded.config) && <Action title="清除摘要翻译的密钥" icon={Icon.Key} style={Action.Style.Destructive} onAction={clearApiKey} />}
           <Action title="打开 config.toml" icon={Icon.Document} onAction={openConfig} />
           <Action title="恢复默认值" icon={Icon.Trash} style={Action.Style.Destructive} onAction={reset} />
         </ActionPanel>
@@ -175,6 +195,19 @@ export default function Settings() {
       {FONT_FIELDS.map(([key, title]) => (
         <Form.TextField key={key} id={key} title={title} info="文件名或绝对路径" placeholder="文件名或绝对路径" value={text(key)} onChange={change(key)} error={error(key)} />
       ))}
+      <Form.Separator />
+      <Form.Description text="摘要翻译" />
+      {ABSTRACT_FIELDS.map(([key, title]) => (
+        <Form.TextField key={key} id={key} title={title} value={text(key)} onChange={change(key)} error={error(key)} />
+      ))}
+      <Form.PasswordField
+        id={API_KEY_KEY}
+        title="密钥"
+        placeholder={apiKeyPlaceholder(loaded.config)}
+        value={text(API_KEY_KEY)}
+        onChange={change(API_KEY_KEY)}
+        error={error(API_KEY_KEY)}
+      />
       <Form.Separator />
       <Form.Description text="插件" />
       <Form.TextField

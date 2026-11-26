@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tongtu import arxiv
 from tongtu.artifacts.fetch import FetchManifest, FetchStatus, PaperMeta
 from tongtu.arxiv import PaperInput
 from tongtu.stages import fetch
@@ -135,6 +136,16 @@ def test_fetch_reads_the_paper_info_from_the_cache(tmp_path: Path, monkeypatch: 
     assert fetch.run(PAPER, second_workdir).status is FetchStatus.OK
     assert urls == [EPRINT_URL]
     assert read_meta(second_workdir).title == "Adam: A Method for Stochastic Optimization"
+
+
+def test_fetch_writes_the_saved_abstract_zh_into_the_meta_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_download(monkeypatch, tar_payload({"main.tex": BIG_TEX}))
+    meta = arxiv.parse_feed(VERSIONED_FEED, "1412.6980v8")
+    found = arxiv.FoundMeta(meta, arxiv.MetaSource.ARXIV, datetime.now(UTC))
+    arxiv.save_abstract_zh(found, "我们提出 Adam。")
+    workdir = make_workdir(tmp_path)
+    assert fetch.run(PAPER, workdir).status is FetchStatus.OK
+    assert read_meta(workdir).abstract_zh == "我们提出 Adam。"
 
 
 @pytest.mark.parametrize(

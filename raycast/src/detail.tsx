@@ -26,9 +26,11 @@ import {
   RunAction,
   START_REFRESH_DELAY_SECONDS,
   arxivUrl,
+  arxivVersion,
   completedMarkdown,
   completedRows,
   initialOpened,
+  needsAbstractZh,
   refreshSeconds,
   removableWorkdir,
   runMessage,
@@ -39,6 +41,7 @@ import {
   statusTarget,
   unfinishedMarkdown,
   unfinishedRows,
+  withAbstractZh,
   withOpened,
   withoutOpened,
   workdirName,
@@ -319,6 +322,8 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
   const [status, setStatus] = useState<PaperStatus | null>(null);
   const [failure, setFailure] = useState("");
   const [settling, setSettling] = useState(starting === true);
+  const [translated, setTranslated] = useState<PaperMeta | null>(null);
+  const askedAbstractZh = useRef(false);
   const running = status?.state === "running";
   const now = useNow(running);
 
@@ -341,6 +346,16 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
   useEffect(() => {
     loadStatus();
   }, []);
+
+  useEffect(() => {
+    if (!status || status.state !== "ok" || askedAbstractZh.current) return;
+    const id = arxivVersion(status);
+    if (!id || !needsAbstractZh(readJson<PaperMeta>(status.meta))) return;
+    askedAbstractZh.current = true;
+    tongtu(["info", id, "--json", "--zh"]).then((result) => {
+      if (result.code === 0) setTranslated(parseJson<PaperMeta>(result.stdout));
+    });
+  }, [status]);
 
   useEffect(() => {
     if (!settling) return;
@@ -375,7 +390,7 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
     name: target.name,
     addedAt: papers?.find((other) => other.name === target.name)?.added_at ?? null,
     status,
-    meta: readJson<PaperMeta>(status.meta),
+    meta: withAbstractZh(readJson<PaperMeta>(status.meta), translated),
   };
   return (
     <Detail

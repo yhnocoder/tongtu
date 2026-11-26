@@ -31,9 +31,12 @@ import {
   entryTitle,
   isPathArgument,
   lookupFailure,
+  needsAbstractZh,
   runMode,
+  shownAbstract,
   statusTarget,
   typedPaper,
+  withAbstractZh,
 } from "./core";
 import { PaperDetailView, RefreshAction, feedback, openPdf, run, stop } from "./detail";
 import { defaultMode, installed, osascript, parseJson, startRun, tongtu } from "./tongtu";
@@ -97,6 +100,7 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
   const latest = useRef(0);
   const shownPaper = useRef<string | null>(null);
   const launching = useRef(false);
+  const translating = useRef(new Set<string>());
 
   useEffect(() => {
     if (missing) return;
@@ -127,7 +131,18 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
       return;
     }
     const found = await lookUp(wanted);
-    if (request === latest.current) setLookup(found);
+    if (request !== latest.current) return;
+    setLookup(found);
+    if (needsAbstractZh(found.meta)) translateAbstract(wanted);
+  }
+
+  async function translateAbstract(wanted: string): Promise<void> {
+    if (translating.current.has(wanted)) return;
+    translating.current.add(wanted);
+    const result = await tongtu(["info", wanted, "--json", "--zh"]);
+    translating.current.delete(wanted);
+    const translated = result.code === 0 ? parseJson<PaperMeta>(result.stdout) : null;
+    setLookup((shown) => (shown && shown.paper === wanted ? { ...shown, meta: withAbstractZh(shown.meta, translated) } : shown));
   }
 
   useEffect(() => {
@@ -216,7 +231,7 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
           subtitle={entrySubtitle(current, source)}
           detail={
             <List.Item.Detail
-              markdown={current.meta?.abstract ?? ""}
+              markdown={shownAbstract(current.meta)}
               metadata={
                 <List.Item.Detail.Metadata>
                   {entryRows(current, shownMode).map((row) => (

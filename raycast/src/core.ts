@@ -45,6 +45,7 @@ export type PaperMeta = {
   abstract: string;
   primary_category: string;
   published: string;
+  abstract_zh?: string | null;
 };
 
 export type PaperSummary = {
@@ -351,10 +352,25 @@ function stageLine(status: PaperStatus): string {
   }).join(" → ");
 }
 
+export function shownAbstract(meta: PaperMeta | null): string {
+  return meta?.abstract_zh || meta?.abstract || "";
+}
+
+export function needsAbstractZh(meta: PaperMeta | null): boolean {
+  return meta !== null && !meta.abstract_zh;
+}
+
+export function withAbstractZh(meta: PaperMeta | null, translated: PaperMeta | null): PaperMeta | null {
+  if (!meta || !translated?.abstract_zh) return meta;
+  if (translated.arxiv_id !== meta.arxiv_id || translated.version !== meta.version) return meta;
+  return { ...meta, abstract_zh: translated.abstract_zh };
+}
+
 export function completedMarkdown(detail: PaperDetail, thumbnailBase64: string | null): string {
   const parts = [`# ${detailTitle(detail)}`];
   if (thumbnailBase64) parts.push(`![](data:image/png;base64,${thumbnailBase64})`);
-  if (detail.meta?.abstract) parts.push(detail.meta.abstract);
+  const abstract = shownAbstract(detail.meta);
+  if (abstract) parts.push(abstract);
   return parts.join("\n\n");
 }
 
@@ -554,6 +570,13 @@ export const FONT_FIELDS: [string, string][] = [
   ["fonts.mono", "等宽"],
 ];
 
+export const ABSTRACT_FIELDS: [string, string][] = [
+  ["abstract.base_url", "接口地址"],
+  ["abstract.model", "模型"],
+];
+export const API_KEY_KEY = "abstract.api_key";
+export const CLEAR_API_KEY_PAIR = [API_KEY_KEY, '""'];
+
 export const modelKey = (mode: string) => `modes.${mode}.model`;
 export const customModelKey = (mode: string) => `modes.${mode}.model.custom`;
 export const effortKey = (mode: string) => `modes.${mode}.effort`;
@@ -579,6 +602,14 @@ export function effortChoices(current: string): string[] {
   return EFFORTS.includes(current) ? EFFORTS : [...EFFORTS, current];
 }
 
+export function apiKeySet(config: Config): boolean {
+  return text(config[API_KEY_KEY]) !== "";
+}
+
+export function apiKeyPlaceholder(config: Config): string {
+  return apiKeySet(config) ? "已设置，留空表示不修改" : "未设置";
+}
+
 export function formValues(config: Config): FormValues {
   const values: FormValues = { [DEFAULT_MODE_KEY]: text(config[DEFAULT_MODE_KEY]), [CROP_KEY]: config[CROP_KEY] === true };
   for (const mode of MODES) {
@@ -588,6 +619,8 @@ export function formValues(config: Config): FormValues {
     values[timeoutKey(mode)] = minutesFromSeconds(Number(config[timeoutKey(mode)]));
   }
   for (const [key] of FONT_FIELDS) values[key] = text(config[key]);
+  for (const [key] of ABSTRACT_FIELDS) values[key] = text(config[key]);
+  values[API_KEY_KEY] = "";
   return values;
 }
 
@@ -607,6 +640,9 @@ export function configChanges(config: Config, form: FormValues): { pairs: string
     else if (seconds !== Number(config[timeoutKey(mode)])) pairs.push(timeoutKey(mode), String(seconds));
   }
   for (const [key] of FONT_FIELDS) set(key, String(form[key]).trim());
+  for (const [key] of ABSTRACT_FIELDS) set(key, String(form[key]).trim());
+  const apiKey = String(form[API_KEY_KEY] ?? "").trim();
+  if (apiKey !== "") pairs.push(API_KEY_KEY, JSON.stringify(apiKey));
   if (form[CROP_KEY] !== (config[CROP_KEY] === true)) pairs.push(CROP_KEY, form[CROP_KEY] ? "true" : "false");
   return { pairs, errors };
 }

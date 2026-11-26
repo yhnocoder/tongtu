@@ -63,6 +63,10 @@ class PdfConfig(BaseModel):
 
 DEFAULT_TIMEOUT_SECONDS = 3600
 
+SECRET_KEYS = frozenset({"abstract.api_key"})
+
+SECRET_MASK = "********"
+
 
 class ModeName(StrEnum):
     FAST = "fast"
@@ -100,12 +104,21 @@ class ModesConfig(BaseModel):
     smart: ModeConfig = ModeConfig(model="claude-code/claude-opus-5-5", effort="medium")
 
 
+class AbstractConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-flash"
+    api_key: str = ""
+
+
 class ModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     modes: ModesConfig = ModesConfig()
     fonts: FontsConfig = FontsConfig()
     pdf: PdfConfig = PdfConfig()
+    abstract: AbstractConfig = AbstractConfig()
 
 
 @dataclass(frozen=True)
@@ -152,6 +165,10 @@ def _leaves(prefix: str, value: object) -> list[tuple[str, object]]:
 
 def config_entries(config: ModelsConfig) -> list[tuple[str, object]]:
     return _leaves("", config.model_dump(mode="python"))
+
+
+def shown_entries(config: ModelsConfig) -> list[tuple[str, object]]:
+    return [(key, SECRET_MASK if key in SECRET_KEYS and value else value) for key, value in config_entries(config)]
 
 
 def updated_config(config: ModelsConfig, key: str, value: object) -> ModelsConfig:

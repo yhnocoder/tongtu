@@ -48,6 +48,7 @@ class PaperMeta(BaseModel):
     doi: str | None
     abs_url: str
     pdf_url: str
+    abstract_zh: str | None = None
 
 
 class CachedMeta(BaseModel):

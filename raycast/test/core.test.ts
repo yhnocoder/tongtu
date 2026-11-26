@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  API_KEY_KEY,
+  CLEAR_API_KEY_PAIR,
   FILTER_ALL,
   ENTRY_ACTION_TITLES,
   FILTER_UNREAD,
   LOCAL_STATE_TEXT,
   OLD_ARCHIVES,
   OTHER_MODEL,
+  apiKeyPlaceholder,
+  apiKeySet,
   arxivId,
   arxivIdFromUrl,
   arxivUrl,
@@ -39,6 +43,7 @@ import {
   matches,
   minutesFromSeconds,
   modelChoices,
+  needsAbstractZh,
   parseOpened,
   parseRecentDays,
   refreshSeconds,
@@ -51,6 +56,7 @@ import {
   secondsFromMinutes,
   sections,
   shellQuote,
+  shownAbstract,
   startingMarkdown,
   statusTarget,
   stateLabel,
@@ -58,6 +64,7 @@ import {
   typedPaper,
   unfinishedMarkdown,
   unfinishedRows,
+  withAbstractZh,
   withOpened,
   withoutOpened,
   workdirName,
@@ -143,6 +150,9 @@ const CONFIG: Config = {
   "fonts.sans.bold": "SourceHanSansSC-Bold.otf",
   "fonts.mono": null,
   "pdf.crop_margins": false,
+  "abstract.base_url": "https://api.deepseek.com",
+  "abstract.model": "deepseek-flash",
+  "abstract.api_key": "",
 };
 
 test("arxivId takes new-style and old-style ids out of text", () => {
@@ -680,4 +690,57 @@ test("configErrors assigns stderr lines to form fields", () => {
 test("configFile follows TONGTU_HOME", () => {
   assert.equal(configFile("/Users/me", undefined), "/Users/me/.tongtu/config.toml");
   assert.equal(configFile("/Users/me", "/Users/me/.tongtu-dev"), "/Users/me/.tongtu-dev/config.toml");
+});
+
+test("shownAbstract prefers the Chinese abstract", () => {
+  assert.equal(shownAbstract(META), "An abstract.");
+  assert.equal(shownAbstract({ ...META, abstract_zh: null }), "An abstract.");
+  assert.equal(shownAbstract({ ...META, abstract_zh: "" }), "An abstract.");
+  assert.equal(shownAbstract({ ...META, abstract_zh: "中文摘要" }), "中文摘要");
+  assert.equal(shownAbstract(null), "");
+});
+
+test("completedMarkdown shows the Chinese abstract when there is one", () => {
+  const complete = detail("ok", ALL_OK, {}, { ...META, abstract_zh: "中文摘要" });
+  assert.equal(completedMarkdown(complete, null), "# Full Title\n\n中文摘要");
+});
+
+test("needsAbstractZh asks only for a paper with info and no Chinese abstract", () => {
+  assert.equal(needsAbstractZh(META), true);
+  assert.equal(needsAbstractZh({ ...META, abstract_zh: null }), true);
+  assert.equal(needsAbstractZh({ ...META, abstract_zh: "中文摘要" }), false);
+  assert.equal(needsAbstractZh(null), false);
+});
+
+test("withAbstractZh takes the Chinese abstract only from the same version", () => {
+  const translated = { ...META, title: "other", abstract_zh: "中文摘要" };
+  assert.deepEqual(withAbstractZh(META, translated), { ...META, abstract_zh: "中文摘要" });
+  assert.deepEqual(withAbstractZh(META, { ...translated, version: 2 }), META);
+  assert.deepEqual(withAbstractZh(META, { ...translated, arxiv_id: "2611.99999" }), META);
+  assert.deepEqual(withAbstractZh(META, { ...META, abstract_zh: null }), META);
+  assert.deepEqual(withAbstractZh(META, null), META);
+  assert.equal(withAbstractZh(null, translated), null);
+});
+
+test("apiKeyPlaceholder tells whether a key is set", () => {
+  assert.equal(apiKeySet(CONFIG), false);
+  assert.equal(apiKeyPlaceholder(CONFIG), "未设置");
+  const withKey = { ...CONFIG, [API_KEY_KEY]: "********" };
+  assert.equal(apiKeySet(withKey), true);
+  assert.equal(apiKeyPlaceholder(withKey), "已设置，留空表示不修改");
+  assert.equal(formValues(withKey)[API_KEY_KEY], "");
+});
+
+test("configChanges writes the key only when it is filled in", () => {
+  const withKey = { ...CONFIG, [API_KEY_KEY]: "********" };
+  assert.deepEqual(configChanges(withKey, formValues(withKey)).pairs, []);
+  assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "   " }).pairs, []);
+  assert.deepEqual(configChanges(CONFIG, { ...formValues(CONFIG), [API_KEY_KEY]: " sk-new " }).pairs, [API_KEY_KEY, '"sk-new"']);
+  assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "********" }).pairs, [API_KEY_KEY, '"********"']);
+  assert.deepEqual(CLEAR_API_KEY_PAIR, [API_KEY_KEY, '""']);
+});
+
+test("configChanges lists the changed abstract translation fields", () => {
+  const form = { ...formValues(CONFIG), "abstract.base_url": " https://chat.example.com ", "abstract.model": "deepseek-flash" };
+  assert.deepEqual(configChanges(CONFIG, form).pairs, ["abstract.base_url", "https://chat.example.com"]);
 });
