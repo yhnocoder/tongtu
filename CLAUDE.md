@@ -48,7 +48,7 @@ Design 使用 HTML 文档，放在 `docs/design/`，由用户描述需求和预�
 | 创建 Task issue（label `task`） | 主 agent | 由用户提出 |
 | 与用户沟通需求并写 Spec | 主 agent | 用户审核通过后才开始开发 |
 | Implement 和 Test | implementer subagent | 不需要 |
-| Review | 主 agent | 不需要；同一个 subagent 两轮未通过时报告用户 |
+| Review | 独立的 review subagent，由主 agent 启动 | 不需要；同一个 subagent 两轮未通过时报告用户 |
 | 偏离 Design Doc、新增 Design Doc 没有的字段或选项、Design Doc 没给数值的常量、增加新依赖 | 主 agent 提出 | 需要 |
 | 在 issue 中写 comment | 主 agent | 不需要 |
 | Validate | 用户 | AI 提供命令、论文编号和要检查的位置 |
@@ -60,7 +60,7 @@ Design 使用 HTML 文档，放在 `docs/design/`，由用户描述需求和预�
 - 实现过程中发现 Spec 有误，在 issue comment 中修正。
 - Task 之间会形成依赖链，也会发现之前的 Task 有错，这都是正常的，在新 Task 的 comment 中记录。
 - Implement 和 Test 的具体规则见 `.claude/agents/implementer.md`。普通任务使用 implementer 默认的 opus 模型；复杂任务在调用时指定 `model: fable`；更复杂的任务可以让多个 fable 和 opus subagent 协作。同一时间只有一个 subagent 修改代码。每个新的 Spec 启动一个新的 subagent；只有 review 退回修改时才继续使用原来的 subagent。
-- Review 的依据是本文件和 `.claude/agents/implementer.md`。主 agent 另外检查：diff 只修改了 Spec 列出的文件；仓库里没有新建论文目录；测试输出是 subagent 贴出的原文，且全部通过。退回时指出未通过的条目。
+- Review 由主 agent 启动一个独立的 review subagent 完成，调用时指定 `model: opus`。它只审查，不修改代码，依据是 Spec、本文件和 `.claude/agents/implementer.md`。主 agent 另外检查：diff 只修改了 Spec 列出的文件；仓库里没有新建论文目录；测试输出是 subagent 贴出的原文，且全部通过。退回时指出未通过的条目。
 - Implement、Test 与 Review 中需要跑真实论文时，从验证集里按改动范围挑 2 到 3 篇有代表性的论文，不跑全部。跑一篇论文要多次调用模型，消耗大量 token。
 - 开发中发现的问题各开一个 issue，加 `question` 标签；得出结论后写进 issue 再关闭，不删除。
 
