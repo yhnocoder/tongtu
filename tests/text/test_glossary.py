@@ -7,7 +7,7 @@ import pytest
 
 from tongtu import glossary
 from tongtu.artifacts.translate import PaperGlossary, PaperKeptWord, PaperTerm
-from tongtu.validation import Glossary
+from tongtu.validation import Glossary, merge_glossaries
 
 MASKED = """\
 \\section{Experimental Setup}
@@ -69,6 +69,30 @@ def test_a_glossary_file_accepts_the_three_optional_fields(home: Path, paper: Pa
 def test_a_malformed_glossary_file_raises_with_its_path(home: Path, paper: Path, content: object) -> None:
     path = write(paper / "glossary.json", content)
     with pytest.raises(glossary.GlossaryError, match=str(path)):
+        glossary.read_layers(paper, (), env(home))
+
+
+def test_two_spellings_of_one_kept_word_are_both_kept(home: Path, paper: Path, tmp_path: Path) -> None:
+    write(paper / "glossary.json", {"do_not_translate": ["seq2seq", "Seq2Seq", "seq2seq"]})
+    layers = glossary.read_layers(paper, (), env(home))
+    assert layers.user[0].glossary.do_not_translate == ("seq2seq", "Seq2Seq", "seq2seq")
+    cli = write(tmp_path / "cli.json", {"do_not_translate": ["RL"]})
+    merged = merge_glossaries([layer.glossary for layer in glossary.read_layers(paper, (cli,), env(home)).user])
+    assert merged.do_not_translate == ("seq2seq", "Seq2Seq", "RL")
+
+
+def test_a_user_term_covers_every_spelling_of_a_learned_kept_word(home: Path, paper: Path) -> None:
+    write(home / "glossary.learned.json", {"do_not_translate": ["seq2seq", "Seq2Seq", "LLM"]})
+    write(paper / "glossary.json", {"terms": {"seq2seq": "序列到序列"}})
+    masked = "The Seq2Seq baseline and the seq2seq model are both LLMs.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.terms == (("seq2seq", "序列到序列"),)
+    assert chosen.learned == Glossary(do_not_translate=("LLM",))
+
+
+def test_a_term_and_a_kept_word_for_one_word_in_one_file_conflict(home: Path, paper: Path) -> None:
+    write(paper / "glossary.json", {"terms": {"seq2seq": "序列到序列"}, "do_not_translate": ["Seq2Seq"]})
+    with pytest.raises(glossary.GlossaryError, match="conflicting records"):
         glossary.read_layers(paper, (), env(home))
 
 

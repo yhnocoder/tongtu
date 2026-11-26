@@ -536,15 +536,21 @@ def parse_glossary(content: str, origin: str) -> Glossary:
         do_not_translate=_parse_do_not_translate(data.get(DO_NOT_TRANSLATE_FIELD), origin),
         style=_parse_style(data.get(STYLE_FIELD), origin),
     )
-    seen: dict[str, tuple[str, str | None]] = {}
+    seen: dict[str, list[tuple[str, str | None]]] = {}
     for entry in glossary.entries():
-        previous = seen.setdefault(term_key(entry[0]), entry)
-        if previous != entry:
-            raise GlossaryFormatError(
-                f"{origin} gives two conflicting records for the same word: "
-                f"{_describe_entry(previous)} and {_describe_entry(entry)}"
-            )
+        same = seen.setdefault(term_key(entry[0]), [])
+        for previous in same:
+            if previous != entry and not _both_kept(previous, entry):
+                raise GlossaryFormatError(
+                    f"{origin} gives two conflicting records for the same word: "
+                    f"{_describe_entry(previous)} and {_describe_entry(entry)}"
+                )
+        same.append(entry)
     return glossary
+
+
+def _both_kept(first: tuple[str, str | None], second: tuple[str, str | None]) -> bool:
+    return first[1] is None and second[1] is None
 
 
 def _unique_object(pairs: list[tuple[str, object]], origin: str) -> dict[str, object]:
@@ -622,18 +628,18 @@ def _describe_entry(entry: tuple[str, str | None]) -> str:
 
 
 def merge_glossaries(glossaries: Sequence[Glossary]) -> Glossary:
-    entries: dict[str, tuple[str, str | None]] = {}
+    entries: list[tuple[str, str | None]] = []
     style: str | None = None
     for glossary in glossaries:
-        for entry in glossary.entries():
-            key = term_key(entry[0])
-            entries.pop(key, None)
-            entries[key] = entry
+        layer = list(dict.fromkeys(glossary.entries()))
+        keys = {term_key(word) for word, _translation in layer}
+        entries = [entry for entry in entries if term_key(entry[0]) not in keys]
+        entries.extend(layer)
         if glossary.style is not None:
             style = glossary.style or None
     return Glossary(
-        terms=tuple((word, translation) for word, translation in entries.values() if translation is not None),
-        do_not_translate=tuple(word for word, translation in entries.values() if translation is None),
+        terms=tuple((word, translation) for word, translation in entries if translation is not None),
+        do_not_translate=tuple(word for word, translation in entries if translation is None),
         style=style,
     )
 
