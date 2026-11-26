@@ -475,7 +475,7 @@ dropout 率为 $0.1$。</code></pre></div>
             <tr><td>公式</td><td class="wrap">每段的行内公式与原文逐个相同。</td></tr>
             <tr><td>章节名</td><td class="wrap">三级章节命令的标题与原文逐字相同。</td></tr>
             <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。</td></tr>
-            <tr><td>术语</td><td class="wrap">原文命中某条术语的段落，译文里出现对应的译法；不译词按大小写原样保留。<code>\label</code>、<code>\ref</code>、<code>\cite</code> 一类命令参数里的词不计。章节标题不参加未译与术语两项检查。</td></tr>
+            <tr><td>术语</td><td class="wrap">原文命中某条术语的段落，译文里出现对应的译法；不译词按大小写原样保留。原文里紧贴单个连字符的出现不算原文有这个不译词：<code>rank</code> 不译时，只有 <code>low-rank</code> 的段落不要求译文保留 <code>rank</code>。不译词本身含连字符时（<code>KV-cache</code>）照常匹配。<code>\label</code>、<code>\ref</code>、<code>\cite</code> 一类命令参数里的词不计。章节标题不参加未译与术语两项检查。</td></tr>
           </tbody>
         </table>
         <p>会话外的校验使用 <code>build/masked.tex</code>、用户术语表的原始文件，以及会话结束时的 <code>glossary.json</code>。会话改动 <code>en.tex</code>、<code>glossary.fixed.json</code> 或 <code>check.py</code> 都不影响判定。</p>
@@ -584,11 +584,11 @@ class GlossaryCounts(BaseModel):
       <tr><td>命令行</td><td><code>--glossary FILE</code></td><td>用户</td><td class="wrap">不能，必须照用</td></tr>
     </tbody>
   </table>
-  <p>同一个词出现在多层时，取最高一层的条目。<code>style</code> 取最高一层写出的那一段。translate 只把本篇原文里命中的条目放进会话目录：三层用户术语表的命中条目与 <code>style</code> 合成 <code>glossary.fixed.json</code>，已学术语表的命中条目是 <code>glossary.json</code> 的初始内容。</p>
+  <p>两个词条去掉大小写与连字符的差别之后，一个等于另一个，或者等于另一个加 s 或 es，就算同一个词：KV cache 与 kv-caches 是同一个词，plan 与 plane 不是。同一个文件里，同一个词的两条记录不同时，这个文件格式不对；两条都是不译词、只是拼写不同时（seq2seq 与 Seq2Seq）两条都保留，因为不译词按大小写原样匹配，两种写法各自有效。同一个词出现在多层时，取最高一层的条目。<code>style</code> 取最高一层写出的那一段。translate 只把本篇原文里命中的条目放进会话目录：三层用户术语表的命中条目与 <code>style</code> 合成 <code>glossary.fixed.json</code>，已学术语表的命中条目是 <code>glossary.json</code> 的初始内容。</p>
   <ul>
     <li>命中按整词匹配，认单复数（词尾的 s 与 es）。全大写的词区分大小写，其余不区分：<code>LLM</code> 命中 LLMs，不命中 vLLM。</li>
-    <li>一条术语的原词里含有某个不译词时，译法里必须原样保留它：mixed RL training 写作「混合 RL 训练」。</li>
-    <li>用户术语表里没有命中本篇的词记进 manifest 的 warnings，方便发现拼错的词。</li>
+    <li>一条术语的原词里含有某个不译词时，译法里必须原样保留它：mixed RL training 写作「混合 RL 训练」。原词里紧贴单个连字符的出现不算含有这个不译词，因此 <code>rank</code> 不译时，<code>low-rank</code> 可以译作「低秩」。</li>
+    <li>用户术语表里没有命中本篇的词记进 manifest 的 warnings，方便发现拼错的词。论文级与命令行的术语表每个未命中的词记一条；全局术语表收的是各篇通用的词，大部分不会出现在某一篇里，所以整个文件只记一条，写明共有多少条、其中多少条本篇没有出现，全部出现时不记。</li>
   </ul>
   <p class="why"><b>理由</b>用户写的条目必须照用，已学的条目允许会话按本篇调整。同一个英文词在不同领域有不同译法，已学术语表来自以前的论文，不一定适用于这一篇；用户写的条目是明确的要求。</p>
   <h3>已学术语表怎样增长</h3>

@@ -257,6 +257,14 @@ def test_a_structural_difference_is_reported_for_its_paragraph_only() -> None:
     assert report.problems[0].message.startswith("paragraph starting at line 4 of the translation, placeholders")
 
 
+@pytest.mark.parametrize("boundary", ["\n \n", "\n\t \n", "\n\n \n", "\n \n\n"])
+def test_a_line_of_only_whitespace_is_a_paragraph_boundary(boundary: str) -> None:
+    source = EN.replace("\n\n⟦BLK-12⟧", f"{boundary}⟦BLK-12⟧")
+    report = validation.check(source, ZH)
+    assert report.ok
+    assert len(validation.paragraphs(source)) == len(validation.paragraphs(ZH)) == 3
+
+
 def caption_line_problems(translation: str) -> list[str]:
     return [
         problem.message
@@ -432,11 +440,52 @@ def test_a_do_not_translate_word_must_be_kept_with_its_case() -> None:
     assert "'Adafactor'" in report.problems[0].message
 
 
+KEPT_IN_COMPOUNDS: list[tuple[str, str, bool]] = [
+    ("rank", "We use a low-rank update for every layer of the large model.", False),
+    ("rank", "We use a rank-based update for every layer of the large model.", False),
+    ("rank", "We use a rank-1 update for every layer of the large model.", False),
+    ("rank", "Each PP rank holds two layers of the large model in memory.", True),
+    ("RL", "We compare RL-based methods on every one of the benchmarks.", False),
+    ("RL", "We compare RL training methods on every one of the benchmarks.", True),
+    ("KV-cache", "We compress the KV-cache of every layer of the large model.", True),
+]
+
+
+@pytest.mark.parametrize(("word", "source", "required"), KEPT_IN_COMPOUNDS)
+def test_a_do_not_translate_word_inside_a_hyphenated_compound_need_not_be_kept(
+    word: str, source: str, required: bool
+) -> None:
+    report = validation.check(source, "我们对大模型的每一层使用同一种方法。", do_not_translate=[word])
+    assert report.ok is not required
+    assert categories(report) == ([validation.Category.GLOSSARY] if required else [])
+
+
+def test_the_translation_side_still_finds_a_kept_word_inside_a_compound() -> None:
+    source = "Each PP rank holds two layers of the large model in memory."
+    assert validation.check(source, "每个 PP rank-0 进程保存大模型的两层。", do_not_translate=["rank"]).ok
+
+
 def test_a_term_must_keep_the_do_not_translate_word_it_contains() -> None:
     report = validation.check(EN, ZH, {"mixed RL training": "混合强化学习训练"}, ["RL"])
     assert categories(report) == [validation.Category.GLOSSARY]
     assert "'mixed RL training'" in report.problems[0].message
     assert validation.check(EN, ZH, {"mixed RL training": "混合 RL 训练"}, ["RL"]).ok
+
+
+@pytest.mark.parametrize(
+    ("word", "translation", "kept", "conflict"),
+    [
+        ("low-rank", "低秩", "rank", False),
+        ("low-rank adaptation", "低秩适配", "rank", False),
+        ("PP rank", "PP 秩", "rank", True),
+        ("mixed RL training", "混合强化学习训练", "RL", True),
+    ],
+)
+def test_a_kept_word_inside_a_hyphenated_compound_of_a_term_need_not_be_kept(
+    word: str, translation: str, kept: str, conflict: bool
+) -> None:
+    conflicts = validation.kept_word_conflicts({word: translation}, [kept])
+    assert conflicts == ([(word, translation, kept)] if conflict else [])
 
 
 @pytest.mark.parametrize(
@@ -452,6 +501,26 @@ def test_a_term_must_keep_the_do_not_translate_word_it_contains() -> None:
 )
 def test_hits_matches_whole_words_with_plurals(word: str, text: str, expected: bool) -> None:
     assert validation.hits(word, text) is expected
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        ("cache", "caches", True),
+        ("batch", "batches", True),
+        ("loss", "losses", True),
+        ("class", "classes", True),
+        ("box", "boxes", True),
+        ("KV cache", "kv-caches", True),
+        ("Long  Context", "long-contexts", True),
+        ("plan", "plane", False),
+        ("cache", "cached", False),
+        ("batches", "batch", True),
+    ],
+)
+def test_same_term_ignores_case_hyphens_and_a_plural_ending(first: str, second: str, expected: bool) -> None:
+    assert validation.same_term(first, second) is expected
+    assert validation.same_term(second, first) is expected
 
 
 def test_exact_hits_respect_case() -> None:

@@ -247,7 +247,11 @@ COMMAND_NAME_RE = re.compile(r"\\[A-Za-z@]+")
 
 SECTION_HEADING_RE = re.compile(r"\\(?:sub){0,2}section\*?\s*(?:\[[^\]]*\])?\s*\{")
 
-PLURAL_SUFFIX_RE = re.compile(r"(?:es|s)$")
+PLURAL_SUFFIXES: tuple[str, ...] = ("s", "es")
+
+COMPOUND_HYPHEN_BEFORE = r"(?<!(?<!-)-)"
+
+COMPOUND_HYPHEN_AFTER = r"(?!-(?!-))"
 
 
 class Category(StrEnum):
@@ -420,7 +424,7 @@ def _paragraph_problems(
                 )
             )
     for word in do_not_translate:
-        if hits(word, source_text, exact=True) and not hits(word, translation_text, exact=True):
+        if hits(word, source_text, exact=True, in_compounds=False) and not hits(word, translation_text, exact=True):
             problems.append(
                 Problem(
                     Category.GLOSSARY,
@@ -488,16 +492,28 @@ def searchable(text: str) -> str:
     return COMMAND_NAME_RE.sub(" ", NON_TEXT_COMMAND_RE.sub(" ", stripped))
 
 
-def hits(word: str, text: str, exact: bool = False) -> bool:
+def hits(word: str, text: str, exact: bool = False, *, in_compounds: bool = True) -> bool:
     case_sensitive = exact or (any(character.isalpha() for character in word) and word == word.upper())
     body = r"\s+".join(re.escape(part) for part in word.split())
-    pattern = rf"(?<![0-9A-Za-z]){body}(?:es|s)?(?![0-9A-Za-z])"
+    before = "" if in_compounds else COMPOUND_HYPHEN_BEFORE
+    after = "" if in_compounds else COMPOUND_HYPHEN_AFTER
+    pattern = rf"(?<![0-9A-Za-z]){before}{body}(?:es|s)?(?![0-9A-Za-z]){after}"
     return re.search(pattern, text, 0 if case_sensitive else re.IGNORECASE) is not None
 
 
-def term_key(word: str) -> str:
-    collapsed = " ".join(word.replace("-", " ").split()).casefold()
-    return PLURAL_SUFFIX_RE.sub("", collapsed)
+def normalized_term(word: str) -> str:
+    return " ".join(word.replace("-", " ").split()).casefold()
+
+
+def term_forms(word: str) -> frozenset[str]:
+    base = normalized_term(word)
+    added = {base + suffix for suffix in PLURAL_SUFFIXES}
+    removed = {base.removesuffix(suffix) for suffix in PLURAL_SUFFIXES if base.endswith(suffix)}
+    return frozenset({base, *added, *removed})
+
+
+def same_term(first: str, second: str) -> bool:
+    return normalized_term(first) in term_forms(second)
 
 
 def kept_word_conflicts(terms: Mapping[str, str], do_not_translate: Sequence[str]) -> list[tuple[str, str, str]]:
@@ -505,7 +521,7 @@ def kept_word_conflicts(terms: Mapping[str, str], do_not_translate: Sequence[str
         (word, translation, kept)
         for word, translation in terms.items()
         for kept in do_not_translate
-        if hits(kept, word, exact=True) and not hits(kept, translation, exact=True)
+        if hits(kept, word, exact=True, in_compounds=False) and not hits(kept, translation, exact=True)
     ]
 
 
@@ -526,15 +542,21 @@ def parse_glossary(content: str, origin: str) -> Glossary:
         do_not_translate=_parse_do_not_translate(data.get(DO_NOT_TRANSLATE_FIELD), origin),
         style=_parse_style(data.get(STYLE_FIELD), origin),
     )
-    seen: dict[str, tuple[str, str | None]] = {}
+    seen: dict[str, list[tuple[str, str | None]]] = {}
     for entry in glossary.entries():
-        previous = seen.setdefault(term_key(entry[0]), entry)
-        if previous != entry:
-            raise GlossaryFormatError(
-                f"{origin} gives two conflicting records for the same word: "
-                f"{_describe_entry(previous)} and {_describe_entry(entry)}"
-            )
+        for form in term_forms(entry[0]):
+            for previous in seen.get(form, []):
+                if previous != entry and not _both_kept(previous, entry):
+                    raise GlossaryFormatError(
+                        f"{origin} gives two conflicting records for the same word: "
+                        f"{_describe_entry(previous)} and {_describe_entry(entry)}"
+                    )
+        seen.setdefault(normalized_term(entry[0]), []).append(entry)
     return glossary
+
+
+def _both_kept(first: tuple[str, str | None], second: tuple[str, str | None]) -> bool:
+    return first[1] is None and second[1] is None
 
 
 def _unique_object(pairs: list[tuple[str, object]], origin: str) -> dict[str, object]:
@@ -612,18 +634,18 @@ def _describe_entry(entry: tuple[str, str | None]) -> str:
 
 
 def merge_glossaries(glossaries: Sequence[Glossary]) -> Glossary:
-    entries: dict[str, tuple[str, str | None]] = {}
+    entries: list[tuple[str, str | None]] = []
     style: str | None = None
     for glossary in glossaries:
-        for entry in glossary.entries():
-            key = term_key(entry[0])
-            entries.pop(key, None)
-            entries[key] = entry
+        layer = list(dict.fromkeys(glossary.entries()))
+        forms = {form for word, _translation in layer for form in term_forms(word)}
+        entries = [entry for entry in entries if normalized_term(entry[0]) not in forms]
+        entries.extend(layer)
         if glossary.style is not None:
             style = glossary.style or None
     return Glossary(
-        terms=tuple((word, translation) for word, translation in entries.values() if translation is not None),
-        do_not_translate=tuple(word for word, translation in entries.values() if translation is None),
+        terms=tuple((word, translation) for word, translation in entries if translation is not None),
+        do_not_translate=tuple(word for word, translation in entries if translation is None),
         style=style,
     )
 

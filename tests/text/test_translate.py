@@ -328,6 +328,19 @@ def test_unmatched_user_terms_become_warnings(workdir: Workdir, monkeypatch: pyt
     assert any("'transformer'" in warning for warning in manifest.warnings)
 
 
+def test_unmatched_global_entries_become_one_warning(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    general = tmp_path / "home" / "glossary.json"
+    write_json(general, {"do_not_translate": ["KV cache", "vLLM", "SGLang"]})
+    fake_session(monkeypatch, writes(GOOD))
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.OK
+    assert [warning for warning in manifest.warnings if str(general) in warning] == [
+        f"{general}: 2 of its 3 entries do not occur in this paper"
+    ]
+
+
 def test_a_broken_session_glossary_is_a_problem(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
     def write(directory: Path) -> None:
         writes(GOOD)(directory)

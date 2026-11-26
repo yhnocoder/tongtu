@@ -7,7 +7,7 @@ import pytest
 
 from tongtu import glossary
 from tongtu.artifacts.translate import PaperGlossary, PaperKeptWord, PaperTerm
-from tongtu.validation import Glossary
+from tongtu.validation import Glossary, check, merge_glossaries
 
 MASKED = """\
 \\section{Experimental Setup}
@@ -63,12 +63,46 @@ def test_a_glossary_file_accepts_the_three_optional_fields(home: Path, paper: Pa
         {"do_not_translate": [""]},
         {"terms": {"LLM": "大模型"}, "do_not_translate": ["LLMs"]},
         {"terms": {"long context": "长上下文", "Long-Contexts": "长语境"}},
+        {"terms": {"cache": "缓存", "caches": "缓冲区"}},
+        {"terms": {"loss": "损失", "Losses": "损耗"}},
         ["LLM"],
     ],
 )
 def test_a_malformed_glossary_file_raises_with_its_path(home: Path, paper: Path, content: object) -> None:
     path = write(paper / "glossary.json", content)
     with pytest.raises(glossary.GlossaryError, match=str(path)):
+        glossary.read_layers(paper, (), env(home))
+
+
+def test_two_spellings_of_one_kept_word_are_both_kept(home: Path, paper: Path, tmp_path: Path) -> None:
+    write(paper / "glossary.json", {"do_not_translate": ["seq2seq", "Seq2Seq", "seq2seq"]})
+    layers = glossary.read_layers(paper, (), env(home))
+    assert layers.user[0].glossary.do_not_translate == ("seq2seq", "Seq2Seq", "seq2seq")
+    cli = write(tmp_path / "cli.json", {"do_not_translate": ["RL"]})
+    merged = merge_glossaries([layer.glossary for layer in glossary.read_layers(paper, (cli,), env(home)).user])
+    assert merged.do_not_translate == ("seq2seq", "Seq2Seq", "RL")
+
+
+def test_a_user_term_covers_every_spelling_of_a_learned_kept_word(home: Path, paper: Path) -> None:
+    write(home / "glossary.learned.json", {"do_not_translate": ["seq2seq", "Seq2Seq", "LLM"]})
+    write(paper / "glossary.json", {"terms": {"seq2seq": "序列到序列"}})
+    masked = "The Seq2Seq baseline and the seq2seq model are both LLMs.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.terms == (("seq2seq", "序列到序列"),)
+    assert chosen.learned == Glossary(do_not_translate=("LLM",))
+
+
+def test_a_paper_term_overrides_every_spelling_of_a_global_kept_word(home: Path, paper: Path) -> None:
+    write(home / "glossary.json", {"do_not_translate": ["seq2seq", "Seq2Seq"]})
+    write(paper / "glossary.json", {"terms": {"seq2seq": "序列到序列"}})
+    chosen = glossary.load_selection("We compare against a seq2seq baseline.\n", paper, (), env(home))
+    assert chosen.fixed.terms == (("seq2seq", "序列到序列"),)
+    assert chosen.fixed.do_not_translate == ()
+
+
+def test_a_term_and_a_kept_word_for_one_word_in_one_file_conflict(home: Path, paper: Path) -> None:
+    write(paper / "glossary.json", {"terms": {"seq2seq": "序列到序列"}, "do_not_translate": ["Seq2Seq"]})
+    with pytest.raises(glossary.GlossaryError, match="conflicting records"):
         glossary.read_layers(paper, (), env(home))
 
 
@@ -104,29 +138,71 @@ def test_the_highest_layer_wins_for_the_same_normalized_word(home: Path, paper: 
     assert chosen.fixed.style == "论文级风格"
 
 
+def test_a_user_entry_covers_learned_entries_that_differ_by_a_plural_ending(home: Path, paper: Path) -> None:
+    write(home / "glossary.learned.json", {"terms": {"kv-caches": "KV 缓存", "batch": "批"}})
+    write(paper / "glossary.json", {"terms": {"KV cache": "键值缓存"}})
+    masked = "Each batch reads the KV cache, and all kv-caches stay on the device.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.terms == (("KV cache", "键值缓存"),)
+    assert chosen.learned == Glossary(terms=(("batch", "批"),))
+
+
 def test_a_lower_layer_style_survives_when_higher_layers_write_none(home: Path, paper: Path) -> None:
     write(home / "glossary.json", {"style": "全局风格"})
     write(paper / "glossary.json", {"terms": {"KV cache": "键值缓存"}})
     assert selection(home, paper).fixed.style == "全局风格"
 
 
-def test_only_entries_found_in_the_paper_are_selected(home: Path, paper: Path) -> None:
-    write(
+def test_only_entries_found_in_the_paper_are_selected(home: Path, paper: Path, tmp_path: Path) -> None:
+    general = write(
         home / "glossary.json",
         {
             "terms": {"large language model": "大语言模型", "tokenizer": "分词器", "Experimental Setup": "实验设置"},
             "do_not_translate": ["LLM", "vLLM", "transformer"],
         },
     )
+    paper_file = write(paper / "glossary.json", {"terms": {"pruning": "剪枝", "decoding": "解码"}})
+    cli = write(tmp_path / "cli.json", {"do_not_translate": ["Adam", "RL"]})
+    chosen = selection(home, paper, cli)
+    assert chosen.fixed.terms == (("large language model", "大语言模型"), ("decoding", "解码"))
+    assert chosen.fixed.do_not_translate == ("LLM", "vLLM", "RL")
+    assert chosen.unmatched == (
+        f"{general}: 3 of its 6 entries do not occur in this paper",
+        f"{cli}: 'Adam' does not occur in this paper",
+        f"{paper_file}: 'pruning' does not occur in this paper",
+    )
+
+
+def test_a_global_glossary_found_in_full_adds_no_warning(home: Path, paper: Path) -> None:
+    write(home / "glossary.json", {"terms": {"KV cache": "键值缓存"}, "do_not_translate": ["LLM", "LLM"]})
+    write(paper / "glossary.json", {"terms": {"transformer": "变换器"}})
     chosen = selection(home, paper)
-    assert chosen.fixed.terms == (("large language model", "大语言模型"),)
-    assert chosen.fixed.do_not_translate == ("LLM", "vLLM")
-    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == [
-        "'transformer' does not occur in this paper",
-        "'tokenizer' does not occur in this paper",
-        "'Experimental Setup' does not occur in this paper",
-    ]
-    assert all(warning.startswith(str(home / "glossary.json")) for warning in chosen.unmatched)
+    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == ["'transformer' does not occur in this paper"]
+
+
+def test_a_global_entry_overridden_by_the_paper_glossary_is_counted_by_both_files(home: Path, paper: Path) -> None:
+    general = write(home / "glossary.json", {"terms": {"transformer": "变换器", "KV cache": "键值缓存"}})
+    paper_file = write(paper / "glossary.json", {"terms": {"Transformers": "Transformer 模型"}})
+    assert selection(home, paper).unmatched == (
+        f"{general}: 1 of its 2 entries do not occur in this paper",
+        f"{paper_file}: 'Transformers' does not occur in this paper",
+    )
+
+
+def test_kept_words_are_selected_regardless_of_case_and_hyphens(home: Path, paper: Path, tmp_path: Path) -> None:
+    write(home / "glossary.learned.json", {"do_not_translate": ["rank", "PP"]})
+    write(paper / "glossary.json", {"do_not_translate": ["RL", "Adapter", "SFT"]})
+    masked = "We train a low-rank adapter with RL-based tuning on every layer of the large model.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.do_not_translate == ("RL", "Adapter")
+    assert chosen.learned.do_not_translate == ("rank",)
+    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == ["'SFT' does not occur in this paper"]
+    session = tmp_path / "session"
+    glossary.write_session_files(session, chosen)
+    initial = json.loads((session / "glossary.json").read_text(encoding="utf-8"))
+    assert initial["do_not_translate"] == ["rank"]
+    report = check(masked, "我们用低秩 adapter 和基于 RL 的方法调整大模型的每一层。", do_not_translate=["rank"])
+    assert report.ok
 
 
 def test_learned_entries_go_to_the_session_glossary_unless_a_user_layer_covers_them(home: Path, paper: Path) -> None:
@@ -182,6 +258,14 @@ def test_a_fixed_term_that_drops_a_kept_word_is_invalid(home: Path, paper: Path)
 def test_a_fixed_term_that_keeps_the_kept_word_is_valid(home: Path, paper: Path) -> None:
     write(home / "glossary.json", {"do_not_translate": ["RL"], "terms": {"mixed RL training": "混合 RL 训练"}})
     assert selection(home, paper).fixed.terms == (("mixed RL training", "混合 RL 训练"),)
+
+
+def test_a_fixed_term_with_a_kept_word_inside_a_hyphenated_compound_is_valid(home: Path, paper: Path) -> None:
+    write(home / "glossary.json", {"do_not_translate": ["rank"], "terms": {"low-rank": "低秩"}})
+    masked = "We add a low-rank update to every layer.\n\nEach PP rank holds two layers.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.terms == (("low-rank", "低秩"),)
+    assert chosen.fixed.do_not_translate == ("rank",)
 
 
 def test_validation_uses_the_session_glossary_under_the_fixed_entries(home: Path, paper: Path) -> None:
