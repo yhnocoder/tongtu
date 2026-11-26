@@ -285,13 +285,14 @@ def test_process_start_failure_is_error(configured: Path, monkeypatch: pytest.Mo
     assert "or launch" in outcome.detail
 
 
-def test_missing_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "absent"))
+def test_broken_config_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text("[modes\n", encoding="utf-8")
     outcome = work("smoke", tmp_path, mode="fast", log_path=tmp_path / "smoke.jsonl")
     assert outcome.session.stop_reason is StopReason.ERROR
     assert outcome.session.model == ""
     assert outcome.session.usage is None
-    assert "tongtu setup" in outcome.detail
+    assert "not valid TOML" in outcome.detail
 
 
 def test_unknown_mode_is_error(configured: Path) -> None:
