@@ -772,7 +772,14 @@ def _display(value: object) -> str:
         return "true" if value else "false"
     if value is None:
         return ""
+    if isinstance(value, float):
+        return f"{value:g}"
     return str(value)
+
+
+def _print_validation_error(error: ValidationError) -> None:
+    for detail in error.errors():
+        error_console.print(f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}")
 
 
 def _entry_lines(entries: list[tuple[str, object]]) -> list[str]:
@@ -835,7 +842,7 @@ def _edit_choice(config: ModelsConfig, key: str, value: object, options: list[ob
     try:
         changed = updated_config(config, key, chosen)
     except ValidationError as error:
-        error_console.print(str(error))
+        _print_validation_error(error)
         return config
     _saved(changed, key)
     return changed
@@ -850,7 +857,7 @@ def _edit_text(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
         try:
             changed = updated_config(config, key, _parse_value(text))
         except ValidationError as error:
-            error_console.print(str(error))
+            _print_validation_error(error)
             continue
         _saved(changed, key)
         return changed
@@ -902,14 +909,14 @@ def config_set(
     dev: DevOpt = False,
 ) -> None:
     _apply_dev(dev)
-    config = _loaded_config(ensure_config_file())
+    config = _loaded_config(load_config())
     try:
         changed = updated_config(config, key, _parse_value(value))
     except KeyError:
         error_console.print(f"config key {key} does not exist; run tongtu config list to see the keys")
         raise typer.Exit(EXIT_USAGE) from None
     except ValidationError as error:
-        error_console.print(str(error))
+        _print_validation_error(error)
         raise typer.Exit(EXIT_USAGE) from None
     _saved(changed, key)
 

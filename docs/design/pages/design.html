@@ -141,7 +141,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
         <li><code>tongtu config set KEY VALUE</code> 修改一项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。键不存在或值不合法时退出 2，不写文件。</li>
         <li><code>tongtu config open</code> 输出配置文件的路径并打开它。环境变量 <code>EDITOR</code> 非空时用它打开，否则用系统默认的程序。</li>
       </ul>
-      <p>除 <code>list</code> 外，配置文件不存在时先写出一份包含全部默认值的文件。配置文件存在但加载失败时，<code>config</code>、<code>list</code>、<code>set</code> 输出错误并退出 1。<code>config</code> 与 <code>set</code> 每次修改都整份重写文件，文件里原有的注释不保留。</p>
+      <p>配置文件不存在时，<code>tongtu config</code> 与 <code>open</code> 先写出一份包含全部默认值的文件；<code>set</code> 在默认值上修改，修改成功时写出文件。校验失败时每条错误输出一行，格式是「键: 原因」。配置文件存在但加载失败时，<code>config</code>、<code>list</code>、<code>set</code> 输出错误并退出 1。<code>config</code> 与 <code>set</code> 每次修改都整份重写文件，文件里原有的注释不保留。</p>
     </li>
   </ul>
 </section>

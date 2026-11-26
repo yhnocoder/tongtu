@@ -394,7 +394,8 @@ def loaded_config() -> ModelsConfig:
         ("modes.fast.model", "codex/gpt-6", "codex/gpt-6", "codex/gpt-6"),
         ("modes.fast.model", '"pi/m"', "pi/m", "pi/m"),
         ("pdf.crop_margins", "true", True, "true"),
-        ("modes.smart.timeout_seconds", "60", 60, "60.0"),
+        ("modes.smart.timeout_seconds", "60", 60, "60"),
+        ("modes.smart.timeout_seconds", "90.5", 90.5, "90.5"),
         ("modes.default", "fast", ModeName.FAST, "fast"),
         ("fonts.main.bold", "", None, ""),
     ],
@@ -439,8 +440,34 @@ def test_config_set_rejects_an_invalid_value(
     path.write_text(TABLE, encoding="utf-8")
     result = runner.invoke(app, ["config", "set", key, value])
     assert result.exit_code == cli.EXIT_USAGE
-    assert key.rsplit(".", 1)[1] in result.stderr
+    lines = result.stderr.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith(f"{key}: ")
+    assert "errors.pydantic.dev" not in result.stderr
+    assert "input_value" not in result.stderr
     assert path.read_text(encoding="utf-8") == TABLE
+
+
+def test_config_set_without_a_file_leaves_no_file_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", "modes.fast.jobs", "4"])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert not path.exists()
+    result = runner.invoke(app, ["config", "set", "modes.fast.model", "ghost/m"])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert not path.exists()
+
+
+def test_config_list_shows_the_same_numbers_before_and_after_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path(tmp_path, monkeypatch)
+    before = runner.invoke(app, ["config", "list"]).stdout.splitlines()
+    write_config(ModelsConfig())
+    after = runner.invoke(app, ["config", "list"]).stdout.splitlines()
+    timeout = [line for line in before if line.startswith("modes.fast.timeout_seconds")]
+    assert timeout == [line for line in after if line.startswith("modes.fast.timeout_seconds")]
+    assert timeout[0].split() == ["modes.fast.timeout_seconds", "3600"]
 
 
 def test_config_set_reports_a_broken_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -563,7 +590,8 @@ def test_config_menu_asks_again_after_an_invalid_text(tmp_path: Path, monkeypatc
     result = runner.invoke(app, ["config"], input="ghost/m\npi/m\n")
     assert result.exit_code == 0, result.output
     assert queue == []
-    assert "modes.fast.model" in result.stderr
+    assert "modes.fast.model: " in result.stderr
+    assert "errors.pydantic.dev" not in result.stderr
     assert loaded_config().modes.fast.model == "pi/m"
 
 
