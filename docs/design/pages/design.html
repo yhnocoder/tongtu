@@ -213,9 +213,9 @@ mode    smart  claude-code/claude-opus-5-5  medium
     <li>不带版本号：缓存有效时读缓存；否则访问 arXiv 并写缓存。</li>
     <li>要求刷新（<code>info --refresh</code>、<code>run --latest</code>）：跳过前两步，直接访问 arXiv 并写缓存。</li>
   </ul>
-  <p>缓存文件是 <code>$TONGTU_HOME/cache/arxiv/&lt;键&gt;.json</code>。不带版本号的查询，键是规范化后的编号（编号里的 <code>/</code> 换成 <code>_</code>，例如 <code>2611.15404</code>、<code>hep-th_9901001</code>）；带版本号的查询，键是 <code>&lt;编号&gt;v&lt;N&gt;</code>。一次不带版本号的查询访问 arXiv 后，同时写不带版本号和带版本号两个条目。不带版本号的条目在 <code>fetched_at</code> 之后 <code>LATEST_CACHE_SECONDS = 86400</code> 秒内有效，因为哪个版本是最新的会变；带版本号的条目不过期，因为某个版本的信息不再变。缓存文件读不出或校验不通过时按不存在处理。通途不清理缓存。</p>
+  <p>缓存文件是 <code>$TONGTU_HOME/cache/arxiv/&lt;键&gt;.json</code>。不带版本号的查询，键是规范化后的编号（编号里的 <code>/</code> 换成 <code>_</code>，例如 <code>2611.15404</code>、<code>hep-th_9901001</code>）；带版本号的查询，键是 <code>&lt;编号&gt;v&lt;N&gt;</code>。一次不带版本号的查询访问 arXiv 后，同时写不带版本号和带版本号两个条目。不带版本号的条目在 <code>fetched_at</code> 之后 <code>LATEST_CACHE_SECONDS = 86400</code> 秒内有效，因为哪个版本是最新的会变；带版本号的条目不过期，因为这个版本的题目、摘要与正文不再变；arXiv 的 <code>comment</code>、<code>journal_ref</code>、<code>doi</code> 可以在不出新版本的情况下更新，这三项要更新时用 <code>tongtu info --refresh</code>。缓存文件读不出或校验不通过时按不存在处理。通途不清理缓存。</p>
   <pre><code class="language-python">class CachedMeta(BaseModel):
-    fetched_at: datetime       # 访问 arXiv 的时间，UTC
+    fetched_at: AwareDatetime  # 访问 arXiv 的时间，UTC；不带时区时校验不通过
     meta: PaperMeta</code></pre>
 
   <h3>config.toml</h3>

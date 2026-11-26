@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -252,6 +253,21 @@ def test_find_meta_treats_a_broken_cache_file_as_absent(
     wire_api(monkeypatch, VERSIONED_FEED)
     assert arxiv.find_meta("1412.6980", 8).source == arxiv.MetaSource.ARXIV
     assert load_manifest(path, CachedMeta) is not None
+
+
+def test_find_meta_treats_a_cache_time_without_a_timezone_as_absent(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = cache_file(isolated_home, "1412.6980")
+    path.parent.mkdir(parents=True)
+    content = {"fetched_at": datetime.now().isoformat(), "meta": adam(version=7).model_dump(mode="json")}
+    path.write_text(json.dumps(content), encoding="utf-8")
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980")
+    assert (found.source, found.meta.version) == (arxiv.MetaSource.ARXIV, 8)
+    assert len(urls) == 1
+    cached = load_manifest(path, CachedMeta)
+    assert cached is not None and cached.fetched_at.tzinfo is not None
 
 
 def test_find_meta_refresh_skips_the_working_directory_and_the_cache(
