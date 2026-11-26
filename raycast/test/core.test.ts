@@ -555,6 +555,7 @@ test("running detail marks the current stage and keeps the time in the metadata"
   const running = detail("running", ["ok", "ok", "ok"], {
     started_at: started,
     mode: "fast",
+    source_pages: 12,
     recent_actions: ["Read en.tex", "Write  parts/01.tex"],
   });
   assert.equal(
@@ -570,6 +571,10 @@ test("running detail marks the current stage and keeps the time in the metadata"
   assert.ok(!runningMarkdown(detail("running", ["ok", "ok", "ok"])).includes("会话最近的动作"));
   assert.deepEqual(runningRows(running, now), [
     { title: "arXiv", text: "2611.15404v1", link: "https://arxiv.org/abs/2611.15404v1" },
+    { title: "作者", text: "Ada Lovelace, Alan Turing" },
+    { title: "分类与发表日期", text: `cs.LG · ${dateText(META.published)}` },
+    { title: "加入日期", text: dateText("2026-11-25T08:00:00Z") },
+    { title: "页数", text: "原文 12 页" },
     { title: "模式", text: "fast" },
     { title: "开始时间", text: "2026-11-26 09:05" },
     { title: "总用时", text: "03:21" },
@@ -577,7 +582,7 @@ test("running detail marks the current stage and keeps the time in the metadata"
 });
 
 test("unfinished detail gives the reason and the next steps", () => {
-  const failed = detail("failed", ["ok", "ok", "ok", "ok", "compile_failed"], { stage: "compile", mode: "smart" });
+  const failed = detail("failed", ["ok", "ok", "ok", "ok", "compile_failed"], { stage: "compile", mode: "smart", source_pages: 12 });
   failed.status.stages[4].message = "latexmk exited\nwith 12";
   assert.equal(
     unfinishedMarkdown(failed),
@@ -592,11 +597,15 @@ test("unfinished detail gives the reason and the next steps", () => {
   );
   assert.deepEqual(unfinishedRows(failed), [
     { title: "arXiv", text: "2611.15404v1", link: "https://arxiv.org/abs/2611.15404v1" },
+    { title: "作者", text: "Ada Lovelace, Alan Turing" },
+    { title: "分类与发表日期", text: `cs.LG · ${dateText(META.published)}` },
+    { title: "加入日期", text: dateText("2026-11-25T08:00:00Z") },
+    { title: "页数", text: "原文 12 页" },
     { title: "模式", text: "smart" },
     { title: "失败的阶段", text: "compile" },
     { title: "已完成的阶段数", text: "4 / 5" },
   ]);
-  const interrupted = detail("interrupted", ["ok", "ok", "ok"]);
+  const interrupted = { ...detail("interrupted", ["ok", "ok", "ok"], {}, null), addedAt: null };
   assert.ok(unfinishedMarkdown(interrupted).includes("fetch ✓ → precompile ✓ → mask ✓ → translate → compile"));
   assert.ok(unfinishedMarkdown(interrupted).includes("在 `translate` 阶段中断"));
   assert.deepEqual(unfinishedRows(interrupted).slice(1), [

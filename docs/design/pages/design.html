@@ -741,7 +741,7 @@ class Note(BaseModel):
     glossary: Path | None
     notes: Path | None
     pages: int | None                           # compile manifest 的 report.pages
-    source_pages: int | None                    # compile manifest 的 baseline.pages
+    source_pages: int | None                    # precompile manifest 的 report.pages，没有时取 compile manifest 的 baseline.pages
     translate_seconds: float | None             # translate manifest 的 session.duration_seconds
     translate_cost_usd: float | None            # translate manifest 的 session.usage.cost_usd
     recent_actions: list[str]                   # 只在 running 时填写，见下文

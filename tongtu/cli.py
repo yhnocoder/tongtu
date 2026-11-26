@@ -634,6 +634,10 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
         mode = translate_manifest.mode if translate_manifest is not None else None
     state, stage_name = _paper_state(stages, marker is not None)
     compiled = load_manifest(paper_workdir.manifest_path(compile.STAGE_NAME), CompileManifest)
+    precompiled = load_manifest(paper_workdir.manifest_path(precompile.STAGE_NAME), PrecompileManifest)
+    source_report = precompiled.report if precompiled is not None else None
+    if source_report is None and compiled is not None:
+        source_report = compiled.baseline
     session = translate_manifest.session if translate_manifest is not None else None
     log = SESSION_LOGS.get(stage_name or "")
     return PaperStatus(
@@ -652,7 +656,7 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
         glossary=_existing(paper_workdir.paper_glossary),
         notes=_existing(paper_workdir.notes),
         pages=compiled.report.pages if compiled is not None and compiled.report is not None else None,
-        source_pages=compiled.baseline.pages if compiled is not None and compiled.baseline is not None else None,
+        source_pages=source_report.pages if source_report is not None else None,
         translate_seconds=session.duration_seconds if session is not None else None,
         translate_cost_usd=session.usage.cost_usd if session is not None and session.usage is not None else None,
         recent_actions=_recent_actions(log(paper_workdir)) if state == PaperState.RUNNING and log else [],

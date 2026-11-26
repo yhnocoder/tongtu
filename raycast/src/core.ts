@@ -416,12 +416,22 @@ function durationText(seconds: number): string {
   return whole < 60 ? `${whole} 秒` : `${Math.floor(whole / 60)} 分 ${whole % 60} 秒`;
 }
 
-export function completedRows(detail: PaperDetail): Row[] {
+function paperRows(detail: PaperDetail): Row[] {
   const { addedAt, status, meta } = detail;
   const rows = arxivRow(status);
   if (meta?.authors.length) rows.push({ title: "作者", text: meta.authors.join(", ") });
   if (meta) rows.push({ title: "分类与发表日期", text: `${meta.primary_category} · ${dateText(meta.published)}` });
   if (addedAt) rows.push({ title: "加入日期", text: dateText(addedAt) });
+  return rows;
+}
+
+function sourcePagesRow(status: PaperStatus): Row[] {
+  return status.source_pages === null ? [] : [{ title: "页数", text: `原文 ${status.source_pages} 页` }];
+}
+
+export function completedRows(detail: PaperDetail): Row[] {
+  const { status } = detail;
+  const rows = paperRows(detail);
   const pages = [
     status.pages === null ? "" : `中文 ${status.pages} 页`,
     status.source_pages === null ? "" : `原文 ${status.source_pages} 页`,
@@ -438,7 +448,7 @@ export function completedRows(detail: PaperDetail): Row[] {
 
 export function runningRows(detail: PaperDetail, now: number): Row[] {
   const { status } = detail;
-  const rows = [...arxivRow(status), ...modeRow(status)];
+  const rows = [...paperRows(detail), ...sourcePagesRow(status), ...modeRow(status)];
   if (status.started_at) {
     rows.push({ title: "开始时间", text: dateTimeText(status.started_at) });
     rows.push({ title: "总用时", text: elapsed(status.started_at, now) });
@@ -448,7 +458,7 @@ export function runningRows(detail: PaperDetail, now: number): Row[] {
 
 export function unfinishedRows(detail: PaperDetail): Row[] {
   const { status } = detail;
-  const rows = [...arxivRow(status), ...modeRow(status)];
+  const rows = [...paperRows(detail), ...sourcePagesRow(status), ...modeRow(status)];
   if (status.stage) {
     rows.push({ title: status.state === "failed" ? "失败的阶段" : "中断的阶段", text: status.stage });
     rows.push({ title: "已完成的阶段数", text: `${Math.max(0, STAGES.indexOf(status.stage))} / ${STAGES.length}` });

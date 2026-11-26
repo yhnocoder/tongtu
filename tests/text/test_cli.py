@@ -24,6 +24,7 @@ from tongtu import __version__, arxiv, cli
 from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session, StopReason, Usage
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.artifacts.fetch import CachedMeta, FetchManifest, FetchStatus, PaperMeta
+from tongtu.artifacts.precompile import PrecompileManifest, PrecompileStatus
 from tongtu.artifacts.status import (
     ABSENT_STATUS,
     PaperListing,
@@ -2140,6 +2141,22 @@ def test_list_and_status_report_the_failed_stage(tmp_path: Path, monkeypatch: py
     assert (snapshot.state, snapshot.stage) == (PaperState.FAILED, "mask")
     assert (snapshot.pages, snapshot.source_pages) == (None, None)
     assert (snapshot.translate_seconds, snapshot.translate_cost_usd) == (None, None)
+
+
+def test_status_json_takes_the_source_pages_from_precompile_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    workdir = write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"mask": "mask_failed"})
+    precompiled = PrecompileManifest(status=PrecompileStatus.OK, report=COMPILE_REPORT.model_copy(update={"pages": 12}))
+    write_manifest(workdir.manifest_path("precompile"), precompiled)
+    snapshot = status_json("1412.6980v8")
+    assert (snapshot.state, snapshot.pages, snapshot.source_pages) == (PaperState.FAILED, None, 12)
+    baseline = COMPILE_REPORT.model_copy(update={"pages": 66})
+    write_manifest(workdir.manifest_path("compile"), CompileManifest(status=CompileStatus.OK, baseline=baseline))
+    assert status_json("1412.6980v8").source_pages == 12
+    write_manifest(workdir.manifest_path("precompile"), PrecompileManifest(status=PrecompileStatus.OK))
+    assert status_json("1412.6980v8").source_pages == 66
 
 
 def test_list_and_status_report_an_interrupted_paper_at_the_first_absent_manifest(
