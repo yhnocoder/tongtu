@@ -116,12 +116,18 @@ const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i;
 const CHROMIUM_BROWSERS = ["Google Chrome", "Microsoft Edge", "Brave Browser", "Arc", "Chromium", "Vivaldi"];
 const TOOL_DIRECTORIES = ["~/.local/bin", "~/.cargo/bin", "/opt/homebrew/bin", "/Library/TeX/texbin", "/usr/bin", "/bin"];
 const DAY_MILLISECONDS = 86_400_000;
+export const SHOWN_AUTHORS = 12;
 
 function nonEmptyLines(text: string): string[] {
   return text
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "");
+}
+
+export function authorsText(authors: string[]): string {
+  const shown = authors.slice(0, SHOWN_AUTHORS).join(", ");
+  return authors.length > SHOWN_AUTHORS ? `${shown}, ...` : shown;
 }
 
 export function arxivId(text: string): string | null {
@@ -437,7 +443,7 @@ function durationText(seconds: number): string {
 function paperRows(detail: PaperDetail): Row[] {
   const { addedAt, status, meta } = detail;
   const rows = arxivRow(status);
-  if (meta?.authors.length) rows.push({ title: "作者", text: meta.authors.join(", ") });
+  if (meta?.authors.length) rows.push({ title: "作者", text: authorsText(meta.authors) });
   if (meta) rows.push({ title: "分类与发表日期", text: `${meta.primary_category} · ${dateText(meta.published)}` });
   if (addedAt) rows.push({ title: "加入日期", text: dateText(addedAt) });
   return rows;
@@ -554,7 +560,7 @@ export function entryArxivUrl(lookup: Lookup): string | null {
 
 export function entryRows(lookup: Lookup, mode: string): Row[] {
   const rows: Row[] = [];
-  if (lookup.meta?.authors.length) rows.push({ title: "作者", text: lookup.meta.authors.join(", ") });
+  if (lookup.meta?.authors.length) rows.push({ title: "作者", text: authorsText(lookup.meta.authors) });
   if (lookup.meta) rows.push({ title: "发表日期", text: dateText(lookup.meta.published) });
   rows.push({ title: "状态", text: LOCAL_STATE_TEXT[localState(lookup.status)] });
   if (mode !== "") rows.push({ title: "模式", text: mode });

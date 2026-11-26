@@ -11,8 +11,10 @@ import {
   OTHER_MODEL,
   apiKeyPlaceholder,
   apiKeySet,
+  SHOWN_AUTHORS,
   arxivId,
   arxivIdFromUrl,
+  authorsText,
   arxivUrl,
   browserUrlScript,
   categories,
@@ -802,4 +804,26 @@ test("configChanges writes the key only when it is filled in", () => {
 test("configChanges lists the changed abstract translation fields", () => {
   const form = { ...formValues(CONFIG), "abstract.base_url": " https://chat.example.com ", "abstract.model": "deepseek-flash" };
   assert.deepEqual(configChanges(CONFIG, form).pairs, ["abstract.base_url", "https://chat.example.com"]);
+});
+
+test("authorsText lists at most 12 authors", () => {
+  const names = Array.from({ length: 14 }, (_, index) => `A${index + 1}`);
+  assert.equal(SHOWN_AUTHORS, 12);
+  assert.equal(authorsText(names.slice(0, 1)), "A1");
+  assert.equal(authorsText(names.slice(0, 12)), names.slice(0, 12).join(", "));
+  assert.equal(authorsText(names.slice(0, 13)), `${names.slice(0, 12).join(", ")}, ...`);
+  assert.equal(authorsText(names), `${names.slice(0, 12).join(", ")}, ...`);
+});
+
+test("the author rows use authorsText", () => {
+  const many = { ...META, authors: Array.from({ length: 13 }, (_, index) => `A${index + 1}`) };
+  const expected = authorsText(many.authors);
+  assert.ok(expected.endsWith(", ..."));
+  const rows = [
+    completedRows(detail("ok", ALL_OK, {}, many)),
+    runningRows(detail("running", ["ok"], {}, many), NOW),
+    unfinishedRows(detail("failed", ["ok", "x"], { stage: "precompile" }, many)),
+    entryRows(lookup("2611.15404", null, many), ""),
+  ];
+  for (const found of rows) assert.equal(found.find((row) => row.title === "作者")?.text, expected);
 });
