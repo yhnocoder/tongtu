@@ -50,7 +50,9 @@ import {
   removableWorkdir,
   runMessage,
   runMode,
+  retryActions,
   runOptions,
+  runTitle,
   runningMarkdown,
   runningRows,
   secondsFromMinutes,
@@ -278,19 +280,38 @@ test("launchScript passes the working directory to the notification script", () 
 });
 
 test("runOptions maps every action to its tongtu run options", () => {
-  assert.deepEqual(runOptions("retry", "/w"), { options: ["--workdir", "/w"], redo: false });
-  assert.deepEqual(runOptions("retrySmart", "/w"), { options: ["--workdir", "/w", "--mode", "smart"], redo: false });
-  assert.deepEqual(runOptions("redoFast", "/w"), { options: ["--workdir", "/w", "--from", "translate", "--mode", "fast"], redo: true });
-  assert.deepEqual(runOptions("redoSmart", "/w"), { options: ["--workdir", "/w", "--from", "translate", "--mode", "smart"], redo: true });
-  assert.deepEqual(runOptions("recompile", "/w"), { options: ["--workdir", "/w", "--from", "compile"], redo: true });
+  assert.deepEqual(runOptions("retry", "/w", null), { options: ["--workdir", "/w"], redo: false });
+  assert.deepEqual(runOptions("retry", "/w", "fast"), { options: ["--workdir", "/w", "--mode", "fast"], redo: false });
+  assert.deepEqual(runOptions("retryFast", "/w", "smart"), { options: ["--workdir", "/w", "--mode", "fast"], redo: false });
+  assert.deepEqual(runOptions("retrySmart", "/w", null), { options: ["--workdir", "/w", "--mode", "smart"], redo: false });
+  assert.deepEqual(runOptions("redoFast", "/w", "smart"), {
+    options: ["--workdir", "/w", "--from", "translate", "--mode", "fast"],
+    redo: true,
+  });
+  assert.deepEqual(runOptions("redoSmart", "/w", null), { options: ["--workdir", "/w", "--from", "translate", "--mode", "smart"], redo: true });
+  assert.deepEqual(runOptions("recompile", "/w", "fast"), { options: ["--workdir", "/w", "--from", "compile"], redo: true });
 });
 
 test("runMessage words the result by action", () => {
-  assert.equal(runMessage("retry", "2611.15404v1"), "继续翻译 2611.15404v1");
-  assert.equal(runMessage("retrySmart", "2611.15404v1"), "继续翻译 2611.15404v1（smart）");
-  assert.equal(runMessage("redoFast", "2611.15404v1"), "开始翻译 2611.15404v1（fast）");
-  assert.equal(runMessage("redoSmart", "2611.15404v1"), "开始翻译 2611.15404v1（smart）");
-  assert.equal(runMessage("recompile", "2611.15404v1"), "重新编译 2611.15404v1");
+  assert.equal(runMessage("retry", "2611.15404v1", null), "继续翻译 2611.15404v1");
+  assert.equal(runMessage("retry", "2611.15404v1", "fast"), "继续翻译 2611.15404v1（fast）");
+  assert.equal(runMessage("retryFast", "2611.15404v1", "smart"), "继续翻译 2611.15404v1（fast）");
+  assert.equal(runMessage("retrySmart", "2611.15404v1", null), "继续翻译 2611.15404v1（smart）");
+  assert.equal(runMessage("redoFast", "2611.15404v1", null), "开始翻译 2611.15404v1（fast）");
+  assert.equal(runMessage("redoSmart", "2611.15404v1", null), "开始翻译 2611.15404v1（smart）");
+  assert.equal(runMessage("recompile", "2611.15404v1", null), "重新编译 2611.15404v1");
+});
+
+test("retryActions offers the last mode and the other one", () => {
+  assert.deepEqual(retryActions("smart"), ["retry", "retryFast"]);
+  assert.deepEqual(retryActions("fast"), ["retry", "retrySmart"]);
+  assert.deepEqual(retryActions(null), ["retry", "retryFast", "retrySmart"]);
+  assert.deepEqual(retryActions(undefined), ["retry", "retryFast", "retrySmart"]);
+  assert.equal(runTitle("retry", "smart"), "重试（smart）");
+  assert.equal(runTitle("retry", null), "重试");
+  assert.equal(runTitle("retryFast", "smart"), "用 fast 重试");
+  assert.equal(runTitle("retrySmart", null), "用 smart 重试");
+  assert.equal(runTitle("redoFast", "smart"), "用 fast 重新翻译");
 });
 
 test("removableWorkdir needs an absolute path that ends in the paper name", () => {
@@ -352,12 +373,32 @@ test("entryActions puts the action for return first in every state", () => {
   ]);
   assert.deepEqual(entryActions(lookup("2611.15404", status("ok", ALL_OK), META)), ["detail", "openPdf", "arxiv"]);
   assert.deepEqual(entryActions(lookup("2611.15404", status("running", ["ok"]), META)), ["detail", "stop"]);
-  assert.deepEqual(entryActions(lookup("2611.15404", status("failed", ["ok", "x"], { stage: "precompile" }), META)), ["detail", "retry"]);
-  assert.deepEqual(entryActions(lookup("2611.15404", status("interrupted", ["ok", "ok", "ok"]), META)), ["detail", "retry"]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("failed", ["ok", "x"], { stage: "precompile" }), META)), [
+    "detail",
+    "retry",
+    "retryFast",
+    "retrySmart",
+  ]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("interrupted", ["ok", "ok", "ok"], { mode: "smart" }), META)), [
+    "detail",
+    "retry",
+    "retryFast",
+  ]);
   assert.deepEqual(entryActions(lookup("~/papers/draft", null, null)), ["start", "startFast", "startSmart"]);
   const local = status("ok", ALL_OK, { arxiv_id: null, version: null, workdir: "/home/papers/draft" });
   assert.deepEqual(entryActions(lookup("~/papers/draft", local, null)), ["detail", "openPdf"]);
-  assert.deepEqual(Object.keys(ENTRY_ACTION_TITLES).sort(), ["arxiv", "detail", "openPdf", "retry", "start", "startFast", "startSmart", "stop"]);
+  assert.deepEqual(Object.keys(ENTRY_ACTION_TITLES).sort(), [
+    "arxiv",
+    "detail",
+    "openPdf",
+    "retry",
+    "retryFast",
+    "retrySmart",
+    "start",
+    "startFast",
+    "startSmart",
+    "stop",
+  ]);
 });
 
 test("lookupFailure reports a failed info only when the paper is not local", () => {
@@ -406,7 +447,7 @@ test("entryRows shows authors, date, state and mode", () => {
 });
 
 test("statusTarget carries what the actions need", () => {
-  assert.deepEqual(statusTarget(status("ok", ALL_OK, { pdf: "/home/papers/2611.15404v1/out/x.pdf" })), {
+  assert.deepEqual(statusTarget(status("ok", ALL_OK, { pdf: "/home/papers/2611.15404v1/out/x.pdf", mode: "fast" })), {
     name: "2611.15404v1",
     workdir: "/home/papers/2611.15404v1",
     state: "ok",
@@ -414,6 +455,7 @@ test("statusTarget carries what the actions need", () => {
     arxiv_id: "2611.15404",
     version: 1,
     pdf: "/home/papers/2611.15404v1/out/x.pdf",
+    mode: "fast",
   });
   assert.equal(startingMarkdown("2611.15404"), "# 2611.15404\n\n正在启动");
 });
@@ -592,7 +634,7 @@ test("unfinished detail gives the reason and the next steps", () => {
       "## 原因",
       "`compile` 失败：compile_failed latexmk exited with 12",
       "## 下一步",
-      "- 重试\n- 用 smart 模式重试\n- 查看日志",
+      "- 重试（smart）\n- 用 fast 重试\n- 查看日志",
     ].join("\n\n"),
   );
   assert.deepEqual(unfinishedRows(failed), [
@@ -608,6 +650,7 @@ test("unfinished detail gives the reason and the next steps", () => {
   const interrupted = { ...detail("interrupted", ["ok", "ok", "ok"], {}, null), addedAt: null };
   assert.ok(unfinishedMarkdown(interrupted).includes("fetch ✓ → precompile ✓ → mask ✓ → translate → compile"));
   assert.ok(unfinishedMarkdown(interrupted).includes("在 `translate` 阶段中断"));
+  assert.ok(unfinishedMarkdown(interrupted).includes("- 重试\n- 用 fast 重试\n- 用 smart 重试\n- 查看日志"));
   assert.deepEqual(unfinishedRows(interrupted).slice(1), [
     { title: "中断的阶段", text: "translate" },
     { title: "已完成的阶段数", text: "3 / 5" },

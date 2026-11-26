@@ -33,6 +33,7 @@ import {
   lookupFailure,
   needsAbstractZh,
   runMode,
+  runTitle,
   shownAbstract,
   statusTarget,
   typedPaper,
@@ -202,7 +203,7 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
     if (action === "stop") {
       return <Action key={action} title={title} icon={Icon.Stop} style={Action.Style.Destructive} onAction={() => stop(local, load)} />;
     }
-    return <Action key={action} title={title} icon={Icon.Play} onAction={() => run(local, "retry", load)} />;
+    return <Action key={action} title={runTitle(action, local.mode)} icon={Icon.Play} onAction={() => run(local, action, load)} />;
   }
 
   const current = lookup && lookup.paper === paper ? lookup : null;

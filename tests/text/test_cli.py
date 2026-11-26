@@ -33,6 +33,7 @@ from tongtu.artifacts.status import (
     PaperSummary,
     RunCommand,
     RunMarker,
+    RunRecord,
 )
 from tongtu.artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
@@ -1024,6 +1025,19 @@ def test_run_keeps_the_run_marker_while_stages_run(tmp_path: Path, monkeypatch: 
     assert all(marker is not None and marker.mode == "smart" for marker in seen)
     assert not workdir.run_marker.exists()
     assert signal.getsignal(signal.SIGTERM) == previous
+    record = load_manifest(workdir.last_run, RunRecord)
+    assert record is not None and seen[0] is not None
+    assert (record.started_at, record.command, record.mode) == (seen[0].started_at, RunCommand.RUN, "smart")
+
+
+def test_run_overwrites_the_run_record_and_from_keeps_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_marker_probe(monkeypatch, [])
+    workdir = cli.Workdir(tmp_path / "paper")
+    assert runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path), "--mode", "fast"]).exit_code == 0
+    arguments = ["run", "2002.05202v1", "--workdir", str(workdir.path), "--from", "fetch", "--mode", "smart"]
+    assert runner.invoke(app, arguments).exit_code == 0
+    record = load_manifest(workdir.last_run, RunRecord)
+    assert record is not None and (record.command, record.mode) == (RunCommand.RUN, "smart")
 
 
 def test_stage_keeps_the_run_marker_while_the_stage_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1034,6 +1048,8 @@ def test_stage_keeps_the_run_marker_while_the_stage_runs(tmp_path: Path, monkeyp
     assert result.exit_code == 0
     assert [(marker.command, marker.mode) if marker else None for marker in seen] == [(RunCommand.STAGE, "smart")]
     assert not workdir.run_marker.exists()
+    record = load_manifest(workdir.last_run, RunRecord)
+    assert record is not None and (record.command, record.mode) == (RunCommand.STAGE, "smart")
 
 
 def test_stage_with_absent_upstream_writes_no_run_marker(tmp_path: Path) -> None:
@@ -1306,6 +1322,28 @@ def test_status_json_takes_the_mode_of_the_translate_manifest(tmp_path: Path) ->
     snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
     assert (snapshot.running, snapshot.mode) == (False, "fast")
     assert next(state for state in snapshot.stages if state.name == "translate").status == "translate_failed"
+
+
+def write_run_record(workdir: cli.Workdir, mode: str) -> None:
+    write_manifest(workdir.last_run, RunRecord(started_at=STARTED_AT, command=RunCommand.RUN, mode=mode))
+
+
+def test_status_json_takes_the_mode_of_the_run_record_last(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    write_run_record(workdir, "smart")
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode == "smart"
+    write_manifest(workdir.manifest_path("translate"), TranslateManifest(status=TranslateStatus.OK, mode="fast"))
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode == "fast"
+    write_manifest(
+        workdir.run_marker, RunMarker(pid=os.getpid(), started_at=STARTED_AT, command=RunCommand.RUN, mode="smart")
+    )
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode == "smart"
+
+
+def test_status_json_ignores_an_unreadable_run_record(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch")
+    workdir.last_run.write_text("{", encoding="utf-8")
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode is None
 
 
 def test_status_json_gives_the_four_output_files_once_they_exist(tmp_path: Path) -> None:

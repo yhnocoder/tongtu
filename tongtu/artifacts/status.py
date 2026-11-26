@@ -30,6 +30,12 @@ class RunMarker(BaseModel):
     mode: str
 
 
+class RunRecord(BaseModel):
+    started_at: datetime
+    command: RunCommand
+    mode: str
+
+
 class PaperState(StrEnum):
     RUNNING = "running"
     OK = "ok"

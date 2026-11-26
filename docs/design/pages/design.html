@@ -187,6 +187,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
     └── 2412.19437v2/                <span class="c">工作目录，名字是 &lt;ID&gt;</span>
         ├── glossary.json            <span class="c">论文级术语表，可选，用户维护</span>
         ├── running.json             <span class="c">运行标记，运行期间存在</span>
+        ├── last_run.json            <span class="c">最近一次运行的记录，不删除</span>
         ├── src/                     <span class="c">解包后的源码</span>
         ├── build/
         │   ├── e-print.bin          <span class="c">下载到的原始字节</span>
@@ -732,7 +733,7 @@ class Note(BaseModel):
     running: bool                               # 运行标记有效
     pid: int | None
     started_at: datetime | None                 # 运行中时取运行标记里的开始时间，UTC
-    mode: str | None                            # 运行中取运行标记，否则取 translate 的 manifest
+    mode: str | None                            # 依次取运行标记、translate 的 manifest、last_run.json，见运行标记
     state: PaperState                           # 见下表
     stage: str | None                           # 见下表
     stages: list[StageState]                    # 五个阶段，按顺序
@@ -811,6 +812,12 @@ class PaperSummary(BaseModel):
     started_at: datetime       # UTC
     command: "run" | "stage"
     mode: str</code></pre>
+  <p><code>run</code> 与 <code>stage</code> 在写运行标记的同一处写 <code>&lt;工作目录&gt;/last_run.json</code>，记下这次运行的开始时间、命令与模式。每次运行覆盖它，运行结束不删除，<code>--from</code> 的清理也不删除。它让在 translate 及之前中断或失败的论文也能查到上次所用的模式。读不出或校验不通过时按不存在处理。</p>
+  <pre><code class="language-python">class RunRecord(BaseModel):
+    started_at: datetime       # UTC，与同一次运行的运行标记相同
+    command: "run" | "stage"
+    mode: str</code></pre>
+  <p><code>status</code> 的 <code>mode</code> 按顺序取：有效运行标记的模式；translate manifest 的模式；<code>last_run.json</code> 的模式；都没有时为 null。translate manifest 排在运行记录之前，因为它是产出当前译文的那次翻译所用的模式，之后只重新编译不改变它。</p>
 </section>
 
 </div>

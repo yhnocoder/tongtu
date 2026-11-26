@@ -63,7 +63,9 @@ export type PaperSummary = {
   pdf: string | null;
 };
 
-export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "pdf">;
+export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "pdf"> & {
+  mode?: string | null;
+};
 export type PaperDetail = { name: string; addedAt: string | null; status: PaperStatus; meta: PaperMeta | null };
 export type PaperSource = "argument" | "browser" | "clipboard";
 export type ConfigValue = string | number | boolean | null;
@@ -177,11 +179,13 @@ export function launchScript(
   return [`${run} > ${shellQuote(logFile)} 2>&1`, workdir === null ? notify : `${notify} ${shellQuote(workdir)}`].join("\n");
 }
 
-export type RunAction = "retry" | "retrySmart" | "redoFast" | "redoSmart" | "recompile";
+export type RetryAction = "retry" | "retryFast" | "retrySmart";
+export type RunAction = RetryAction | "redoFast" | "redoSmart" | "recompile";
 
-export const RUN_TITLES: Record<RunAction, string> = {
+const RUN_TITLES: Record<RunAction, string> = {
   retry: "重试",
-  retrySmart: "用 smart 模式重试",
+  retryFast: "用 fast 重试",
+  retrySmart: "用 smart 重试",
   redoFast: "用 fast 重新翻译",
   redoSmart: "用 smart 重新翻译",
   recompile: "只重新编译",
@@ -189,22 +193,35 @@ export const RUN_TITLES: Record<RunAction, string> = {
 
 const RUN_OPTIONS: Record<RunAction, { options: string[]; redo: boolean }> = {
   retry: { options: [], redo: false },
+  retryFast: { options: ["--mode", "fast"], redo: false },
   retrySmart: { options: ["--mode", "smart"], redo: false },
   redoFast: { options: ["--from", "translate", "--mode", "fast"], redo: true },
   redoSmart: { options: ["--from", "translate", "--mode", "smart"], redo: true },
   recompile: { options: ["--from", "compile"], redo: true },
 };
 
-export function runOptions(action: RunAction, workdir: string): { options: string[]; redo: boolean } {
-  const { options, redo } = RUN_OPTIONS[action];
-  return { options: ["--workdir", workdir, ...options], redo };
+const RETRY_MODES: Record<RetryAction, string | null> = { retry: null, retryFast: "fast", retrySmart: "smart" };
+
+export function retryActions(mode: string | null | undefined): RetryAction[] {
+  const actions: RetryAction[] = ["retry", "retryFast", "retrySmart"];
+  return actions.filter((action) => action === "retry" || RETRY_MODES[action] !== (mode || null));
 }
 
-export function runMessage(action: RunAction, name: string): string {
-  if (action === "retry") return `继续翻译 ${name}`;
-  if (action === "retrySmart") return `继续翻译 ${name}（smart）`;
+export function runTitle(action: RunAction, mode: string | null | undefined): string {
+  return action === "retry" && mode ? `重试（${mode}）` : RUN_TITLES[action];
+}
+
+export function runOptions(action: RunAction, workdir: string, mode: string | null | undefined): { options: string[]; redo: boolean } {
+  const { options, redo } = RUN_OPTIONS[action];
+  const retryMode = action === "retry" && mode ? ["--mode", mode] : [];
+  return { options: ["--workdir", workdir, ...options, ...retryMode], redo };
+}
+
+export function runMessage(action: RunAction, name: string, mode: string | null | undefined): string {
   if (action === "recompile") return `重新编译 ${name}`;
-  return `开始翻译 ${name}（${action === "redoFast" ? "fast" : "smart"}）`;
+  if (action === "redoFast" || action === "redoSmart") return `开始翻译 ${name}（${action === "redoFast" ? "fast" : "smart"}）`;
+  const shown = action === "retry" ? mode || null : RETRY_MODES[action];
+  return shown ? `继续翻译 ${name}（${shown}）` : `继续翻译 ${name}`;
 }
 
 export function workdirName(workdir: string): string {
@@ -382,7 +399,9 @@ export function runningMarkdown(detail: PaperDetail): string {
   return parts.join("\n\n");
 }
 
-export const UNFINISHED_NEXT_STEPS = [RUN_TITLES.retry, RUN_TITLES.retrySmart, "查看日志"];
+export function unfinishedNextSteps(mode: string | null): string[] {
+  return [...retryActions(mode).map((action) => runTitle(action, mode)), "查看日志"];
+}
 
 export function unfinishedMarkdown(detail: PaperDetail): string {
   const { status } = detail;
@@ -397,7 +416,7 @@ export function unfinishedMarkdown(detail: PaperDetail): string {
     "## 原因",
     reason,
     "## 下一步",
-    UNFINISHED_NEXT_STEPS.map((step) => `- ${step}`).join("\n"),
+    unfinishedNextSteps(status.mode).map((step) => `- ${step}`).join("\n"),
   ].join("\n\n");
 }
 
@@ -468,7 +487,7 @@ export function unfinishedRows(detail: PaperDetail): Row[] {
 
 export type LocalState = "none" | PaperState;
 export type Lookup = { paper: string; status: PaperStatus | null; meta: PaperMeta | null; infoError: string };
-export type EntryAction = "start" | "startFast" | "startSmart" | "detail" | "openPdf" | "arxiv" | "stop" | "retry";
+export type EntryAction = "start" | "startFast" | "startSmart" | "detail" | "openPdf" | "arxiv" | "stop" | RetryAction;
 
 export const LOCAL_STATE_TEXT: Record<LocalState, string> = {
   none: "未翻译",
@@ -493,6 +512,8 @@ export const ENTRY_ACTION_TITLES: Record<EntryAction, string> = {
   arxiv: "打开 arXiv 页面",
   stop: "停止",
   retry: "重试",
+  retryFast: "用 fast 重试",
+  retrySmart: "用 smart 重试",
 };
 
 export function isPathArgument(paper: string): boolean {
@@ -547,7 +568,7 @@ export function entryActions(lookup: Lookup): EntryAction[] {
   if (state === "none") return ["start", "startFast", "startSmart", ...arxiv];
   if (state === "ok") return ["detail", "openPdf", ...arxiv];
   if (state === "running") return ["detail", "stop"];
-  return ["detail", "retry"];
+  return ["detail", ...retryActions(lookup.status?.mode)];
 }
 
 export function statusTarget(status: PaperStatus): PaperTarget {
@@ -559,6 +580,7 @@ export function statusTarget(status: PaperStatus): PaperTarget {
     arxiv_id: status.arxiv_id,
     version: status.version,
     pdf: status.pdf,
+    mode: status.mode,
   };
 }
 

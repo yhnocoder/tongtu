@@ -48,6 +48,7 @@ from .artifacts.status import (
     PaperSummary,
     RunCommand,
     RunMarker,
+    RunRecord,
     StageState,
 )
 from .artifacts.translate import TranslateManifest
@@ -519,9 +520,9 @@ def stage(
 
 @contextmanager
 def _running(workdir: Workdir, command: RunCommand, mode: str) -> Iterator[None]:
-    write_manifest(
-        workdir.run_marker, RunMarker(pid=os.getpid(), started_at=datetime.now(UTC), command=command, mode=mode)
-    )
+    started_at = datetime.now(UTC)
+    write_manifest(workdir.run_marker, RunMarker(pid=os.getpid(), started_at=started_at, command=command, mode=mode))
+    write_manifest(workdir.last_run, RunRecord(started_at=started_at, command=command, mode=mode))
 
     def terminate(signum: int, frame: FrameType | None) -> None:
         processes.terminate_active()
@@ -628,10 +629,13 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
         )
     marker = _live_marker(paper_workdir)
     translate_manifest = load_manifest(paper_workdir.manifest_path(translate.STAGE_NAME), TranslateManifest)
+    last_run = load_manifest(paper_workdir.last_run, RunRecord)
     if marker is not None:
         mode = marker.mode
+    elif translate_manifest is not None:
+        mode = translate_manifest.mode
     else:
-        mode = translate_manifest.mode if translate_manifest is not None else None
+        mode = last_run.mode if last_run is not None else None
     state, stage_name = _paper_state(stages, marker is not None)
     compiled = load_manifest(paper_workdir.manifest_path(compile.STAGE_NAME), CompileManifest)
     precompiled = load_manifest(paper_workdir.manifest_path(precompile.STAGE_NAME), PrecompileManifest)

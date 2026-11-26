@@ -21,7 +21,6 @@ import {
   PaperStatus,
   PaperSummary,
   PaperTarget,
-  RUN_TITLES,
   Row,
   RunAction,
   START_REFRESH_DELAY_SECONDS,
@@ -33,8 +32,10 @@ import {
   needsAbstractZh,
   refreshSeconds,
   removableWorkdir,
+  retryActions,
   runMessage,
   runOptions,
+  runTitle,
   runningMarkdown,
   runningRows,
   startingMarkdown,
@@ -179,7 +180,7 @@ export async function openPdf(paper: PaperTarget): Promise<void> {
 }
 
 export async function run(paper: PaperTarget, action: RunAction, reload: () => Promise<void>): Promise<void> {
-  const { options, redo } = runOptions(action, paper.workdir);
+  const { options, redo } = runOptions(action, paper.workdir, paper.mode);
   if (redo) await setOpened((opened) => withoutOpened(opened, paper.name));
   try {
     startRun(paper.name, options, paper.workdir);
@@ -189,7 +190,7 @@ export async function run(paper: PaperTarget, action: RunAction, reload: () => P
   }
   await reload();
   setTimeout(reload, START_REFRESH_DELAY_SECONDS * 1000);
-  await announce(runMessage(action, paper.name));
+  await announce(runMessage(action, paper.name, paper.mode));
 }
 
 async function stopRun(paper: PaperTarget): Promise<boolean> {
@@ -236,7 +237,7 @@ export function RefreshAction({ reload }: { reload: Reload }) {
 }
 
 function RunItem({ paper, action, icon, reload }: { paper: PaperTarget; action: RunAction; icon: Icon; reload: Reload }) {
-  return <Action title={RUN_TITLES[action]} icon={icon} onAction={() => run(paper, action, reload)} />;
+  return <Action title={runTitle(action, paper.mode)} icon={icon} onAction={() => run(paper, action, reload)} />;
 }
 
 type ActionsProps = { paper: PaperTarget; reload: Reload; toggleView?: () => void; removed?: () => void };
@@ -274,8 +275,9 @@ export function PaperActions({ paper, reload, toggleView, removed }: ActionsProp
       {(paper.state === "failed" || paper.state === "interrupted") && (
         <>
           {details}
-          <RunItem paper={paper} action="retry" icon={Icon.Play} reload={reload} />
-          <RunItem paper={paper} action="retrySmart" icon={Icon.Play} reload={reload} />
+          {retryActions(paper.mode).map((action) => (
+            <RunItem key={action} paper={paper} action={action} icon={Icon.Play} reload={reload} />
+          ))}
           <Action.ShowInFinder title="查看日志" icon={Icon.Text} path={path.join(paper.workdir, "logs")} />
           {finder}
         </>
