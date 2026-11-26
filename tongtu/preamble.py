@@ -39,7 +39,7 @@ GROUP_START_RE = re.compile(r"\s*\{")
 
 ASSIGNMENT_RE = re.compile(r"[ \t]*=?[ \t]*-?\d+(?:[ \t]*\\relax)?")
 
-CJK_ENV_RE = re.compile(r"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\})*|\\end\s*\{CJK\*?\}|\\CJKfamily\s*\{[^}]*\}")
+CJK_ENV_RE = re.compile(r"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\}){2}|\\end\s*\{CJK\*?\}|\\CJKfamily\s*\{[^}]*\}")
 
 
 @dataclass(frozen=True)

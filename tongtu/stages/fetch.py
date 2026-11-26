@@ -5,24 +5,19 @@ import io
 import shutil
 import tarfile
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 
-from .. import __version__, pipeline, workdir
-from ..artifacts.fetch import FetchKind, FetchManifest, FetchStatus
+from .. import arxiv, pipeline
+from ..artifacts.fetch import FetchKind, FetchManifest, FetchStatus, PaperMeta
+from ..arxiv import PaperInput
 from ..manifests import describe_error, write_manifest
 from ..workdir import Workdir
 
 STAGE_NAME = "fetch"
 
-EPRINT_URL_TEMPLATE = "https://export.arxiv.org/e-print/{arxiv_id}"
-
-DOWNLOAD_TIMEOUT_SECONDS = 60.0
-
-DOWNLOAD_USER_AGENT = f"tongtu/{__version__} (+https://github.com/yhnocoder/tongtu)"
+EPRINT_URL_TEMPLATE = "https://export.arxiv.org/e-print/{paper_id}"
 
 PDF_MAGIC = b"%PDF"
 
@@ -34,104 +29,70 @@ MIN_TEX_CHARS_WITH_INCLUDEPDF = 5000
 
 COPY_SKIP_NAMES = frozenset({".git", ".svn", ".hg", "__pycache__", ".DS_Store"})
 
-PATH_NAVIGATION_LITERALS = frozenset({"", ".", "..", "~"})
 
-
-class PaperArgumentError(ValueError):
-    pass
-
-
-@dataclass(frozen=True)
-class PaperInput:
-    arxiv_id: str | None = None
-    source_dir: Path | None = None
-
-
-def parse_arxiv_url(url: str) -> str:
-    parts = urlsplit(url)
-    host = parts.hostname or ""
-    if host != "arxiv.org" and not host.endswith(".arxiv.org"):
-        raise PaperArgumentError(f"not an arxiv.org URL: {url}")
-    for prefix in ("/abs/", "/pdf/", "/html/"):
-        if parts.path.startswith(prefix):
-            arxiv_id = parts.path[len(prefix) :].rstrip("/").removesuffix(".pdf")
-            if not arxiv_id:
-                raise PaperArgumentError(f"no id after the path prefix in URL: {url}")
-            return arxiv_id
-    raise PaperArgumentError(f"URL path has none of the /abs/, /pdf/, /html/ prefixes: {url}")
-
-
-def _as_source_directory(paper: str) -> Path | None:
-    if paper in PATH_NAVIGATION_LITERALS:
-        return None
-    try:
-        path = Path(paper).expanduser()
-    except RuntimeError:
-        return None
-    return path if path.is_dir() else None
-
-
-def parse_paper_argument(paper: str) -> PaperInput:
-    source_dir = _as_source_directory(paper)
-    if source_dir is not None:
-        return PaperInput(source_dir=source_dir)
-    if paper.startswith(("http://", "https://")):
-        arxiv_id = parse_arxiv_url(paper)
-    else:
-        arxiv_id = paper
-    workdir.normalize_arxiv_id(arxiv_id)
-    return PaperInput(arxiv_id=arxiv_id)
-
-
-def run(paper: PaperInput, paper_workdir: Workdir) -> FetchManifest:
+def run(paper: PaperInput, paper_workdir: Workdir, meta: PaperMeta | None = None) -> FetchManifest:
     paper_workdir.create()
     if paper.source_dir is not None:
         manifest = _fetch_local(paper.source_dir, paper_workdir)
     else:
-        manifest = _fetch_remote(paper.arxiv_id or "", paper_workdir)
+        manifest = _fetch_remote(paper, paper_workdir, meta)
     if manifest.status is not FetchStatus.OK and _src_is_clearable(paper, paper_workdir):
         _reset_src(paper_workdir)
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def _fetch_remote(arxiv_id: str, paper_workdir: Workdir) -> FetchManifest:
-    url = EPRINT_URL_TEMPLATE.format(arxiv_id=arxiv_id)
+def _fetch_remote(paper: PaperInput, paper_workdir: Workdir, meta: PaperMeta | None) -> FetchManifest:
+    if paper.arxiv_id is None or paper.version is None:
+        raise ValueError(f"fetch needs an arXiv id with a version, got {paper}")
+    paper_id = arxiv.versioned_id(paper.arxiv_id, paper.version)
+    url = EPRINT_URL_TEMPLATE.format(paper_id=paper_id)
+    identity = {"source": paper_id, "arxiv_id": paper.arxiv_id, "version": paper.version, "url": url}
     _reset_outputs(paper_workdir)
-    payload_path = paper_workdir.eprint
+    if meta is None:
+        try:
+            meta = arxiv.query(paper.arxiv_id, paper.version)
+        except arxiv.ArxivError as error:
+            return FetchManifest(status=FetchStatus.DOWNLOAD_FAILED, message=str(error), **identity)
+    write_manifest(paper_workdir.meta, meta)
     try:
         payload = _download_eprint(url)
     except Exception as error:
         return FetchManifest(
-            status=FetchStatus.DOWNLOAD_FAILED, source=arxiv_id, url=url, message=describe_error(error)
+            status=FetchStatus.DOWNLOAD_FAILED,
+            message=f"source download failed: {describe_error(error)}",
+            **identity,
         )
     if not payload:
         return FetchManifest(
-            status=FetchStatus.DOWNLOAD_FAILED,
-            source=arxiv_id,
-            url=url,
+            status=FetchStatus.EMPTY,
             message="download succeeded but the response body is empty.",
+            **identity,
         )
-    payload_path.write_bytes(payload)
+    paper_workdir.eprint.write_bytes(payload)
     try:
         kind, rejected, warnings = _unpack_payload(payload, paper_workdir.src)
     except Exception as error:
         return FetchManifest(
             status=FetchStatus.UNPACK_FAILED,
-            source=arxiv_id,
-            url=url,
             payload_bytes=len(payload),
             message=describe_error(error),
+            **identity,
         )
-    return _manifest_from_src(
+    manifest = _manifest_from_src(
         paper_workdir,
-        source=arxiv_id,
         kind=kind,
-        url=url,
         payload_bytes=len(payload),
         rejected=rejected,
         warnings=warnings,
+        **identity,
     )
+    if manifest.status is FetchStatus.PDF_ONLY:
+        manifest.message = (
+            f"{paper_id} has no TeX source: {manifest.message} Other versions of {paper.arxiv_id} may have "
+            f"TeX source; to try one, name its version in the command, for example {paper.arxiv_id}v<N>."
+        )
+    return manifest
 
 
 def _fetch_local(source_dir: Path, paper_workdir: Workdir) -> FetchManifest:
@@ -165,8 +126,8 @@ def _fetch_local(source_dir: Path, paper_workdir: Workdir) -> FetchManifest:
 def _download_eprint(url: str) -> bytes:
     response = httpx.get(
         url,
-        headers={"User-Agent": DOWNLOAD_USER_AGENT},
-        timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        headers={"User-Agent": arxiv.USER_AGENT},
+        timeout=arxiv.REQUEST_TIMEOUT_SECONDS,
         follow_redirects=True,
     )
     response.raise_for_status()
@@ -239,6 +200,8 @@ def _manifest_from_src(
     *,
     source: str,
     kind: FetchKind,
+    arxiv_id: str | None = None,
+    version: int | None = None,
     url: str = "",
     payload_bytes: int = 0,
     rejected: list[str] | None = None,
@@ -265,6 +228,8 @@ def _manifest_from_src(
     return FetchManifest(
         status=status,
         source=source,
+        arxiv_id=arxiv_id,
+        version=version,
         kind=kind,
         url=url,
         payload_bytes=payload_bytes,

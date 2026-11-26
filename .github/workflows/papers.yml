@@ -3,10 +3,11 @@ name: papers
 # 手动触发的多篇全流程翻译：每篇一个 matrix 作业，在参考镜像 :env 里从 fetch 跑到 compile，
 # 整个论文目录上传为 artifact paper-<paper>，PDF 另传一份 pdf-<paper>；最后 report 作业读各篇
 # manifest，把一张表写进 run 页面的 step summary，每行链接到该篇的两个 artifact。
+# <paper> 是输入清单里的写法；论文目录名带版本号（例如 2412.19437v2），由 tongtu status --json 给出。
 #
-# ask 角色走 opencode（[provider.opencode]），work 角色走 pi 的 deepseek 服务商（model = "pi/deepseek/…"），
-# pi 从环境变量 DEEPSEEK_API_KEY 读密钥。secret 是 environment `llm` 里的 OPENCODE_API_KEY 与
-# DEEPSEEK_API_KEY。config.toml 由作业写：load_config 没有内置回退，tongtu setup 只写模板。
+# CI 没有 Claude 凭据，[modes] 的 fast 与 smart 都用 pi 的 deepseek 服务商（model = "pi/deepseek/…"），
+# pi 从环境变量 DEEPSEEK_API_KEY 读密钥，secret 在 environment `llm` 里。
+# config.toml 由作业写：load_config 没有内置回退，tongtu setup 只写模板。
 #
 # 隔离边界是容器 + 一次性 runner。Actions 的非特权容器起不来 bwrap（#88），所以 agentrun 关掉沙箱
 #（AGENTRUN_SANDBOX=off）。
@@ -23,10 +24,6 @@ on:
         description: 非空时传 --from <stage>
         type: string
         default: ""
-      no_review:
-        description: 跳过 review 阶段
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -59,13 +56,12 @@ jobs:
     runs-on: ubuntu-latest
     container: ghcr.io/yhnocoder/tongtu:env
     environment: llm
-    timeout-minutes: 30
+    timeout-minutes: 200
     strategy:
       fail-fast: false
       matrix:
         paper: ${{ fromJSON(needs.plan.outputs.papers) }}
     env:
-      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     defaults:
       run:
@@ -102,65 +98,61 @@ jobs:
         run: |
           mkdir -p "$TONGTU_HOME"
           cat > "$TONGTU_HOME/config.toml" <<'TOML'
-          [provider.opencode]
-          base_url    = "https://opencode.ai/zen/go"
-          api_key     = ""
-          api_key_env = "OPENCODE_API_KEY"
+          # 会话超时用默认的 3600 秒：translate 一次会话翻译整篇论文。作业上限 200 分钟，容得下 translate 与
+          # 两个修复会话各超时一次，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
+          [modes]
+          default = "smart"
 
-          [provider.opencode.models]
-          "deepseek-v4-pro" = "chat"
-          "deepseek-v4-flash" = "chat"
+          [modes.fast]
+          model = "pi/deepseek/deepseek-v4-pro"
 
-          [chunking]
-          chunk_tokens       = 5000
-          chunk_merge_tokens = 1500
-
-          # CI 专用的超时：作业上限 30 分钟，会话 600 秒，会话超时要落在 manifest 而不是作业被杀；要涨一起涨。
-          [roles]
-          survey_terms   = { model = "opencode/deepseek-v4-flash", effort = "low" }
-          translate      = { model = "opencode/deepseek-v4-pro" }
-          review         = { model = "pi/deepseek/deepseek-v4-pro", timeout_seconds = 600 }
-          precompile_fix = { model = "pi/deepseek/deepseek-v4-pro", timeout_seconds = 600 }
-          compile_fix    = { model = "pi/deepseek/deepseek-v4-pro", timeout_seconds = 600 }
+          [modes.smart]
+          model = "pi/deepseek/deepseek-v4-pro"
           TOML
 
       - run: uv run tongtu doctor
 
-      # 模板论文名映射到 examples/papers/ 下的目录；总时长与退出码写进工作目录的 ci.json，供 summary 作业读。
+      # 模板论文名映射到 examples/papers/ 下的目录。跑完后由 tongtu status --json 取论文目录（不带版本号的
+      # arXiv 编号解析到本地最新的版本），写进 PAPER_WORKDIR 供上传步骤用；总时长与退出码写进该目录的 ci.json，
+      # 供 report 作业读。
       - name: Run pipeline
         env:
           PAPER: ${{ matrix.paper }}
           FROM: ${{ inputs.from }}
-          NO_REVIEW: ${{ inputs.no_review }}
         run: |
           target="$PAPER"
           if [ -d "examples/papers/$PAPER" ]; then target="examples/papers/$PAPER"; fi
           args=()
           if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
-          if [ "$NO_REVIEW" = "true" ]; then args+=(--no-review); fi
           start=$(date +%s)
           code=0
           uv run tongtu run "$target" "${args[@]}" || code=$?
-          mkdir -p "$TONGTU_HOME/papers/$PAPER"
-          printf '{"paper": "%s", "seconds": %d, "exit_code": %d}\n' "$PAPER" "$(( $(date +%s) - start ))" "$code" \
-            > "$TONGTU_HOME/papers/$PAPER/ci.json"
-          cat "$TONGTU_HOME/papers/$PAPER/ci.json"
+          if snapshot=$(uv run tongtu status "$target" --json); then
+            workdir=$(printf '%s' "$snapshot" | uv run python -c 'import json, sys; print(json.load(sys.stdin)["workdir"])')
+            echo "PAPER_WORKDIR=$workdir" >> "$GITHUB_ENV"
+            mkdir -p "$workdir"
+            printf '{"paper": "%s", "seconds": %d, "exit_code": %d}\n' "$PAPER" "$(( $(date +%s) - start ))" "$code" \
+              > "$workdir/ci.json"
+            cat "$workdir/ci.json"
+          else
+            echo "tongtu status found no working directory for $target; no artifact is uploaded" >&2
+          fi
           exit "$code"
 
       # 只给一个目录，artifact 根就是论文目录本身，report 作业按 paper-<paper>/build/manifests 读。
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && env.PAPER_WORKDIR != ''
         with:
           name: paper-${{ matrix.paper }}
-          path: ${{ runner.temp }}/tongtu/papers/${{ matrix.paper }}
+          path: ${{ env.PAPER_WORKDIR }}
           if-no-files-found: ignore
           retention-days: 14
 
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && env.PAPER_WORKDIR != ''
         with:
           name: pdf-${{ matrix.paper }}
-          path: ${{ runner.temp }}/tongtu/papers/${{ matrix.paper }}/out/*.pdf
+          path: ${{ env.PAPER_WORKDIR }}/out/*.pdf
           if-no-files-found: ignore
           retention-days: 14
 

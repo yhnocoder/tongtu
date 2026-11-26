@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -11,71 +12,49 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 from rich.progress import Progress
 from typer.testing import CliRunner
 
-from tongtu import __version__, cli, validation
-from tongtu.artifacts.common import CompileReport, FixSession, Manifest
+from tongtu import __version__, cli
+from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session, StopReason
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
-from tongtu.artifacts.status import ABSENT_STATUS, ChunkCounts, PaperStatus, RunCommand, RunMarker
-from tongtu.artifacts.survey import BriefFile, ChunkRecord, Part
-from tongtu.artifacts.translate import ChunkTranslateRecord, ChunkTranslateStatus, TranslateManifest, TranslateStatus
+from tongtu.artifacts.fetch import FetchManifest, FetchStatus
+from tongtu.artifacts.status import ABSENT_STATUS, PaperStatus, RunCommand, RunMarker
+from tongtu.artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
-from tongtu.manifests import load_manifest
+from tongtu.manifests import load_manifest, write_manifest
 from tongtu.model.config import CONFIG_TEMPLATE
 from tongtu.pipeline import STAGES
-from tongtu.stages.translate import ChunkProgress, ChunkProgressState
 
+from .test_arxiv import ERROR_FEED, LATEST_FEED, VERSIONED_FEED
 from .test_pipeline import write_outputs
 
 runner = CliRunner()
 
 TABLE = """
-[provider.demo]
-base_url = "https://demo.example/v1"
-api_key_env = "DEMO_KEY"
-api = "chat"
+[modes.fast]
+model = "codex/m1"
+effort = "low"
 
-[provider.written]
-base_url = "https://written.example/v1"
-api_key = "written-key"
-api = "chat"
-
-[provider.unused]
-base_url = "https://unused.example/v1"
-api_key_env = "UNUSED_KEY"
-api = "chat"
-
-[roles]
-translate = { model = "demo/m1", effort = "low" }
-survey_terms = { model = "written/m1", effort = "low" }
-review = { model = "codex/m1", effort = "low", timeout_seconds = 60 }
-precompile_fix = { model = "claude-code/m1", effort = "low", timeout_seconds = 60 }
-compile_fix = { model = "pi/deepseek/m1", timeout_seconds = 60 }
+[modes.smart]
+model = "pi/deepseek/m1"
+timeout_seconds = 60
 """
 
 
-KEYLESS_TABLE = """
-[provider.demo]
-base_url = "https://demo.example/v1"
-api = "chat"
+SHARED_TABLE = """
+[modes]
+default = "fast"
 
-[roles]
-translate = { model = "demo/m1", effort = "low" }
-"""
+[modes.fast]
+model = "claude-code/m1"
+effort = "low"
 
-
-BROKEN_ROLE_TABLE = """
-[provider.demo]
-base_url = "https://demo.example/v1"
-api_key = "demo-key"
-api = "chat"
-
-[roles]
-translate = { model = "demo/m1", effort = "low" }
-review = { model = "ghost/m1", effort = "low", timeout_seconds = 60 }
-compile_fix = { model = "demo", timeout_seconds = 60 }
+[modes.smart]
+model = "claude-code/m1"
+effort = "high"
 """
 
 
@@ -118,6 +97,11 @@ def no_legacy_directories(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "legacy_dirs_present", lambda: [])
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "isolated-home"))
+
+
 def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     return tmp_path / "config.toml"
@@ -156,25 +140,40 @@ def test_setup_rejects_the_interactive_flag(tmp_path: Path, monkeypatch: pytest.
 def test_doctor_without_config_exits_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    fake_xelatex_version(monkeypatch, VERSION_2026)
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
     assert "tongtusetup" in output
     assert "toolchainandfontscomplete" in output
+    assert "fetch,precompileandmaskstillcan" in output
+    assert calls == [[cli.XELATEX, "--version"]]
 
 
 def test_doctor_with_unreadable_config_exits_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path(tmp_path, monkeypatch).write_text("[roles\n", encoding="utf-8")
+    config_path(tmp_path, monkeypatch).write_text("[modes\n", encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
 
 
+def test_doctor_reports_an_old_roles_config_as_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text(
+        TABLE + '\n[roles]\ntranslate = { model = "codex/m1" }\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
+    output = squeeze(result.stdout)
+    assert "[missing]config.toml" in output
+    assert "roles" in output
+    assert calls == [[cli.XELATEX, "--version"]]
+
+
 def test_doctor_missing_fonts_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     monkeypatch.setattr(cli, "FONTS_DIR", tmp_path / "no-fonts")
@@ -193,7 +192,6 @@ def test_doctor_missing_toolchain_and_config_exits_one(tmp_path: Path, monkeypat
 @pytest.mark.parametrize("tool", [name for name, _purpose in cli.TOOLCHAIN_CHECKS])
 def test_doctor_missing_one_tool_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: None if name == tool else f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
@@ -202,7 +200,6 @@ def test_doctor_missing_one_tool_exits_one(tmp_path: Path, monkeypatch: pytest.M
 
 def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
@@ -214,7 +211,6 @@ def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.
 
 def test_doctor_accepts_the_required_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
@@ -226,7 +222,6 @@ def test_doctor_accepts_the_required_texlive_year(tmp_path: Path, monkeypatch: p
 
 def test_doctor_rejects_an_older_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2022)
     result = runner.invoke(app, ["doctor"])
@@ -239,7 +234,6 @@ def test_doctor_rejects_an_older_texlive_year(tmp_path: Path, monkeypatch: pytes
 
 def test_doctor_rejects_output_without_a_texlive_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_WITHOUT_YEAR)
     result = runner.invoke(app, ["doctor"])
@@ -249,57 +243,52 @@ def test_doctor_rejects_output_without_a_texlive_year(tmp_path: Path, monkeypatc
     assert "(MiKTeX24.1)" in output
 
 
-def test_doctor_lists_only_referenced_providers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    fake_xelatex_version(monkeypatch, VERSION_2026)
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
-    output = squeeze(result.stdout)
-    assert "environmentcomplete." in output
-    assert "keydemo" in output
-    assert output.count("keywritten") == 1
-    assert "keyunused" not in output
-    assert "environmentvariableDEMO_KEY" in output
-    assert "api_keyinconfig.toml" in output
-    assert "providers,chunking,fontsandroles" in output
-
-
-def test_doctor_checks_each_referenced_runtime_once_through_agentrun(
+def test_doctor_checks_the_runtime_of_each_mode_through_agentrun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     output = squeeze(result.stdout)
-    for backend, name in (("codex", "codex/m1"), ("claude-code", "claude-code/m1"), ("pi", "pi/deepseek/m1")):
-        assert f"[ok]{name}agentrundoctor:executable/usr/bin/{backend}" in output
-        assert f"[ok]{name}agentrundoctor:login{backend}loggedin" in output
+    assert "environmentcomplete." in output
+    assert "[ok]config.toml" in output
+    for runtime, name in (("codex", "codex/m1"), ("pi", "pi/deepseek/m1")):
+        assert f"[ok]{name}agentrundoctor:executable/usr/bin/{runtime}" in output
+        assert f"[ok]{name}agentrundoctor:login{runtime}loggedin" in output
         assert f"[ok]{name}agentrundoctor:networkskipped:--networknone" in output
-    assert ["/usr/bin/agentrun", "doctor", "pi", "--json", "--model", "deepseek/m1"] in calls
-    assert sum(1 for command in calls if command[1:3] == ["doctor", "codex"]) == 1
+    assert [command[1:] for command in calls if command[1:2] == ["doctor"]] == [
+        ["doctor", "codex", "--json", "--model", "m1"],
+        ["doctor", "pi", "--json", "--model", "deepseek/m1"],
+    ]
+
+
+def test_doctor_runs_agentrun_once_for_modes_sharing_a_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text(SHARED_TABLE, encoding="utf-8")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert [command[1:] for command in calls if command[1:2] == ["doctor"]] == [
+        ["doctor", "claude-code", "--json", "--model", "m1"],
+    ]
 
 
 def test_doctor_reports_a_failed_agentrun_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026, failing={"codex": "codex login file not found"})
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
     assert "[missing]codex/m1agentrundoctor:logincodexloginfilenotfound" in output
-    assert "[ok]claude-code/m1agentrundoctor:login" in output
-    assert "codex/m1notconfigured" in output
+    assert "[ok]pi/deepseek/m1agentrundoctor:login" in output
+    assert "codex/m1notusable" in output
 
 
 def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: None if name == "agentrun" else f"/usr/bin/{name}")
     calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
@@ -311,8 +300,7 @@ def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: 
 
 
 def test_doctor_reports_agentrun_output_that_is_not_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    path.write_text('[roles]\nreview = { model = "pi", timeout_seconds = 60 }\n', encoding="utf-8")
+    config_path(tmp_path, monkeypatch).write_text(SHARED_TABLE.replace("claude-code/m1", "pi"), encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -326,42 +314,19 @@ def test_doctor_reports_agentrun_output_that_is_not_json(tmp_path: Path, monkeyp
     assert "[missing]piagentrundoctoragentrun:unexpectedargument" in squeeze(result.stdout)
 
 
-def test_doctor_reports_roles_that_do_not_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    path.write_text(BROKEN_ROLE_TABLE, encoding="utf-8")
+def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text(SHARED_TABLE.replace("claude-code/m1", "pi"), encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    fake_xelatex_version(monkeypatch, VERSION_2026)
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command == [cli.XELATEX, "--version"]:
+            return subprocess.CompletedProcess(command, 0, VERSION_2026, "")
+        return subprocess.CompletedProcess(command, 0, '[{"runtime": "pi"}]', "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
-    output = squeeze(result.stdout)
-    assert "[ok]keydemo" in output
-    assert "[missing]rolereview" in output
-    assert "providerghost" in output
-    assert "[missing]rolecompile_fix" in output
-    assert "backend/model" in output
-    assert "rolereview,rolecompile_fixnotconfigured" in output
-
-
-def test_doctor_reports_missing_key_as_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    written_config(tmp_path, monkeypatch)
-    monkeypatch.delenv("DEMO_KEY", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    fake_xelatex_version(monkeypatch, VERSION_2026)
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
-    output = squeeze(result.stdout)
-    assert "toolchainandfontscomplete" in output
-    assert "keydemo" in output
-
-
-def test_doctor_keeps_table_names_in_the_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    path.write_text(KEYLESS_TABLE, encoding="utf-8")
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    fake_xelatex_version(monkeypatch, VERSION_2026)
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
-    assert "[provider.demo]" in result.stdout
+    assert "[missing]piagentrundoctoragentrundoctorprintednochecklist" in squeeze(result.stdout)
 
 
 def note_lines(output: str) -> list[str]:
@@ -372,7 +337,6 @@ def test_doctor_notes_legacy_directories_without_changing_the_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     legacy = [tmp_path / "legacy-config" / "tongtu", tmp_path / "legacy-share" / "tongtu"]
@@ -390,7 +354,6 @@ def test_doctor_notes_legacy_directories_without_changing_the_exit_code(
 
 def test_doctor_without_legacy_directories_prints_no_note(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     monkeypatch.setattr(cli, "legacy_dirs_present", lambda: [])
@@ -403,7 +366,6 @@ def test_doctor_does_not_ask_to_delete_a_legacy_directory_in_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written_config(tmp_path, monkeypatch)
-    monkeypatch.setenv("DEMO_KEY", "demo-key")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     fake_xelatex_version(monkeypatch, VERSION_2026)
     monkeypatch.setattr(cli, "legacy_dirs_present", lambda: [tmp_path])
@@ -462,7 +424,7 @@ def wire_entries(
 def test_run_from_scratch_runs_all_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper")])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
     assert result.exit_code == 0
     assert calls == list(STAGES)
     header = [line for line in result.stdout.splitlines() if "summary" in line and "elapsed" in line]
@@ -473,19 +435,32 @@ def test_run_resumes_from_the_first_absent_output(tmp_path: Path, monkeypatch: p
     workdir = write_outputs(tmp_path, "fetch", "precompile")
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
-    assert calls == ["mask", "survey", "translate", "review", "compile"]
+    assert calls == ["mask", "translate", "compile"]
     assert "resumingfrommask" in squeeze(result.stdout)
+
+
+def test_run_resumes_at_a_failed_stage_whose_outputs_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    write_manifest(workdir.manifest_path("translate"), Manifest(status="translate_failed"))
+    calls: list[str] = []
+    wire_entries(monkeypatch, calls)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert calls == ["translate", "compile"]
+    assert (workdir.sandbox("translate") / "zh.tex").is_file()
+    assert workdir.zh_pdf.is_file()
 
 
 def test_run_with_all_outputs_runs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = write_outputs(tmp_path, *STAGES)
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert calls == []
+    assert "allfivestageshavefinishedok" in squeeze(result.stdout)
     assert "--from" in result.stdout
 
 
@@ -493,21 +468,25 @@ def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch
     workdir = write_outputs(tmp_path, *STAGES)
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path), "--from", "review"])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path), "--from", "translate"])
     assert result.exit_code == 0
-    assert calls == ["review", "compile"]
-    assert (workdir.build / "translated" / "c000.tex").is_file()
-    assert workdir.manifest_path("translate").is_file()
-    assert not (workdir.build / "reviewed").exists()
+    assert calls == ["translate", "compile"]
+    assert workdir.masked.is_file()
+    assert workdir.manifest_path("mask").is_file()
+    assert not workdir.sandbox("translate").exists()
+    assert not workdir.translated.exists()
     assert not workdir.zh_pdf.exists()
-    assert not workdir.manifest_path("review").exists()
+    assert not workdir.manifest_path("translate").exists()
     assert not workdir.manifest_path("compile").exists()
+    notes_file = load_manifest(workdir.notes, NotesFile)
+    assert notes_file is not None
+    assert [note.session for note in notes_file.notes] == ["precompile_fix"]
 
 
 def test_run_stops_at_the_first_failed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     wire_entries(monkeypatch, calls, statuses={"mask": "mask_failed"})
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper")])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
     assert result.exit_code == 1
     assert calls == ["fetch", "precompile", "mask"]
     assert "mask_failed" in result.stdout
@@ -523,45 +502,97 @@ def test_run_passes_the_options_to_the_stage_entry(tmp_path: Path, monkeypatch: 
         app,
         [
             "run",
-            "https://arxiv.org/abs/2002.05202",
+            "https://arxiv.org/abs/2002.05202v1",
             "--workdir",
             str(tmp_path / "paper"),
             "--glossary",
             "a.json",
             "--glossary",
             "b.json",
-            "--jobs",
-            "9",
-            "--no-terms",
-            "--no-review",
+            "--mode",
+            "fast",
         ],
     )
     assert result.exit_code == 0
     options = captured[0]
-    assert options.paper.arxiv_id == "2002.05202"
+    assert (options.paper.arxiv_id, options.paper.version) == ("2002.05202", 1)
+    assert options.meta is None
     assert options.workdir.path == tmp_path / "paper"
     assert options.glossary == (Path("a.json"), Path("b.json"))
-    assert options.jobs == 9
-    assert options.no_terms is True
-    assert options.no_review is True
+    assert options.mode == "fast"
     assert all(entry is options for entry in captured)
 
 
-@pytest.mark.parametrize("option", ["--ask-model", "--ask-effort", "--work-model", "--work-effort"])
-def test_run_rejects_the_removed_model_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: str) -> None:
+def test_run_prints_the_workdir_and_the_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    calls: list[str] = []
+    captured: list[RunOptions] = []
+    wire_entries(monkeypatch, calls, captured=captured)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper"), "--mode", "fast"])
+    assert result.exit_code == 0
+    lines = result.stdout.splitlines()
+    assert lines[0] == f"workdir {tmp_path / 'paper'}"
+    assert lines[1] == "mode    fast  codex/m1  low"
+    assert captured[0].mode == "fast"
+
+
+def test_run_takes_the_default_mode_of_the_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text(SHARED_TABLE, encoding="utf-8")
+    calls: list[str] = []
+    captured: list[RunOptions] = []
+    wire_entries(monkeypatch, calls, captured=captured)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[1] == "mode    fast  claude-code/m1  low"
+    assert captured[0].mode == "fast"
+
+
+def test_run_without_effort_prints_only_the_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    wire_entries(monkeypatch, [])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[1] == "mode    smart  pi/deepseek/m1"
+
+
+def test_run_without_a_config_uses_smart_and_says_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    calls: list[str] = []
+    captured: list[RunOptions] = []
+    wire_entries(monkeypatch, calls, captured=captured)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
+    assert result.exit_code == 0
+    mode_line = squeeze(result.stdout.splitlines()[1])
+    assert mode_line.startswith("modesmart(cannotreadconfigfile")
+    assert calls == list(STAGES)
+    assert captured[0].mode == "smart"
+
+
+def test_run_rejects_an_unknown_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper"), option, "a/b"])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper"), "--mode", "turbo"])
     assert result.exit_code == 2
     assert calls == []
 
 
-@pytest.mark.parametrize("option", ["--ask-model", "--work-model"])
-def test_stage_rejects_the_removed_model_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: str) -> None:
+@pytest.mark.parametrize(
+    "option", [["--ask-model", "a/b"], ["--work-effort", "low"], ["--jobs", "4"], ["--no-terms"], ["--no-review"]]
+)
+def test_run_rejects_the_removed_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: list[str]) -> None:
+    calls: list[str] = []
+    wire_entries(monkeypatch, calls)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper"), *option])
+    assert result.exit_code == 2
+    assert calls == []
+
+
+@pytest.mark.parametrize("option", [["--ask-model", "a/b"], ["--jobs", "4"], ["--no-terms"]])
+def test_stage_rejects_the_removed_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: list[str]) -> None:
     workdir = write_outputs(tmp_path, "fetch", "precompile")
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
-    result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path), option, "a/b"])
+    result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path), *option])
     assert result.exit_code == 2
     assert calls == []
 
@@ -572,14 +603,14 @@ def test_run_rejects_an_invalid_paper_argument(tmp_path: Path) -> None:
 
 
 def test_run_rejects_an_unknown_from_stage(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(tmp_path / "paper"), "--from", "flatten"])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper"), "--from", "flatten"])
     assert result.exit_code == 2
 
 
 def test_stage_without_arguments_lists_the_stage_order() -> None:
     result = runner.invoke(app, ["stage"])
     assert result.exit_code == 0
-    assert "fetch → precompile → mask → survey → translate → review → compile" in result.stdout
+    assert "fetch → precompile → mask → translate → compile" in result.stdout
 
 
 def test_stage_requires_the_paper_argument() -> None:
@@ -604,6 +635,30 @@ def test_stage_runs_only_the_named_stage(tmp_path: Path, monkeypatch: pytest.Mon
     assert result.exit_code == 0
     assert calls == ["mask"]
     assert [line for line in result.stdout.splitlines() if "summary" in line and "elapsed" in line]
+
+
+def test_stage_cleans_its_own_outputs_before_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    seen: dict = {}
+
+    def entry(options: RunOptions, display: cli.StageDisplay) -> Manifest:
+        seen.update(
+            session_dir=options.workdir.sandbox("translate").exists(),
+            translated=options.workdir.translated.exists(),
+            manifest=options.workdir.manifest_path("translate").exists(),
+            mode=options.mode,
+        )
+        return Manifest(status="ok")
+
+    monkeypatch.setitem(cli.STAGE_ENTRIES, "translate", entry)
+    result = runner.invoke(app, ["stage", "translate", "2002.05202", "--workdir", str(workdir.path), "--mode", "fast"])
+    assert result.exit_code == 0
+    assert seen == {"session_dir": False, "translated": False, "manifest": False, "mode": "fast"}
+    assert workdir.zh_pdf.is_file()
+    assert workdir.manifest_path("compile").is_file()
+    notes_file = load_manifest(workdir.notes, NotesFile)
+    assert notes_file is not None
+    assert [note.session for note in notes_file.notes] == ["precompile_fix", "compile_fix"]
 
 
 def test_stage_exits_one_when_the_stage_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -633,11 +688,12 @@ def test_run_keeps_the_run_marker_while_stages_run(tmp_path: Path, monkeypatch: 
     wire_marker_probe(monkeypatch, seen)
     workdir = cli.Workdir(tmp_path / "paper")
     previous = signal.getsignal(signal.SIGTERM)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert len(seen) == len(STAGES)
     assert all(marker is not None and marker.pid == os.getpid() for marker in seen)
     assert all(marker is not None and marker.command is RunCommand.RUN for marker in seen)
+    assert all(marker is not None and marker.mode == "smart" for marker in seen)
     assert not workdir.run_marker.exists()
     assert signal.getsignal(signal.SIGTERM) == previous
 
@@ -648,7 +704,7 @@ def test_stage_keeps_the_run_marker_while_the_stage_runs(tmp_path: Path, monkeyp
     wire_marker_probe(monkeypatch, seen)
     result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
-    assert [marker.command if marker else None for marker in seen] == [RunCommand.STAGE]
+    assert [(marker.command, marker.mode) if marker else None for marker in seen] == [(RunCommand.STAGE, "smart")]
     assert not workdir.run_marker.exists()
 
 
@@ -662,7 +718,7 @@ def test_run_removes_the_run_marker_after_a_failed_stage(tmp_path: Path, monkeyp
     calls: list[str] = []
     wire_entries(monkeypatch, calls, statuses={"mask": "mask_failed"})
     workdir = cli.Workdir(tmp_path / "paper")
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 1
     assert not workdir.run_marker.exists()
 
@@ -675,7 +731,7 @@ def test_run_removes_the_run_marker_when_interrupted(
     wire_marker_probe(monkeypatch, seen, failure)
     workdir = cli.Workdir(tmp_path / "paper")
     previous = signal.getsignal(signal.SIGTERM)
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code != 0
     assert len(seen) == 1 and seen[0] is not None
     assert not workdir.run_marker.exists()
@@ -683,7 +739,7 @@ def test_run_removes_the_run_marker_when_interrupted(
 
 
 def test_run_leaves_a_marker_written_by_another_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    other = RunMarker(pid=os.getpid() + 1, started_at=datetime.now(UTC), command=RunCommand.RUN)
+    other = RunMarker(pid=os.getpid() + 1, started_at=datetime.now(UTC), command=RunCommand.RUN, mode="fast")
 
     def entry(options: RunOptions, display: cli.StageDisplay) -> Manifest:
         options.workdir.run_marker.write_text(other.model_dump_json(), encoding="utf-8")
@@ -692,7 +748,7 @@ def test_run_leaves_a_marker_written_by_another_process(tmp_path: Path, monkeypa
     for name in STAGES:
         monkeypatch.setitem(cli.STAGE_ENTRIES, name, entry)
     workdir = cli.Workdir(tmp_path / "paper")
-    result = runner.invoke(app, ["run", "2002.05202", "--workdir", str(workdir.path)])
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert load_manifest(workdir.run_marker, RunMarker) == other
 
@@ -712,7 +768,7 @@ def entry(options, display):
 
 for name in list(cli.STAGE_ENTRIES):
     cli.STAGE_ENTRIES[name] = entry
-cli.app(["run", "2002.05202", "--workdir", sys.argv[1]])
+cli.app(["run", "2002.05202v1", "--workdir", sys.argv[1]])
 """
 
 
@@ -753,17 +809,22 @@ def test_status_json_treats_a_killed_run_as_not_running(tmp_path: Path) -> None:
     assert (snapshot.running, snapshot.pid) == (False, None)
 
 
+STARTED_AT = datetime(2026, 11, 25, 8, 30, tzinfo=UTC)
+
+
 def write_run_marker(workdir: cli.Workdir, pid: int) -> None:
     workdir.path.mkdir(parents=True, exist_ok=True)
-    marker = RunMarker(pid=pid, started_at=datetime.now(UTC), command=RunCommand.STAGE)
+    marker = RunMarker(pid=pid, started_at=STARTED_AT, command=RunCommand.STAGE, mode="fast")
     workdir.run_marker.write_text(marker.model_dump_json(), encoding="utf-8")
 
 
 def test_status_json_reports_the_live_pid_of_the_run_marker(tmp_path: Path) -> None:
     workdir = cli.Workdir(tmp_path / "paper")
     write_run_marker(workdir, os.getpid())
+    write_manifest(workdir.manifest_path("translate"), TranslateManifest(status=TranslateStatus.OK, mode="smart"))
     snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
     assert (snapshot.running, snapshot.pid) == (True, os.getpid())
+    assert (snapshot.started_at, snapshot.mode) == (STARTED_AT, "fast")
     assert workdir.run_marker.exists()
 
 
@@ -773,7 +834,7 @@ def test_status_json_ignores_a_run_marker_whose_process_is_gone(tmp_path: Path) 
     workdir = cli.Workdir(tmp_path / "paper")
     write_run_marker(workdir, finished.pid)
     snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
-    assert (snapshot.running, snapshot.pid) == (False, None)
+    assert (snapshot.running, snapshot.pid, snapshot.started_at, snapshot.mode) == (False, None, None, None)
 
 
 @pytest.mark.parametrize("content", ["{", '{"pid": 0, "started_at": "2026-01-01T00:00:00Z", "command": "run"}'])
@@ -830,9 +891,8 @@ def test_status_json_of_an_absent_workdir_marks_every_stage_absent(tmp_path: Pat
         assert state.status == ABSENT_STATUS
         assert not state.outputs_present
         assert (state.message, state.warnings, state.manifest) == ("", [], None)
-    assert snapshot.translate_chunks is None
-    assert snapshot.pdf is None
-    assert (snapshot.running, snapshot.pid) == (False, None)
+    assert (snapshot.pdf, snapshot.meta, snapshot.glossary, snapshot.notes) == (None, None, None, None)
+    assert (snapshot.running, snapshot.pid, snapshot.started_at, snapshot.mode) == (False, None, None, None)
     assert not target.exists()
 
 
@@ -842,7 +902,7 @@ def test_status_json_reports_each_stage_from_its_manifest(tmp_path: Path) -> Non
         Manifest(status="mask_failed", warnings=["警告一条"], message="哨兵已存在").model_dump_json(),
         encoding="utf-8",
     )
-    workdir.manifest_path("survey").write_text("{", encoding="utf-8")
+    workdir.manifest_path("translate").write_text("{", encoding="utf-8")
     workdir.precompile_pdf.unlink()
     for path in (workdir.zh_tex, workdir.zh_pdf):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -857,34 +917,34 @@ def test_status_json_reports_each_stage_from_its_manifest(tmp_path: Path) -> Non
     assert states["mask"].warnings == ["警告一条"]
     assert not states["mask"].outputs_present
     assert states["mask"].manifest == workdir.manifest_path("mask")
-    assert states["survey"].status == ABSENT_STATUS
-    assert states["survey"].manifest == workdir.manifest_path("survey")
-    for name in ("translate", "review", "compile"):
-        assert (states[name].status, states[name].manifest) == (ABSENT_STATUS, None)
+    assert states["translate"].status == ABSENT_STATUS
+    assert states["translate"].manifest == workdir.manifest_path("translate")
+    assert (states["compile"].status, states["compile"].manifest) == (ABSENT_STATUS, None)
     assert [name for name, state in states.items() if state.outputs_present] == ["fetch", "compile"]
     assert snapshot.pdf == workdir.zh_pdf
 
 
-def test_status_json_counts_the_translatable_chunks(tmp_path: Path) -> None:
+def test_status_json_takes_the_mode_of_the_translate_manifest(tmp_path: Path) -> None:
     workdir = write_outputs(tmp_path, "fetch", "precompile", "mask")
-    records = [
-        ChunkRecord(id=chunk_id, start=0, end=1, part=Part.BODY, tokens=1, paragraphs=1, translatable_chars=chars)
-        for chunk_id, chars in (("c000", 5), ("c001", 0), ("c002", 7))
-    ]
-    workdir.brief.write_text(BriefFile(chunks=records).model_dump_json(), encoding="utf-8")
-    assert status_json("2002.05202", "--workdir", str(workdir.path)).translate_chunks == ChunkCounts(total=2, done=0)
-    manifest = TranslateManifest(
-        status=TranslateStatus.OK,
-        chunks={
-            "c000": ChunkTranslateRecord(status=ChunkTranslateStatus.TRANSLATED, attempts=1),
-            "c001": ChunkTranslateRecord(status=ChunkTranslateStatus.SKIPPED, attempts=0),
-            "c002": ChunkTranslateRecord(status=ChunkTranslateStatus.FALLBACK, attempts=2),
-        },
+    write_manifest(
+        workdir.manifest_path("translate"), TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, mode="fast")
     )
-    workdir.manifest_path("translate").write_text(manifest.model_dump_json(), encoding="utf-8")
     snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
-    assert snapshot.translate_chunks == ChunkCounts(total=2, done=2)
-    assert next(state for state in snapshot.stages if state.name == "translate").status == "ok"
+    assert (snapshot.running, snapshot.mode) == (False, "fast")
+    assert next(state for state in snapshot.stages if state.name == "translate").status == "translate_failed"
+
+
+def test_status_json_gives_the_four_output_files_once_they_exist(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    for path in (workdir.meta, workdir.paper_glossary):
+        path.write_text("{}", encoding="utf-8")
+    snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
+    assert (snapshot.pdf, snapshot.meta, snapshot.glossary, snapshot.notes) == (
+        workdir.zh_pdf,
+        workdir.meta,
+        workdir.paper_glossary,
+        workdir.notes,
+    )
 
 
 def test_status_json_gives_the_pdf_once_it_exists(tmp_path: Path) -> None:
@@ -920,27 +980,44 @@ def test_status_json_keeps_the_usage_error_exit_and_stdout_empty(tmp_path: Path)
     assert result.stderr
 
 
-def test_validate_exits_zero_when_every_layer_passes(tmp_path: Path) -> None:
-    src = tmp_path / "c000.tex"
+VALIDATE_SOURCE = "We use the large language model with $x$ layers in every experiment.\n"
+
+
+def test_validate_exits_zero_when_the_check_passes(tmp_path: Path) -> None:
+    src = tmp_path / "en.tex"
     dst = tmp_path / "zh.tex"
-    src.write_text("We use $x$ here.\n", encoding="utf-8")
-    dst.write_text("我们这里用 $x$。\n", encoding="utf-8")
+    src.write_text(VALIDATE_SOURCE, encoding="utf-8")
+    dst.write_text("每个实验都使用 $x$ 层的大语言模型。\n", encoding="utf-8")
     result = runner.invoke(app, ["validate", str(src), str(dst)])
     assert result.exit_code == 0
-    output = squeeze(result.stdout)
-    assert all(f"[pass]{layer}" in output for layer in validation.CHECK_NAMES)
+    assert result.stdout.splitlines() == ["translated paragraphs 1/1", "check passed"]
 
 
-def test_validate_exits_one_when_a_layer_fails(tmp_path: Path) -> None:
-    src = tmp_path / "c000.tex"
+def test_validate_exits_one_when_the_check_reports_a_problem(tmp_path: Path) -> None:
+    src = tmp_path / "en.tex"
     dst = tmp_path / "zh.tex"
-    src.write_text("We use $x$ here.\n", encoding="utf-8")
-    dst.write_text("我们这里用 x。\n", encoding="utf-8")
+    src.write_text(VALIDATE_SOURCE, encoding="utf-8")
+    dst.write_text("每个实验都使用 x 层的大语言模型。\n", encoding="utf-8")
     result = runner.invoke(app, ["validate", str(src), str(dst)])
     assert result.exit_code == 1
-    output = squeeze(result.stdout)
-    assert "[fail]braces_and_math" in output
-    assert "[pass]placeholders" in output
+    assert "[structure] paragraph starting at line 1 of the translation, braces_and_math" in result.stdout
+    assert "[formula] " in result.stdout
+
+
+def test_validate_passes_repeated_glossaries_in_order(tmp_path: Path) -> None:
+    src = tmp_path / "en.tex"
+    dst = tmp_path / "zh.tex"
+    src.write_text(VALIDATE_SOURCE, encoding="utf-8")
+    dst.write_text("每个实验都使用 $x$ 层的大语言模型。\n", encoding="utf-8")
+    wrong = tmp_path / "wrong.json"
+    wrong.write_text('{"terms": {"large language model": "巨型模型"}}', encoding="utf-8")
+    right = tmp_path / "right.json"
+    right.write_text('{"terms": {"large language model": "大语言模型"}}', encoding="utf-8")
+    failing = runner.invoke(app, ["validate", str(src), str(dst), "--glossary", str(right), "--glossary", str(wrong)])
+    assert failing.exit_code == 1
+    assert "[glossary] " in failing.stdout
+    passing = runner.invoke(app, ["validate", str(src), str(dst), "--glossary", str(wrong), "--glossary", str(right)])
+    assert passing.exit_code == 0
 
 
 def test_version_flag() -> None:
@@ -951,28 +1028,29 @@ def test_version_flag() -> None:
 
 def test_link_and_id_resolve_to_the_same_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    make_paper_dirs(tmp_path, "2002.05202v1")
     first_lines = []
     for paper in ("2002.05202", "https://arxiv.org/abs/2002.05202"):
         result = runner.invoke(app, ["status", paper])
         assert result.exit_code == 0
         first_lines.append(result.stdout.splitlines()[0])
     assert first_lines[0] == first_lines[1]
-    assert str(tmp_path / "papers" / "2002.05202") in first_lines[0]
+    assert str(tmp_path / "papers" / "2002.05202v1") in first_lines[0]
 
 
 def test_status_dev_uses_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
-    result = runner.invoke(app, ["status", "2002.05202", "--dev"], env={"TONGTU_HOME": None})
+    result = runner.invoke(app, ["status", "2002.05202v1", "--dev"], env={"TONGTU_HOME": None})
     assert result.exit_code == 0
-    assert str(tmp_path / "dev" / "papers" / "2002.05202") in result.stdout.splitlines()[0]
+    assert str(tmp_path / "dev" / "papers" / "2002.05202v1") in result.stdout.splitlines()[0]
 
 
 def test_dev_wins_over_tongtu_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
-    result = runner.invoke(app, ["status", "2002.05202", "--dev"], env={"TONGTU_HOME": str(tmp_path / "home")})
+    result = runner.invoke(app, ["status", "2002.05202v1", "--dev"], env={"TONGTU_HOME": str(tmp_path / "home")})
     assert result.exit_code == 0
     first_line = result.stdout.splitlines()[0]
-    assert str(tmp_path / "dev" / "papers" / "2002.05202") in first_line
+    assert str(tmp_path / "dev" / "papers" / "2002.05202v1") in first_line
     assert str(tmp_path / "home") not in first_line
 
 
@@ -1014,85 +1092,24 @@ def test_stage_display_action_pads_a_bare_status_to_the_same_width(terminal_cons
     assert len(description) == cli.NAME_WIDTH + cli.STATUS_WIDTH + cli.SUMMARY_WIDTH
 
 
-def test_stage_display_action_prints_a_line_when_not_a_terminal(
+def test_stage_display_prints_steps_but_not_session_actions_when_not_a_terminal(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: False))
     progress = Progress(disable=True)
     task = progress.add_task("precompile", total=None)
     display = cli.StageDisplay(progress=progress, task=task, name="precompile")
+    display.action("compiling", "main.tex")
+    display.action("fix session", "running")
     display.action("fix session", "Read: main.tex")
-    display.action("verifying")
-    out = capsys.readouterr().out
-    assert "    fix session: Read: main.tex" in out
-    assert "    verifying: " in out
+    display.action("fix session", "Edit: main.tex")
+    display.action("verifying", "main.tex")
+    assert capsys.readouterr().out.splitlines() == [
+        "    compiling: main.tex",
+        "    fix session: running",
+        "    verifying: main.tex",
+    ]
     assert progress.tasks[0].description == "precompile"
-
-
-def test_stage_display_chunks_prints_a_line_when_not_a_terminal(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(type(cli.console), "is_terminal", property(lambda self: False))
-    progress = Progress(disable=True)
-    task = progress.add_task("translate", total=None, chunks="", tokens="", chunk_progress=())
-    cli.StageDisplay(progress=progress, task=task, name="translate").chunks(CHUNKS)
-    assert "    chunks 2/4, 0.0k/0.1k tok" in capsys.readouterr().out
-    assert progress.tasks[0].fields["chunks"] == ""
-
-
-CHUNKS = (
-    ChunkProgress("c000", 10, ChunkProgressState.DONE),
-    ChunkProgress("c001", 1, ChunkProgressState.WARNING),
-    ChunkProgress("c002", 30, ChunkProgressState.RUNNING),
-    ChunkProgress("c003", 20, ChunkProgressState.PENDING),
-)
-
-
-def spans(text) -> list[tuple[str, str]]:
-    return [(text.plain[span.start : span.end], str(span.style)) for span in text.spans]
-
-
-@pytest.mark.parametrize("width", [20, 45, 85])
-def test_chunk_line_splits_the_width_by_tokens(width: int) -> None:
-    text = cli._chunk_line(CHUNKS, width, False)
-    assert len(text.plain) == width
-    parts = spans(text)
-    assert [style for _run, style in parts] == ["green", "yellow", "cyan", "dim"]
-    assert [run[0] for run, _style in parts] == ["━", "━", "─", "─"]
-    lengths = [len(run) for run, _style in parts]
-    assert lengths[1] == 1
-    assert lengths[2] > lengths[3] > lengths[0] > lengths[1]
-    assert sum(lengths) == width
-
-
-def test_chunk_line_shares_cells_taking_the_worst_state() -> None:
-    many = tuple(
-        ChunkProgress(f"c{index:03d}", 1, ChunkProgressState.WARNING if index == 5 else ChunkProgressState.DONE)
-        for index in range(50)
-    )
-    text = cli._chunk_line(many, 20, False)
-    assert text.plain == "━" * 20
-    assert [style for _run, style in spans(text)] == ["green"] * 2 + ["yellow"] + ["green"] * 17
-
-
-def test_chunk_line_ascii_fallback() -> None:
-    assert cli._chunk_line(CHUNKS, 20, True).plain == "===!~~~~~~~~~~------"
-
-
-def test_chunk_line_is_empty_below_the_minimum_width() -> None:
-    assert cli._chunk_line(CHUNKS, cli.MIN_CHUNK_LINE_WIDTH - 1, False).plain == ""
-
-
-def test_stage_display_chunks_counts_finished_tokens(terminal_console: None) -> None:
-    progress = Progress(disable=True)
-    task = progress.add_task("translate", total=None, chunks="", tokens="", chunk_progress=())
-    cli.StageDisplay(progress=progress, task=task, name="translate").chunks(CHUNKS)
-    fields = progress.tasks[0].fields
-    assert progress.tasks[0].completed == 11
-    assert progress.tasks[0].total == 61
-    assert fields["chunks"] == "2/4"
-    assert fields["tokens"] == "0.0k/0.1k tok"
-    assert fields["chunk_progress"] == CHUNKS
 
 
 def test_every_stage_has_an_entry() -> None:
@@ -1111,7 +1128,7 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
         duration_seconds=1.0,
     )
     baseline = report.model_copy(update={"pages": 5})
-    session = FixSession(stop_reason="finished", model="rt/m", duration_seconds=1.0)
+    session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
     assert cli.stage_summary(CompileManifest(status=CompileStatus.OK)) == ""
     assert cli.stage_summary(CompileManifest(status=CompileStatus.OK, report=report)) == "6 pages"
     assert (
@@ -1126,52 +1143,448 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
     )
 
 
-def test_compile_entry_passes_the_workdir_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_translate_summary_counts_paragraphs_and_new_terms() -> None:
+    session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
+    manifest = TranslateManifest(
+        status=TranslateStatus.OK,
+        mode="smart",
+        session=session,
+        paragraphs_total=170,
+        paragraphs_translated=164,
+        glossary=GlossaryCounts(user=2, learned=5, added=31),
+    )
+    assert cli.stage_summary(manifest) == "164 paragraphs, 31 new terms"
+    reused = manifest.model_copy(update={"session": None})
+    assert cli.stage_summary(reused) == "164 paragraphs, 31 new terms, reused existing translation"
+
+
+@pytest.mark.parametrize(("name", "module"), [("precompile", "precompile"), ("compile", "compile")])
+def test_fix_stage_entries_pass_the_workdir_mode_and_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, module: str
+) -> None:
     captured: dict = {}
 
-    def fake_run(workdir, *, report):
-        captured.update(workdir=workdir, report=report)
+    def fake_run(workdir, *, mode, report):
+        captured.update(workdir=workdir, mode=mode, report=report)
         return CompileManifest(status=CompileStatus.OK)
 
-    monkeypatch.setattr(cli.compile, "run", fake_run)
-    workdir = write_outputs(tmp_path, *STAGES[:-1])
-    result = runner.invoke(app, ["stage", "compile", "2002.05202", "--workdir", str(workdir.path)])
+    monkeypatch.setattr(getattr(cli, module), "run", fake_run)
+    workdir = write_outputs(tmp_path, *STAGES[: STAGES.index(name)])
+    result = runner.invoke(app, ["stage", name, "2002.05202", "--workdir", str(workdir.path), "--mode", "fast"])
     assert result.exit_code == 0
     assert captured["workdir"].path == workdir.path
+    assert captured["mode"] == "fast"
     assert callable(captured["report"])
 
 
-def test_doctor_reports_agentrun_json_that_is_not_a_check_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    path.write_text('[roles]\nreview = { model = "pi", timeout_seconds = 60 }\n', encoding="utf-8")
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+def test_translate_entry_passes_the_mode_glossaries_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
 
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command == [cli.XELATEX, "--version"]:
-            return subprocess.CompletedProcess(command, 0, VERSION_2026, "")
-        return subprocess.CompletedProcess(command, 0, '[{"runtime": "pi"}]', "")
+    def fake_run(workdir, *, mode, glossary_files, report):
+        captured.update(workdir=workdir, mode=mode, glossary_files=glossary_files, report=report)
+        return TranslateManifest(status=TranslateStatus.OK, mode=mode)
 
-    monkeypatch.setattr(cli.subprocess, "run", run)
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
-    assert "[missing]piagentrundoctoragentrundoctorprintednochecklist" in squeeze(result.stdout)
-
-
-def test_doctor_checks_each_runtime_and_model_pair_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    path.write_text(
-        "[roles]\n"
-        'review = { model = "pi/a/m1", timeout_seconds = 60 }\n'
-        'compile_fix = { model = "pi/a/m1", timeout_seconds = 60 }\n'
-        'precompile_fix = { model = "pi/b/m2", timeout_seconds = 60 }\n',
-        encoding="utf-8",
+    monkeypatch.setattr(cli.translate, "run", fake_run)
+    workdir = write_outputs(tmp_path, "fetch", "precompile", "mask")
+    result = runner.invoke(
+        app, ["stage", "translate", "2002.05202", "--workdir", str(workdir.path), "--glossary", "a.json"]
     )
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
-    result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
-    doctor_calls = [command[1:] for command in calls if command[1:2] == ["doctor"]]
-    assert doctor_calls == [
-        ["doctor", "pi", "--json", "--model", "a/m1"],
-        ["doctor", "pi", "--json", "--model", "b/m2"],
-    ]
+    assert captured["workdir"].path == workdir.path
+    assert (captured["mode"], captured["glossary_files"]) == ("smart", (Path("a.json"),))
+    assert callable(captured["report"])
+
+
+LATEST_API_URL = "https://export.arxiv.org/api/query?id_list=2106.04426"
+
+
+def wire_api(monkeypatch: pytest.MonkeyPatch, feed: str = LATEST_FEED, status_code: int = 200) -> list[str]:
+    urls: list[str] = []
+
+    def get(url: str, **kwargs: object) -> httpx.Response:
+        urls.append(url)
+        return httpx.Response(status_code, text=feed, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", get)
+    return urls
+
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def run_with_home(
+    home: Path, monkeypatch: pytest.MonkeyPatch, *arguments: str
+) -> tuple[object, list[RunOptions], list[str]]:
+    calls: list[str] = []
+    captured: list[RunOptions] = []
+    wire_entries(monkeypatch, calls, captured=captured)
+    result = runner.invoke(app, list(arguments), env={"TONGTU_HOME": str(home)})
+    return result, captured, calls
+
+
+def make_paper_dirs(home: Path, *names: str) -> None:
+    for name in names:
+        (home / "papers" / name).mkdir(parents=True)
+
+
+def write_fetch_manifest(workdir: Path, arxiv_id: str | None, version: int | None, source: str = "x") -> None:
+    manifest = FetchManifest(status=FetchStatus.OK, source=source, arxiv_id=arxiv_id, version=version)
+    path = cli.Workdir(workdir).manifest_path("fetch")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(manifest.model_dump_json(), encoding="utf-8")
+
+
+def test_run_with_a_version_uses_it_without_asking_arxiv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426v3")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "https://arxiv.org/abs/2106.04426v2")
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v2"
+    assert (captured[0].paper.arxiv_id, captured[0].paper.version, captured[0].meta) == ("2106.04426", 2, None)
+
+
+def test_run_without_a_version_takes_the_highest_local_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426v1", "2106.04426v2", "2106.04426")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v2"
+    assert (captured[0].paper.version, captured[0].meta) == (2, None)
+
+
+def test_run_without_a_local_version_asks_arxiv_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+    assert captured[0].paper.version == 3
+    assert captured[0].meta is not None and captured[0].meta.version == 3
+    assert calls == list(STAGES)
+
+
+def test_run_ignores_the_unversioned_directory_of_v01(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+
+
+@pytest.mark.parametrize("local", ["2106.04426v1", "2106.04426v3"])
+def test_run_latest_asks_arxiv_even_with_a_local_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local: str
+) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, local)
+    (tmp_path / "papers" / local / "kept").write_text("x", encoding="utf-8")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426", "--latest")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+    assert captured[0].meta is not None
+    assert (tmp_path / "papers" / local / "kept").is_file()
+
+
+def test_run_latest_with_a_version_is_a_usage_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "run", "2106.04426v2", "--latest")
+    assert result.exit_code == 2
+    assert (urls, calls) == ([], [])
+    assert not (tmp_path / "papers").exists()
+
+
+@pytest.mark.parametrize(
+    ("feed", "status_code"), [(ERROR_FEED, 200), ("<feed xmlns='http://www.w3.org/2005/Atom'/>", 200), ("", 503)]
+)
+def test_run_whose_version_query_fails_exits_one_without_a_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feed: str, status_code: int
+) -> None:
+    urls = wire_api(monkeypatch, feed, status_code)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "run", "2106.04426")
+    assert result.exit_code == 1
+    assert urls == [LATEST_API_URL]
+    assert calls == []
+    assert "2106.04426" in result.stderr
+    assert not (tmp_path / "papers").exists()
+
+
+def test_run_with_workdir_takes_the_version_of_its_fetch_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    urls = wire_api(monkeypatch)
+    workdir = tmp_path / "chosen"
+    write_fetch_manifest(workdir, "2106.04426", 2)
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426", "--workdir", str(workdir))
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == workdir
+    assert (captured[0].paper.version, captured[0].meta) == (2, None)
+
+
+@pytest.mark.parametrize("manifest", [None, ("2106.04426", None)])
+def test_run_with_workdir_without_a_fetched_version_asks_arxiv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest: tuple[str, int | None] | None
+) -> None:
+    urls = wire_api(monkeypatch)
+    workdir = tmp_path / "chosen"
+    if manifest is not None:
+        write_fetch_manifest(workdir, *manifest)
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "run", "2106.04426", "--workdir", str(workdir))
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert captured[0].workdir.path == workdir
+    assert captured[0].paper.version == 3
+
+
+def test_run_of_a_local_source_has_no_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    source = tmp_path / "article"
+    source.mkdir()
+    result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, "run", str(source))
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == tmp_path / "home" / "papers" / "article"
+    assert (captured[0].paper.version, captured[0].meta) == (None, None)
+
+
+def test_stage_resolves_only_local_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    write_outputs(tmp_path / "papers", "fetch", "precompile").path.rename(tmp_path / "papers" / "2106.04426v2")
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, "stage", "mask", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == []
+    assert calls == ["mask"]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v2"
+
+
+def test_stage_rejects_the_latest_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426", "--latest")
+    assert result.exit_code == 2
+    assert (urls, calls) == ([], [])
+
+
+def test_stage_fetch_asks_arxiv_when_no_version_is_known(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == [LATEST_API_URL]
+    assert calls == ["fetch"]
+    assert captured[0].workdir.path == tmp_path / "papers" / "2106.04426v3"
+    assert captured[0].meta is not None and captured[0].meta.version == 3
+
+
+def test_stage_fetch_reuses_the_local_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "2106.04426v3")
+    result, captured, _ = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426")
+    assert result.exit_code == 0
+    assert urls == []
+    assert (captured[0].paper.version, captured[0].meta) == (3, None)
+
+
+def test_stage_fetch_whose_version_query_fails_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_api(monkeypatch, ERROR_FEED)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, "stage", "fetch", "2106.04426")
+    assert result.exit_code == 1
+    assert calls == []
+    assert not (tmp_path / "papers").exists()
+
+
+def status_with_home(home: Path, *arguments: str) -> PaperStatus:
+    result = runner.invoke(app, ["status", *arguments, "--json"], env={"TONGTU_HOME": str(home)})
+    assert result.exit_code == 0
+    return PaperStatus.model_validate_json(result.stdout)
+
+
+def test_status_resolves_the_highest_local_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_api(monkeypatch)
+    make_paper_dirs(tmp_path, "1412.6980v8", "1412.6980v9")
+    snapshot = status_with_home(tmp_path, "1412.6980")
+    assert urls == []
+    assert snapshot.workdir == tmp_path / "papers" / "1412.6980v9"
+    assert (snapshot.arxiv_id, snapshot.version) == ("1412.6980", 9)
+
+
+UNVERSIONED_COMMANDS: list[list[str]] = [["status"], ["status", "--json"], ["stage", "precompile"]]
+
+
+@pytest.mark.parametrize("command", UNVERSIONED_COMMANDS)
+@pytest.mark.parametrize("local", [[], ["2106.04426"]])
+def test_unversioned_id_without_a_local_versioned_workdir_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str], local: list[str]
+) -> None:
+    urls = wire_api(monkeypatch)
+    for name in local:
+        write_outputs(tmp_path / "papers", "fetch").path.rename(tmp_path / "papers" / name)
+    result, _, calls = run_with_home(tmp_path, monkeypatch, *command, "2106.04426")
+    assert result.exit_code == 1
+    assert (urls, calls, result.stdout) == ([], [], "")
+    stderr = " ".join(ANSI_ESCAPE_RE.sub("", result.stderr).split())
+    assert f"no working directory for 2106.04426 in {tmp_path / 'papers'}" in stderr
+    assert "run tongtu run 2106.04426 first" in stderr
+    papers = tmp_path / "papers"
+    assert (sorted(entry.name for entry in papers.iterdir()) if papers.is_dir() else []) == local
+
+
+@pytest.mark.parametrize("command", UNVERSIONED_COMMANDS)
+def test_unversioned_id_resolves_to_the_local_versioned_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    urls = wire_api(monkeypatch)
+    write_outputs(tmp_path / "papers", "fetch").path.rename(tmp_path / "papers" / "2106.04426v2")
+    make_paper_dirs(tmp_path, "2106.04426")
+    result, captured, calls = run_with_home(tmp_path, monkeypatch, *command, "2106.04426")
+    assert result.exit_code == 0
+    assert urls == []
+    workdir = tmp_path / "papers" / "2106.04426v2"
+    if command[0] == "stage":
+        assert calls == ["precompile"]
+        assert (captured[0].workdir.path, captured[0].paper.version) == (workdir, 2)
+    elif "--json" in command:
+        assert PaperStatus.model_validate_json(result.stdout).workdir == workdir
+    else:
+        assert str(workdir) in result.stdout.splitlines()[0]
+
+
+def test_status_with_workdir_reads_the_version_of_its_fetch_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    urls = wire_api(monkeypatch)
+    workdir = tmp_path / "chosen"
+    write_fetch_manifest(workdir, "1412.6980", 8)
+    snapshot = status_with_home(tmp_path, "1412.6980", "--workdir", str(workdir))
+    assert urls == []
+    assert (snapshot.workdir, snapshot.version) == (workdir, 8)
+    assert status_with_home(tmp_path, "1412.6980v8", "--workdir", str(workdir)).version == 8
+
+
+MISMATCHED_WORKDIRS: list[tuple[tuple[str | None, int | None], list[str], str, str]] = [
+    (("1412.6980", 8), ["2106.04426"], "1412.6980v8", "2106.04426"),
+    (("1412.6980", 8), ["1412.6980v9"], "1412.6980v8", "1412.6980v9"),
+    (("2106.04426", 2), ["2106.04426", "--latest"], "2106.04426v2", "2106.04426v3"),
+    ((None, None), ["2106.04426v3"], "a local source directory", "2106.04426v3"),
+    (("2106.04426", 2), ["SOURCE"], "2106.04426v2", "a local source directory"),
+]
+
+
+@pytest.mark.parametrize(
+    ("command", "fetched", "arguments", "holds", "asks"),
+    [
+        (command, *case)
+        for command in ("run", "stage", "status")
+        for case in MISMATCHED_WORKDIRS
+        if command == "run" or "--latest" not in case[1]
+    ],
+)
+def test_workdir_holding_another_paper_is_a_usage_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    fetched: tuple[str | None, int | None],
+    arguments: list[str],
+    holds: str,
+    asks: str,
+) -> None:
+    wire_api(monkeypatch)
+    source = tmp_path / "article"
+    source.mkdir()
+    workdir = tmp_path / "chosen"
+    write_fetch_manifest(workdir, *fetched)
+    paper = [str(source) if argument == "SOURCE" else argument for argument in arguments]
+    head = ["stage", "fetch"] if command == "stage" else [command]
+    result, _, calls = run_with_home(tmp_path / "home", monkeypatch, *head, *paper, "--workdir", str(workdir))
+    assert result.exit_code == 2
+    assert calls == []
+    stderr = " ".join(ANSI_ESCAPE_RE.sub("", result.stderr).replace("│", " ").split())
+    assert f"holds {holds}, but the command asks for {asks}" in stderr
+
+
+def local_source_workdir(tmp_path: Path, *stages: str) -> tuple[Path, Path]:
+    source = tmp_path / "article"
+    source.mkdir()
+    workdir = write_outputs(tmp_path / "home" / "papers", *stages).path
+    write_fetch_manifest(workdir, None, None, str(source))
+    return source, workdir
+
+
+@pytest.mark.parametrize("by_name", [True, False])
+def test_status_with_workdir_of_a_local_source_accepts_its_name_or_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, by_name: bool
+) -> None:
+    urls = wire_api(monkeypatch)
+    source, workdir = local_source_workdir(tmp_path)
+    paper = "article" if by_name else str(source)
+    snapshot = status_with_home(tmp_path / "home", paper, "--workdir", str(workdir))
+    assert urls == []
+    assert (snapshot.workdir, snapshot.arxiv_id, snapshot.version) == (workdir, None, None)
+
+
+@pytest.mark.parametrize("paper", ["OTHER", "draft"])
+def test_status_with_workdir_of_a_local_source_rejects_another_paper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paper: str
+) -> None:
+    urls = wire_api(monkeypatch)
+    _, workdir = local_source_workdir(tmp_path)
+    other = tmp_path / "other" / "article"
+    other.mkdir(parents=True)
+    argument = str(other) if paper == "OTHER" else paper
+    result = runner.invoke(
+        app, ["status", argument, "--workdir", str(workdir), "--json"], env={"TONGTU_HOME": str(tmp_path / "home")}
+    )
+    assert result.exit_code == 2
+    assert (urls, result.stdout) == ([], "")
+    assert "holds a local source directory" in " ".join(ANSI_ESCAPE_RE.sub("", result.stderr).replace("│", " ").split())
+
+
+@pytest.mark.parametrize("head", [["run"], ["stage", "mask"]])
+def test_run_and_stage_with_workdir_of_a_local_source_accept_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head: list[str]
+) -> None:
+    urls = wire_api(monkeypatch)
+    source, workdir = local_source_workdir(tmp_path, "fetch", "precompile")
+    result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, *head, "article", "--workdir", str(workdir))
+    assert result.exit_code == 0
+    assert urls == []
+    assert captured[0].workdir.path == workdir
+    assert captured[0].paper.source_dir == source
+
+
+def test_status_rejects_the_latest_option(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["status", "1412.6980", "--latest"], env={"TONGTU_HOME": str(tmp_path)})
+    assert result.exit_code == 2
+
+
+def test_fetch_summary_starts_with_the_version() -> None:
+    remote = FetchManifest(
+        status=FetchStatus.OK,
+        source="2412.19437v2",
+        arxiv_id="2412.19437",
+        version=2,
+        kind="tar.gz",
+        tex_files=["a.tex", "b.tex"],
+    )
+    local = FetchManifest(status=FetchStatus.OK, source="/src", kind="local", tex_files=["a.tex"])
+    assert cli.stage_summary(remote) == "v2, tar.gz, 2 tex files"
+    assert cli.stage_summary(local) == "local, 1 tex files"
+
+
+def test_fetch_entry_passes_the_meta(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple] = []
+
+    def fake_run(paper, workdir, meta=None):
+        captured.append((paper, workdir, meta))
+        return FetchManifest(status=FetchStatus.OK, source="x")
+
+    monkeypatch.setattr(cli.fetch, "run", fake_run)
+    wire_api(monkeypatch, VERSIONED_FEED)
+    result = runner.invoke(app, ["stage", "fetch", "1412.6980"], env={"TONGTU_HOME": str(tmp_path)})
+    assert result.exit_code == 0
+    paper, workdir, meta = captured[0]
+    assert (paper.arxiv_id, paper.version) == ("1412.6980", 8)
+    assert workdir.path == tmp_path / "papers" / "1412.6980v8"
+    assert meta is not None and meta.title == "Adam: A Method for Stochastic Optimization"

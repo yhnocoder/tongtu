@@ -1,478 +1,192 @@
 from __future__ import annotations
 
-import re
-import threading
+import shutil
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import ValidationError
-
-from .. import chunks, masking, pipeline, validation
-from ..artifacts.status import ChunkCounts
-from ..artifacts.survey import BriefFile, Part
-from ..artifacts.translate import (
-    ChunkTranslateRecord,
-    ChunkTranslateStatus,
-    TranslateManifest,
-    TranslateStatus,
-)
-from ..assets import asset_path
-from ..manifests import describe_error, load_manifest, write_manifest
-from ..model.ask import AskOutcome, AskStatus, CallLog, ask
-from ..model.config import Target, load_config, role_target
-from ..model.work import StopReason, session_end, work
+from .. import glossary, model, notes, validation
+from ..artifacts.common import Session, StopReason
+from ..artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
+from ..glossary import GlossaryError, Selection
+from ..manifests import describe_error, timeout_warning, write_manifest
+from ..model.work import skill_dir
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "translate"
 
-SKILL_FILENAME = "SKILL.md"
+SKILL = "translate"
 
-ROLE = "translate"
+SOURCE_FILENAME = "en.tex"
 
-RETRY_EFFORT = "low"
+TRANSLATION_FILENAME = "zh.tex"
 
-NEIGHBOR_PARAGRAPHS = 3
+VALIDATE_FILENAME = "validate.py"
 
-EMPTY_REPLY_DETAIL = "model returned an empty translation: the call succeeded with not a single character of body."
-
-FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
-
-PROMPT_VERSION_RE = re.compile(r"^version:\s*(\S+)\s*$", re.MULTILINE)
-
-TRANSLATION_FILENAME = "translation.tex"
-
-ATTEMPTS = (1, 2)
-
-CODE_FENCE_RE = re.compile(r"\A```[A-Za-z]*[ \t]*\r?\n(.*?)\s*```\Z", re.DOTALL)
-
-REFERENCE_HEADER = (
-    "# 本次任务的附带信息\n\n以下各节都是**参考材料，不是待译文本**：不要翻译它们，也不要把它们写进译文。"
-)
-
-
-class ChunkProgressState(StrEnum):
-    PENDING = "pending"
-    RUNNING = "running"
-    DONE = "done"
-    WARNING = "warning"
+SESSION_STATUS = "session"
 
 
 @dataclass(frozen=True)
-class ChunkProgress:
-    id: str
-    tokens: int
-    state: ChunkProgressState
+class Verdict:
+    written: bool
+    problems: tuple[str, ...]
+    paragraphs_total: int
+    paragraphs_translated: int
 
-
-Report = Callable[[str, str], None]
-
-ProgressCallback = Callable[[tuple[ChunkProgress, ...]], None]
-
-
-@dataclass(frozen=True)
-class _Context:
-    id: str
-    raw: str
-    body: str
-    system: str
-    tokens: int
-
-
-@dataclass
-class _Outcome:
-    id: str
-    status: ChunkTranslateStatus
-    body: str
-    attempts: int = 0
-    failures: list[str] = field(default_factory=list)
-    model: str = ""
+    @property
+    def ok(self) -> bool:
+        return self.written and not self.problems
 
 
 def run(
     paper_workdir: Workdir,
     *,
-    jobs: int,
-    report: Report | None = None,
-    progress: ProgressCallback | None = None,
+    mode: str,
+    glossary_files: Sequence[Path] = (),
+    report: Callable[[str, str], None] | None = None,
 ) -> TranslateManifest:
     paper_workdir.create()
-    pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(
-        paper_workdir, jobs, report or (lambda status, summary: None), progress or (lambda chunks: None)
-    )
+    for path in (paper_workdir.manifest_path(STAGE_NAME), paper_workdir.translated, paper_workdir.paper_glossary):
+        path.unlink(missing_ok=True)
+    manifest = _execute(paper_workdir, mode, tuple(glossary_files), report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def chunk_counts(paper_workdir: Workdir) -> ChunkCounts | None:
-    try:
-        brief = BriefFile.model_validate_json(paper_workdir.brief.read_text(encoding=ENCODING))
-    except (OSError, UnicodeDecodeError, ValidationError):
-        return None
-    translatable = [record.id for record in brief.chunks if record.translatable_chars]
-    manifest = load_manifest(paper_workdir.manifest_path(STAGE_NAME), TranslateManifest)
-    if manifest is None:
-        done = sum(1 for chunk_id in translatable if _settled(paper_workdir, chunk_id))
-    else:
-        done = sum(1 for chunk_id in translatable if chunk_id in manifest.chunks)
-    return ChunkCounts(total=len(translatable), done=done)
-
-
 def _execute(
-    paper_workdir: Workdir,
-    jobs: int,
-    report: Report,
-    progress: ProgressCallback,
+    paper_workdir: Workdir, mode: str, cli_glossaries: tuple[Path, ...], report: Callable[[str, str], None]
 ) -> TranslateManifest:
     try:
-        brief = BriefFile.model_validate_json(paper_workdir.brief.read_text(encoding=ENCODING))
-        bodies = [_chunk_path(paper_workdir, record.id).read_text(encoding=ENCODING) for record in brief.chunks]
-    except (OSError, UnicodeDecodeError, ValidationError) as error:
-        return TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, jobs=jobs, message=describe_error(error))
-
-    skill, prompt_version, detail = _prompt_asset()
-    if detail:
-        return TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, jobs=jobs, message=detail)
-
-    pending = [record for record in brief.chunks if record.translatable_chars]
-    effort = ""
-    if pending:
-        target, detail = _resolve()
-        if target is None:
-            return TranslateManifest(
-                status=TranslateStatus.TRANSLATE_FAILED, prompt_version=prompt_version, jobs=jobs, message=detail
-            )
-        display = str(target)
-        effort = target.effort or ""
-        report(
-            STAGE_NAME,
-            f"{display}, {len(brief.chunks)} chunks, {sum(record.tokens for record in brief.chunks)} tok, jobs {jobs}",
-        )
-
-    contexts = _contexts(brief, bodies, skill)
-    outcomes = {
-        context.id: _Outcome(id=context.id, status=ChunkTranslateStatus.SKIPPED, body=context.body)
-        for record, context in zip(brief.chunks, contexts, strict=True)
-        if not record.translatable_chars
-    }
-    if pending:
-        translatable = [context for context in contexts if context.id not in outcomes]
-        states = {
-            record.id: ChunkProgressState.DONE if record.id in outcomes else ChunkProgressState.PENDING
-            for record in brief.chunks
-        }
-        lock = threading.Lock()
-
-        def publish() -> None:
-            progress(tuple(ChunkProgress(record.id, record.tokens, states[record.id]) for record in brief.chunks))
-
-        publish()
-
-        def worker(context: _Context) -> _Outcome:
-            with lock:
-                states[context.id] = ChunkProgressState.RUNNING
-                publish()
-            outcome = _translate_until_valid(context, paper_workdir, target)
-            with lock:
-                if outcome.status is ChunkTranslateStatus.FALLBACK:
-                    states[context.id] = ChunkProgressState.WARNING
-                    report("warning", f"{context.id} fell back to the English source after {outcome.attempts} attempts")
-                else:
-                    states[context.id] = ChunkProgressState.DONE
-                publish()
-            return outcome
-
-        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-            for outcome in pool.map(worker, translatable):
-                outcomes[outcome.id] = outcome
-
-    model = next((outcome.model for outcome in outcomes.values() if outcome.model), "")
-    return _finish(paper_workdir, contexts, outcomes, model, effort, prompt_version, jobs)
-
-
-def _resolve() -> tuple[Target | None, str]:
-    config, detail = load_config()
-    if config is None:
-        return None, detail
-    return role_target(config, ROLE)
-
-
-def _prompt_asset() -> tuple[str, str, str]:
-    path = asset_path("skill") / ROLE / SKILL_FILENAME
-    try:
-        content = path.read_text(encoding=ENCODING)
-    except OSError as error:
-        return "", "", f"cannot read the prompt asset {path} ({describe_error(error)})"
-    frontmatter = FRONTMATTER_RE.match(content)
-    version = None if frontmatter is None else PROMPT_VERSION_RE.search(frontmatter.group(1))
-    if version is None:
-        return "", "", f"the frontmatter of prompt asset {path} has no version field"
-    return FRONTMATTER_RE.sub("", content).strip(), version.group(1), ""
-
-
-def _contexts(brief: BriefFile, bodies: Sequence[str], skill: str) -> list[_Context]:
-    stable = _stable_sections(brief, skill)
-    heading_tree = _format_heading_tree(brief)
-    contexts: list[_Context] = []
-    for index, (record, raw) in enumerate(zip(brief.chunks, bodies, strict=True)):
-        sections = [stable]
-        if record.part is Part.FRONT and heading_tree:
-            sections.append(f"## 全文章节标题树\n\n供理解缩写与专名在全文中的含义。\n\n{heading_tree}")
-        neighbors = _neighbor_section(bodies, index)
-        if neighbors:
-            sections.append(neighbors)
-        contexts.append(
-            _Context(
-                id=record.id,
-                raw=raw,
-                body=raw.strip(),
-                system="\n\n".join(sections),
-                tokens=record.tokens,
-            )
-        )
-    return contexts
-
-
-def _stable_sections(brief: BriefFile, skill: str) -> str:
-    sections = [skill, REFERENCE_HEADER]
-    if brief.abstract:
-        sections.append(f"## 论文摘要（原文）\n\n供理解全篇主题。\n\n{brief.abstract}")
-    if brief.terms or brief.do_not_translate:
-        parts = ["## 术语表\n\n本篇的约定译法，必须照此翻译。"]
-        if brief.terms:
-            parts.append("\n".join(f"- {entry.word} → {entry.translation}" for entry in brief.terms))
-        if brief.do_not_translate:
-            parts.append("保留原文、不要翻译的词：" + "、".join(entry.word for entry in brief.do_not_translate))
-        sections.append("\n\n".join(parts))
-    if brief.style:
-        sections.append(f"## 额外要求\n\n{brief.style}")
-    return "\n\n".join(sections)
-
-
-def _format_heading_tree(brief: BriefFile) -> str:
-    return "\n".join(f"{'  ' * (heading.depth - 1)}- {heading.argument}" for heading in brief.heading_tree)
-
-
-def _neighbor_section(bodies: Sequence[str], index: int) -> str:
-    before = _paragraphs(bodies[index - 1], tail=True) if index > 0 else "（这是全文的第一块，前面没有内容）"
-    after = (
-        _paragraphs(bodies[index + 1], tail=False)
-        if index + 1 < len(bodies)
-        else "（这是全文的最后一块，后面没有内容）"
-    )
-    return (
-        "## 相邻上下文（原文）\n\n供衔接参考。\n\n"
-        f"### 前一块的结尾\n\n```\n{before}\n```\n\n### 后一块的开头\n\n```\n{after}\n```"
-    )
-
-
-def _task_message(body: str) -> str:
-    return f"请翻译：\n\n```\n{body}\n```"
-
-
-def _paragraphs(text: str, *, tail: bool) -> str:
-    found = [part.strip() for part in masking.BLANK_LINE_RE.split(text) if part.strip()]
-    return "\n\n".join(found[-NEIGHBOR_PARAGRAPHS:] if tail else found[:NEIGHBOR_PARAGRAPHS])
-
-
-def _translate_until_valid(context: _Context, paper_workdir: Workdir, target: Target) -> _Outcome:
-    messages: list[tuple[str, str]] = [("user", _task_message(context.body))]
-    failures: list[str] = []
-    model = ""
-    effort: str | None = None
-    for attempts in ATTEMPTS:
-        if target.is_runtime:
-            outcome = _agent_request(context, paper_workdir, messages, attempts, effort)
-        else:
-            outcome = ask(
-                role=ROLE,
-                system=context.system,
-                messages=messages,
-                log_path=_call_log_path(paper_workdir, context.id, attempts),
-                effort=effort,
-            )
-        model = outcome.model or model
-        if outcome.status is AskStatus.ERROR:
-            failures = [outcome.detail]
-            continue
-        translated = _strip_code_fence(outcome.text)
-        failures = _check_failures(context.body, translated)
-        if not failures:
-            return _Outcome(
-                id=context.id,
-                status=ChunkTranslateStatus.TRANSLATED,
-                body=translated,
-                attempts=attempts,
-                model=model,
-            )
-        if not translated:
-            continue
-        messages = [
-            ("user", _task_message(context.body)),
-            ("assistant", translated),
-            ("user", _retry_message(failures)),
-        ]
-        effort = RETRY_EFFORT
-    return _Outcome(
-        id=context.id,
-        status=ChunkTranslateStatus.FALLBACK,
-        body=context.body,
-        attempts=ATTEMPTS[-1],
-        failures=failures,
-        model=model,
-    )
-
-
-def _agent_request(
-    context: _Context,
-    paper_workdir: Workdir,
-    messages: list[tuple[str, str]],
-    attempt: int,
-    effort: str | None,
-) -> AskOutcome:
-    site = _site(paper_workdir, context.id, attempt)
-    actual_model = ""
-    try:
-        site.mkdir(parents=True, exist_ok=True)
-        task = context.system + "\n\n" + "\n\n".join(f"## {role}\n\n{text}" for role, text in messages)
-        (site / "task.md").write_text(task, encoding=ENCODING)
-        outcome = work(
-            role=ROLE,
-            workdir=site,
-            trace_path=_trace_path(paper_workdir, context.id, attempt),
-            effort=effort,
-            prompt=(
-                "读取 task.md，按其中的翻译规则、论文语境与对话完成翻译。"
-                "这是文件任务：将最终完整译文写入当前目录 translation.tex，"
-                "不要在文件里写 Markdown 围栏、说明或总结。task.md 里的输出规则指该文件的内容。"
-                "只在当前目录工作；完成文件后结束。"
-            ),
-        )
-        actual_model = outcome.model
-        if outcome.stop_reason is not StopReason.FINISHED:
-            return AskOutcome(
-                status=AskStatus.ERROR,
-                detail=outcome.detail or f"agent stopped: {outcome.stop_reason}",
-                model=outcome.model,
-            )
-        output = site / TRANSLATION_FILENAME
-        if output.is_symlink():
-            return AskOutcome(
-                status=AskStatus.ERROR, detail="translation.tex must not be a symlink", model=outcome.model
-            )
-        return AskOutcome(status=AskStatus.OK, text=output.read_text(encoding=ENCODING), model=outcome.model)
+        masked = paper_workdir.masked.read_text(encoding=ENCODING)
     except (OSError, UnicodeDecodeError) as error:
-        return AskOutcome(status=AskStatus.ERROR, detail=describe_error(error), model=actual_model)
-
-
-def _check_failures(body: str, translated: str) -> list[str]:
-    if not translated:
-        return [EMPTY_REPLY_DETAIL]
-    return [f"{failure.check}: {failure.message}" for failure in validation.validate(body, translated).failures]
-
-
-def _retry_message(failures: Sequence[str]) -> str:
-    listed = "\n".join(f"- {failure}" for failure in failures)
-    return f"上一次的译文未通过机械校验：\n\n{listed}\n\n请修正上述差异并重新输出完整译文，只输出译文本身。"
-
-
-def _strip_code_fence(text: str) -> str:
-    stripped = text.strip()
-    match = CODE_FENCE_RE.match(stripped)
-    if match is None:
-        return stripped
-    return match.group(1).strip()
-
-
-def _finish(
-    paper_workdir: Workdir,
-    contexts: Sequence[_Context],
-    outcomes: dict[str, _Outcome],
-    model: str,
-    effort: str,
-    prompt_version: str,
-    jobs: int,
-) -> TranslateManifest:
-    chunks = {
-        context.id: ChunkTranslateRecord(
-            status=outcomes[context.id].status,
-            attempts=outcomes[context.id].attempts,
-            failures=outcomes[context.id].failures,
+        return TranslateManifest(
+            status=TranslateStatus.TRANSLATE_FAILED,
+            mode=mode,
+            message=f"cannot read {paper_workdir.masked} ({describe_error(error)}); run mask first.",
         )
-        for context in contexts
-    }
-    warnings: list[str] = []
-    for context in contexts:
-        outcome = outcomes[context.id]
-        if outcome.status is ChunkTranslateStatus.FALLBACK:
-            listed = "; ".join(outcome.failures) or "no failure detail was recorded"
-            warnings.append(f"{context.id} fell back to the English source; the last attempt failed: {listed}")
-    _write_translated(paper_workdir, contexts, outcomes)
+    try:
+        selection = glossary.load_selection(masked, paper_workdir.path, cli_glossaries)
+    except GlossaryError as error:
+        return TranslateManifest(status=TranslateStatus.GLOSSARY_INVALID, mode=mode, message=str(error))
+    warnings = list(selection.unmatched)
+    counts = GlossaryCounts(user=selection.user_count, learned=selection.learned_count)
+    session_dir = paper_workdir.sandbox(STAGE_NAME)
+
+    if (session_dir / TRANSLATION_FILENAME).exists():
+        verdict = _verify(masked, session_dir, selection)
+        if verdict.ok:
+            return _accept(paper_workdir, session_dir, selection, mode, None, verdict, counts, warnings)
+
+    report(SESSION_STATUS, "running")
+    session = _launch(paper_workdir, session_dir, selection, mode, warnings, report)
+    verdict = _verify(masked, session_dir, selection)
+    if verdict.ok:
+        return _accept(paper_workdir, session_dir, selection, mode, session, verdict, counts, warnings)
+    return TranslateManifest(
+        status=TranslateStatus.TRANSLATE_FAILED,
+        mode=mode,
+        session=session,
+        paragraphs_total=verdict.paragraphs_total,
+        paragraphs_translated=verdict.paragraphs_translated,
+        problems=list(verdict.problems),
+        glossary=counts,
+        warnings=warnings,
+        message=_failure_message(verdict, session, session_dir),
+    )
+
+
+def _launch(
+    paper_workdir: Workdir,
+    session_dir: Path,
+    selection: Selection,
+    mode: str,
+    warnings: list[str],
+    report: Callable[[str, str], None],
+) -> Session:
+    session_dir.mkdir(parents=True, exist_ok=True)
+    source = session_dir / SOURCE_FILENAME
+    source.unlink(missing_ok=True)
+    content = paper_workdir.masked.read_bytes()
+    source.write_bytes(content if content.endswith(b"\n") else content + b"\n")
+    source.chmod(glossary.READ_ONLY_MODE)
+    glossary.write_session_files(session_dir, selection)
+    validate_copy = session_dir / skill_dir(SKILL) / VALIDATE_FILENAME
+    validate_copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(validation.__file__), validate_copy)
+    outcome = model.work(
+        SKILL,
+        session_dir,
+        mode=mode,
+        log_path=paper_workdir.translate_log,
+        report=lambda action: report(SESSION_STATUS, action),
+    )
+    if outcome.session.stop_reason is StopReason.TIMEOUT:
+        warnings.append(timeout_warning(STAGE_NAME))
+    if outcome.session.stop_reason is StopReason.ERROR:
+        warnings.append(
+            f"the {STAGE_NAME} session ended with error ({outcome.detail}); "
+            "the verdict still comes from the scripted checks"
+        )
+    warnings.extend(notes.collect(session_dir, SKILL, paper_workdir.notes))
+    return outcome.session
+
+
+def _verify(masked: str, session_dir: Path, selection: Selection) -> Verdict:
+    total = validation.paragraphs_to_translate(masked)
+    translation_path = session_dir / TRANSLATION_FILENAME
+    if not translation_path.is_file():
+        return Verdict(written=False, problems=(), paragraphs_total=total, paragraphs_translated=0)
+    try:
+        translation = translation_path.read_text(encoding=ENCODING)
+    except (OSError, UnicodeDecodeError) as error:
+        problem = f"[{validation.Category.STRUCTURE}] cannot read {translation_path} ({describe_error(error)})"
+        return Verdict(written=True, problems=(problem,), paragraphs_total=total, paragraphs_translated=0)
+    problems: list[str] = []
+    try:
+        session_glossary = glossary.read_session_glossary(session_dir)
+    except GlossaryError as error:
+        session_glossary = validation.Glossary()
+        problems.append(f"[{validation.Category.GLOSSARY}] {error}")
+    merged = glossary.validation_glossary(selection, session_glossary)
+    checked = validation.check(masked, translation, dict(merged.terms), merged.do_not_translate)
+    problems.extend(f"[{problem.category}] {problem.message}" for problem in checked.problems)
+    return Verdict(
+        written=True,
+        problems=tuple(problems),
+        paragraphs_total=checked.paragraphs_total,
+        paragraphs_translated=checked.paragraphs_translated,
+    )
+
+
+def _accept(
+    paper_workdir: Workdir,
+    session_dir: Path,
+    selection: Selection,
+    mode: str,
+    session: Session | None,
+    verdict: Verdict,
+    counts: GlossaryCounts,
+    warnings: list[str],
+) -> TranslateManifest:
+    shutil.copyfile(session_dir / TRANSLATION_FILENAME, paper_workdir.translated)
+    added = glossary.publish(session_dir, selection, paper_workdir.paper_glossary)
     return TranslateManifest(
         status=TranslateStatus.OK,
-        model=model,
-        effort=effort,
-        prompt_version=prompt_version,
-        jobs=jobs,
-        chunks=chunks,
+        mode=mode,
+        session=session,
+        paragraphs_total=verdict.paragraphs_total,
+        paragraphs_translated=verdict.paragraphs_translated,
+        glossary=counts.model_copy(update={"added": added}),
         warnings=warnings,
     )
 
 
-def _write_translated(paper_workdir: Workdir, contexts: Sequence[_Context], outcomes: dict[str, _Outcome]) -> None:
-    paper_workdir.translated.mkdir(parents=True, exist_ok=True)
-    for context in contexts:
-        content = chunks.restore_padding(context.raw, outcomes[context.id].body)
-        _translated_path(paper_workdir, context.id).write_text(content, encoding=ENCODING)
-
-
-def _chunk_path(paper_workdir: Workdir, chunk_id: str) -> Path:
-    return paper_workdir.chunks / f"{chunk_id}.tex"
-
-
-def _translated_path(paper_workdir: Workdir, chunk_id: str) -> Path:
-    return paper_workdir.translated / f"{chunk_id}.tex"
-
-
-def _call_log_path(paper_workdir: Workdir, chunk_id: str, attempt: int) -> Path:
-    return paper_workdir.logs / f"{STAGE_NAME}-{chunk_id}-{attempt}.json"
-
-
-def _trace_path(paper_workdir: Workdir, chunk_id: str, attempt: int) -> Path:
-    return paper_workdir.logs / f"{STAGE_NAME}-{chunk_id}-{attempt}.jsonl"
-
-
-def _site(paper_workdir: Workdir, chunk_id: str, attempt: int) -> Path:
-    return paper_workdir.sandbox(STAGE_NAME) / chunk_id / str(attempt)
-
-
-def _settled(paper_workdir: Workdir, chunk_id: str) -> bool:
-    first = _attempt_reply(paper_workdir, chunk_id, ATTEMPTS[0])
-    if first is None:
-        return False
-    if _attempt_reply(paper_workdir, chunk_id, ATTEMPTS[-1]) is not None:
-        return True
-    try:
-        body = _chunk_path(paper_workdir, chunk_id).read_text(encoding=ENCODING).strip()
-    except (OSError, UnicodeDecodeError):
-        return False
-    return not _check_failures(body, _strip_code_fence(first))
-
-
-def _attempt_reply(paper_workdir: Workdir, chunk_id: str, attempt: int) -> str | None:
-    call_log = load_manifest(_call_log_path(paper_workdir, chunk_id, attempt), CallLog)
-    if call_log is not None:
-        return call_log.response if call_log.status is AskStatus.OK else ""
-    stop_reason = session_end(_trace_path(paper_workdir, chunk_id, attempt))
-    if stop_reason is None:
-        return None
-    output = _site(paper_workdir, chunk_id, attempt) / TRANSLATION_FILENAME
-    if stop_reason is not StopReason.FINISHED or output.is_symlink():
-        return ""
-    try:
-        return output.read_text(encoding=ENCODING)
-    except (OSError, UnicodeDecodeError):
-        return ""
+def _failure_message(verdict: Verdict, session: Session, session_dir: Path) -> str:
+    if verdict.written:
+        found = f"the scripted checks report {len(verdict.problems)} problems in {TRANSLATION_FILENAME}"
+    else:
+        found = f"{TRANSLATION_FILENAME} was not written"
+    return (
+        f"the {STAGE_NAME} session ended with {session.stop_reason} and {found}; "
+        f"the session directory {session_dir} is kept, and running tongtu run again continues there."
+    )

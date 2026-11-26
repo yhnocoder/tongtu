@@ -36,8 +36,14 @@ def strip_comment_text(source: bytes, table: Mapping[str, TableEntry]) -> bytes:
         character = text[position]
         if character == "%":
             line_end = _line_end(text, position)
-            parts.append(text[cursor : position + 1])
-            cursor = position = line_end
+            line_start = text.rfind("\n", 0, position) + 1
+            if text[line_start:position].strip(" \t"):
+                parts.append(text[cursor : position + 1])
+                cursor = line_end
+            else:
+                parts.append(text[cursor:line_start])
+                cursor = min(line_end + 1, length)
+            position = line_end
             continue
         if character == "\n":
             position += 1
@@ -54,7 +60,7 @@ def strip_comment_text(source: bytes, table: Mapping[str, TableEntry]) -> bytes:
         if name == "verb":
             position = skip_verb(text, after)
         elif name == "begin":
-            position = _skip_code_environment(text, after, table)
+            position = skip_code_block(text, after, table)
         elif name in URL_COMMANDS:
             match = URL_ARGUMENT_RE.match(text, after)
             if match is None:
@@ -69,7 +75,7 @@ def strip_comment_text(source: bytes, table: Mapping[str, TableEntry]) -> bytes:
     return "".join(parts).encode(BYTE_TEXT_ENCODING)
 
 
-def _skip_code_environment(text: str, after_begin: int, table: Mapping[str, TableEntry]) -> int:
+def skip_code_block(text: str, after_begin: int, table: Mapping[str, TableEntry]) -> int:
     environment, body_start = read_environment_name(text, after_begin)
     if environment is None:
         return after_begin

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 import tongtu.model
 from tongtu import processes
+from tongtu.artifacts.common import Note, NotesFile, Session, StopReason
 from tongtu.artifacts.precompile import PrecompileStatus
+from tongtu.manifests import load_manifest, write_manifest
+from tongtu.masking import TableEntry
 from tongtu.model.config import FontsConfig, load_config
-from tongtu.model.work import StopReason, WorkOutcome
+from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.processes import ProcessOutcome
 from tongtu.stages import precompile
@@ -40,10 +44,13 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
 
 
+MODES_TABLE = '[modes.fast]\nmodel = "claude-code/m"\n\n[modes.smart]\nmodel = "claude-code/m"\n\n'
+
+
 def write_config_toml(tmp_path: Path, text: str) -> None:
     path = tmp_path / "home" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_text(MODES_TABLE + text, encoding="utf-8")
 
 
 def make_workdir(tmp_path: Path, files: dict[str, str]) -> Workdir:
@@ -96,6 +103,9 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> dict[str
     return calls
 
 
+FIX_NOTE = {"where": "main.tex:2", "problem": "p", "resolution": "r", "suggestion": "s"}
+
+
 def wire_work(
     monkeypatch: pytest.MonkeyPatch,
     stop_reason: StopReason = StopReason.FINISHED,
@@ -105,19 +115,24 @@ def wire_work(
     calls: list[dict] = []
 
     def fake_work(
-        role: str,
-        workdir: Path,
+        skill: str,
+        session_dir: Path,
         *,
-        trace_path: Path,
+        mode: str,
+        log_path: Path,
         report=None,
-        prompt=None,
+        extra_prompt: str = "",
     ):
-        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path})
+        calls.append({"role": skill, "workdir": session_dir, "trace_path": log_path, "mode": mode})
         if report is not None:
             report("Bash: ls")
         if edit is not None:
-            edit(workdir)
-        return WorkOutcome(stop_reason=stop_reason, detail=detail, model="claude_code/claude-sonnet-5")
+            edit(session_dir)
+        (session_dir / "notes.json").write_text(json.dumps({"notes": [FIX_NOTE]}), encoding="utf-8")
+        session = Session(
+            stop_reason=stop_reason, model="claude-code/claude-sonnet-5", effort="low", duration_seconds=4.0
+        )
+        return WorkOutcome(session=session, detail=detail)
 
     monkeypatch.setattr(tongtu.model, "work", fake_work)
     return calls
@@ -132,7 +147,7 @@ def run_ok_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[st
 
 def test_main_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"notes.tex": "no class here\n", "old.tex": "% \\documentclass{article}\n"})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.MAIN_NOT_FOUND
     assert manifest.main_file == ""
     assert manifest.report is None
@@ -144,7 +159,7 @@ def test_main_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 def test_main_ambiguous_lists_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paper = PLAIN_PAPER
     workdir = make_workdir(tmp_path, {"a.tex": paper, "b.tex": paper})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.MAIN_AMBIGUOUS
     assert "a.tex" in manifest.message
     assert "b.tex" in manifest.message
@@ -154,14 +169,14 @@ def test_main_selection_prefers_begin_document(tmp_path: Path, monkeypatch: pyte
     workdir, _ = run_ok_setup(
         tmp_path, monkeypatch, {"style.tex": "\\documentclass{article}\n", "paper.tex": PLAIN_PAPER}
     )
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.main_file == "paper.tex"
 
 
 def test_main_selection_prefers_main_basename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER, "supplement.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.main_file == "main.tex"
 
@@ -169,7 +184,7 @@ def test_main_selection_prefers_main_basename(tmp_path: Path, monkeypatch: pytes
 def test_expand_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
     wire_expand(monkeypatch, returncode=1, stderr=b"missing input file body.tex\n")
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert manifest.main_file == "main.tex"
     assert "exited with code 1" in manifest.message
@@ -179,7 +194,7 @@ def test_expand_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_expand_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
     wire_expand(monkeypatch, returncode=-9, timed_out=True)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert manifest.main_file == "main.tex"
     assert str(precompile.LATEXPAND_TIMEOUT_SECONDS) in manifest.message
@@ -189,14 +204,14 @@ def test_expand_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 def test_expand_result_must_be_a_complete_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path, {"main.tex": "\\documentclass{article}\n\\begin{document}\ntruncated\n"})
     wire_expand(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert "\\end{document}" in manifest.message
 
 
 def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, calls = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.main_file == "main.tex"
     assert manifest.fix_session is None
@@ -224,7 +239,7 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 def test_injects_xecjk_after_documentclass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    precompile.run(workdir)
+    precompile.run(workdir, mode="fast")
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert (
         output.index("\\documentclass")
@@ -289,7 +304,7 @@ def fallback_warnings(warnings: list[str], slot: str) -> list[str]:
 
 def test_injects_default_fonts_without_config_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert "\\usepackage[AutoFakeBold=2]{xeCJK}\n" in output
     assert f"{DEFAULT_MAIN_LINE}\n{DEFAULT_SANS_LINE}\n\\setCJKmonofont{{LXGWWenKai-Light.ttf}}\n" in output
@@ -301,7 +316,7 @@ def test_injects_default_fonts_without_config_toml(tmp_path: Path, monkeypatch: 
 def test_fonts_config_rejects_system_font_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config_toml(tmp_path, '[fonts]\nmain = "Noto Serif CJK SC"\nsans = "Noto Sans CJK SC"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert DEFAULT_MAIN_LINE in output
@@ -318,7 +333,7 @@ def test_fonts_config_rejects_system_font_names(tmp_path: Path, monkeypatch: pyt
 def test_fonts_config_string_family_has_no_bold_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert "\\setCJKmainfont{LXGWWenKai-Medium.ttf}\n" in output
     assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
@@ -331,7 +346,7 @@ def test_fonts_config_family_table_sets_bold_font(tmp_path: Path, monkeypatch: p
         tmp_path, '[fonts]\nmain = { regular = "LXGWWenKai-Medium.ttf", bold = "LXGWWenKai-Light.ttf" }\n'
     )
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert "\\setCJKmainfont[BoldFont=LXGWWenKai-Light.ttf]{LXGWWenKai-Medium.ttf}\n" in output
     assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
@@ -344,7 +359,7 @@ def test_fonts_config_external_file_is_referenced_by_name(tmp_path: Path, monkey
     font_path.write_bytes(b"font-bytes")
     write_config_toml(tmp_path, f'[fonts]\nmain = "{font_path}"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert "\\setCJKmainfont{MyFont.otf}\n" in output
@@ -357,7 +372,7 @@ def test_fonts_config_family_with_missing_regular_falls_back_as_a_whole(
 ) -> None:
     write_config_toml(tmp_path, '[fonts]\nmain = { regular = "Ghost.ttf", bold = "LXGWWenKai-Medium.ttf" }\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert DEFAULT_MAIN_LINE in output
@@ -371,7 +386,7 @@ def test_fonts_config_family_with_missing_bold_falls_back_as_a_whole(
 ) -> None:
     write_config_toml(tmp_path, '[fonts]\nmain = { regular = "LXGWWenKai-Medium.ttf", bold = "Ghost.ttf" }\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert DEFAULT_MAIN_LINE in output
     assert "\\setCJKmainfont{LXGWWenKai-Medium.ttf}" not in output
@@ -385,7 +400,7 @@ def test_fonts_config_family_with_both_files_missing_falls_back(
 ) -> None:
     write_config_toml(tmp_path, '[fonts]\nsans = { regular = "Ghost.otf", bold = "Ghost-Bold.otf" }\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert DEFAULT_SANS_LINE in output
     assert "Ghost" not in output
@@ -399,7 +414,7 @@ def test_fonts_config_missing_string_file_falls_back_to_default(
 ) -> None:
     write_config_toml(tmp_path, '[fonts]\nmain = "Ghost.ttf"\nsans = "Ghost.otf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert DEFAULT_MAIN_LINE in output
@@ -416,7 +431,7 @@ def test_fonts_config_list_is_rejected_and_defaults_apply(tmp_path: Path, monkey
     config, detail = load_config()
     assert config is None
     assert "main" in detail
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert DEFAULT_MAIN_LINE in output
@@ -431,7 +446,7 @@ def test_fonts_config_old_bold_key_is_rejected_and_defaults_apply(
     config, detail = load_config()
     assert config is None
     assert "fonts.bold" in detail
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert DEFAULT_MAIN_LINE in output
@@ -440,7 +455,7 @@ def test_fonts_config_old_bold_key_is_rejected_and_defaults_apply(
 def test_fonts_config_overrides_sans_and_mono(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config_toml(tmp_path, '[fonts]\nsans = "LXGWWenKai-Medium.ttf"\nmono = "LXGWWenKai-Medium.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    precompile.run(workdir)
+    precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert "\\setCJKsansfont{LXGWWenKai-Medium.ttf}\n" in output
     assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
@@ -451,7 +466,7 @@ def test_fonts_config_overrides_sans_and_mono(tmp_path: Path, monkeypatch: pytes
 def test_fonts_config_missing_mono_falls_back_to_main_regular(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config_toml(tmp_path, '[fonts]\nmain = "LXGWWenKai-Medium.ttf"\nmono = "Ghost.ttf"\n')
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
     assert any("mono font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
@@ -461,7 +476,7 @@ def test_fonts_config_missing_mono_falls_back_to_main_regular(tmp_path: Path, mo
 def test_inject_passes_through_existing_xecjk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paper = PLAIN_PAPER.replace("\\usepackage{graphicx}", "\\usepackage{graphicx}\n\\usepackage{xeCJK}")
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
-    precompile.run(workdir)
+    precompile.run(workdir, mode="fast")
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert "injected by tongtu" not in output
 
@@ -469,7 +484,7 @@ def test_inject_passes_through_existing_xecjk(tmp_path: Path, monkeypatch: pytes
 def test_inject_passes_through_ctex_class(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paper = PLAIN_PAPER.replace("\\documentclass[11pt]{article}", "\\documentclass{ctexart}")
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
-    precompile.run(workdir)
+    precompile.run(workdir, mode="fast")
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert "injected by tongtu" not in output
 
@@ -486,7 +501,7 @@ def test_inject_replaces_cjkutf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 \\end{document}
 """
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert manifest.status is PrecompileStatus.OK
     assert "CJKutf8" not in output
@@ -503,7 +518,7 @@ def test_bbl_is_inlined_when_exactly_one_bibliography(tmp_path: Path, monkeypatc
     paper = PLAIN_PAPER.replace("Hello world.", "Hello world.\n\\bibliography{refs}")
     files = {"main.tex": paper, "main.bbl": "\\begin{thebibliography}{1}\n\\end{thebibliography}\n"}
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, files)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert "\\begin{thebibliography}" in output
     assert "\\bibliography{refs}" not in output
@@ -514,7 +529,7 @@ def test_bbl_not_inlined_when_ambiguous(tmp_path: Path, monkeypatch: pytest.Monk
     paper = PLAIN_PAPER.replace("Hello world.", "\\bibliography{refs}\n\\bibliography{refs}")
     files = {"main.tex": paper, "main.bbl": "\\begin{thebibliography}{1}\n\\end{thebibliography}\n"}
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, files)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert "thebibliography" not in output
     assert any("not inlined" in line for line in manifest.warnings)
@@ -525,7 +540,7 @@ def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.
     wire_expand(monkeypatch)
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     work_calls = wire_work(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "finished"
@@ -534,6 +549,23 @@ def test_first_failure_starts_a_fix_session(tmp_path: Path, monkeypatch: pytest.
     assert work_calls[0]["role"] == "precompile_fix"
     assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "tex"
     assert work_calls[0]["trace_path"] == workdir.logs / "precompile-fix.jsonl"
+    assert work_calls[0]["mode"] == "fast"
+    assert load_manifest(workdir.notes, NotesFile) == NotesFile(notes=[Note(session="precompile_fix", **FIX_NOTE)])
+
+
+def test_a_rerun_drops_the_notes_of_the_last_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = make_workdir(tmp_path, {"main.tex": PLAIN_PAPER})
+    kept = Note(session="translate", **FIX_NOTE)
+    write_manifest(workdir.notes, NotesFile(notes=[Note(session="precompile_fix", **FIX_NOTE), kept]))
+    (workdir.logs / "precompile-fix.raw.jsonl").write_text("stale", encoding="utf-8")
+    wire_expand(monkeypatch)
+    wire_latexmk(monkeypatch, [{}])
+    work_calls = wire_work(monkeypatch)
+    manifest = precompile.run(workdir, mode="fast")
+    assert manifest.status is PrecompileStatus.OK
+    assert work_calls == []
+    assert load_manifest(workdir.notes, NotesFile) == NotesFile(notes=[kept])
+    assert not (workdir.logs / "precompile-fix.raw.jsonl").exists()
 
 
 def test_fix_session_error_still_goes_to_verification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -541,7 +573,7 @@ def test_fix_session_error_still_goes_to_verification(tmp_path: Path, monkeypatc
     wire_expand(monkeypatch)
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     wire_work(monkeypatch, stop_reason=StopReason.ERROR, detail="运行时 claude_code 不在 PATH 里")
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
@@ -555,7 +587,7 @@ def test_fix_session_error_then_verification_failure(tmp_path: Path, monkeypatch
     wire_expand(monkeypatch)
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}])
     wire_work(monkeypatch, stop_reason=StopReason.ERROR, detail="运行时 claude_code 不在 PATH 里")
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "error"
@@ -570,7 +602,7 @@ def test_fix_session_timeout_still_goes_to_verification(tmp_path: Path, monkeypa
     wire_expand(monkeypatch)
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     wire_work(monkeypatch, stop_reason=StopReason.TIMEOUT)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None
     assert manifest.fix_session.stop_reason == "timeout"
@@ -582,7 +614,7 @@ def test_final_verification_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     wire_expand(monkeypatch)
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}])
     wire_work(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert manifest.report is None
     assert "verify" in manifest.message
@@ -595,7 +627,7 @@ def test_first_compile_timeout_skips_the_fix_session(tmp_path: Path, monkeypatch
     wire_expand(monkeypatch)
     wire_latexmk(monkeypatch, [{"timeout": True}])
     work_calls = wire_work(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert "timeout" in manifest.message
     assert work_calls == []
@@ -607,7 +639,7 @@ def test_zero_pages_fails_the_verdict(tmp_path: Path, monkeypatch: pytest.Monkey
     wire_expand(monkeypatch)
     wire_latexmk(monkeypatch, [{"log": "Output written on main.xdv (0 pages, 8 bytes).\n"}])
     wire_work(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert "page count" in manifest.message
 
@@ -618,7 +650,7 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     (workdir.build / "sandbox" / "tex" / "main.pdf").write_bytes(b"stale")
     (workdir.build / "precompile.tex").write_text("stale", encoding="utf-8")
     (workdir.logs / "precompile-fix.jsonl").write_text("stale", encoding="utf-8")
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.MAIN_NOT_FOUND
     assert not (workdir.build / "sandbox" / "tex").exists()
     assert not (workdir.build / "precompile.tex").exists()
@@ -628,7 +660,7 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
 def test_report_traces_the_compile_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     actions: list[tuple[str, str]] = []
-    manifest = precompile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
+    manifest = precompile.run(workdir, mode="fast", report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is PrecompileStatus.OK
     assert actions == [("compiling", "main.tex")]
 
@@ -639,7 +671,7 @@ def test_report_traces_the_fix_session_and_verify(tmp_path: Path, monkeypatch: p
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     wire_work(monkeypatch)
     actions: list[tuple[str, str]] = []
-    manifest = precompile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
+    manifest = precompile.run(workdir, mode="fast", report=lambda status, summary: actions.append((status, summary)))
     assert manifest.status is PrecompileStatus.OK
     assert actions == [
         ("compiling", "main.tex"),
@@ -654,7 +686,7 @@ def wire_missing_inputs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
     def run(command: list[str], cwd: Path, timeout: float, **kwargs: object) -> ProcessOutcome:
         assert command[:-1] == list(precompile.LATEXPAND_COMMAND)
-        calls.append(cwd)
+        calls.append((cwd / command[-1]).resolve().parent)
         source = (cwd / command[-1]).read_bytes()
         for name in ("macros_new", "new_cmds", "wrong/body", "sections/body"):
             marker = b"\\include{" + name.encode() + b"}"
@@ -705,13 +737,13 @@ def test_arxiv_1905_12322v3_missing_legacy_inputs(
         workdir.precompile_fix_log.write_text("one session\n")
 
     calls = wire_work(monkeypatch, stop_reason, edit=edit)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     tree = workdir.sandbox("tex")
     assert manifest.status is PrecompileStatus.OK
     assert manifest.fix_session is not None and manifest.fix_session.stop_reason == str(stop_reason)
     assert manifest.report is not None and manifest.report.pdf_bytes > 0
     assert len(calls) == 1
-    assert expansions == [workdir.src, tree]
+    assert expansions == [workdir.src.resolve(), tree.resolve()]
     assert latexmk == {"compile": 1, "clean": 2}
     assert (workdir.src / main_file).read_text() == source
     assert (workdir.src / "local.sty").read_text() == "old"
@@ -738,7 +770,7 @@ def test_missing_input_path_repair_inlines_body(tmp_path: Path, monkeypatch: pyt
         (tree / "main.tex").write_text(source.replace("wrong/body", "sections/body"))
 
     calls = wire_work(monkeypatch, edit=edit)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK
     assert len(calls) == 1
     assert "Essential body content." in workdir.precompile_tex.read_text()
@@ -763,7 +795,7 @@ def test_missing_input_unresolved_fails_strict_recheck(
         (tree / "main.pdf").write_bytes(b"%PDF agent result cannot bypass strict expansion")
 
     calls = wire_work(monkeypatch, stop_reason, edit=edit)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert manifest.fix_session is not None and manifest.fix_session.stop_reason == str(stop_reason)
     assert manifest.report is None
@@ -794,7 +826,7 @@ def test_expansion_fix_does_not_start_second_compile_session(
         workdir.precompile_fix_log.write_text("original session\n")
 
     calls = wire_work(monkeypatch, edit=edit)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.COMPILE_FAILED
     assert manifest.fix_session is not None and manifest.fix_session.stop_reason == "finished"
     assert manifest.report is None
@@ -824,7 +856,7 @@ def test_non_missing_expansion_failures_do_not_start_fix(
 
     monkeypatch.setattr(processes, "run_in_process_group", run)
     calls = wire_work(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert manifest.fix_session is None and manifest.report is None
     assert calls == []
@@ -836,7 +868,7 @@ def test_missing_essential_body_remains_failed(tmp_path: Path, monkeypatch: pyte
     workdir = make_workdir(tmp_path, {"main.tex": source})
     wire_missing_inputs(monkeypatch)
     calls = wire_work(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert "sections/body.tex" in manifest.message
     assert manifest.fix_session is not None and len(calls) == 1
@@ -869,7 +901,7 @@ def test_unreadable_auxiliary_source_still_enters_fix(tmp_path: Path, monkeypatc
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
     wire_missing_inputs(monkeypatch)
     calls = wire_work(monkeypatch)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.EXPAND_FAILED
     assert manifest.fix_session is not None and len(calls) == 1
     assert any("unreadable.tex" in warning for warning in manifest.warnings)
@@ -895,7 +927,7 @@ def test_expansion_empties_comments_outside_code_environments(tmp_path: Path, mo
         "\\begin{lstlisting}\nx[i % n] = 1\n\\end{lstlisting}\n\\end{document}\n"
     )
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = workdir.precompile_tex.read_text(encoding="utf-8")
     assert manifest.status is PrecompileStatus.OK
     assert "Text %\n" in output
@@ -908,7 +940,7 @@ def test_injects_xecjk_after_the_live_documentclass(tmp_path: Path, monkeypatch:
         "\\documentclass{revtex4-2}\n\\fi\n\\begin{document}\nHello\n\\end{document}\n"
     )
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": paper})
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     output = (workdir.build / "precompile.tex").read_text(encoding="utf-8")
     assert manifest.status is PrecompileStatus.OK
     assert output.count("\\documentclass") == 1
@@ -923,4 +955,71 @@ def test_strip_unterminated_code_environment_is_kept_with_warning() -> None:
     assert precompile._strip_dead_branches(source, warnings) == source
     assert warnings == [
         "environment verbatim has no matching \\end{verbatim} before end of file; constant switch branches are not removed"
+    ]
+
+
+def kept(text: str, table: Mapping[str, TableEntry]) -> list[tuple[str, str, str]]:
+    return [(found.command, found.owner, found.target) for found in precompile.argument_inputs(text, table)]
+
+
+def test_arxiv_2607_24653_inputs_in_command_arguments_are_found(environments_table: Mapping[str, TableEntry]) -> None:
+    text = (
+        "\\resizebox{0.95\\textwidth}{!}{\\input{figures/benchmark0727-fixed}}\n"
+        "\\resizebox{\\columnwidth}{!}{\\input{figures/case-study-kernel-optimization.tex}}\n"
+        "\\fbox{\\include{part}}\n"
+        "\\scalebox{0.5}[1]{\\input fig.pdf_t }\n"
+        "\\resizebox{1pt}{!}%\n  {\n  \\input{commented_newline}\n}\n"
+    )
+    assert kept(text, environments_table) == [
+        ("input", "resizebox", "figures/benchmark0727-fixed"),
+        ("input", "resizebox", "figures/case-study-kernel-optimization.tex"),
+        ("include", "fbox", "part"),
+        ("input", "scalebox", "fig.pdf_t"),
+        ("input", "resizebox", "commented_newline"),
+    ]
+
+
+def test_inputs_outside_command_arguments_are_not_found(environments_table: Mapping[str, TableEntry]) -> None:
+    text = (
+        "\\input{top}\n"
+        "{\\small \\input{bare}}\n"
+        "Text {\\input{after_text}}\n"
+        "\\begin{figure}\n\\centering\n\\input{figure_body}\n\\end{figure}\n"
+        "\\begin{multicols}{4}\n{\n\\small\n\\input{contributors}\n}\n\\end{multicols}\n"
+        "\\section{A}\n\n{\\input{after_paragraph}}\n"
+        "\\section{B}\n{\\input{after_line_break}}\n"
+        "\\input{first} {\\input{after_input}}\n"
+        "\\fbox{\\{ \\}} \\input{after_escaped_braces}\n"
+        "\\fbox{% {\n\\textbf{x}} \\input{after_comment_brace}\n"
+        "\\fbox{\\verb|}|} \\input{after_verb}\n"
+        "\\begin{verbatim}\n\\fbox{\n\\end{verbatim}\n\\input{after_code}\n"
+    )
+    assert kept(text, environments_table) == []
+
+
+def test_hide_argument_inputs_marks_only_argument_inputs(environments_table: Mapping[str, TableEntry]) -> None:
+    source = b"\\input{top}\n\\resizebox{1pt}{!}{\\input{fig}}\n"
+    hidden = precompile.hide_argument_inputs(source, environments_table)
+    assert hidden == b"\\input{top}\n\\resizebox{1pt}{!}{" + precompile.KEPT_INPUT_MARK + b"input{fig}}\n"
+    assert hidden.replace(precompile.KEPT_INPUT_MARK, b"\\") == source
+
+
+def test_argument_inputs_stay_in_the_expansion_with_warnings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = PLAIN_PAPER.replace(
+        "Hello world.", "Hello world.\n\\resizebox{\\columnwidth}{!}{\\input{figures/plot.tex}}\n\\input{missing}"
+    )
+    workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": source, "figures/plot.tex": "x y\n1 2\n"})
+    manifest = precompile.run(workdir, mode="fast")
+    assert manifest.status is PrecompileStatus.OK
+    assert (workdir.src / "main.tex").read_text() == source
+    output = workdir.precompile_tex.read_text()
+    assert "\\resizebox{\\columnwidth}{!}{\\input{figures/plot.tex}}\n" in output
+    assert precompile.KEPT_INPUT_MARK.decode() not in output
+    assert [line for line in manifest.warnings if "figures/plot.tex" in line] == [
+        "\\input{figures/plot.tex} in an argument of \\resizebox is not expanded; "
+        "TeX reads the file at compile time and its text is not translated, at line 5"
+    ]
+    assert [line for line in manifest.warnings if "lines still contain" in line] == [
+        "1 lines still contain \\input{ or \\include{ outside comments and outside command arguments "
+        "after expansion; latexpand did not expand those files"
     ]

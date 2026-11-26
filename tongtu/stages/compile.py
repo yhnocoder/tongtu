@@ -11,17 +11,16 @@ from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 from .. import anchors, compiling, cropping, masking, pipeline, synctex, validation
-from ..artifacts.common import CompileReport, FixSession
+from ..artifacts.common import CompileReport, Session
 from ..artifacts.compile import CompileManifest, CompileStatus
 from ..artifacts.mask import BlocksFile
 from ..artifacts.precompile import PrecompileManifest
-from ..artifacts.survey import BriefFile
 from ..manifests import describe_error, load_manifest, write_manifest
 from ..workdir import ENCODING, Workdir
 
 STAGE_NAME = "compile"
 
-ROLE = "compile_fix"
+SKILL = "compile_fix"
 
 PRECOMPILE_STAGE_NAME = "precompile"
 
@@ -44,16 +43,17 @@ COUNT_FIELDS: tuple[str, ...] = (
 def run(
     paper_workdir: Workdir,
     *,
+    mode: str,
     report: Callable[[str, str], None] | None = None,
 ) -> CompileManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(paper_workdir, report or (lambda status, summary: None))
+    manifest = _execute(paper_workdir, mode, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> CompileManifest:
+def _execute(paper_workdir: Workdir, mode: str, report: Callable[[str, str], None]) -> CompileManifest:
     warnings: list[str] = []
     precompile_manifest = load_manifest(paper_workdir.manifest_path(PRECOMPILE_STAGE_NAME), PrecompileManifest)
     if precompile_manifest is None or precompile_manifest.report is None:
@@ -66,28 +66,14 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
             f"Rerun with --from {PRECOMPILE_STAGE_NAME}.",
             baseline=baseline,
         )
-    if not any(paper_workdir.reviewed.glob("*.tex")):
-        return _failed(
-            f"build/{paper_workdir.reviewed.name}/ holds no chunk file; run review first.", baseline=baseline
-        )
     try:
-        brief = BriefFile.model_validate_json(_read(paper_workdir.brief))
         blocks_file = BlocksFile.model_validate_json(_read(paper_workdir.blocks))
-        masked = _read(paper_workdir.masked)
-        chunk_ids = [chunk.id for chunk in brief.chunks]
-        sources = [_read(paper_workdir.chunks / f"{chunk_id}.tex") for chunk_id in chunk_ids]
-        reviewed = [_read(paper_workdir.reviewed / f"{chunk_id}.tex") for chunk_id in chunk_ids]
+        translated = _read(paper_workdir.translated)
     except (OSError, UnicodeDecodeError, ValidationError) as error:
         return _failed(describe_error(error), baseline=baseline)
-    if "".join(sources) != masked:
-        return _failed(
-            f"build/{paper_workdir.chunks.name}/ concatenated in the order of {paper_workdir.brief.name} does not equal "
-            f"{paper_workdir.masked.name} character for character; rerun with --from survey.",
-            baseline=baseline,
-        )
 
     try:
-        unmasked = masking.unmask("".join(reviewed), blocks_file.blocks, blocks_file.captions)
+        unmasked = masking.unmask(translated, blocks_file.blocks, blocks_file.captions)
     except masking.MaskError as error:
         return _failed(f"unmask failed: {error}", baseline=baseline)
     if unmasked.fallbacks:
@@ -100,12 +86,14 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Comp
     (tree / main_file).write_text(unmasked.text, encoding=ENCODING)
 
     final, fix_session, failure = compiling.compile_with_fix(
-        ROLE,
+        SKILL,
         tree,
         main_file,
         paper_workdir.compile_fix_log,
         warnings,
         report,
+        mode=mode,
+        notes_path=paper_workdir.notes,
     )
     if final is None or failure:
         return _failed(failure, warnings, baseline, fix_session)
@@ -214,7 +202,7 @@ def _failed(
     message: str,
     warnings: list[str] | None = None,
     baseline: CompileReport | None = None,
-    fix_session: FixSession | None = None,
+    fix_session: Session | None = None,
     report: CompileReport | None = None,
 ) -> CompileManifest:
     return CompileManifest(

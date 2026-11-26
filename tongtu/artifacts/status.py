@@ -18,11 +18,6 @@ class StageState(BaseModel):
     manifest: Path | None = None
 
 
-class ChunkCounts(BaseModel):
-    total: int
-    done: int
-
-
 class RunCommand(StrEnum):
     RUN = "run"
     STAGE = "stage"
@@ -32,13 +27,19 @@ class RunMarker(BaseModel):
     pid: PositiveInt
     started_at: datetime
     command: RunCommand
+    mode: str
 
 
 class PaperStatus(BaseModel):
     workdir: Path
     arxiv_id: str | None = None
+    version: int | None = None
     running: bool
     pid: int | None = None
+    started_at: datetime | None = None
+    mode: str | None = None
     stages: list[StageState]
-    translate_chunks: ChunkCounts | None = None
     pdf: Path | None = None
+    meta: Path | None = None
+    glossary: Path | None = None
+    notes: Path | None = None

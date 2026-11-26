@@ -8,18 +8,29 @@ from pathlib import Path
 
 import pytest
 
-from tongtu.model.work import StopReason, work
+from tongtu.artifacts.common import StopReason
+from tongtu.model.work import work
+from tongtu.workdir import raw_log_path
 
 pytestmark = pytest.mark.llm
 
 work_module = importlib.import_module("tongtu.model.work")
 
+RUNTIME = "claude-code"
+
 TABLE = """
-[roles]
-smoke_codex = { model = "codex/gpt-6-astra", effort = "low", timeout_seconds = 300 }
-smoke_claude = { model = "claude-code/claude-haiku-4-5-20251001", effort = "low", timeout_seconds = 300 }
-smoke_pi = { model = "pi", timeout_seconds = 300 }
+[modes.fast]
+model = "claude-code/claude-haiku-5-5"
+effort = "low"
+timeout_seconds = 300
+
+[modes.smart]
+model = "claude-code/claude-haiku-5-5"
+effort = "low"
+timeout_seconds = 300
 """
+
+SKILL = "smoke"
 
 SMOKE_SKILL = """---
 name: smoke
@@ -30,57 +41,40 @@ description: 在现场写一个 hello.txt
 """
 
 
-def doctor_checks(name: str) -> dict[str, dict]:
+def require_login(name: str) -> None:
     agentrun = shutil.which("agentrun")
     if agentrun is None:
         pytest.skip("PATH 里没有 agentrun")
     completed = subprocess.run([agentrun, "doctor", name, "--json"], capture_output=True, text=True)
     try:
-        return {check["check"]: check for check in json.loads(completed.stdout)}
+        checks = {check["check"]: check for check in json.loads(completed.stdout)}
     except (ValueError, TypeError, KeyError):
         pytest.skip(f"agentrun doctor {name} 没有输出检查结果：{completed.stderr.strip()}")
-
-
-def require_login(name: str) -> None:
-    login = doctor_checks(name).get("login", {})
+    login = checks.get("login", {})
     if login.get("status") != "ok":
         pytest.skip(f"{name} 没有登录：{login.get('detail')}")
 
 
-def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, skill: str) -> None:
+def test_work_runs_a_minimal_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    require_login(RUNTIME)
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
-    config = tmp_path / "home" / "config.toml"
-    config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(TABLE, encoding="utf-8")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "config.toml").write_text(TABLE, encoding="utf-8")
     skill_root = tmp_path / "skill"
-    (skill_root / role).mkdir(parents=True)
-    (skill_root / role / "SKILL.md").write_text(skill, encoding="utf-8")
+    (skill_root / SKILL).mkdir(parents=True)
+    (skill_root / SKILL / "SKILL.md").write_text(SMOKE_SKILL, encoding="utf-8")
     monkeypatch.setattr(work_module, "SKILL_ROOT", skill_root)
-
-
-def run_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str) -> None:
-    prepared(tmp_path, monkeypatch, role, SMOKE_SKILL)
-    workdir = tmp_path / "paper"
-    workdir.mkdir()
-    trace_path = tmp_path / "logs" / f"{role}.jsonl"
-    outcome = work(role, workdir, trace_path=trace_path)
-    assert outcome.stop_reason == StopReason.FINISHED, outcome.detail
-    assert "hello" in (workdir / "hello.txt").read_text(encoding="utf-8").strip().lower()
-    assert trace_path.stat().st_size > 0
-    print(f"trace： {trace_path} ")
-    print(f"现场： {workdir} ")
-
-
-def test_work_runs_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    require_login("codex")
-    run_smoke(tmp_path, monkeypatch, "smoke_codex")
-
-
-def test_work_runs_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    require_login("claude-code")
-    run_smoke(tmp_path, monkeypatch, "smoke_claude")
-
-
-def test_work_runs_pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    require_login("pi")
-    run_smoke(tmp_path, monkeypatch, "smoke_pi")
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    log_path = tmp_path / "logs" / f"{SKILL}.jsonl"
+    outcome = work(SKILL, session_dir, mode="fast", log_path=log_path)
+    print(outcome.session.model_dump_json(indent=2))
+    assert outcome.session.stop_reason is StopReason.FINISHED, outcome.detail
+    assert outcome.session.model == "claude-code/claude-haiku-5-5"
+    assert outcome.session.effort == "low"
+    assert (session_dir / "hello.txt").read_text(encoding="utf-8").strip().lower() == "hello"
+    assert log_path.stat().st_size > 0
+    assert raw_log_path(log_path).stat().st_size > 0
+    usage = outcome.session.usage
+    assert usage is not None and usage.turns >= 1 and usage.output_tokens > 0
+    assert usage.cost_usd is not None and usage.cost_usd > 0

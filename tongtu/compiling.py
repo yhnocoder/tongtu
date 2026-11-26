@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import fonts, model, processes, texlog
-from .artifacts.common import CompileReport, FixSession
+from . import fonts, model, notes, processes, texlog
+from .artifacts.common import CompileReport, NoteSession, Session, StopReason
 from .manifests import describe_error, timeout_warning
-from .model.work import PROMPT, StopReason, skill_dir
 
 COMPILE_TIMEOUT_SECONDS = 600
 
@@ -93,41 +91,47 @@ def clean_tree(tree: Path, main_filename: str) -> list[str]:
 
 
 def fix(
-    role: str,
+    skill: NoteSession,
     tree: Path,
-    trace_path: Path,
+    log_path: Path,
     main_filename: str,
     warnings: list[str],
+    *,
+    mode: str,
+    notes_path: Path,
     report: Callable[[str], None] | None = None,
-) -> FixSession:
-    started = time.monotonic()
+) -> Session:
     log_name = Path(main_filename).with_suffix(".log").name
-    prompt = PROMPT.format(skill_path=skill_dir(role)) + FIX_PROMPT_FILES.format(main=main_filename, log=log_name)
-    outcome = model.work(role, tree, trace_path=trace_path, report=report, prompt=prompt)
-    session = FixSession(
-        stop_reason=str(outcome.stop_reason),
-        model=outcome.model,
-        duration_seconds=time.monotonic() - started,
+    outcome = model.work(
+        skill,
+        tree,
+        mode=mode,
+        log_path=log_path,
+        report=report,
+        extra_prompt=FIX_PROMPT_FILES.format(main=main_filename, log=log_name),
     )
-    if outcome.stop_reason is StopReason.ERROR:
+    if outcome.session.stop_reason is StopReason.ERROR:
         warnings.append(
             f"the fix session ended with error ({outcome.detail}); the verdict still comes from the scripted checks"
         )
-    if outcome.stop_reason is StopReason.TIMEOUT:
+    if outcome.session.stop_reason is StopReason.TIMEOUT:
         warnings.append(timeout_warning("fix"))
-    return session
+    warnings.extend(notes.collect(tree, skill, notes_path))
+    return outcome.session
 
 
 def compile_with_fix(
-    role: str,
+    skill: NoteSession,
     tree: Path,
     main_filename: str,
-    trace_path: Path,
+    log_path: Path,
     warnings: list[str],
     report: Callable[[str, str], None],
     *,
-    fix_session: FixSession | None = None,
-) -> tuple[CompileAttempt | None, FixSession | None, str]:
+    mode: str,
+    notes_path: Path,
+    fix_session: Session | None = None,
+) -> tuple[CompileAttempt | None, Session | None, str]:
     if fix_session is not None:
         warnings.extend(clean_tree(tree, main_filename))
     report("verifying" if fix_session is not None else "compiling", main_filename)
@@ -152,11 +156,13 @@ def compile_with_fix(
         )
     report("fix session", "running")
     session = fix(
-        role,
+        skill,
         tree,
-        trace_path,
+        log_path,
         main_filename,
         warnings,
+        mode=mode,
+        notes_path=notes_path,
         report=lambda action: report("fix session", action),
     )
     warnings.extend(clean_tree(tree, main_filename))

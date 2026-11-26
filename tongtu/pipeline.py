@@ -4,46 +4,52 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from .workdir import Workdir
+from . import notes
+from .artifacts.common import Manifest, NoteSession
+from .manifests import load_manifest
+from .workdir import Workdir, raw_log_path
 
-STAGES: tuple[str, ...] = ("fetch", "precompile", "mask", "survey", "translate", "review", "compile")
+STAGES: tuple[str, ...] = ("fetch", "precompile", "mask", "translate", "compile")
 
 STAGE_OUTPUTS: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
     "fetch": (lambda w: w.src,),
     "precompile": (lambda w: w.precompile_tex, lambda w: w.precompile_pdf),
     "mask": (lambda w: w.masked, lambda w: w.blocks),
-    "survey": (lambda w: w.brief, lambda w: w.chunks),
     "translate": (lambda w: w.translated,),
-    "review": (lambda w: w.reviewed,),
     "compile": (lambda w: w.zh_tex, lambda w: w.zh_pdf),
 }
 
-STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path] | str, ...]] = {
-    "fetch": (lambda w: w.src, lambda w: w.eprint),
+STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
+    "fetch": (lambda w: w.src, lambda w: w.eprint, lambda w: w.meta),
     "precompile": (
         lambda w: w.sandbox("tex"),
         lambda w: w.precompile_tex,
         lambda w: w.precompile_pdf,
         lambda w: w.precompile_fix_log,
+        lambda w: raw_log_path(w.precompile_fix_log),
     ),
     "mask": (lambda w: w.masked, lambda w: w.blocks),
-    "survey": (lambda w: w.brief, lambda w: w.chunks, lambda w: w.survey_terms_log),
     "translate": (
-        lambda w: w.translated,
         lambda w: w.sandbox("translate"),
-        "logs/translate-*.json",
-        "logs/translate-*.jsonl",
+        lambda w: w.translated,
+        lambda w: w.paper_glossary,
+        lambda w: w.translate_log,
+        lambda w: raw_log_path(w.translate_log),
     ),
-    "review": (lambda w: w.sandbox("review"), lambda w: w.reviewed, lambda w: w.review_log),
     "compile": (
         lambda w: w.zh_tex,
         lambda w: w.zh_pdf,
         lambda w: w.zh_anchors,
         lambda w: w.zh_synctex,
         lambda w: w.compile_fix_log,
-        # why(#119): 改名前编译的论文留有 out/zh.pdf
-        "out/zh.pdf",
+        lambda w: raw_log_path(w.compile_fix_log),
     ),
+}
+
+STAGE_SESSIONS: dict[str, NoteSession] = {
+    "precompile": "precompile_fix",
+    "translate": "translate",
+    "compile": "compile_fix",
 }
 
 
@@ -57,9 +63,14 @@ def _present(path: Path) -> bool:
     return path.is_file()
 
 
+def completed(workdir: Workdir, stage: str) -> bool:
+    manifest = load_manifest(workdir.manifest_path(stage), Manifest)
+    return manifest is not None and manifest.ok
+
+
 def first_pending(workdir: Workdir) -> str | None:
     for name in STAGES:
-        if not outputs_present(workdir, name):
+        if not completed(workdir, name):
             return name
     return None
 
@@ -70,11 +81,10 @@ def downstream(stage: str) -> tuple[str, ...]:
 
 def clean(workdir: Workdir, stage: str) -> None:
     for entry in STAGE_REMOVES[stage]:
-        if isinstance(entry, str):
-            for path in sorted(workdir.path.glob(entry)):
-                _remove(path)
-        else:
-            _remove(entry(workdir))
+        _remove(entry(workdir))
+    session = STAGE_SESSIONS.get(stage)
+    if session is not None:
+        notes.remove(workdir.notes, session)
     _remove(workdir.manifest_path(stage))
 
 

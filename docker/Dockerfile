@@ -164,7 +164,7 @@ RUN curl -fL --retry 3 -o /usr/local/bin/agentrun \
     && agentrun --version
 ENV AGENTRUN_SANDBOX=off
 
-# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/papers/<arxiv_id>，宿主挂进来即可续跑。
+# 入口 = PATH 上的 `tongtu`（venv 的 bin 前置）。工作目录默认 /work，论文目录落 /work/papers/<编号加版本号>，宿主挂进来即可续跑。
 ENV PATH="/opt/tongtu/.venv/bin:${PATH}" \
     TONGTU_HOME=/work
 
@@ -183,10 +183,10 @@ WORKDIR /work
 # 构建时自检：xelatex / latexmk / latexpand 三件套 + 打包的字体文件齐全，这个镜像才成立。
 # 三个程序的在位判断本来就是 doctor 干的活（tongtu/cli.py 的 TOOLCHAIN_CHECKS），
 # 这里不另抄一遍 `xxx --version`：那既重复又容易被某个工具「--version 退非零」判成假失败。
-# doctor 的退出码只对工具链与字体那一组负责，密钥与登录缺失不计入（docs/design/pages/remote-cli.html）：
-# 这个镜像是要推 GHCR 的可分发产物，构建它的机器不该需要运行期凭证。
+# 构建时没有 config.toml，doctor 在工具链与字体齐全、只缺配置时退出 3，这里把 3 也算通过；
+# 工具链或字体缺失时退出 1，构建失败。这个镜像是要推 GHCR 的可分发产物，构建它的机器不该需要运行期凭证。
 RUN tongtu --version \
-    && tongtu doctor
+    && { tongtu doctor || [ $? -eq 3 ]; }
 
 LABEL org.opencontainers.image.title="tongtu" \
       org.opencontainers.image.description="通途：基于 LaTeX 源码的 arXiv 论文英译中引擎（TeX Live full 参考环境）" \

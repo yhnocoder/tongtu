@@ -1,23 +1,34 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
-from collections.abc import Callable
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .. import comments, compiling, fonts, pipeline, preamble, processes
-from ..artifacts.common import FixSession
+from ..artifacts.common import Session
 from ..artifacts.precompile import PrecompileManifest, PrecompileStatus
 from ..conditionals import strip_dead_branches
 from ..fonts import FONT_FILE_SUFFIXES, FONTS_DIR, family_files
 from ..manifests import describe_error, write_manifest
-from ..masking import ENVIRONMENTS_TABLE_PATH, MaskError, parse_environment_table
+from ..masking import (
+    ENVIRONMENTS_TABLE_PATH,
+    MaskError,
+    TableEntry,
+    parse_environment_table,
+    skip_optional_arguments,
+    skip_verb,
+)
 from ..model.config import FontFamily, FontsConfig
+from ..validation import read_control_sequence
 from ..workdir import Workdir
 
 STAGE_NAME = "precompile"
 
-ROLE = "precompile_fix"
+SKILL = "precompile_fix"
 
 TREE_NAME = "tex"
 
@@ -40,6 +51,12 @@ END_DOCUMENT_MARKER = rb"\end{document}"
 MAIN_FILE_BASENAME = "main.tex"
 
 INPUT_MARKERS: tuple[bytes, ...] = (rb"\input{", rb"\include{")
+
+INPUT_COMMANDS = frozenset({"input", "include"})
+
+INPUT_TARGET_RE = re.compile(r"\s*\{([^{}]*)\}|\s+([^\s{}%]+)")
+
+KEPT_INPUT_MARK = rb"\TONGTUKEEP"
 
 BIBLIOGRAPHY_COMMAND_RE = re.compile(rb"\\bibliography\s*\{[^}]*\}")
 
@@ -111,19 +128,28 @@ XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 """
 
 
+@dataclass(frozen=True)
+class ArgumentInput:
+    start: int
+    command: str
+    owner: str
+    target: str
+
+
 def run(
     paper_workdir: Workdir,
     *,
+    mode: str,
     report: Callable[[str, str], None] | None = None,
 ) -> PrecompileManifest:
     paper_workdir.create()
     pipeline.clean(paper_workdir, STAGE_NAME)
-    manifest = _execute(paper_workdir, report or (lambda status, summary: None))
+    manifest = _execute(paper_workdir, mode, report or (lambda status, summary: None))
     write_manifest(paper_workdir.manifest_path(STAGE_NAME), manifest)
     return manifest
 
 
-def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> PrecompileManifest:
+def _execute(paper_workdir: Workdir, mode: str, report: Callable[[str, str], None]) -> PrecompileManifest:
     src = paper_workdir.src
     warnings: list[str] = []
     candidates = _scan_candidates(src, warnings)
@@ -152,11 +178,13 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
         _write_expand_diagnostic(tree, main_file, failure, missing_diagnostic, warnings)
         report("fix session", "running")
         fix_session = compiling.fix(
-            ROLE,
+            SKILL,
             tree,
             paper_workdir.precompile_fix_log,
             main_file,
             warnings,
+            mode=mode,
+            notes_path=paper_workdir.notes,
             report=lambda action: report("fix session", action),
         )
         src = tree
@@ -185,8 +213,10 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
     if residual:
         warnings.append(
             f"{residual} lines still contain \\input{{ or \\include{{ outside comments "
-            "after expansion; those files were not expanded"
+            "and outside command arguments after expansion; latexpand did not expand those files"
         )
+    expanded = expanded.replace(KEPT_INPUT_MARK, BACKSLASH)
+    warnings.extend(_kept_input_warnings(expanded))
 
     injected = _inject_cjk(expanded, warnings, fonts.configured())
     if fix_session is None:
@@ -194,12 +224,14 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
     (tree / main_file).write_bytes(injected)
 
     final, fix_session, failure = compiling.compile_with_fix(
-        ROLE,
+        SKILL,
         tree,
         main_file,
         paper_workdir.precompile_fix_log,
         warnings,
         report,
+        mode=mode,
+        notes_path=paper_workdir.notes,
         fix_session=fix_session,
     )
     if final is None or failure:
@@ -218,7 +250,7 @@ def _execute(paper_workdir: Workdir, report: Callable[[str, str], None]) -> Prec
 
 
 def _compile_failed(
-    main_file: str, warnings: list[str], message: str, fix_session: FixSession | None = None
+    main_file: str, warnings: list[str], message: str, fix_session: Session | None = None
 ) -> PrecompileManifest:
     return PrecompileManifest(
         status=PrecompileStatus.COMPILE_FAILED,
@@ -270,17 +302,22 @@ def _select_main_file(candidates: list[tuple[str, bool]]) -> str | None:
 
 def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | None, str, str]:
     command = [*LATEXPAND_COMMAND, main_file]
-    try:
-        outcome = processes.run_in_process_group(command, src, LATEXPAND_TIMEOUT_SECONDS)
-    except OSError as error:
-        return (
-            None,
-            (
-                f"failed to run latexpand ({describe_error(error)}). latexpand ships with TeX Live; "
-                "check that it is installed and in PATH."
-            ),
-            "",
-        )
+    table = parse_environment_table(ENVIRONMENTS_TABLE_PATH.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory() as scratch:
+        shadow = Path(scratch) / TREE_NAME
+        shutil.copytree(src.resolve(), shadow, symlinks=True, copy_function=os.symlink)
+        _hide_argument_inputs_in_tree(shadow, table, warnings)
+        try:
+            outcome = processes.run_in_process_group(command, shadow, LATEXPAND_TIMEOUT_SECONDS)
+        except OSError as error:
+            return (
+                None,
+                (
+                    f"failed to run latexpand ({describe_error(error)}). latexpand ships with TeX Live; "
+                    "check that it is installed and in PATH."
+                ),
+                "",
+            )
     stderr_text = outcome.stderr_text
     warnings.extend(line for line in stderr_text.splitlines() if line.strip())
     if outcome.timed_out:
@@ -302,8 +339,109 @@ def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | Non
             ),
             stderr_text if MISSING_INPUT_RE.search(stderr_text) else "",
         )
-    table = parse_environment_table(ENVIRONMENTS_TABLE_PATH.read_text(encoding="utf-8"))
     return comments.strip_comment_text(outcome.stdout, table), "", ""
+
+
+def _hide_argument_inputs_in_tree(tree: Path, table: Mapping[str, TableEntry], warnings: list[str]) -> None:
+    for path in sorted(tree.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            warnings.append(
+                f"cannot read {path.relative_to(tree)} while locating \\input in command arguments: "
+                f"{describe_error(error)}"
+            )
+            continue
+        if not SOURCE_INPUT_RE.search(content):
+            continue
+        hidden = hide_argument_inputs(content, table)
+        if hidden != content:
+            path.unlink()
+            path.write_bytes(hidden)
+
+
+def hide_argument_inputs(source: bytes, table: Mapping[str, TableEntry]) -> bytes:
+    text = source.decode(comments.BYTE_TEXT_ENCODING)
+    mark = KEPT_INPUT_MARK.decode(comments.BYTE_TEXT_ENCODING)
+    for found in reversed(argument_inputs(text, table)):
+        text = text[: found.start] + mark + text[found.start + 1 :]
+    return text.encode(comments.BYTE_TEXT_ENCODING)
+
+
+def argument_inputs(text: str, table: Mapping[str, TableEntry]) -> list[ArgumentInput]:
+    found: list[ArgumentInput] = []
+    groups: list[str | None] = []
+    owner: str | None = None
+    position = 0
+    while position < len(text):
+        character = text[position]
+        if character == "%":
+            newline = text.find("\n", position)
+            position = len(text) if newline < 0 else newline + 1
+            continue
+        if character in " \t\n":
+            if character == "\n":
+                owner = None
+            position += 1
+            continue
+        if character == "{":
+            groups.append(owner)
+            owner = None
+            position += 1
+            continue
+        if character == "}":
+            owner = groups.pop() if groups else None
+            position += 1
+            continue
+        if character == "[" and owner is not None:
+            try:
+                position = skip_optional_arguments(text, position)
+            except MaskError:
+                owner = None
+                position += 1
+            continue
+        if character != "\\":
+            owner = None
+            position += 1
+            continue
+        name, after = read_control_sequence(text, position)
+        if name == "verb":
+            owner = None
+            position = skip_verb(text, after)
+            continue
+        if name == "begin":
+            owner = None
+            position = comments.skip_code_block(text, after, table)
+            continue
+        if name in INPUT_COMMANDS:
+            if groups and groups[-1] is not None:
+                found.append(ArgumentInput(position, name, groups[-1], _input_target(text, after)))
+            owner = None
+            position = after
+            continue
+        owner = name if name.isalpha() else None
+        position = after
+    return found
+
+
+def _input_target(text: str, position: int) -> str:
+    match = INPUT_TARGET_RE.match(text, position)
+    if match is None:
+        return ""
+    return match.group(1) if match.group(1) is not None else match.group(2)
+
+
+def _kept_input_warnings(output: bytes) -> list[str]:
+    table = parse_environment_table(ENVIRONMENTS_TABLE_PATH.read_text(encoding="utf-8"))
+    text = output.decode(comments.BYTE_TEXT_ENCODING)
+    return [
+        f"\\{found.command}{{{found.target}}} in an argument of \\{found.owner} is not expanded; "
+        "TeX reads the file at compile time and its text is not translated, "
+        f"at line {text.count(chr(10), 0, found.start) + 1}"
+        for found in argument_inputs(text, table)
+    ]
 
 
 def _write_expand_diagnostic(tree: Path, main_file: str, failure: str, stderr: str, warnings: list[str]) -> None:

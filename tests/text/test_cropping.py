@@ -132,7 +132,10 @@ def test_an_unreadable_pdf_keeps_its_bytes(tmp_path: Path, monkeypatch: pytest.M
 def test_enabled_follows_the_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     assert cropping.enabled() is False
-    (tmp_path / "config.toml").write_text("[pdf]\ncrop_margins = true\n", encoding="utf-8")
+    (tmp_path / "config.toml").write_text(
+        '[modes.fast]\nmodel = "claude-code/m"\n\n[modes.smart]\nmodel = "claude-code/m"\n\n[pdf]\ncrop_margins = true\n',
+        encoding="utf-8",
+    )
     assert cropping.enabled() is True
 
 

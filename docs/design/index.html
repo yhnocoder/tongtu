@@ -10,40 +10,21 @@
 <body>
 <main class="wide index">
 <h1>通途设计文档</h1>
-<p class="lead">通途把 arXiv 论文的 LaTeX 源码翻译成中文，编译出保留原文排版与公式的 PDF。设计文档分三份：流水线写七个阶段的任务、状态与产物，模型调用层写 ask / work 与 models.toml，命令行写命令、选项与重跑规则。</p>
+<p class="lead">通途设计写五个阶段、命令行、配置与供其他程序读取的输出，另外两份文档写在服务器上远程运行通途的设计与命令。</p>
 
 <h2>设计文档</h2>
 <ul class="cards">
-  <li><a class="card" href="pipeline.html">
-    <div class="pv">
-      <div class="pv-line pv-a pv-s1">fetch       <span class="pv-chip">src/</span></div>
-      <div class="pv-line pv-a pv-s2">precompile  <span class="pv-chip">build/precompile.tex</span></div>
-      <div class="pv-line pv-a pv-s3">translate   <span class="pv-chip">build/translated/</span></div>
-      <div class="pv-line pv-a pv-s4">compile     <span class="pv-chip hot">out/&lt;ID&gt;.zh.pdf</span></div>
-    </div>
-    <div class="card-body"><strong>通途流水线</strong><span>fetch → precompile → mask → survey → translate → review → compile 七个阶段，每个阶段一张卡片：任务、状态、读写的文件、细节与常量、产物的类定义；另有术语表与字体两张配置卡片。</span>
-    <div class="card-tags"><i>pipeline</i><i>stages</i><i>artifacts</i></div></div>
-  </a></li>
-  <li><a class="card" href="pages/model.html">
-    <div class="pv">
-      <div class="pv-line pv-a pv-s1">ask(role, system, messages)  <span class="pv-chip">AskOutcome</span></div>
-      <div class="pv-line pv-a pv-s2">work(role, workdir)          <span class="pv-chip">WorkOutcome</span></div>
-      <div class="pv-line pv-a pv-s3">[runtime.codex]  command = [...]</div>
-      <div class="pv-line pv-a pv-s4">[roles]  translate = { runtime = "codex" }</div>
-    </div>
-    <div class="card-body"><strong>模型调用层</strong><span>ask 做单次问答，work 在一棵目录树里启动一次 agent 会话；运行时是一条命令模板；models.toml 的格式与会话的约束。</span>
-    <div class="card-tags"><i>model</i><i>ask</i><i>work</i><i>models.toml</i></div></div>
-  </a></li>
-  <li><a class="card" href="pages/cli.html">
+  <li><a class="card" href="pages/design.html">
     <div class="pv pv-dark">
       <div class="pv-line pv-cmd"><b>$</b><span class="pv-a">tongtu run 2412.19437</span></div>
-      <div class="pv-line pv-a pv-s1">✓ fetch       ok   tar.gz, 14 tex files</div>
-      <div class="pv-line pv-a pv-s2">✓ precompile  ok   12 pages</div>
-      <div class="pv-line pv-a pv-s3">✓ translate   ok   17 chunks, 1 fallback</div>
-      <div class="pv-line pv-a pv-s4">✓ compile     ok   12 pages, baseline 12</div>
+      <div class="pv-line pv-a pv-s1">✓ fetch       ok   v2, tar.gz, 14 tex files</div>
+      <div class="pv-line pv-a pv-s1">✓ precompile  ok   66 pages</div>
+      <div class="pv-line pv-a pv-s2">✓ mask        ok   183 blocks masked</div>
+      <div class="pv-line pv-a pv-s3">✓ translate   ok   164 paragraphs, 31 new terms</div>
+      <div class="pv-line pv-a pv-s4">✓ compile     ok   56 pages, baseline 66</div>
     </div>
-    <div class="card-body"><strong>命令行</strong><span>tongtu run、stage、status、validate、doctor、setup 的用法，选项、退出码、文件与环境变量，以及各种情况下的示例输出。</span>
-    <div class="card-tags"><i>cli</i><i>run</i><i>options</i></div></div>
+    <div class="card-body"><strong>通途设计</strong><span>fetch → precompile → mask → translate → compile 五个阶段的任务、状态、读写的文件、常量与产物类；命令行、论文编号与版本、目录与配置、术语表、模式与 agent 会话，以及供其他程序读取的输出。</span>
+    <div class="card-tags"><i>stages</i><i>cli</i><i>glossary</i><i>modes</i></div></div>
   </a></li>
   <li><a class="card" href="pages/remote.html">
     <div class="pv">

@@ -10,8 +10,29 @@ def strip(source: str, table: Mapping[str, masking.TableEntry]) -> str:
 
 
 def test_comment_text_is_emptied_and_newlines_are_kept(environments_table: Mapping[str, masking.TableEntry]) -> None:
-    source = "% whole line\nText % tail\n\\% escaped % gone\n\\\\% after a line break\n"
-    assert strip(source, environments_table) == "%\nText %\n\\% escaped %\n\\\\%\n"
+    source = "Text % tail\n\\% escaped % gone\n\\\\% after a line break\n"
+    assert strip(source, environments_table) == "Text %\n\\% escaped %\n\\\\%\n"
+
+
+def test_whole_line_comments_are_removed_with_their_newline(
+    environments_table: Mapping[str, masking.TableEntry],
+) -> None:
+    source = "% first\nA\n  \t% indented\n%\nB % tail\n% last without newline"
+    assert strip(source, environments_table) == "A\nB %\n"
+
+
+def test_whole_line_comment_before_end_document_keeps_the_cut(
+    environments_table: Mapping[str, masking.TableEntry],
+) -> None:
+    source = "Body\n% closing note\n\\end{document}\nleftover\n"
+    assert strip(source, environments_table) == "Body\n\\end{document}\n"
+
+
+def test_whole_line_comment_inside_code_environment_is_kept(
+    environments_table: Mapping[str, masking.TableEntry],
+) -> None:
+    source = "\\begin{verbatim}\n% shown\n\\end{verbatim}\n"
+    assert strip(source, environments_table) == source
 
 
 def test_code_environments_keep_their_percent_signs(environments_table: Mapping[str, masking.TableEntry]) -> None:
@@ -44,7 +65,7 @@ def test_commented_begin_does_not_open_a_code_environment(
     environments_table: Mapping[str, masking.TableEntry],
 ) -> None:
     source = "% \\begin{verbatim}\nText % tail\n"
-    assert strip(source, environments_table) == "%\nText %\n"
+    assert strip(source, environments_table) == "Text %\n"
 
 
 def test_unclosed_code_environment_is_stripped_like_text(

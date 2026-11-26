@@ -148,6 +148,20 @@ def test_line_ranges_follow_lines_changed_after_unmask(environments_table: Mappi
     assert same["PAR-0-0"] == (3, 3)
 
 
+def test_line_ranges_stay_right_when_text_follows_a_comment_on_its_line(
+    environments_table: Mapping[str, masking.TableEntry],
+) -> None:
+    joined = (*UNITS_TRANSLATIONS[:1], ("⟦BLK-1⟧\nline two.", "⟦BLK-1⟧第二行。"), *UNITS_TRANSLATIONS[2:])
+    source, source_units = masked_units(UNITS_PAPER, environments_table, UNITS_TRANSLATIONS)
+    target, target_units = masked_units(UNITS_PAPER, environments_table, joined)
+    assert target.text == source.text
+    spans = {unit.id: target.text[unit.start : unit.end] for unit in target_units}
+    assert spans["PAR-0-1"] == "第一段第一行\n% a comment line\n第二行。"
+    assert anchors.line_ranges(target_units, target.text, target.text) == anchors.line_ranges(
+        source_units, source.text, source.text
+    )
+
+
 def line(tag_line: int, x: float, baseline: float, width: float, *records: str, height: float = 10) -> list[str]:
     return [synctex_record("(", 1, tag_line, x, baseline, width, height, 2), *records, ")"]
 

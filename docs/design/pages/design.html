@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通途设计</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/lxgwwenkaiscreen.css">
+<link rel="stylesheet" href="../style.css">
+<script defer src="../math.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-chtml.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/line-highlight/prism-line-highlight.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/diff-highlight/prism-diff-highlight.min.js"></script>
+<script defer src="../code.js"></script>
+</head>
+<body>
+<main class="doc">
+
+<nav class="toc" aria-label="目录">
+  <p class="toc-label">目录</p>
+  <ol>
+    <li><a href="#flow">五个阶段</a></li>
+    <li><a href="#cli">命令行</a></li>
+    <li><a href="#versions">论文编号与版本</a></li>
+    <li><a href="#files">目录与配置</a></li>
+    <li><a href="#stages">各阶段的规格</a></li>
+    <li class="sub"><a href="#fetch">fetch</a></li>
+    <li class="sub"><a href="#precompile">precompile</a></li>
+    <li class="sub"><a href="#mask">mask</a></li>
+    <li class="sub"><a href="#translate">translate</a></li>
+    <li class="sub"><a href="#compile">compile</a></li>
+    <li><a href="#glossary">术语表</a></li>
+    <li><a href="#modes">模式与 agent 会话</a></li>
+    <li><a href="#status">供其他程序读取的输出</a></li>
+  </ol>
+</nav>
+
+<div class="doc-body">
+<p class="nav"><a href="../index.html">返回索引</a></p>
+<h1>通途设计</h1>
+
+<section id="flow">
+  <h2>五个阶段</h2>
+  <p><code>tongtu run</code> 依次运行五个阶段。每个阶段读上一个阶段的产物，写出自己的产物和一份 manifest。只有 translate 每次都启动 agent 会话；precompile 与 compile 只在展开或编译失败时各启动一次修复会话。</p>
+  <ol class="flow">
+    <li><span class="n">1</span><span class="name">fetch</span><span class="what">查询版本与论文信息，下载并解包源码</span><span class="who">规则</span></li>
+    <li><span class="n">2</span><span class="name">precompile</span><span class="what">展开成单文件，加入中文排版设置，确认原文能编译</span><span class="who">规则；失败时一次修复会话</span></li>
+    <li><span class="n">3</span><span class="name">mask</span><span class="what">把公式、图表、代码等不翻译的部分换成占位符</span><span class="who">规则</span></li>
+    <li class="agent"><span class="n">4</span><span class="name">translate</span><span class="what">一次会话译出全文，会话外重跑校验</span><span class="who">agent 会话</span></li>
+    <li><span class="n">5</span><span class="name">compile</span><span class="what">把占位符换回原文，编译中文 PDF</span><span class="who">规则；失败时一次修复会话</span></li>
+  </ol>
+  <p>一次成功的运行在 <code>out/</code> 下写出五个文件，文件名都带论文编号与版本号：</p>
+  <table>
+    <thead><tr><th>文件</th><th>内容</th><th>写出的阶段</th></tr></thead>
+    <tbody>
+      <tr><td><code>&lt;ID&gt;.zh.pdf</code></td><td class="wrap">中文 PDF</td><td>compile</td></tr>
+      <tr><td><code>&lt;ID&gt;.zh.anchors.json</code></td><td class="wrap">译文每个块在 PDF 上的位置，供阅读器在原文与译文之间按块对照</td><td>compile</td></tr>
+      <tr><td><code>&lt;ID&gt;.meta.json</code></td><td class="wrap">论文信息：题目、作者、摘要、分类、版本、日期</td><td>fetch</td></tr>
+      <tr><td><code>&lt;ID&gt;.glossary.json</code></td><td class="wrap">本篇实际使用的术语表</td><td>translate</td></tr>
+      <tr><td><code>&lt;ID&gt;.notes.json</code></td><td class="wrap">各次 agent 会话记下的问题、处理办法与预期的解决方法，供之后补充 skill 与规则</td><td>启动过会话的阶段</td></tr>
+    </tbody>
+  </table>
+  <p>设计遵守四条原则：</p>
+  <ul>
+    <li>翻译的依据是 arXiv 提供的 LaTeX 源码。编译能否通过由机器检查。</li>
+    <li>翻译由 agent 完成，结果是否正确以校验脚本为准。脚本不对翻译过程做细粒度控制。要提高译文质量，就修改提供给模型的信息，即 skill 与术语表。</li>
+    <li>能用规则处理的编译问题，由 precompile 的前导区改写规则在编译之前处理。修复会话只在按规则处理之后展开或编译仍然失败时启动，每个阶段最多一次。同一类修复在多篇论文的修复日志里重复出现时，把它写成规则。</li>
+    <li>论文工作目录不在仓库内。</li>
+  </ul>
+  <p class="why"><b>理由</b>只支持 xelatex 一个引擎。中文排版用 xeCJK；precompile 与 compile 用同一个引擎、同一份前导区，两次编译的差别只剩正文文字，compile 出错时原因只可能在译文。</p>
+</section>
+
+<section id="cli">
+  <h2>命令行</h2>
+  <pre><code>tongtu run      PAPER [--mode fast|smart] [--latest] [--from STAGE] [--glossary FILE]... [--workdir DIR] [--dev]
+tongtu stage    STAGE PAPER [--mode fast|smart] [--glossary FILE]... [--workdir DIR] [--dev]
+tongtu status   PAPER [--json] [--workdir DIR] [--dev]
+tongtu validate SRC DST [--glossary FILE]...
+tongtu doctor
+tongtu setup    [--dev]
+tongtu          --version</code></pre>
+  <p><code>PAPER</code> 是 arXiv 编号、arXiv 链接或本地源码目录。<code>STAGE</code> 取 <code>fetch</code>、<code>precompile</code>、<code>mask</code>、<code>translate</code>、<code>compile</code> 之一。终端输出、manifest 的 <code>message</code> 与 <code>warnings</code> 一律用英文。</p>
+
+  <h3>选项</h3>
+  <table>
+    <thead><tr><th>选项</th><th>适用命令</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>--mode fast|smart</code></td><td>run、stage</td><td class="wrap">本次运行的 agent 会话用哪个模式，不给时取 <code>config.toml</code> 的 <code>[modes] default</code>。见<a href="#modes">模式与 agent 会话</a>。</td></tr>
+      <tr><td><code>--latest</code></td><td>run</td><td class="wrap">向 arXiv 查询最新版本并使用它。见<a href="#versions">论文编号与版本</a>。</td></tr>
+      <tr><td><code>--from STAGE</code></td><td>run</td><td class="wrap">从这个阶段起重跑，先删掉它及其下游的旧产物。</td></tr>
+      <tr><td><code>--glossary FILE</code></td><td>run、stage、validate</td><td class="wrap">本次运行追加的术语表，可以给多个，靠后的优先。</td></tr>
+      <tr><td><code>--workdir DIR</code></td><td>run、stage、status</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同；或者 manifest 记的是本地源码目录，<code>PAPER</code> 是同一个目录，或者是这个目录的名字。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
+      <tr><td><code>--dev</code></td><td>run、stage、status、setup</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>run</h3>
+  <p>每个阶段结束后终端输出一行结果，阶段的 <code>message</code> 与 <code>warnings</code> 各占一行，缩进在结果行下方。阶段运行时显示一行进度，只在终端是 tty 时刷新。translate 的进度行显示耗时和会话当前的动作，例如正在读原文、正在写哪个文件、正在运行检查。</p>
+  <p class="hint">示例输出为示意</p>
+  <div class="term"><span class="prompt">$</span> tongtu run 2412.19437
+workdir ~/.tongtu/papers/2412.19437v2
+mode    smart  claude-code/claude-opus-5-5  medium
+  stage       status            summary                                     elapsed
+<span class="ok">✓</span> fetch       ok                v2, tar.gz, 14 tex files                    0:00:03
+<span class="ok">✓</span> precompile  ok                66 pages                                    0:00:41
+<span class="ok">✓</span> mask        ok                183 blocks masked                           0:00:00
+<span class="ok">✓</span> translate   ok                164 paragraphs, 31 new terms                0:09:55
+<span class="ok">✓</span> compile     ok                56 pages, baseline 66                       0:00:47</div>
+  <table>
+    <thead><tr><th>情形</th><th>行为</th><th>退出码</th></tr></thead>
+    <tbody>
+      <tr><td>全部阶段成功</td><td class="wrap">写出 <code>out/</code> 下的五个文件。</td><td>0</td></tr>
+      <tr><td>某个阶段失败</td><td class="wrap">停在出错的阶段，终端输出原因与 manifest 路径。处理后再执行一次同样的命令，从这个阶段接着跑，前面的阶段不重做。</td><td>1</td></tr>
+      <tr><td>运行被打断</td><td class="wrap">再执行一次，从中断的阶段接着跑。</td><td>非 0</td></tr>
+      <tr><td>五个阶段都已完成</td><td class="wrap">不做任何事，提示用 <code>--from</code>。</td><td>0</td></tr>
+      <tr><td>参数不合法</td><td class="wrap"><code>PAPER</code> 无法识别，<code>--latest</code> 与带版本号的编号同时出现，或者 <code>--workdir</code> 里已有的论文与 <code>PAPER</code> 不一致。</td><td>2</td></tr>
+    </tbody>
+  </table>
+  <p>通途不检测输入是否变化。不给 <code>--from</code> 就沿用旧产物。改了输入之后，按下表选择起点：</p>
+  <table>
+    <thead><tr><th>改了什么</th><th>从哪个阶段起重跑</th></tr></thead>
+    <tbody>
+      <tr><td class="wrap"><code>src/</code> 里的源码，或 <code>config.toml</code> 的 <code>[fonts]</code></td><td><code>--from precompile</code></td></tr>
+      <tr><td class="wrap"><code>tongtu/data/environments.json</code></td><td><code>--from mask</code></td></tr>
+      <tr><td class="wrap">任何一层术语表、<code>skill/translate/</code>，或者想换一个模式重译</td><td><code>--from translate</code></td></tr>
+      <tr><td class="wrap"><code>config.toml</code> 的 <code>[pdf]</code></td><td><code>--from compile</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>其余命令</h3>
+  <ul>
+    <li><code>stage STAGE PAPER</code> 只运行一个阶段。它先删掉本阶段的旧产物再运行，不改动其他阶段的产物。上游产物不存在时拒绝执行，退出 2。</li>
+    <li><code>status PAPER</code> 只读，列出每个阶段的状态、产物是否存在和 manifest 路径。它不联网。<code>--json</code> 的格式见<a href="#status">供其他程序读取的输出</a>。</li>
+    <li><code>validate SRC DST</code> 对一对掩码文件运行 translate 判定时使用的同一套校验，逐类输出问题，有问题时退出 1。给了 <code>--glossary</code> 才检查术语。手工修改译文后用它确认。</li>
+    <li><code>doctor</code> 逐项检查环境：TeX 工具链（xelatex、latexmk、latexpand）、默认字体、<code>config.toml</code>、agentrun，以及每个模式引用的运行时与模型（对每个组合运行一次 <code>agentrun doctor</code>）。工具链或字体缺失时退出 1；工具链齐全但配置或运行时不可用时退出 3，这时 fetch、precompile、mask 仍然可以运行。</li>
+    <li><code>setup</code> 在 <code>$TONGTU_HOME</code> 写出 <code>config.toml</code> 模板。</li>
+  </ul>
+</section>
+
+<section id="versions">
+  <h2>论文编号与版本</h2>
+  <p>arXiv 的一篇论文有多个版本，各版本的源码可以不同。通途把「论文编号加版本号」当作一篇论文的标识，记作 <code>&lt;ID&gt;</code>，例如 <code>2412.19437v2</code>。工作目录名与 <code>out/</code> 下的文件名都用它，所以同一篇论文的不同版本各有一个工作目录，互不覆盖。</p>
+  <table>
+    <thead><tr><th>命令里的写法</th><th>使用哪个版本</th></tr></thead>
+    <tbody>
+      <tr><td><code>2412.19437v2</code></td><td class="wrap">v2。</td></tr>
+      <tr><td><code>2412.19437</code></td><td class="wrap">本地已有这篇论文带版本号的工作目录时，用其中版本号最大的一个，不联网。本地没有时，<code>run</code> 与 <code>stage fetch</code> 向 arXiv 查询最新版本并使用它，其余命令报错，见下文。</td></tr>
+      <tr><td><code>2412.19437 --latest</code></td><td class="wrap">向 arXiv 查询最新版本。本地没有这个版本时新建工作目录从头运行；已有时沿用它。</td></tr>
+      <tr><td><code>2412.19437v2 --latest</code></td><td class="wrap">用法错误，退出 2。</td></tr>
+      <tr><td>arXiv 链接</td><td class="wrap">取链接里的编号，带版本号与不带版本号分别按上面的规则处理。</td></tr>
+      <tr><td>本地源码目录</td><td class="wrap">没有版本号，也不写论文信息。工作目录名取源码目录的名字。</td></tr>
+    </tbody>
+  </table>
+  <p>版本要靠查询才能确定时，查询发生在建立工作目录之前，查询结果随后交给 fetch 写论文信息，一次运行只请求一次。这次查询失败时版本无法确定，<code>run</code> 把原因输出到终端并退出 1，不建立工作目录，也不写 manifest。版本已经确定时（命令里写明，或取自本地的目录名），API 请求由 fetch 发出，失败记为 fetch 的 <code>download_failed</code>。<code>status</code> 与 fetch 以外的 <code>stage</code> 不联网，遇到不带版本号的编号又没有 <code>--workdir</code> 时，只按本地已有的带版本号的工作目录解析。本地没有这样的目录时，命令把编号与 <code>papers/</code> 的路径写到 stderr，提示先运行 <code>tongtu run &lt;编号&gt;</code>，退出 1。v0.1 留下的不带版本号的目录不被识别。</p>
+  <p>选定的版本没有 TeX 源码时，fetch 的状态是 <code>pdf_only</code>，运行停在 fetch。<code>message</code> 写明是哪个版本没有 TeX 源码，并提示其他版本可能有源码，要试的话在命令里写明版本号。通途不自动改用别的版本。</p>
+  <p class="why"><b>理由</b>读者需要确切知道自己读的是哪个版本。版本只在两种情况下确定：命令里写明，或者由通途查询后写进目录名、文件名和论文信息。</p>
+</section>
+
+<section id="files">
+  <h2>目录与配置</h2>
+  <p>全部数据在 <code>$TONGTU_HOME</code> 下，默认是 <code>~/.tongtu</code>。测试与试验也不在仓库里创建论文目录。</p>
+  <pre><code>$TONGTU_HOME/
+├── config.toml                      <span class="c">模式、字体、PDF 选项</span>
+├── glossary.json                    <span class="c">全局术语表，用户维护</span>
+├── glossary.learned.json            <span class="c">已学术语表，通途维护</span>
+└── papers/
+    └── 2412.19437v2/                <span class="c">工作目录，名字是 &lt;ID&gt;</span>
+        ├── glossary.json            <span class="c">论文级术语表，可选，用户维护</span>
+        ├── running.json             <span class="c">运行标记，运行期间存在</span>
+        ├── src/                     <span class="c">解包后的源码</span>
+        ├── build/
+        │   ├── e-print.bin          <span class="c">下载到的原始字节</span>
+        │   ├── precompile.tex       <span class="c">展开并加入中文排版设置的英文单文件</span>
+        │   ├── precompile.pdf       <span class="c">原文编译出的 PDF，页数基线</span>
+        │   ├── masked.tex           <span class="c">掩码全文，翻译的输入</span>
+        │   ├── blocks.json          <span class="c">占位符到原文的映射</span>
+        │   ├── translated.tex       <span class="c">通过校验的中文掩码全文</span>
+        │   ├── zh.tex               <span class="c">换回占位符后、编译通过的中文全文</span>
+        │   ├── zh.synctex.gz
+        │   ├── manifests/           <span class="c">fetch.json … compile.json</span>
+        │   └── sandbox/
+        │       ├── tex/             <span class="c">编译目录，precompile 与 compile 共用</span>
+        │       └── translate/       <span class="c">翻译会话目录</span>
+        ├── out/                     <span class="c">交给用户与其他程序的五个文件</span>
+        └── logs/
+            ├── translate.jsonl      <span class="c">翻译会话的事件记录</span>
+            ├── translate.raw.jsonl  <span class="c">运行时的原始输出，每个会话各有一份</span>
+            ├── precompile-fix.jsonl <span class="c">启动过修复会话才有</span>
+            └── compile-fix.jsonl</code></pre>
+
+  <h3>config.toml</h3>
+  <pre><code class="language-toml">[modes]
+default = "smart"
+
+[modes.fast]
+model  = "claude-code/claude-sonnet-5-5"
+effort = "low"
+
+[modes.smart]
+model  = "claude-code/claude-opus-5-5"
+effort = "medium"
+
+[fonts]
+main = { regular = "LXGWWenKai-Light.ttf", bold = "LXGWWenKai-Medium.ttf" }
+sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.otf" }
+
+[pdf]
+crop_margins = false</code></pre>
+  <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 3600 秒。配置里出现未知字段时，加载配置报错。</p>
+
+  <h3>manifest</h3>
+  <p>每个阶段结束时写 <code>build/manifests/&lt;阶段&gt;.json</code>。各阶段的 manifest 继承同一个基类，<code>status</code> 在 JSON 里排第一。<code>run</code> 与 <code>status</code> 只读 manifest 判断一个阶段是否完成。</p>
+  <pre><code class="language-python">class Manifest(BaseModel):
+    status: str            # 子类限定为本阶段的状态值
+    warnings: list[str]
+    message: str           # 失败原因；成功时为空</code></pre>
+</section>
+
+<section id="stages">
+  <h2>各阶段的规格</h2>
+  <p>状态不是 <code>ok</code> 时，<code>run</code> 停在这个阶段。</p>
+
+  <section class="stage" id="fetch">
+    <header><h3>fetch</h3><p>确定版本，取论文信息，把源码放进 <code>src/</code></p></header>
+    <dl class="spec">
+      <dt>做什么</dt>
+      <dd>
+        <ol>
+          <li>向 arXiv API 请求一次（<code>https://export.arxiv.org/api/query?id_list=&lt;编号&gt;</code>），得到版本号与论文信息，写出 <code>out/&lt;ID&gt;.meta.json</code>。</li>
+          <li>下载这个版本的源码包（<code>https://export.arxiv.org/e-print/&lt;ID&gt;</code>），原始字节写进 <code>build/e-print.bin</code>。</li>
+          <li>按文件头判断格式并解包到 <code>src/</code>。格式可以是 tar.gz、tar、gz、单个 tex 或 PDF。tar 里的链接与设备文件不解包。</li>
+          <li><code>PAPER</code> 是本地目录时不联网，把目录内容拷进 <code>src/</code>，不写论文信息。</li>
+        </ol>
+        <p>任何非 <code>ok</code> 的状态都把 <code>src/</code> 清空，只保留 <code>build/e-print.bin</code> 供排查。论文信息文件 <code>out/&lt;ID&gt;.meta.json</code> 在 API 请求成功后已经写出，也保留。</p>
+      </dd>
+      <dt>状态</dt>
+      <dd>
+        <table>
+          <tbody>
+            <tr><td><span class="st ok">ok</span></td><td class="wrap">源码已解包，其中有可用的 TeX 文件。</td></tr>
+            <tr><td><span class="st bad">pdf_only</span></td><td class="wrap">这个版本没有 TeX 源码：下载到的是 PDF，或者全部 <code>.tex</code> 的字符数少于 1000（源码里有 <code>\includepdf</code> 时为 5000）。</td></tr>
+            <tr><td><span class="st bad">empty</span></td><td class="wrap">下载成功但内容为空，或者包里没有任何 <code>.tex</code> 文件。</td></tr>
+            <tr><td><span class="st bad">download_failed</span></td><td class="wrap">版本确定之后的 API 请求失败或超时，或者源码下载失败或超时。</td></tr>
+            <tr><td><span class="st bad">unpack_failed</span></td><td class="wrap">源码包解不开，或者本地目录拷贝失败。</td></tr>
+            <tr><td><span class="st bad">source_missing</span></td><td class="wrap">指定的本地目录不存在。</td></tr>
+          </tbody>
+        </table>
+      </dd>
+      <dt>写</dt>
+      <dd>
+        <p><code>src/</code>、<code>build/e-print.bin</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>build/manifests/fetch.json</code>。</p>
+      </dd>
+      <dt>常量</dt>
+      <dd><p>每次网络请求的超时是 60 秒。</p></dd>
+      <dt>产物类</dt>
+      <dd>
+        <pre><code class="language-python">class FetchManifest(Manifest):
+    status: FetchStatus
+    source: str                # &lt;ID&gt;，或本地目录的绝对路径
+    arxiv_id: str | None       # 不带版本号；本地目录时为 null
+    version: int | None
+    kind: "tar.gz" | "tar" | "gz" | "tex" | "pdf" | "local" | None
+    url: str
+    payload_bytes: int
+    tex_files: list[str]
+    tex_chars: int
+    rejected: list[str]        # 解包时没有解出的 tar 成员</code></pre>
+        <p><code>PaperMeta</code> 的定义见<a href="#status">供其他程序读取的输出</a>。</p>
+      </dd>
+    </dl>
+  </section>
+
+  <section class="stage" id="precompile">
+    <header><h3>precompile</h3><p>把原文变成一份带中文排版设置、能编译通过的单文件</p></header>
+    <dl class="spec">
+      <dt>做什么</dt>
+      <dd>
+        <ol>
+          <li>选主文件：<code>src/</code> 里带 <code>\documentclass</code> 的 <code>.tex</code>。</li>
+          <li>用 latexpand 把 <code>\input</code> 与 <code>\include</code> 展开成单文件，有 <code>.bbl</code> 时一并内联。写在其他命令花括号参数里的 <code>\input</code>（例如 <code>\resizebox{…}{!}{\input{fig}}</code>）不展开，原样留给 TeX 在编译时读文件，每处在 manifest 里记一条 warning；裸分组与环境体里的照常展开。<p class="why"><b>理由</b>参数里的 <code>\input</code> 不展开。TeX 在执行到这条命令时才读文件；把文件内容内联进参数之后，内容按参数的方式读入，换行变成空格，依赖换行的内容（例如 pgfplots 的内联表格）读不出来，standalone 子文档的导言区也会进入主文件。这类文件里的文字不进入翻译，实际出现的都是图。</p></li>
+          <li>处理注释：整行注释整行删掉；行尾注释删掉文字，只留 <code>%</code>，因为行尾的 <code>%</code> 决定换行处是否留空白。代码环境与 <code>\verb</code> 里的 <code>%</code> 是正文，不改动。</li>
+          <li>前导区里取值确定的条件开关只保留生效的分支。</li>
+          <li>按 <code>tongtu/preamble.py</code> 的规则改写前导区里只适用于 pdflatex 的写法，再加入 xeCJK 与中文字体设置。行距是 <code>\linespread{1.4}</code>。</li>
+          <li>搭编译目录 <code>build/sandbox/tex/</code>：<code>src/</code> 的完整拷贝，主文件换成展开后的单文件，文件名不变。在其中用 latexmk 编译，通过后记下页数等计数作为基线，PDF 拷出为 <code>build/precompile.pdf</code>。</li>
+          <li>展开时缺文件，或者编译不通过时，启动一次修复会话（skill <code>precompile_fix</code>），然后重新展开或编译一次，以这次结果为准。整个阶段只启动一次修复会话。</li>
+        </ol>
+      </dd>
+      <dt>状态</dt>
+      <dd>
+        <table>
+          <tbody>
+            <tr><td><span class="st ok">ok</span></td><td class="wrap">编译退出码为 0，PDF 非空，日志解析出的页数大于 0。</td></tr>
+            <tr><td><span class="st bad">main_not_found</span></td><td class="wrap">没有带 <code>\documentclass</code> 的 <code>.tex</code>。</td></tr>
+            <tr><td><span class="st bad">main_ambiguous</span></td><td class="wrap">候选不唯一。<code>message</code> 列出全部候选。</td></tr>
+            <tr><td><span class="st bad">expand_failed</span></td><td class="wrap">展开失败，修复会话之后仍然失败。</td></tr>
+            <tr><td><span class="st bad">compile_failed</span></td><td class="wrap">编译不通过，修复会话之后仍然不通过；或者 latexmk 无法运行、超时。</td></tr>
+          </tbody>
+        </table>
+      </dd>
+      <dt>读</dt>
+      <dd><p><code>src/</code>、<code>config.toml</code> 的 <code>[fonts]</code> 与模式、<code>skill/precompile_fix/</code>。</p></dd>
+      <dt>写</dt>
+      <dd><p><code>build/precompile.tex</code>、<code>build/precompile.pdf</code>、<code>build/sandbox/tex/</code>、<code>build/manifests/precompile.json</code>；启动过修复会话时另有 <code>logs/precompile-fix.jsonl</code> 与 <code>out/&lt;ID&gt;.notes.json</code> 里的条目。</p></dd>
+      <dt>常量</dt>
+      <dd>
+        <p>编译命令是 <code>latexmk -norc -xelatex -interaction=nonstopmode -synctex=1 &lt;主文件&gt;</code>，与 compile 共用，超时 600 秒。latexpand 的超时是 10 秒。</p>
+        <p class="why"><b>理由</b>中文排版设置在翻译之前加入。宏包与 xeCJK 的冲突在这一步暴露并修好，修复的结果留在编译目录里，compile 直接使用。</p>
+        <p class="why"><b>理由</b>主文件在编译目录里不改名。jobname 因此不变，作者随源码上传、按 jobname 命名的文件在两次编译里都能找到。</p>
+      </dd>
+      <dt>产物类</dt>
+      <dd>
+        <pre><code class="language-python">class PrecompileManifest(Manifest):
+    status: PrecompileStatus
+    main_file: str                  # 判定出的主文件
+    report: CompileReport | None    # 编译通过才有，是 compile 的页数基线
+    fix_session: Session | None     # 启动过修复会话才有
+
+class CompileReport(BaseModel):
+    pages: int
+    pdf_bytes: int
+    overfull_hboxes: int
+    undefined_references: int
+    undefined_citations: int
+    missing_characters: int
+    duration_seconds: float</code></pre>
+        <p><code>Session</code> 的定义见<a href="#modes">模式与 agent 会话</a>。</p>
+      </dd>
+    </dl>
+  </section>
+
+  <section class="stage" id="mask">
+    <header><h3>mask</h3><p>把不翻译的部分换成占位符</p></header>
+    <dl class="spec">
+      <dt>做什么</dt>
+      <dd>
+        <ol>
+          <li>判定每个 LaTeX 环境是否翻译：文内用 <code>\newtheorem</code> 一类命令定义的环境算正文，其余查 <code>tongtu/data/environments.json</code>，查不到的不翻译。</li>
+          <li>把不翻译的部分逐块换成 <code>⟦BLK-n⟧</code>，原文存进 <code>blocks.json</code>。</li>
+          <li>把块里需要翻译的文字抽出来：图表的 caption 与写在前导区里的摘要，各换成 <code>⟦CAP-n⟧</code>，压成单行放在正文里，和正文一起翻译。代码块的 caption 不抽。</li>
+          <li>往返自检：用 <code>blocks.json</code> 把 <code>masked.tex</code> 还原，结果必须与 <code>precompile.tex</code> 逐字符相同。</li>
+        </ol>
+        <table>
+          <thead><tr><th>换成占位符，不翻译</th><th>留在正文里，翻译</th></tr></thead>
+          <tbody>
+            <tr><td class="wrap">前导区与 <code>\end{document}</code> 之后的内容</td><td class="wrap">摘要</td></tr>
+            <tr><td class="wrap">题目、作者、日期、单位、邮箱</td><td class="wrap">正文段落、列表、脚注</td></tr>
+            <tr><td class="wrap">行间公式</td><td class="wrap">定理、证明一类正文环境里的文字</td></tr>
+            <tr><td class="wrap">表格、图、TikZ</td><td class="wrap">图表的 caption</td></tr>
+            <tr><td class="wrap">代码、算法</td><td class="wrap">附录</td></tr>
+            <tr><td class="wrap">参考文献、行尾注释留下的 <code>%</code>、无法判定的环境</td><td class="wrap">行内公式留在正文里，由 translate 原样保留</td></tr>
+          </tbody>
+        </table>
+        <p class="why"><b>理由</b>表格与算法整块不翻译。表格里主要是数字与短标签，译成中文后列宽变化会破坏原来的版式；算法伪代码与代码同样对待。它们的 caption 照常翻译。</p>
+      </dd>
+      <dt>状态</dt>
+      <dd>
+        <table>
+          <tbody>
+            <tr><td><span class="st ok">ok</span></td><td class="wrap">往返自检通过。</td></tr>
+            <tr><td><span class="st bad">mask_failed</span></td><td class="wrap">往返自检不通过，<code>message</code> 给出第一处差异的位置；或者原文里已经出现 <code>⟦</code> 或 <code>⟧</code>，占位符无法保证唯一。</td></tr>
+          </tbody>
+        </table>
+      </dd>
+      <dt>读</dt>
+      <dd><p><code>build/precompile.tex</code>、<code>tongtu/data/environments.json</code>。</p></dd>
+      <dt>写</dt>
+      <dd><p><code>build/masked.tex</code>、<code>build/blocks.json</code>、<code>build/manifests/mask.json</code>。</p></dd>
+      <dt>产物类</dt>
+      <dd>
+        <pre><code class="language-python">class BlocksFile(BaseModel):            # build/blocks.json
+    blocks: list[BlockRecord]
+    captions: list[CaptionRecord]
+
+class BlockRecord(BaseModel):
+    id: str                             # BLK-n
+    category: "preamble" | "postamble" | "comment" | "metadata" | "math" | "table"
+            | "figure" | "tikz" | "code" | "algorithm" | "bibliography" | "box" | "unknown"
+    environment: str                    # 环境名；不是环境的块为空
+    tex: str                            # 原文，换回时使用
+
+class CaptionRecord(BaseModel):
+    id: str                             # CAP-n
+    block_id: str
+    kind: "caption" | "abstract"
+    tex: str                            # 原文整条命令或环境
+    masked_text: str                    # 压成单行后放进 masked.tex 的文字
+
+class MaskManifest(Manifest):
+    status: "ok" | "mask_failed"
+    environments: dict[str, EnvironmentDecisionRecord]
+    blocks_total: int
+    captions_total: int
+
+class EnvironmentDecisionRecord(BaseModel):
+    classification: "text" | "non_translatable"
+    category: BlockCategory | None      # 不翻译时的类别
+    decided_by: "newtheorem" | "newenvironment" | "table" | "default"
+    occurrences: int
+    blocks: int</code></pre>
+      </dd>
+    </dl>
+  </section>
+
+  <section class="stage" id="translate">
+    <header><h3>translate</h3><p>一次会话译出全文，会话外重跑校验</p></header>
+    <dl class="spec">
+      <dt>做什么</dt>
+      <dd>
+        <ol>
+          <li>合并术语表，取出本篇命中的条目。规则见<a href="#glossary">术语表</a>。</li>
+          <li>搭会话目录 <code>build/sandbox/translate/</code>。</li>
+          <li>经 agentrun 启动一次会话，模型与强度取自本次运行的模式。会话读 <code>.skills/translate/SKILL.md</code>，在目录里写出 <code>zh.tex</code>，并运行 <code>check.py</code> 自查。</li>
+          <li>会话结束后，通途在会话目录之外重跑校验：用仓库里的校验脚本，比对 <code>build/masked.tex</code> 与会话写出的 <code>zh.tex</code>。</li>
+          <li>校验通过时，把 <code>zh.tex</code> 拷为 <code>build/translated.tex</code>，写出 <code>out/&lt;ID&gt;.glossary.json</code>，把本篇新定的术语并入已学术语表。</li>
+        </ol>
+      </dd>
+      <dt>会话目录</dt>
+      <dd>
+        <pre><code>build/sandbox/translate/
+├── en.tex                   <span class="c">build/masked.tex 的拷贝，末尾没有换行符时补一个，只读</span>
+├── glossary.fixed.json      <span class="c">用户术语表里本篇命中的条目与 style，只读，必须照用</span>
+├── glossary.json            <span class="c">开始时是已学术语表里本篇命中的条目；会话可以修改和追加</span>
+├── .skills/translate/
+│   ├── SKILL.md             <span class="c">翻译规则与工作顺序</span>
+│   ├── check.py             <span class="c">比对 en.tex 与 zh.tex，报告问题</span>
+│   └── validate.py          <span class="c">tongtu/validation.py 的拷贝，check.py 调用</span>
+├── zh.tex                   <span class="c">译文，由会话写出，与 en.tex 逐段对应</span>
+├── parts/                   <span class="c">长论文的译文先按节存在这里，写完后合并成 zh.tex</span>
+└── notes.json               <span class="c">会话结束前写出的问题记录</span></code></pre>
+        <p>长论文的译文由同一个会话按 <code>\section</code> 的顺序依次写进 <code>parts/</code>，每写完一节存一个文件，全部写完后合并成 <code>zh.tex</code>。这只是同一个会话存盘的方式：术语表和前面各节的译文一直在这个会话的上下文里。</p>
+        <p>会话在 agentrun 的沙箱里运行，写入范围是会话目录。启动时带 <code>--no-subagents</code>，全部译文由这一个会话写出。会话的 <code>PATH</code> 里有 <code>python3</code>，用来运行 <code>check.py</code>。会话的事件记录写进 <code>logs/translate.jsonl</code>。</p>
+      </dd>
+      <dt>译什么</dt>
+      <dd>
+        <p><code>masked.tex</code> 里留下的文字都翻译，有两处例外：<code>\section</code>、<code>\subsection</code>、<code>\subsubsection</code> 的标题保留英文，一个字符都不改；术语表里列为不译的词保留原文。题目属于元数据，已经在 mask 阶段换成占位符，所以也保留英文。<code>\paragraph{}</code> 的段首小标题照常翻译。</p>
+        <div class="pair">
+          <div><span class="pair-label">en.tex</span><pre><code class="language-latex">\section{Training Setup}
+In recent years, Large Language Models~(LLMs)
+have been undergoing rapid iteration~\citep{gpt4o}.
+
+⟦BLK-12⟧
+⟦CAP-3⟧ Overview of the pipeline. $F$ denotes a forward chunk.
+
+\paragraph{Optimizer} We use Adafactor
+with a dropout rate of $0.1$.</code></pre></div>
+          <div><span class="pair-label">zh.tex</span><pre><code class="language-latex">\section{Training Setup}
+近年来，大语言模型~(LLMs)
+快速迭代~\citep{gpt4o}。
+
+⟦BLK-12⟧
+⟦CAP-3⟧ 流程概览。$F$ 表示一个前向块。
+
+\paragraph{优化器} 我们使用 Adafactor，
+dropout 率为 $0.1$。</code></pre></div>
+        </div>
+        <p class="hint">示意。<code>zh.tex</code> 与 <code>en.tex</code> 逐段对应。</p>
+        <p>翻译规则与文风要求写在 <code>skill/translate/SKILL.md</code>，不写在本页。</p>
+      </dd>
+      <dt>校验</dt>
+      <dd>
+        <p>校验脚本逐段比对原文与译文，报告五类问题。会话里的 <code>check.py</code> 与通途在会话外运行的是同一套比对。</p>
+        <table>
+          <thead><tr><th>类别</th><th>检查什么</th></tr></thead>
+          <tbody>
+            <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。每个 <code>⟦CAP-n⟧</code> 位于行首，所在行没有其他占位符，含 CAP 的段落行数与原文相同：compile 换回图表标题时取走 CAP 所在的整行。不含 CAP 的段落不检查行数。</td></tr>
+            <tr><td>公式</td><td class="wrap">每段的行内公式与原文逐个相同。</td></tr>
+            <tr><td>章节名</td><td class="wrap">三级章节命令的标题与原文逐字相同。</td></tr>
+            <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。</td></tr>
+            <tr><td>术语</td><td class="wrap">原文命中某条术语的段落，译文里出现对应的译法；不译词按大小写原样保留。<code>\label</code>、<code>\ref</code>、<code>\cite</code> 一类命令参数里的词不计。章节标题不参加未译与术语两项检查。</td></tr>
+          </tbody>
+        </table>
+        <p>会话外的校验使用 <code>build/masked.tex</code>、用户术语表的原始文件，以及会话结束时的 <code>glossary.json</code>。会话改动 <code>en.tex</code>、<code>glossary.fixed.json</code> 或 <code>check.py</code> 都不影响判定。</p>
+        <p class="why"><b>理由</b>判定放在会话之外。会话目录整体可写，会话自己报告的「检查通过」无法核对；在会话外用原始输入重跑同一套比对，结果只取决于译文本身。</p>
+      </dd>
+      <dt>状态</dt>
+      <dd>
+        <table>
+          <tbody>
+            <tr><td><span class="st ok">ok</span></td><td class="wrap">会话外的校验没有报告问题。判定只看校验结果：会话超时或出错，但留下的 <code>zh.tex</code> 通过校验时，状态仍是 <code>ok</code>，另记一条 warning。</td></tr>
+            <tr><td><span class="st bad">glossary_invalid</span></td><td class="wrap">某一层术语表文件读不出来或格式不对；或者用户术语表里本篇用到的术语与不译词冲突：一条术语的原词含有某个本篇用到的不译词（按大小写原样匹配），译法却没有原样保留这个词。不启动会话。</td></tr>
+            <tr><td><span class="st bad">translate_failed</span></td><td class="wrap">会话没有写出 <code>zh.tex</code>，或者校验报告了问题。问题逐条记在 manifest 的 <code>problems</code> 里。不写 <code>build/translated.tex</code>，compile 不运行。</td></tr>
+          </tbody>
+        </table>
+        <p><code>translate_failed</code> 之后会话目录保留。再执行一次 <code>run</code> 时，translate 先对保留下来的 <code>zh.tex</code> 重跑校验：通过就直接采用，不启动会话，手工改好译文后走的就是这条路径；不通过就在同一个目录里再启动一次会话，会话从已有的译文接着做。通途不另写问题清单：skill 规定会话发现 <code>zh.tex</code> 或 <code>parts/</code> 已经存在时先运行 <code>check.py</code>，它报告的就是上次校验的那些问题，没有写完的章节也由它报告为段落缺失。<code>--from translate</code> 与 <code>stage translate</code> 先清空会话目录，从头翻译。</p>
+        <p class="why"><b>理由</b>一次运行只启动一次翻译会话，校验不通过时通途不自动重开。脚本不对翻译过程做细粒度控制；同一类问题反复出现时，修改 skill 或校验脚本。</p>
+      </dd>
+      <dt>读</dt>
+      <dd><p><code>build/masked.tex</code>、各层术语表、<code>skill/translate/</code>、<code>tongtu/validation.py</code>、<code>config.toml</code> 的模式。</p></dd>
+      <dt>写</dt>
+      <dd><p><code>build/translated.tex</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>、<code>$TONGTU_HOME/glossary.learned.json</code>、<code>build/sandbox/translate/</code>、<code>logs/translate.jsonl</code>、<code>build/manifests/translate.json</code>。</p></dd>
+      <dt>常量</dt>
+      <dd>
+        <p>会话时限取模式的 <code>timeout_seconds</code>，默认 3600 秒。未译判定的门槛是 6 个英文单词。</p>
+        <p class="why"><b>理由</b>整篇论文在一次会话里翻译，全部译文由这一个会话写出。术语与专名的统一靠同一个上下文：会话先通读全文、定下术语，再逐节写译文，写后面的章节时看得到前面用过的译法。</p>
+      </dd>
+      <dt>产物类</dt>
+      <dd>
+        <pre><code class="language-python">class TranslateManifest(Manifest):
+    status: "ok" | "glossary_invalid" | "translate_failed"
+    mode: str                        # "fast" 或 "smart"
+    session: Session | None          # 本次运行没有启动会话时为 null
+    paragraphs_total: int            # masked.tex 里需要翻译的段落数
+    paragraphs_translated: int       # 译文里含中文的段落数
+    problems: list[str]              # 会话外校验报告的问题；ok 时为空
+    glossary: GlossaryCounts
+
+class GlossaryCounts(BaseModel):
+    user: int                        # 用户术语表里本篇命中的条数
+    learned: int                     # 已学术语表里本篇命中的条数
+    added: int                       # 本篇新定、并入已学术语表的条数</code></pre>
+      </dd>
+    </dl>
+  </section>
+
+  <section class="stage" id="compile">
+    <header><h3>compile</h3><p>把占位符换回原文，编译出中文 PDF</p></header>
+    <dl class="spec">
+      <dt>做什么</dt>
+      <dd>
+        <ol>
+          <li>用 <code>blocks.json</code> 把 <code>build/translated.tex</code> 里的 <code>⟦BLK-n⟧</code> 与 <code>⟦CAP-n⟧</code> 换回原文块，得到中文全文。行尾注释留下的 <code>%</code> 换回之后，如果它后面到行尾之间还有文字，就在 <code>%</code> 后面补一个换行。前导区在 precompile 已经加入中文排版设置，这里不再改动。</li>
+          <li>把中文全文写进 precompile 留下的编译目录，覆盖主文件，用同一条 latexmk 命令编译。</li>
+          <li>编译不通过时启动一次修复会话（skill <code>compile_fix</code>），然后重新编译一次，以这次结果为准。</li>
+          <li>检查出口判据，通过后拷出 <code>out/&lt;ID&gt;.zh.pdf</code> 与 <code>build/zh.tex</code>。</li>
+          <li>用 SyncTeX 文件算出 <code>zh.tex</code> 每个块在 PDF 每页上的矩形，写成 <code>out/&lt;ID&gt;.zh.anchors.json</code>。锚点写不出时只记一条 warning，阶段仍是 <code>ok</code>。</li>
+          <li><code>[pdf] crop_margins = true</code> 时，用 Ghostscript 量出每页内容的边界，把页边空白裁掉。只改 CropBox，排版、链接与锚点坐标不变。</li>
+        </ol>
+      </dd>
+      <dt>状态</dt>
+      <dd>
+        <table>
+          <tbody>
+            <tr><td><span class="st ok">ok</span></td><td class="wrap">三条出口判据都满足：编译通过；译文页数与原文基线之比在 0.7 到 1.3 之间；启动过修复会话时，修复后的主文件与修复前写入编译目录的中文全文相比，每个控制序列的出现次数相同（<code>tongtu/validation.py</code> 的控制序列比对）。第三条用来发现修复会话为了让编译通过而删掉正文内容。</td></tr>
+            <tr><td><span class="st bad">compile_failed</span></td><td class="wrap">任何一条不满足。这时不写 <code>out/&lt;ID&gt;.zh.pdf</code> 与 <code>build/zh.tex</code>。</td></tr>
+          </tbody>
+        </table>
+      </dd>
+      <dt>读</dt>
+      <dd><p><code>build/translated.tex</code>、<code>build/blocks.json</code>、<code>build/manifests/precompile.json</code>、<code>build/sandbox/tex/</code>、<code>skill/compile_fix/</code>、<code>config.toml</code> 的 <code>[pdf]</code> 与模式。</p></dd>
+      <dt>写</dt>
+      <dd><p><code>out/&lt;ID&gt;.zh.pdf</code>、<code>out/&lt;ID&gt;.zh.anchors.json</code>、<code>build/zh.tex</code>、<code>build/zh.synctex.gz</code>、<code>build/manifests/compile.json</code>；启动过修复会话时另有 <code>logs/compile-fix.jsonl</code> 与 <code>out/&lt;ID&gt;.notes.json</code> 里的条目。</p></dd>
+      <dt>常量</dt>
+      <dd>
+        <p>页数比的范围是 [0.7, 1.3]，用来发现整章丢失或整章重复。编译超时 600 秒。裁白边时四边各留 12 pt。</p>
+        <p class="why"><b>理由</b>换回 <code>%</code> 时补换行。译文只要求与原文逐段对应，换回的结果不能依赖译文的换行位置：会话把占位符之后的文字写在同一行时，不补换行这半行会被 TeX 当成注释丢掉。<code>%</code> 加换行在 TeX 里吃掉换行和下一行行首的空白，含义与原文相同。</p>
+        <p class="why"><b>理由</b>编译由 compile 阶段负责，翻译会话只负责译文。编译失败时才启动修复会话，两类会话的日志分开，便于从修复日志里找出可以写成规则的共性问题。</p>
+      </dd>
+      <dt>产物类</dt>
+      <dd>
+        <pre><code class="language-python">class CompileManifest(Manifest):
+    status: "ok" | "compile_failed"
+    report: CompileReport | None     # 译文的编译统计；判据不满足时也保留
+    baseline: CompileReport | None   # 原文的编译统计，取自 precompile 的 manifest
+    fix_session: Session | None      # 启动过修复会话才有</code></pre>
+      </dd>
+    </dl>
+  </section>
+</section>
+
+<section id="glossary">
+  <h2>术语表</h2>
+  <p>术语表决定哪些词怎样译、哪些词保留原文。用户写的术语表与已学术语表用同一种格式，三个字段都可以省略：</p>
+  <pre><code class="language-json">{
+  "terms": { "on-policy distillation": "同策略蒸馏" },
+  "do_not_translate": ["token", "KV cache", "RL"],
+  "style": "给译者的额外要求，例如称呼与语气"
+}</code></pre>
+  <h3>四层，后一层覆盖前一层</h3>
+  <table>
+    <thead><tr><th>层</th><th>文件</th><th>谁维护</th><th>会话能否改动</th></tr></thead>
+    <tbody>
+      <tr><td>已学</td><td><code>$TONGTU_HOME/glossary.learned.json</code></td><td>通途</td><td class="wrap">可以按本篇调整</td></tr>
+      <tr><td>全局</td><td><code>$TONGTU_HOME/glossary.json</code></td><td>用户</td><td class="wrap">不能，必须照用</td></tr>
+      <tr><td>论文级</td><td><code>&lt;工作目录&gt;/glossary.json</code></td><td>用户</td><td class="wrap">不能，必须照用</td></tr>
+      <tr><td>命令行</td><td><code>--glossary FILE</code></td><td>用户</td><td class="wrap">不能，必须照用</td></tr>
+    </tbody>
+  </table>
+  <p>同一个词出现在多层时，取最高一层的条目。<code>style</code> 取最高一层写出的那一段。translate 只把本篇原文里命中的条目放进会话目录：三层用户术语表的命中条目与 <code>style</code> 合成 <code>glossary.fixed.json</code>，已学术语表的命中条目是 <code>glossary.json</code> 的初始内容。</p>
+  <ul>
+    <li>命中按整词匹配，认单复数（词尾的 s 与 es）。全大写的词区分大小写，其余不区分：<code>LLM</code> 命中 LLMs，不命中 vLLM。</li>
+    <li>一条术语的原词里含有某个不译词时，译法里必须原样保留它：mixed RL training 写作「混合 RL 训练」。</li>
+    <li>用户术语表里没有命中本篇的词记进 manifest 的 warnings，方便发现拼错的词。</li>
+  </ul>
+  <p class="why"><b>理由</b>用户写的条目必须照用，已学的条目允许会话按本篇调整。同一个英文词在不同领域有不同译法，已学术语表来自以前的论文，不一定适用于这一篇；用户写的条目是明确的要求。</p>
+  <h3>已学术语表怎样增长</h3>
+  <p>translate 的状态为 <code>ok</code> 时，通途读会话结束时的 <code>glossary.json</code>。其中的每个词，已学术语表里还没有时追加进去，已经有时保持原样。</p>
+  <p class="why"><b>理由</b>已有的条目不被后来的论文改写。已经译出的论文之间保持同一种译法；要改一个译法，由用户把它写进全局术语表，全局层覆盖已学层。</p>
+  <h3>随 PDF 输出的术语表</h3>
+  <p><code>out/&lt;ID&gt;.glossary.json</code> 是本篇实际使用的全部条目，每个条目带来源，从中可以直接看出这篇论文新学到了哪些术语。整份已学术语表只在 <code>$TONGTU_HOME</code> 下保留一份。</p>
+  <pre><code class="language-python">class PaperGlossary(BaseModel):          # out/&lt;ID&gt;.glossary.json
+    terms: list[PaperTerm]
+    do_not_translate: list[PaperKeptWord]
+
+class PaperTerm(BaseModel):
+    word: str
+    translation: str
+    source: "user" | "learned" | "new"
+
+class PaperKeptWord(BaseModel):
+    word: str
+    source: "user" | "learned" | "new"</code></pre>
+  <table>
+    <thead><tr><th>source</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>user</code></td><td class="wrap">来自用户写的三层术语表，即 <code>glossary.fixed.json</code> 里的条目。</td></tr>
+      <tr><td><code>learned</code></td><td class="wrap">来自已学术语表，这次会话原样沿用。</td></tr>
+      <tr><td><code>new</code></td><td class="wrap">这次会话新定的条目，或者对已学条目按本篇改定的条目。其中已学术语表里原来没有的词并入已学术语表；按本篇改定的已学条目不写进已学术语表，translate manifest 的 <code>glossary.added</code> 也不计它。</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="modes">
+  <h2>模式与 agent 会话</h2>
+  <p>模式是一组模型与强度的配置。一次运行里的全部 agent 会话用同一个模式，包括翻译会话和两种修复会话。</p>
+  <table>
+    <thead><tr><th>模式</th><th>模型</th><th>强度</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>fast</code></td><td>Claude Sonnet</td><td>low</td><td class="wrap">初步查看译文，费用最低。</td></tr>
+      <tr><td><code>smart</code></td><td>Claude Opus</td><td>medium</td><td class="wrap">准备用中文 PDF 代替原文来读</td></tr>
+    </tbody>
+  </table>
+  <p>模式的来源依次是命令行的 <code>--mode</code>、<code>config.toml</code> 的 <code>[modes] default</code>，模板里的默认值是 smart。translate 的 manifest 记下使用的模式。想用另一个模式重译一篇已经译完的论文，执行 <code>tongtu run PAPER --mode fast --from translate</code>，新译文覆盖旧译文。</p>
+  <h3>会话怎样启动</h3>
+  <p>模型调用层在 <code>tongtu/model/</code>，只有一个入口：在一个目录里启动一次 agent 会话。它不依赖具体产品，运行时由 agentrun 适配。</p>
+  <ol>
+    <li>把仓库里的 <code>skill/&lt;名字&gt;/</code> 拷进会话目录的 <code>.skills/&lt;名字&gt;/</code>。skill 有三个：<code>translate</code>、<code>precompile_fix</code>、<code>compile_fix</code>。</li>
+    <li>经 agentrun 启动会话：会话目录是工作目录，沙箱开启，带 <code>--no-subagents</code>，模型、强度与时限取自模式。提示词是固定的一句话：读 skill，按它做，只在当前目录里读写。</li>
+    <li>agentrun 输出的事件逐行写进日志，同时解析出当前动作，交给命令行显示在进度行上。</li>
+    <li>返回会话的结束方式。调用方不采用会话自己的结论，总是自己复验结果：translate 重跑校验，precompile 与 compile 重新编译。</li>
+  </ol>
+  <pre><code class="language-python">class Session(BaseModel):            # 各阶段 manifest 共用
+    stop_reason: "finished" | "timeout" | "error"
+    model: str                       # "claude-code/claude-opus-5-5"
+    effort: str | None
+    duration_seconds: float
+    usage: Usage | None              # 运行时没有报告用量时为 null
+
+class Usage(BaseModel):
+    turns: int                       # agentrun 报告的模型请求次数
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    cost_usd: float | None           # 只有 claude-code 有值，取自它原始输出里的费用
+    thinking_tokens: int | None      # output_tokens 当中用于思考的部分，只有 claude-code 有值</code></pre>
+  <p><code>thinking_tokens</code> 包含在 <code>output_tokens</code> 之内，不另外计费。它与 <code>cost_usd</code> 一样只有 claude-code 有值，取自 claude-code 原始输出的 result 行。agentrun 的结束事件没有这两项数据，所以暂时从原始输出读取。</p>
+  <h3>会话记下的问题</h3>
+  <p>每次 agent 会话结束前，按 skill 的要求在会话目录写一个 <code>notes.json</code>，逐条记下这次遇到的问题、当时的处理办法和预期的解决方法。没有遇到问题时写空列表。会话结束后，通途读这个文件，给每条加上会话的名字，写进 <code>out/&lt;ID&gt;.notes.json</code>，然后删掉会话目录里的那一份。一个会话的条目与它的工作成果同存亡：precompile 与 compile 每次运行都从头做，开始时先去掉自己的修复会话以前写进去的条目；translate 的条目在会话目录被清空时（<code>--from</code> 或 <code>stage translate</code>）去掉，直接采用已有译文时保留，接着已有译文再启动会话时新条目追加在已有条目之后。</p>
+  <p>通途只收集这些条目。<code>notes.json</code> 读不出来或格式不对时记一条 warning，阶段的状态不受影响。条目不参加判定，也不触发后续动作；之后由人或别的工具读这个文件，决定怎样补充 skill、规则或校验脚本。</p>
+  <pre><code class="language-python">class NotesFile(BaseModel):          # out/&lt;ID&gt;.notes.json
+    notes: list[Note]
+
+class Note(BaseModel):
+    session: "translate" | "precompile_fix" | "compile_fix"   # 由通途填写
+    where: str                       # 位置：文件名与行号，或一段原文
+    problem: str                     # 遇到了什么问题
+    resolution: str                  # 这次会话怎样处理的
+    suggestion: str                  # 预期的解决方法：改 skill、规则或校验脚本的哪一处；没有时为空串</code></pre>
+</section>
+
+<section id="status">
+  <h2>供其他程序读取的输出</h2>
+  <p>其他程序通过四种输出读取通途的结果：<code>tongtu status --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这四种格式可以修改，修改时读它们的程序一起改。仓库内的 Raycast 插件另外读 <code>logs/&lt;会话&gt;.jsonl</code>，显示会话最近的动作；这个文件是 agentrun 的事件格式。</p>
+
+  <h3>out/&lt;ID&gt;.meta.json</h3>
+  <p>内容来自 arXiv API 的同一次响应，是所选版本的信息。题目与摘要里的换行压成一个空格。</p>
+  <pre><code class="language-python">class PaperMeta(BaseModel):
+    arxiv_id: str              # "2412.19437"，不带版本号
+    version: int               # 2
+    title: str
+    authors: list[str]         # 按论文上的顺序
+    abstract: str
+    primary_category: str      # "cs.CL"
+    categories: list[str]
+    published: datetime        # 第一个版本的提交时间，UTC
+    updated: datetime          # 这个版本的提交时间，UTC
+    comment: str | None
+    journal_ref: str | None
+    doi: str | None
+    abs_url: str               # https://arxiv.org/abs/2412.19437v2
+    pdf_url: str               # https://arxiv.org/pdf/2412.19437v2</code></pre>
+
+  <h3>tongtu status PAPER --json</h3>
+  <p>读一次当前状态，向 stdout 输出一个 JSON 对象后立即退出，此外不输出任何文字。需要持续更新的程序按自己的间隔重复调用。工作目录已经确定但还不存在时照常输出，五个阶段都是 <code>absent</code>，退出 0。<code>PAPER</code> 是不带版本号的编号、本地又没有它带版本号的工作目录时，不输出 JSON，错误信息写到 stderr，退出 1，见<a href="#versions">论文编号与版本</a>。<code>PAPER</code> 不合法时退出 2，错误信息写到 stderr。</p>
+  <pre><code class="language-python">class PaperStatus(BaseModel):
+    workdir: Path                               # 绝对路径
+    arxiv_id: str | None                        # 不带版本号；本地目录时为 null
+    version: int | None
+    running: bool                               # 运行标记存在，且其中的进程还活着
+    pid: int | None
+    started_at: datetime | None                 # 运行中时取运行标记里的开始时间，UTC
+    mode: str | None                            # 运行中取运行标记，否则取 translate 的 manifest
+    stages: list[StageState]                    # 五个阶段，按顺序
+    pdf: Path | None                            # 以下四项在文件存在时给出绝对路径
+    meta: Path | None
+    glossary: Path | None
+    notes: Path | None
+
+class StageState(BaseModel):
+    name: str
+    status: str                                 # manifest 的 status；没有 manifest 时为 "absent"
+    outputs_present: bool
+    message: str
+    warnings: list[str]
+    manifest: Path | None</code></pre>
+  <p>翻译会话运行期间，<code>status</code> 给出 <code>running</code>、开始时间和各阶段的状态，正在运行的是第一个状态为 <code>absent</code> 的阶段。其他程序据此显示「翻译中」与已用时间。会话当前的动作只显示在终端的进度行上。</p>
+
+  <h3>运行标记</h3>
+  <p><code>run</code> 与 <code>stage</code> 开始运行阶段前写 <code>&lt;工作目录&gt;/running.json</code>，结束时删除。正常结束、阶段失败、程序异常、Ctrl-C 与 SIGTERM 都在退出前删除它。<code>status</code> 读这个文件，再检查其中的进程是否还在；文件不存在、读不出或进程已经不在时，<code>running</code> 为 false。</p>
+  <pre><code class="language-python">class RunMarker(BaseModel):
+    pid: PositiveInt
+    started_at: datetime       # UTC
+    command: "run" | "stage"
+    mode: str</code></pre>
+</section>
+
+</div>
+</main>
+</body>
+</html>

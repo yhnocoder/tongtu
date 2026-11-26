@@ -4,13 +4,13 @@
 
 > 命名取自《水调歌头·游泳》「一桥飞架南北，天堑变通途」——语言是天堑，翻译使之为通途。
 
-**状态：v0.1，可运行。** `tongtu run <arxiv_id>` 走完 fetch → precompile → mask → survey → translate → review → compile 七个阶段，在验证集的论文上出了中文 PDF；未发布到 PyPI。v0.2 在设计中。
+**状态：v0.2，可运行。** `tongtu run <arxiv_id>` 走完 fetch → precompile → mask → translate → compile 五个阶段，translate 由一次 agent 会话整篇翻译，产出 `papers/<编号加版本号>/out/<编号加版本号>.zh.pdf`；未发布到 PyPI。
 
 从哪里进：
 
-- 设计文档 https://yhnocoder.github.io/tongtu/ ——七个阶段、模型调用层、命令行各是什么、读写哪些文件（源文件在 `docs/design/`）
-- [`CLAUDE.md`](CLAUDE.md)——项目的目标、判断与协作约定
-- [Milestone](https://github.com/yhnocoder/tongtu/milestone/2)—— v0.2 的进度
+- [设计文档](https://yhnocoder.github.io/tongtu/pages/design.html)：五个阶段、模式配置、命令行各是什么、读写哪些文件（源文件在 `docs/design/`）
+- [`CLAUDE.md`](CLAUDE.md)：项目的目标、判断与协作约定
+- [Issues](https://github.com/yhnocoder/tongtu/issues)：后续方向
 
 ## 开发
 

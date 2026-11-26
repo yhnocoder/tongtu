@@ -44,8 +44,6 @@ DECLARATION_COMMANDS: dict[str, str] = {
     "renewenvironment": "newenvironment",
 }
 
-LABEL_RE = re.compile(r"\\label\s*\{([^{}]*)\}")
-
 TOP_LEVEL_SPECIAL_RE = re.compile(r"[\\%$]")
 
 BODY_SPECIAL_RE = re.compile(r"[\\%]")
@@ -280,7 +278,7 @@ class _MaskRun:
 
     def _mask_preamble(self) -> int:
         end, slots = self._scan_preamble()
-        self._emit_block(0, end, BlockCategory.PREAMBLE, environment="", decided_by=None, slots=slots)
+        self._emit_block(0, end, BlockCategory.PREAMBLE, environment="", slots=slots)
         return end
 
     def _scan_preamble(self) -> tuple[int, list[_CaptionSlot]]:
@@ -355,9 +353,7 @@ class _MaskRun:
             if name == "end":
                 environment, after = read_environment_name(self.text, after_name)
                 if environment == DOCUMENT_ENVIRONMENT:
-                    self._emit_block(
-                        position, self.length, BlockCategory.POSTAMBLE, environment="", decided_by=None, slots=[]
-                    )
+                    self._emit_block(position, self.length, BlockCategory.POSTAMBLE, environment="", slots=[])
                     seen_end_document = True
                     break
                 position = after_name if environment is None else after
@@ -381,21 +377,21 @@ class _MaskRun:
                     break
                 end = following_end
                 next_start = following_end + 1
-            self._emit_block(line_start, end, BlockCategory.COMMENT, environment="", decided_by=None, slots=[])
+            self._emit_block(line_start, end, BlockCategory.COMMENT, environment="", slots=[])
             return end
-        self._emit_block(position, line_end, BlockCategory.COMMENT, environment="", decided_by=None, slots=[])
+        self._emit_block(position, line_end, BlockCategory.COMMENT, environment="", slots=[])
         return line_end
 
     def _mask_dollar(self, position: int) -> int:
         if self.text[position + 1 : position + 2] == "$":
             end = _find_display_dollar_close(self.text, position + 2)
-            self._emit_block(position, end, BlockCategory.MATH, environment="", decided_by=None, slots=[])
+            self._emit_block(position, end, BlockCategory.MATH, environment="", slots=[])
             return end
         return find_inline_dollar_close(self.text, position + 1)
 
     def _mask_display_math(self, start: int, body_start: int, closing: str) -> int:
         end = skip_to_delimiter(self.text, body_start, closing, "\\[")
-        self._emit_block(start, end, BlockCategory.MATH, environment="", decided_by=None, slots=[])
+        self._emit_block(start, end, BlockCategory.MATH, environment="", slots=[])
         return end
 
     def _mask_environment(self, start: int, after_name: int) -> int:
@@ -413,7 +409,6 @@ class _MaskRun:
             end,
             decision.category or BlockCategory.UNKNOWN,
             environment=environment,
-            decided_by=decision.decided_by,
             slots=slots,
         )
         decision.blocks += 1
@@ -424,7 +419,7 @@ class _MaskRun:
         if position >= self.length or self.text[position] != "{":
             return after_name
         end = match_group(self.text, position)
-        self._emit_block(start, end, BlockCategory.METADATA, environment="", decided_by=None, slots=[])
+        self._emit_block(start, end, BlockCategory.METADATA, environment="", slots=[])
         return end
 
     def _scan_environment_body(
@@ -498,23 +493,16 @@ class _MaskRun:
         category: BlockCategory,
         *,
         environment: str,
-        decided_by: DecisionSource | None,
         slots: list[_CaptionSlot],
     ) -> None:
         block_id = f"{BLOCK_ID_PREFIX}-{len(self.blocks)}"
         captions = [self._emit_caption(block_id, slot) for slot in slots]
-        raw = self.text[start:end]
         self.blocks.append(
             BlockRecord(
                 id=block_id,
                 category=category,
                 environment=environment,
-                decided_by=decided_by,
-                labels=LABEL_RE.findall(raw),
                 tex=_apply_slots(self.text, start, end, slots, [caption.id for caption in captions]),
-                start=start,
-                end=end,
-                line=self._line_of(start),
             )
         )
         self.output.append(self.text[self.cursor : start])
@@ -798,6 +786,8 @@ def _restore_blocks(
         parts.append(stream[cursor : match.start()])
         length += match.start() - cursor
         body, slots = _fill_slots(block.tex, filled)
+        if block.category is BlockCategory.COMMENT and _text_follows_on_line(stream, match.end()):
+            body += "\n"
         placements.append(Placement(token_id, length, length + len(body)))
         placements.extend(Placement(slot.token_id, length + slot.start, length + slot.end) for slot in slots)
         parts.append(body)
@@ -811,6 +801,11 @@ def _restore_blocks(
                 f"{block_token(block.id)} is used {count} times in the stream; each block token must be used exactly once"
             )
     return "".join(parts), placements
+
+
+def _text_follows_on_line(stream: str, position: int) -> bool:
+    line_end = stream.find("\n", position)
+    return bool(stream[position : len(stream) if line_end < 0 else line_end].strip())
 
 
 def _fill_slots(tex: str, filled: Mapping[str, str]) -> tuple[str, list[Placement]]:

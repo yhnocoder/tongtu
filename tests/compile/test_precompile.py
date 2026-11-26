@@ -10,9 +10,10 @@ from pypdf import PdfReader
 
 import tongtu.model
 from tongtu import fonts, processes
+from tongtu.artifacts.common import Session, StopReason
 from tongtu.artifacts.precompile import PrecompileStatus
 from tongtu.model.config import FontsConfig
-from tongtu.model.work import StopReason, WorkOutcome
+from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.stages import precompile
 from tongtu.workdir import Workdir
@@ -47,24 +48,28 @@ def test_arxiv_1905_12322v3_double_missing_inputs(
     calls: list[Path] = []
 
     def work(
-        role: str,
-        tree: Path,
+        skill: str,
+        session_dir: Path,
         *,
-        trace_path: Path,
+        mode: str,
+        log_path: Path,
         report=None,
-        prompt=None,
+        extra_prompt: str = "",
     ) -> WorkOutcome:
-        assert role == "precompile_fix"
-        calls.append(tree)
+        assert skill == "precompile_fix"
+        assert mode == "fast"
+        calls.append(session_dir)
         text = source.replace("\\include{macros_new}", "%\\include{macros_new}")
         if repair_all:
             text = text.replace("\\include{new_cmds}", "%\\include{new_cmds}")
-        (tree / "main.tex").write_text(text)
-        trace_path.write_text("single simulated repair\n")
-        return WorkOutcome(stop_reason=StopReason.FINISHED, model="test/offline")
+        (session_dir / "main.tex").write_text(text)
+        (session_dir / "notes.json").write_text('{"notes": []}')
+        log_path.write_text("single simulated repair\n")
+        session = Session(stop_reason=StopReason.FINISHED, model="test/offline", duration_seconds=1.0)
+        return WorkOutcome(session=session, detail="")
 
     monkeypatch.setattr(tongtu.model, "work", work)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert len(calls) == 1
     assert manifest.fix_session is not None and manifest.fix_session.model == "test/offline"
     assert (workdir.src / "main.tex").read_text() == source
@@ -246,11 +251,11 @@ def test_jobname_named_companion_files_are_found(tmp_path: Path, monkeypatch: py
     )
     (workdir.src / "subword.data").write_text("Data uploaded by the author.\n")
 
-    def work(role: str, tree: Path, **kwargs: object) -> WorkOutcome:
+    def work(skill: str, session_dir: Path, **kwargs: object) -> WorkOutcome:
         raise AssertionError("a jobname-named companion file must not need a fix session")
 
     monkeypatch.setattr(tongtu.model, "work", work)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK, manifest.message
     assert manifest.main_file == "subword.tex"
     assert manifest.fix_session is None
@@ -267,11 +272,11 @@ def test_shipped_aux_of_the_jobname_is_not_read(tmp_path: Path, monkeypatch: pyt
     (workdir.src / "main.tex").write_text("\\documentclass{article}\n\\begin{document}\nBody.\n\\end{document}\n")
     (workdir.src / "main.aux").write_text("\\relax\n\\abx@aux@refcontext{nty/global//global/global}\n")
 
-    def work(role: str, tree: Path, **kwargs: object) -> WorkOutcome:
+    def work(skill: str, session_dir: Path, **kwargs: object) -> WorkOutcome:
         raise AssertionError("an aux file shipped in src/ must not need a fix session")
 
     monkeypatch.setattr(tongtu.model, "work", work)
-    manifest = precompile.run(workdir)
+    manifest = precompile.run(workdir, mode="fast")
     assert manifest.status is PrecompileStatus.OK, manifest.message
     assert manifest.fix_session is None
     assert any("main.aux" in warning for warning in manifest.warnings)
@@ -307,3 +312,61 @@ def test_expansion_keeps_percent_inside_code_and_empties_comments_elsewhere(tmp_
     assert "\\verb|50% off|" in text
     assert "hidden %\n" in text
     assert "drop this" not in text
+
+
+def test_arxiv_2607_24653_inputs_in_command_arguments_compile_unexpanded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    workdir = Workdir(tmp_path / "2607.24653")
+    workdir.create()
+    main = (
+        "\\documentclass{article}\n"
+        "\\usepackage{standalone}\n"
+        "\\usepackage{pgfplots}\n"
+        "\\begin{document}\n"
+        "\\resizebox{0.5\\textwidth}{!}{\\input{figures/benchmark}}\n"
+        "\\input{case-study}\n"
+        "Closing paragraph.\n"
+        "\\end{document}\n"
+    )
+    case_study = "Case study text.\n\\resizebox{\\columnwidth}{!}{\\input{figures/kernel.tex}}\n"
+    benchmark = "\\documentclass{standalone}\n\\begin{document}\nBenchmark figure\n\\end{document}\n"
+    kernel = (
+        "\\begin{tikzpicture}\n\\begin{axis}\n"
+        "\\addplot table [x=step, y=speedup] {\nstep speedup\n1 1.0\n2 1.8\n};\n"
+        "\\end{axis}\n\\end{tikzpicture}\n"
+    )
+    files = {
+        "main.tex": main,
+        "case-study.tex": case_study,
+        "figures/benchmark.tex": benchmark,
+        "figures/kernel.tex": kernel,
+    }
+    for name, content in files.items():
+        (workdir.src / name).parent.mkdir(parents=True, exist_ok=True)
+        (workdir.src / name).write_text(content)
+
+    def work(skill: str, session_dir: Path, **kwargs: object) -> WorkOutcome:
+        raise AssertionError("inputs in command arguments must not need a fix session")
+
+    monkeypatch.setattr(tongtu.model, "work", work)
+    manifest = precompile.run(workdir, mode="fast")
+    assert manifest.status is PrecompileStatus.OK, manifest.message
+    assert manifest.fix_session is None
+    output = workdir.precompile_tex.read_text()
+    assert "\\resizebox{0.5\\textwidth}{!}{\\input{figures/benchmark}}\n" in output
+    assert "\\resizebox{\\columnwidth}{!}{\\input{figures/kernel.tex}}\n" in output
+    assert "Case study text." in output and "Closing paragraph." in output
+    assert output.count("\\end{document}") == 1
+    assert [warning for warning in manifest.warnings if "is not expanded" in warning] == [
+        "\\input{figures/benchmark} in an argument of \\resizebox is not expanded; "
+        "TeX reads the file at compile time and its text is not translated, at line 5",
+        "\\input{figures/kernel.tex} in an argument of \\resizebox is not expanded; "
+        "TeX reads the file at compile time and its text is not translated, at line 7",
+    ]
+    assert not any("lines still contain" in warning for warning in manifest.warnings)
+    for name, content in files.items():
+        assert (workdir.src / name).read_text() == content
+    text = "".join(page.extract_text() for page in PdfReader(workdir.precompile_pdf).pages)
+    assert "Closing paragraph." in text

@@ -11,12 +11,11 @@ from pypdf import PdfWriter
 
 import tongtu.model
 from tongtu import cropping, processes
-from tongtu.artifacts.common import CompileReport
+from tongtu.artifacts.common import CompileReport, Note, NotesFile, Session, StopReason
 from tongtu.artifacts.compile import AnchorKind, AnchorRect, AnchorsFile, CompileManifest, CompileStatus
 from tongtu.artifacts.precompile import PrecompileManifest, PrecompileStatus
-from tongtu.artifacts.survey import BriefFile, ChunkRecord, Part
-from tongtu.manifests import write_manifest
-from tongtu.model.work import StopReason, WorkOutcome
+from tongtu.manifests import load_manifest, write_manifest
+from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.processes import ProcessOutcome
 from tongtu.stages import compile, mask
@@ -51,8 +50,6 @@ TRANSLATIONS: tuple[tuple[str, str], ...] = (
     ("First line. \\par Second line.", "第一行。 \\par 第二行。"),
     ("Second paragraph here.", "第二段。"),
 )
-
-SPLIT_MARKER = "\n\nSecond"
 
 LOG_OK = "Output written on zh.xdv (5 pages, 12345 bytes).\n"
 
@@ -134,20 +131,8 @@ def make_workdir(tmp_path: Path, paper: str = PAPER) -> Workdir:
     (workdir.src / "figure.pdf").write_bytes(b"%PDF")
     (workdir.build / "precompile.tex").write_text(paper, encoding="utf-8")
     assert mask.run(workdir).status == "ok"
-    masked = (workdir.build / "masked.tex").read_text(encoding="utf-8")
-    split = masked.index(SPLIT_MARKER)
-    bodies = {"c000": masked[:split], "c001": masked[split:]}
-    for dirname, mapping in (("chunks", bodies), ("reviewed", {k: translate(v) for k, v in bodies.items()})):
-        (workdir.build / dirname).mkdir()
-        for chunk_id, body in mapping.items():
-            (workdir.build / dirname / f"{chunk_id}.tex").write_text(body, encoding="utf-8")
-    records = [
-        ChunkRecord(id="c000", start=0, end=split, part=Part.BODY, tokens=1, paragraphs=1, translatable_chars=1),
-        ChunkRecord(
-            id="c001", start=split, end=len(masked), part=Part.BODY, tokens=1, paragraphs=1, translatable_chars=1
-        ),
-    ]
-    (workdir.build / "brief.json").write_text(BriefFile(chunks=records).model_dump_json(indent=2), encoding="utf-8")
+    masked = workdir.masked.read_text(encoding="utf-8")
+    workdir.translated.write_text(translate(masked), encoding="utf-8")
     write_manifest(
         workdir.manifest_path("precompile"),
         PrecompileManifest(status=PrecompileStatus.OK, main_file="main.tex", report=BASELINE),
@@ -188,6 +173,13 @@ def wire_latexmk(monkeypatch: pytest.MonkeyPatch, specs: list[dict]) -> dict[str
     return calls
 
 
+NOTE = {"where": "main.tex:16", "problem": "p", "resolution": "r", "suggestion": ""}
+
+FIX_SESSION = Session(
+    stop_reason=StopReason.FINISHED, model="claude-code/claude-sonnet-5", effort="low", duration_seconds=4.0
+)
+
+
 def wire_work(
     monkeypatch: pytest.MonkeyPatch,
     stop_reason: StopReason = StopReason.FINISHED,
@@ -196,20 +188,24 @@ def wire_work(
     calls: list[dict] = []
 
     def fake_work(
-        role: str,
-        workdir: Path,
+        skill: str,
+        session_dir: Path,
         *,
-        trace_path: Path,
+        mode: str,
+        log_path: Path,
         report=None,
-        prompt=None,
+        extra_prompt: str = "",
     ):
-        calls.append({"role": role, "workdir": workdir, "trace_path": trace_path})
-        (trace_path).write_text("{}\n", encoding="utf-8")
+        calls.append({"skill": skill, "session_dir": session_dir, "mode": mode, "log_path": log_path})
+        log_path.write_text("{}\n", encoding="utf-8")
         if report is not None:
             report("Bash: ls")
         if edit is not None:
-            edit(workdir)
-        return WorkOutcome(stop_reason=stop_reason, detail="runtime missing", model="claude_code/claude-sonnet-5")
+            edit(session_dir)
+        (session_dir / "notes.json").write_text(json.dumps({"notes": [NOTE]}), encoding="utf-8")
+        return WorkOutcome(
+            session=FIX_SESSION.model_copy(update={"stop_reason": stop_reason}), detail="runtime missing"
+        )
 
     monkeypatch.setattr(tongtu.model, "work", fake_work)
     return calls
@@ -244,7 +240,7 @@ def test_ok_on_first_compile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cr
     workdir = make_workdir(tmp_path)
     calls = wire_latexmk(monkeypatch, [{}])
     work_calls = wire_work(monkeypatch)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert manifest == read_manifest(workdir)
     assert manifest.report is not None and manifest.report.pages == 5
@@ -290,7 +286,7 @@ def test_crop_margins_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     wire_latexmk(monkeypatch, [{}])
     wire_work(monkeypatch)
     monkeypatch.setattr(cropping, "enabled", lambda: True)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert manifest.warnings == []
     assert cropped == [workdir.zh_pdf]
@@ -302,7 +298,7 @@ def test_crop_failure_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.Monk
     wire_work(monkeypatch)
     monkeypatch.setattr(cropping, "enabled", lambda: True)
     monkeypatch.setattr(cropping, "crop_margins", lambda pdf: ["Ghostscript reported no page content"])
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert manifest.warnings == ["Ghostscript reported no page content"]
     assert workdir.zh_pdf.is_file()
@@ -312,7 +308,7 @@ def test_missing_synctex_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.M
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{"synctex": False}])
     wire_work(monkeypatch)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert len(manifest.warnings) == 1
     assert manifest.warnings[0].startswith("cannot build paper.zh.anchors.json (")
@@ -335,7 +331,7 @@ def test_unreadable_synctex_becomes_a_warning(tmp_path: Path, monkeypatch: pytes
         return outcome
 
     monkeypatch.setattr(processes, "run_in_process_group", run)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert len(manifest.warnings) == 1
     assert manifest.warnings[0].startswith("cannot build paper.zh.anchors.json (")
@@ -349,7 +345,7 @@ def test_caption_paragraph_break_is_not_a_control_sequence_difference(
     workdir = make_workdir(tmp_path, paper)
     wire_latexmk(monkeypatch, [{}])
     wire_work(monkeypatch)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert "\\par 第二行" in (workdir.build / "zh.tex").read_text(encoding="utf-8")
 
@@ -357,7 +353,7 @@ def test_caption_paragraph_break_is_not_a_control_sequence_difference(
 def test_manifest_fields_match_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{}])
-    compile.run(workdir)
+    compile.run(workdir, mode="fast")
     keys = set(json.loads(workdir.manifest_path("compile").read_text(encoding="utf-8")))
     assert keys == {"status", "report", "baseline", "fix_session", "warnings", "message"}
 
@@ -365,7 +361,7 @@ def test_manifest_fields_match_card(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 def test_missing_precompile_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     workdir.manifest_path("precompile").unlink()
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert manifest.baseline is None
     assert "precompile.json" in manifest.message
@@ -374,7 +370,7 @@ def test_missing_precompile_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_precompile_manifest_without_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     write_manifest(workdir.manifest_path("precompile"), PrecompileManifest(status=PrecompileStatus.COMPILE_FAILED))
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert "report" in manifest.message
 
@@ -382,60 +378,41 @@ def test_precompile_manifest_without_report(tmp_path: Path, monkeypatch: pytest.
 def test_missing_compile_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     shutil.rmtree(workdir.build / "sandbox" / "tex")
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert manifest.baseline == BASELINE
     assert "--from precompile" in manifest.message
 
 
-def test_empty_reviewed_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir = make_workdir(tmp_path)
-    for path in (workdir.build / "reviewed").glob("*.tex"):
-        path.unlink()
-    manifest = compile.run(workdir)
-    assert_failed(workdir, manifest)
-    assert "reviewed" in manifest.message
-
-
-@pytest.mark.parametrize("relative", ["brief.json", "blocks.json", "masked.tex", "chunks/c001.tex"])
+@pytest.mark.parametrize("relative", ["translated.tex", "blocks.json"])
 def test_missing_input_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str) -> None:
     workdir = make_workdir(tmp_path)
     (workdir.build / relative).unlink()
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert Path(relative).name in manifest.message
 
 
-def test_reviewed_chunk_listed_in_brief_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unreadable_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
-    (workdir.build / "reviewed" / "c001.tex").unlink()
-    manifest = compile.run(workdir)
-    assert_failed(workdir, manifest)
-    assert "c001.tex" in manifest.message
-
-
-def test_unreadable_brief(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir = make_workdir(tmp_path)
-    (workdir.build / "brief.json").write_text("{not json", encoding="utf-8")
-    manifest = compile.run(workdir)
+    workdir.blocks.write_text("{not json", encoding="utf-8")
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert "ValidationError" in manifest.message
 
 
-def test_chunks_do_not_add_up_to_masked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_does_not_need_the_masked_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
-    (workdir.build / "masked.tex").write_text("something else", encoding="utf-8")
-    manifest = compile.run(workdir)
-    assert_failed(workdir, manifest)
-    assert "masked.tex" in manifest.message
-    assert "第一" not in (workdir.build / "sandbox" / "tex" / "main.tex").read_text(encoding="utf-8")
+    workdir.masked.unlink()
+    wire_latexmk(monkeypatch, [{}])
+    assert compile.run(workdir, mode="fast").status is CompileStatus.OK
 
 
 def test_unmask_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
-    path = workdir.build / "reviewed" / "c000.tex"
+    path = workdir.translated
     path.write_text(path.read_text(encoding="utf-8").replace("⟦BLK-0⟧", "⟦BLK-0⟧⟦BLK-0⟧"), encoding="utf-8")
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert manifest.message.startswith("unmask failed")
 
@@ -447,7 +424,7 @@ def test_latexmk_not_runnable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         raise FileNotFoundError("latexmk")
 
     monkeypatch.setattr(processes, "run_in_process_group", run)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert "latexmk" in manifest.message
 
@@ -456,7 +433,7 @@ def test_first_compile_timeout_skips_the_fix_session(tmp_path: Path, monkeypatch
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{"timeout": True}])
     work_calls = wire_work(monkeypatch)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert manifest.fix_session is None
     assert work_calls == []
@@ -472,26 +449,32 @@ def test_fix_session_then_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
         path.write_text(path.read_text(encoding="utf-8").replace("第二段。", "第二段。%"), encoding="utf-8")
 
     work_calls = wire_work(monkeypatch, edit=edit)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert manifest == read_manifest(workdir)
-    assert manifest.fix_session is not None
-    assert manifest.fix_session.stop_reason == "finished"
-    assert manifest.fix_session.model == "claude_code/claude-sonnet-5"
+    assert manifest.fix_session == FIX_SESSION
     assert manifest.report is not None and manifest.baseline == BASELINE
     assert calls == {"compile": 2, "clean": 2}
-    assert work_calls[0]["role"] == "compile_fix"
-    assert work_calls[0]["workdir"] == workdir.build / "sandbox" / "tex"
-    assert work_calls[0]["trace_path"] == workdir.logs / "compile-fix.jsonl"
+    assert work_calls == [
+        {
+            "skill": "compile_fix",
+            "session_dir": workdir.build / "sandbox" / "tex",
+            "mode": "fast",
+            "log_path": workdir.logs / "compile-fix.jsonl",
+        }
+    ]
     assert "第二段。%" in (workdir.build / "zh.tex").read_text(encoding="utf-8")
     assert outputs_present(workdir, "compile")
+    notes_file = load_manifest(workdir.notes, NotesFile)
+    assert notes_file == NotesFile(notes=[Note(session="compile_fix", **NOTE)])
+    assert not (workdir.build / "sandbox" / "tex" / "notes.json").exists()
 
 
 def test_fix_session_then_verify_still_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}])
     wire_work(monkeypatch)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert manifest.fix_session is not None
     assert manifest.report is None
@@ -508,10 +491,10 @@ def test_fix_session_error_or_timeout_still_verifies(
     workdir = make_workdir(tmp_path)
     calls = wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     wire_work(monkeypatch, stop_reason=stop_reason)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert manifest.fix_session is not None
-    assert manifest.fix_session.stop_reason == str(stop_reason)
+    assert manifest.fix_session.stop_reason is stop_reason
     assert any(str(stop_reason) in line for line in manifest.warnings)
     assert calls == {"compile": 2, "clean": 2}
 
@@ -525,7 +508,7 @@ def test_control_sequences_must_match_the_source(tmp_path: Path, monkeypatch: py
         path.write_text(path.read_text(encoding="utf-8").replace("\\emph{强调}", "强调"), encoding="utf-8")
 
     wire_work(monkeypatch, edit=edit)
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert manifest.report is not None and manifest.report.pages == 5
     assert manifest.fix_session is not None
@@ -536,7 +519,7 @@ def test_control_sequences_must_match_the_source(tmp_path: Path, monkeypatch: py
 def test_page_ratio_outside_the_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pages: int) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{"log": f"Output written on zh.xdv ({pages} pages, 1 bytes).\n"}])
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert manifest.report is not None and manifest.report.pages == pages
     assert manifest.baseline == BASELINE
@@ -547,13 +530,13 @@ def test_page_ratio_outside_the_window(tmp_path: Path, monkeypatch: pytest.Monke
 def test_page_ratio_inside_the_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pages: int) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{"log": f"Output written on zh.xdv ({pages} pages, 1 bytes).\n"}])
-    assert compile.run(workdir).status is CompileStatus.OK
+    assert compile.run(workdir, mode="fast").status is CompileStatus.OK
 
 
 def test_count_increases_become_warnings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{"log": LOG_NOISY}])
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert len(manifest.warnings) == 4
     for name in ("overfull_hboxes", "undefined_references", "undefined_citations", "missing_characters"):
@@ -563,10 +546,10 @@ def test_count_increases_become_warnings(tmp_path: Path, monkeypatch: pytest.Mon
 def test_caption_fallback_becomes_a_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = make_workdir(tmp_path)
     wire_latexmk(monkeypatch, [{}])
-    path = workdir.build / "reviewed" / "c000.tex"
+    path = workdir.translated
     lines = [line for line in path.read_text(encoding="utf-8").splitlines(keepends=True) if "⟦CAP-" not in line]
     path.write_text("".join(lines), encoding="utf-8")
-    manifest = compile.run(workdir)
+    manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
     assert len(manifest.warnings) == 1
     assert "CAP-0" in manifest.warnings[0]
@@ -581,12 +564,17 @@ def test_rerun_clears_previous_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     workdir.zh_anchors.write_text("stale", encoding="utf-8")
     workdir.zh_synctex.write_bytes(b"stale")
     (workdir.logs / "compile-fix.jsonl").write_text("stale", encoding="utf-8")
-    manifest = compile.run(workdir)
+    (workdir.logs / "compile-fix.raw.jsonl").write_text("stale", encoding="utf-8")
+    kept = [Note(session="precompile_fix", **NOTE), Note(session="translate", **NOTE)]
+    write_manifest(workdir.notes, NotesFile(notes=[kept[0], Note(session="compile_fix", **NOTE), kept[1]]))
+    manifest = compile.run(workdir, mode="fast")
     assert_failed(workdir, manifest)
     assert not workdir.zh_anchors.exists()
     assert not workdir.zh_synctex.exists()
     assert (workdir.build / "sandbox" / "tex" / "main.tex").is_file()
     assert not (workdir.logs / "compile-fix.jsonl").exists()
+    assert not (workdir.logs / "compile-fix.raw.jsonl").exists()
+    assert load_manifest(workdir.notes, NotesFile) == NotesFile(notes=kept)
 
 
 def test_report_traces_the_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -594,7 +582,7 @@ def test_report_traces_the_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {}])
     wire_work(monkeypatch)
     actions: list[tuple[str, str]] = []
-    compile.run(workdir, report=lambda status, summary: actions.append((status, summary)))
+    compile.run(workdir, mode="fast", report=lambda status, summary: actions.append((status, summary)))
     assert actions == [
         ("compiling", "main.tex"),
         ("fix session", "running"),
