@@ -19,12 +19,16 @@ import path from "node:path";
 import { useEffect, useState } from "react";
 import {
   DEFAULT_RECENT_DAYS,
+  DETAIL_REFRESH_SECONDS,
   FILTER_ALL,
   FILTER_UNREAD,
   GlossaryFile,
   NOT_INSTALLED,
   NotesFile,
-  PaperEntry,
+  PaperDetail,
+  PaperMeta,
+  PaperStatus,
+  PaperSummary,
   RUN_TITLES,
   Row,
   RunAction,
@@ -36,6 +40,9 @@ import {
   isUnread,
   matches,
   paperTitle,
+  refreshSeconds,
+  removableWorkdir,
+  runMessage,
   runOptions,
   runningMarkdown,
   runningRows,
@@ -60,7 +67,7 @@ import {
   tongtu,
 } from "./tongtu";
 
-const REFRESH_MILLISECONDS = 2000;
+const CLOCK_MILLISECONDS = 1000;
 const GRID_COLUMNS = 5;
 const UNREAD_ICON = { source: Icon.CircleFilled, tintColor: Color.Yellow };
 const STATE_ICONS = {
@@ -71,11 +78,12 @@ const STATE_ICONS = {
 };
 const STATE_COLORS = { running: Color.Blue, ok: Color.Green, failed: Color.Red, interrupted: Color.Orange };
 
-type Shared = { papers: PaperEntry[] | null; missing: boolean; error: string; opened: string[] | null };
+type Shared = { papers: PaperSummary[] | null; missing: boolean; error: string; opened: string[] | null };
 
 let shared: Shared = { papers: null, missing: false, error: "", opened: null };
 let refreshing = false;
-let timer: ReturnType<typeof setInterval> | null = null;
+let polling = false;
+let timer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
 
 function publish(next: Partial<Shared>): void {
@@ -92,7 +100,7 @@ async function refresh(): Promise<void> {
       return;
     }
     const result = await tongtu(["list", "--json"]);
-    const listing = result.code === 0 ? parseJson<{ papers: PaperEntry[] }>(result.stdout) : null;
+    const listing = result.code === 0 ? parseJson<{ papers: PaperSummary[] }>(result.stdout) : null;
     if (!listing) {
       publish({ missing: false, error: result.stderr.trim() || "tongtu list --json 没有给出结果" });
       return;
@@ -109,24 +117,39 @@ async function refresh(): Promise<void> {
   }
 }
 
+function schedule(): void {
+  if (!polling) return;
+  timer = setTimeout(() => refresh().then(schedule), refreshSeconds(shared.papers ?? []) * 1000);
+}
+
 function useShared(): Shared {
   const [, setVersion] = useState(0);
   useEffect(() => {
     const listener = () => setVersion((version) => version + 1);
     listeners.add(listener);
-    if (timer === null) {
-      refresh();
-      timer = setInterval(refresh, REFRESH_MILLISECONDS);
+    if (!polling) {
+      polling = true;
+      refresh().then(schedule);
     }
     return () => {
       listeners.delete(listener);
-      if (listeners.size === 0 && timer !== null) {
-        clearInterval(timer);
-        timer = null;
-      }
+      if (listeners.size > 0) return;
+      polling = false;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
     };
   }, []);
   return shared;
+}
+
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const clock = setInterval(() => setNow(Date.now()), CLOCK_MILLISECONDS);
+    return () => clearInterval(clock);
+  }, [active]);
+  return active ? now : Date.now();
 }
 
 async function setOpened(change: (opened: string[]) => string[]): Promise<void> {
@@ -135,61 +158,79 @@ async function setOpened(change: (opened: string[]) => string[]): Promise<void> 
   await saveOpened(opened);
 }
 
-async function openPdf(paper: PaperEntry): Promise<void> {
-  if (!paper.status.pdf) return;
+async function openPdf(paper: PaperSummary): Promise<void> {
+  if (!paper.pdf) return;
   await setOpened((opened) => withOpened(opened, paper.name));
-  await open(paper.status.pdf);
+  await open(paper.pdf);
 }
 
-async function previewPdf(paper: PaperEntry): Promise<void> {
-  if (!paper.status.pdf) return;
+async function previewPdf(paper: PaperSummary): Promise<void> {
+  if (!paper.pdf) return;
   await setOpened((opened) => withOpened(opened, paper.name));
-  preview(paper.status.pdf);
+  preview(paper.pdf);
 }
 
-async function run(paper: PaperEntry, action: RunAction): Promise<void> {
-  const { options, mode, redo } = runOptions(action, paper.status.workdir);
+async function run(paper: PaperSummary, action: RunAction, reload: () => Promise<void>): Promise<void> {
+  const { options, redo } = runOptions(action, paper.workdir);
   if (redo) await setOpened((opened) => withoutOpened(opened, paper.name));
-  const shown = await startRun(paper.name, options, mode);
-  await showHUD(`开始翻译 ${paper.name}（${shown}）`);
+  startRun(paper.name, options, paper.workdir);
+  await reload();
+  await showHUD(runMessage(action, paper.name));
 }
 
-async function stopRun(paper: PaperEntry): Promise<boolean> {
-  const result = await tongtu(["stop", paper.name, "--workdir", paper.status.workdir]);
+async function stopRun(paper: PaperSummary): Promise<boolean> {
+  const result = await tongtu(["stop", paper.name, "--workdir", paper.workdir]);
   if (result.code !== 0) {
     await showToast({ style: Toast.Style.Failure, title: `没有停止 ${paper.name}`, message: result.stderr.trim() });
   }
   return result.code === 0;
 }
 
-async function stop(paper: PaperEntry): Promise<void> {
-  if (await stopRun(paper)) await showHUD(`已停止 ${paper.name}`);
+async function stop(paper: PaperSummary, reload: () => Promise<void>): Promise<void> {
+  const stopped = await stopRun(paper);
+  await reload();
+  if (stopped) await showHUD(`已停止 ${paper.name}`);
 }
 
-async function remove(paper: PaperEntry): Promise<void> {
+async function remove(paper: PaperSummary): Promise<void> {
   const confirmed = await confirmAlert({
     title: `删除 ${paper.name}？`,
-    message: `删除工作目录 ${paper.status.workdir}、缩略图缓存和已读记录。`,
+    message: `删除工作目录 ${paper.workdir}、缩略图缓存和已读记录。`,
     primaryAction: { title: "删除", style: Alert.ActionStyle.Destructive },
   });
   if (!confirmed) return;
-  if (paper.state === "running" && !(await stopRun(paper))) return;
-  removePaperFiles(paper.name, paper.status.workdir);
+  if (!removableWorkdir(paper.name, paper.workdir)) {
+    await showToast({ style: Toast.Style.Failure, title: `没有删除 ${paper.name}`, message: `工作目录 ${paper.workdir} 与目录名不符` });
+    return;
+  }
+  if (!(await stopRun(paper))) return;
+  try {
+    removePaperFiles(paper.name, paper.workdir);
+  } catch (error) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: `没有删除 ${paper.name}`,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    await refresh();
+    return;
+  }
   await setOpened((opened) => withoutOpened(opened, paper.name));
-  publish({ papers: (shared.papers ?? []).filter((other) => other.name !== paper.name) });
+  await refresh();
   await showToast({ style: Toast.Style.Success, title: `已删除 ${paper.name}` });
 }
 
-function RunItem({ paper, action, icon }: { paper: PaperEntry; action: RunAction; icon: Icon }) {
-  return <Action title={RUN_TITLES[action]} icon={icon} onAction={() => run(paper, action)} />;
+type ActionsProps = { paper: PaperSummary; reload: () => Promise<void>; toggleView?: () => void };
+
+function RunItem({ paper, action, icon, reload }: { paper: PaperSummary; action: RunAction; icon: Icon; reload: () => Promise<void> }) {
+  return <Action title={RUN_TITLES[action]} icon={icon} onAction={() => run(paper, action, reload)} />;
 }
 
-function PaperActions({ paper, toggleView }: { paper: PaperEntry; toggleView?: () => void }) {
-  const workdir = paper.status.workdir;
-  const original = path.join(workdir, "build/precompile.pdf");
-  const arxiv = arxivUrl(paper.status);
-  const details = toggleView && <Action.Push title="查看详情" icon={Icon.Sidebar} target={<PaperDetail name={paper.name} />} />;
-  const finder = <Action.ShowInFinder title="在访达中显示" path={workdir} />;
+function PaperActions({ paper, reload, toggleView }: ActionsProps) {
+  const original = path.join(paper.workdir, "build/precompile.pdf");
+  const arxiv = arxivUrl(paper);
+  const details = toggleView && <Action.Push title="查看详情" icon={Icon.Sidebar} target={<PaperDetailView name={paper.name} />} />;
+  const finder = <Action.ShowInFinder title="在访达中显示" path={paper.workdir} />;
   return (
     <ActionPanel>
       {paper.state === "ok" && (
@@ -201,29 +242,30 @@ function PaperActions({ paper, toggleView }: { paper: PaperEntry; toggleView?: (
           {arxiv && <Action.OpenInBrowser title="打开 arXiv 页面" url={arxiv} />}
           {finder}
           <ActionPanel.Section title="重做">
-            <RunItem paper={paper} action="redoFast" icon={Icon.ArrowClockwise} />
-            <RunItem paper={paper} action="redoSmart" icon={Icon.ArrowClockwise} />
-            <RunItem paper={paper} action="recompile" icon={Icon.Hammer} />
+            <RunItem paper={paper} action="redoFast" icon={Icon.ArrowClockwise} reload={reload} />
+            <RunItem paper={paper} action="redoSmart" icon={Icon.ArrowClockwise} reload={reload} />
+            <RunItem paper={paper} action="recompile" icon={Icon.Hammer} reload={reload} />
           </ActionPanel.Section>
         </>
       )}
       {paper.state === "running" && (
         <>
           {details}
-          <Action title="停止" icon={Icon.Stop} style={Action.Style.Destructive} onAction={() => stop(paper)} />
+          <Action title="停止" icon={Icon.Stop} style={Action.Style.Destructive} onAction={() => stop(paper, reload)} />
           {finder}
         </>
       )}
       {(paper.state === "failed" || paper.state === "interrupted") && (
         <>
           {details}
-          <RunItem paper={paper} action="retry" icon={Icon.Play} />
-          <RunItem paper={paper} action="retrySmart" icon={Icon.Play} />
-          <Action.ShowInFinder title="查看日志" icon={Icon.Text} path={path.join(workdir, "logs")} />
+          <RunItem paper={paper} action="retry" icon={Icon.Play} reload={reload} />
+          <RunItem paper={paper} action="retrySmart" icon={Icon.Play} reload={reload} />
+          <Action.ShowInFinder title="查看日志" icon={Icon.Text} path={path.join(paper.workdir, "logs")} />
           {finder}
         </>
       )}
       <ActionPanel.Section>
+        <Action title="刷新" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={reload} />
         {toggleView && (
           <Action
             title="切换列表和网格"
@@ -244,32 +286,72 @@ function PaperActions({ paper, toggleView }: { paper: PaperEntry; toggleView?: (
   );
 }
 
-function detailMarkdown(paper: PaperEntry): string {
-  if (paper.state === "running") return runningMarkdown(paper, Date.now());
-  if (paper.state !== "ok") return unfinishedMarkdown(paper);
+function detailMarkdown(detail: PaperDetail): string {
+  if (detail.status.state === "running") return runningMarkdown(detail);
+  if (detail.status.state !== "ok") return unfinishedMarkdown(detail);
   return completedMarkdown(
-    paper,
-    thumbnail(paper.name, paper.status.pdf),
-    readJson<NotesFile>(paper.status.notes),
-    readJson<GlossaryFile>(paper.status.glossary),
+    detail,
+    thumbnail(detail.summary.name, detail.status.pdf),
+    readJson<NotesFile>(detail.status.notes),
+    readJson<GlossaryFile>(detail.status.glossary),
   );
 }
 
-function detailRows(paper: PaperEntry): Row[] {
-  if (paper.state === "running") return runningRows(paper, Date.now());
-  return paper.state === "ok" ? completedRows(paper) : unfinishedRows(paper);
+function detailRows(detail: PaperDetail, now: number): Row[] {
+  if (detail.status.state === "running") return runningRows(detail, now);
+  return detail.status.state === "ok" ? completedRows(detail) : unfinishedRows(detail);
 }
 
-function PaperDetail({ name }: { name: string }) {
-  const paper = useShared().papers?.find((other) => other.name === name);
-  if (!paper) return <Detail markdown={`没有 ${name} 这篇论文。`} />;
+function PaperDetailView({ name }: { name: string }) {
+  const summary = useShared().papers?.find((other) => other.name === name);
+  const workdir = summary?.workdir;
+  const [status, setStatus] = useState<PaperStatus | null>(null);
+  const [failure, setFailure] = useState("");
+  const running = status?.state === "running";
+  const now = useNow(running);
+
+  async function loadStatus(): Promise<void> {
+    if (!workdir) return;
+    const result = await tongtu(["status", name, "--workdir", workdir, "--json"]);
+    const next = result.code === 0 ? parseJson<PaperStatus>(result.stdout) : null;
+    if (next) setStatus(next);
+    setFailure(next ? "" : result.stderr.trim() || "tongtu status --json 没有给出结果");
+  }
+
+  async function reload(): Promise<void> {
+    await Promise.all([loadStatus(), refresh()]);
+  }
+
+  useEffect(() => {
+    loadStatus();
+  }, [workdir]);
+
+  useEffect(() => {
+    if (!running) return;
+    let busy = false;
+    const poll = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      await loadStatus();
+      busy = false;
+    }, DETAIL_REFRESH_SECONDS * 1000);
+    return () => {
+      clearInterval(poll);
+      refresh();
+    };
+  }, [running, workdir]);
+
+  if (!summary) return <Detail markdown={`没有 ${name} 这篇论文。`} />;
+  if (!status) return <Detail isLoading={failure === ""} markdown={failure} actions={<PaperActions paper={summary} reload={reload} />} />;
+  const detail = { summary, status, meta: readJson<PaperMeta>(status.meta) };
+  const current = { ...summary, state: status.state, stage: status.stage, started_at: status.started_at, pdf: status.pdf };
   return (
     <Detail
-      markdown={detailMarkdown(paper)}
-      actions={<PaperActions paper={paper} />}
+      markdown={detailMarkdown(detail)}
+      actions={<PaperActions paper={current} reload={reload} />}
       metadata={
         <Detail.Metadata>
-          {detailRows(paper).map((row) =>
+          {detailRows(detail, now).map((row) =>
             row.link ? (
               <Detail.Metadata.Link key={row.title} title={row.title} text={row.text} target={row.link} />
             ) : (
@@ -282,13 +364,9 @@ function PaperDetail({ name }: { name: string }) {
   );
 }
 
-function keywords(paper: PaperEntry): string[] {
-  return [paper.name, ...(paper.info?.authors ?? [])];
-}
-
-function listAccessories(paper: PaperEntry, opened: string[] | null): List.Item.Accessory[] {
-  if (paper.state !== "ok") return [{ tag: { value: stateLabel(paper, Date.now()), color: STATE_COLORS[paper.state] } }];
-  const label = { text: stateLabel(paper, Date.now()) };
+function listAccessories(paper: PaperSummary, opened: string[] | null, now: number): List.Item.Accessory[] {
+  if (paper.state !== "ok") return [{ tag: { value: stateLabel(paper, now), color: STATE_COLORS[paper.state] } }];
+  const label = { text: stateLabel(paper, now) };
   return isUnread(paper, opened) ? [{ icon: UNREAD_ICON, tooltip: "未读" }, label] : [label];
 }
 
@@ -298,6 +376,7 @@ export default function Papers() {
   const [recentDays, setRecentDays] = useState(DEFAULT_RECENT_DAYS);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState(FILTER_ALL);
+  const now = useNow((papers ?? []).some((paper) => paper.state === "running"));
   useEffect(() => {
     LocalStorage.getItem<string>("view").then((stored) => setView(stored === "grid" ? "grid" : "list"));
     loadRecentDays().then(setRecentDays);
@@ -310,9 +389,14 @@ export default function Papers() {
   const shown = sections(
     (papers ?? []).filter((paper) => matches(paper, search, filter, opened)),
     recentDays,
-    Date.now(),
+    now,
   );
   const empty = missing ? NOT_INSTALLED : error || (papers === null ? "" : "没有论文");
+  const emptyActions = (
+    <ActionPanel>
+      <Action title="刷新" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={refresh} />
+    </ActionPanel>
+  );
   const filters = [
     { value: FILTER_ALL, title: "全部" },
     { value: FILTER_UNREAD, title: "未读" },
@@ -322,7 +406,7 @@ export default function Papers() {
     isLoading: papers === null && !missing && error === "",
     filtering: false,
     onSearchTextChange: setSearch,
-    searchBarPlaceholder: "搜索标题、作者或编号",
+    searchBarPlaceholder: "搜索标题或编号",
   };
   if (view === "grid") {
     return (
@@ -340,18 +424,18 @@ export default function Papers() {
           </Grid.Dropdown>
         }
       >
-        {shown.length === 0 && <Grid.EmptyView title={empty} />}
+        {shown.length === 0 && <Grid.EmptyView title={empty} actions={emptyActions} />}
         {shown.map((section) => (
           <Grid.Section key={section.title} title={section.title} subtitle={`${section.papers.length}`}>
             {section.papers.map((paper) => (
               <Grid.Item
                 key={paper.name}
-                content={thumbnail(paper.name, paper.status.pdf) ?? "placeholder.png"}
+                content={thumbnail(paper.name, paper.pdf) ?? "placeholder.png"}
                 title={paperTitle(paper)}
-                subtitle={stateLabel(paper, Date.now())}
-                keywords={keywords(paper)}
+                subtitle={stateLabel(paper, now)}
+                keywords={[paper.name]}
                 accessory={isUnread(paper, opened) ? { icon: UNREAD_ICON, tooltip: "未读" } : undefined}
-                actions={<PaperActions paper={paper} toggleView={toggleView} />}
+                actions={<PaperActions paper={paper} reload={refresh} toggleView={toggleView} />}
               />
             ))}
           </Grid.Section>
@@ -370,7 +454,7 @@ export default function Papers() {
         </List.Dropdown>
       }
     >
-      {shown.length === 0 && <List.EmptyView title={empty} />}
+      {shown.length === 0 && <List.EmptyView title={empty} actions={emptyActions} />}
       {shown.map((section) => (
         <List.Section key={section.title} title={section.title} subtitle={`${section.papers.length}`}>
           {section.papers.map((paper) => (
@@ -378,9 +462,9 @@ export default function Papers() {
               key={paper.name}
               icon={STATE_ICONS[paper.state]}
               title={paperTitle(paper)}
-              keywords={keywords(paper)}
-              accessories={listAccessories(paper, opened)}
-              actions={<PaperActions paper={paper} toggleView={toggleView} />}
+              keywords={[paper.name]}
+              accessories={listAccessories(paper, opened, now)}
+              actions={<PaperActions paper={paper} reload={refresh} toggleView={toggleView} />}
             />
           ))}
         </List.Section>

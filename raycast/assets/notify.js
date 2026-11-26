@@ -15,8 +15,9 @@ function toolPath(home) {
   return TOOL_DIRECTORIES.map((directory) => directory.replace(/^~/, home)).join(":");
 }
 
-function statusCommand(paper, home) {
-  return "PATH=" + shellQuote(toolPath(home)) + " tongtu status " + shellQuote(paper) + ' --json 2>/dev/null; echo "exit=$?"';
+function statusCommand(paper, home, workdir) {
+  const location = workdir ? " --workdir " + shellQuote(workdir) : "";
+  return "PATH=" + shellQuote(toolPath(home)) + " tongtu status " + shellQuote(paper) + location + ' --json 2>/dev/null; echo "exit=$?"';
 }
 
 function parseStatusOutput(output) {
@@ -73,7 +74,7 @@ function run(argv) {
   const home = $.NSHomeDirectory().js;
   let output = "";
   try {
-    output = app.doShellScript(statusCommand(paper, home), { alteringLineEndings: false });
+    output = app.doShellScript(statusCommand(paper, home, argv[3]), { alteringLineEndings: false });
   } catch (error) {
     output = "";
   }

@@ -1,6 +1,9 @@
 export const STAGES = ["fetch", "precompile", "mask", "translate", "compile"];
 export const NOT_INSTALLED = "没有找到 tongtu 命令，安装方法见 README";
 export const DEFAULT_RECENT_DAYS = 7;
+export const ACTIVE_REFRESH_SECONDS = 5;
+export const IDLE_REFRESH_SECONDS = 60;
+export const DETAIL_REFRESH_SECONDS = 2;
 
 export type StageState = {
   name: string;
@@ -11,6 +14,8 @@ export type StageState = {
   manifest: string | null;
 };
 
+export type PaperState = "running" | "ok" | "failed" | "interrupted";
+
 export type PaperStatus = {
   workdir: string;
   arxiv_id: string | null;
@@ -19,31 +24,13 @@ export type PaperStatus = {
   pid: number | null;
   started_at: string | null;
   mode: string | null;
+  state: PaperState;
+  stage: string | null;
   stages: StageState[];
   pdf: string | null;
   meta: string | null;
   glossary: string | null;
   notes: string | null;
-};
-
-export type PaperMeta = {
-  title: string;
-  authors: string[];
-  abstract: string;
-  primary_category: string;
-  published: string;
-};
-
-export type PaperState = "running" | "ok" | "failed" | "interrupted";
-
-export type PaperEntry = {
-  name: string;
-  state: PaperState;
-  stage: string | null;
-  status: PaperStatus;
-  info: PaperMeta | null;
-  added_at: string;
-  updated_at: string;
   pages: number | null;
   source_pages: number | null;
   translate_seconds: number | null;
@@ -51,6 +38,33 @@ export type PaperEntry = {
   recent_actions: string[];
 };
 
+export type PaperMeta = {
+  arxiv_id: string;
+  version: number;
+  title: string;
+  authors: string[];
+  abstract: string;
+  primary_category: string;
+  published: string;
+};
+
+export type PaperSummary = {
+  name: string;
+  workdir: string;
+  state: PaperState;
+  stage: string | null;
+  arxiv_id: string | null;
+  version: number | null;
+  title: string | null;
+  primary_category: string | null;
+  added_at: string;
+  updated_at: string;
+  started_at: string | null;
+  pdf: string | null;
+};
+
+export type PaperDetail = { summary: PaperSummary; status: PaperStatus; meta: PaperMeta | null };
+export type PaperSource = "argument" | "browser" | "clipboard";
 export type Note = { where: string; problem: string; resolution: string };
 export type NotesFile = { notes: Note[] };
 export type GlossaryFile = { terms: { word: string; translation: string }[] };
@@ -58,14 +72,22 @@ export type ConfigValue = string | number | boolean | null;
 export type Config = Record<string, ConfigValue>;
 export type FormValues = Record<string, string | boolean>;
 export type Row = { title: string; text: string; link?: string };
-export type Section = { title: string; papers: PaperEntry[] };
+export type Section = { title: string; papers: PaperSummary[] };
 
-const NEW_ARXIV_ID = /\d{4}\.\d{4,5}(v\d+)?/;
-const OLD_ARXIV_ID = /[a-z-]+(\.[A-Z]{2})?\/\d{7}(v\d+)?/;
+const NEW_ARXIV_ID = /(?<!\d)\d{4}\.\d{4,5}(v\d+)?(?!\d|\.\d)/;
+const OLD_ARXIV_ID = /(?<![A-Za-z-])[a-z][a-z-]*(\.[A-Z]{2})?\/\d{7}(v\d+)?(?!\d)/;
+const PATH_ARGUMENT = /^[/~.]/;
 const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i;
 const CHROMIUM_BROWSERS = ["Google Chrome", "Microsoft Edge", "Brave Browser", "Arc", "Chromium", "Vivaldi"];
 const TOOL_DIRECTORIES = ["~/.local/bin", "~/.cargo/bin", "/opt/homebrew/bin", "/Library/TeX/texbin", "/usr/bin", "/bin"];
 const DAY_MILLISECONDS = 86_400_000;
+
+function nonEmptyLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
 
 export function arxivId(text: string): string | null {
   return (NEW_ARXIV_ID.exec(text) ?? OLD_ARXIV_ID.exec(text))?.[0] ?? null;
@@ -78,7 +100,8 @@ export function arxivIdFromUrl(url: string): string | null {
 }
 
 export function paperArgument(text: string): string {
-  return arxivId(text) ?? text.trim();
+  const trimmed = text.trim();
+  return PATH_ARGUMENT.test(trimmed) ? trimmed : (arxivId(trimmed) ?? trimmed);
 }
 
 export function browserUrlScript(application: string): string | null {
@@ -108,12 +131,16 @@ export function logFileName(paper: string): string {
   return `${paper.replace(/\//g, "_")}.log`;
 }
 
-export function launchScript(paper: string, runArguments: string[], logFile: string, notifyScript: string): string {
+export function launchScript(
+  paper: string,
+  runArguments: string[],
+  logFile: string,
+  notifyScript: string,
+  workdir: string | null,
+): string {
   const run = ["tongtu", "run", shellQuote(paper), ...runArguments.map(shellQuote)].join(" ");
-  return [
-    `${run} > ${shellQuote(logFile)} 2>&1`,
-    `osascript -l JavaScript ${shellQuote(notifyScript)} ${shellQuote(paper)} $? ${shellQuote(logFile)}`,
-  ].join("\n");
+  const notify = `osascript -l JavaScript ${shellQuote(notifyScript)} ${shellQuote(paper)} $? ${shellQuote(logFile)}`;
+  return [`${run} > ${shellQuote(logFile)} 2>&1`, workdir === null ? notify : `${notify} ${shellQuote(workdir)}`].join("\n");
 }
 
 export type RunAction = "retry" | "retrySmart" | "redoFast" | "redoSmart" | "recompile";
@@ -126,34 +153,59 @@ export const RUN_TITLES: Record<RunAction, string> = {
   recompile: "只重新编译",
 };
 
-const RUN_OPTIONS: Record<RunAction, { options: string[]; mode: string | null; redo: boolean }> = {
-  retry: { options: [], mode: null, redo: false },
-  retrySmart: { options: ["--mode", "smart"], mode: "smart", redo: false },
-  redoFast: { options: ["--from", "translate", "--mode", "fast"], mode: "fast", redo: true },
-  redoSmart: { options: ["--from", "translate", "--mode", "smart"], mode: "smart", redo: true },
-  recompile: { options: ["--from", "compile"], mode: null, redo: true },
+const RUN_OPTIONS: Record<RunAction, { options: string[]; redo: boolean }> = {
+  retry: { options: [], redo: false },
+  retrySmart: { options: ["--mode", "smart"], redo: false },
+  redoFast: { options: ["--from", "translate", "--mode", "fast"], redo: true },
+  redoSmart: { options: ["--from", "translate", "--mode", "smart"], redo: true },
+  recompile: { options: ["--from", "compile"], redo: true },
 };
 
-export function runOptions(action: RunAction, workdir: string): { options: string[]; mode: string | null; redo: boolean } {
-  const { options, mode, redo } = RUN_OPTIONS[action];
-  return { options: ["--workdir", workdir, ...options], mode, redo };
+export function runOptions(action: RunAction, workdir: string): { options: string[]; redo: boolean } {
+  const { options, redo } = RUN_OPTIONS[action];
+  return { options: ["--workdir", workdir, ...options], redo };
+}
+
+export function startMessage(paper: string, mode: string): string {
+  return mode === "" ? `开始翻译 ${paper}` : `开始翻译 ${paper}（${mode}）`;
+}
+
+export function runMessage(action: RunAction, name: string): string {
+  if (action === "retry") return `继续翻译 ${name}`;
+  if (action === "retrySmart") return `继续翻译 ${name}（smart）`;
+  if (action === "recompile") return `重新编译 ${name}`;
+  return startMessage(name, action === "redoFast" ? "fast" : "smart");
 }
 
 export function workdirName(workdir: string): string {
   return workdir.replace(/\/+$/, "").split("/").pop() ?? workdir;
 }
 
+export function removableWorkdir(name: string, workdir: string): boolean {
+  return name !== "" && workdir.startsWith("/") && workdirName(workdir) === name;
+}
+
 export function isComplete(status: PaperStatus): boolean {
-  return status.pdf !== null && STAGES.every((name) => status.stages.find((stage) => stage.name === name)?.status === "ok");
+  return status.state === "ok" && status.pdf !== null;
+}
+
+export function refreshSeconds(papers: PaperSummary[]): number {
+  return papers.some((paper) => paper.state === "running") ? ACTIVE_REFRESH_SECONDS : IDLE_REFRESH_SECONDS;
+}
+
+export function infoFailure(paper: string, stderr: string): string {
+  if (stderr.includes("has no entry for")) return `arXiv 上没有 ${paper}`;
+  const lines = nonEmptyLines(stderr);
+  return lines[lines.length - 1] ?? `tongtu info ${paper} 没有给出结果`;
 }
 
 export function recentTitle(days: number): string {
   return `最近 ${days} 天`;
 }
 
-export function sections(papers: PaperEntry[], recentDays: number, now: number): Section[] {
+export function sections(papers: PaperSummary[], recentDays: number, now: number): Section[] {
   const cutoff = now - recentDays * DAY_MILLISECONDS;
-  const recent = (paper: PaperEntry) => Date.parse(paper.updated_at) >= cutoff;
+  const recent = (paper: PaperSummary) => Date.parse(paper.updated_at) >= cutoff;
   return [
     { title: "进行中", papers: papers.filter((paper) => paper.state === "running") },
     { title: "需要处理", papers: papers.filter((paper) => paper.state === "failed" || paper.state === "interrupted") },
@@ -165,20 +217,20 @@ export function sections(papers: PaperEntry[], recentDays: number, now: number):
 export const FILTER_ALL = "all";
 export const FILTER_UNREAD = "unread";
 
-export function categories(papers: PaperEntry[]): string[] {
-  const found = papers.map((paper) => paper.info?.primary_category ?? "").filter((category) => category !== "");
+export function categories(papers: PaperSummary[]): string[] {
+  const found = papers.map((paper) => paper.primary_category ?? "").filter((category) => category !== "");
   return [...new Set(found)].sort();
 }
 
-export function isUnread(paper: PaperEntry, opened: string[] | null): boolean {
+export function isUnread(paper: PaperSummary, opened: string[] | null): boolean {
   return paper.state === "ok" && opened !== null && !opened.includes(paper.name);
 }
 
-export function matches(paper: PaperEntry, search: string, filter: string, opened: string[] | null): boolean {
+export function matches(paper: PaperSummary, search: string, filter: string, opened: string[] | null): boolean {
   if (filter === FILTER_UNREAD && !isUnread(paper, opened)) return false;
-  if (filter !== FILTER_ALL && filter !== FILTER_UNREAD && paper.info?.primary_category !== filter) return false;
+  if (filter !== FILTER_ALL && filter !== FILTER_UNREAD && paper.primary_category !== filter) return false;
   const words = search.toLowerCase().split(/\s+/).filter((word) => word !== "");
-  const text = [paper.info?.title ?? "", ...(paper.info?.authors ?? []), paper.name].join("\n").toLowerCase();
+  const text = `${paper.title ?? ""}\n${paper.name}`.toLowerCase();
   return words.every((word) => text.includes(word));
 }
 
@@ -192,7 +244,7 @@ export function parseOpened(stored: string | undefined): string[] | null {
   }
 }
 
-export function initialOpened(papers: PaperEntry[]): string[] {
+export function initialOpened(papers: PaperSummary[]): string[] {
   return papers.filter((paper) => paper.state === "ok").map((paper) => paper.name);
 }
 
@@ -231,24 +283,26 @@ export function dateTimeText(iso: string): string {
   return `${dateText(iso)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export function paperTitle(paper: PaperEntry): string {
-  return paper.info?.title || paper.name;
+export function paperTitle(paper: PaperSummary): string {
+  return paper.title || paper.name;
 }
 
-export function stateLabel(paper: PaperEntry, now: number): string {
-  if (paper.state === "running") return `${paper.stage} ${elapsed(paper.status.started_at, now)}`;
-  if (paper.state === "failed") return `${paper.stage} 失败`;
-  if (paper.state === "interrupted") return `${paper.stage} 中断`;
-  return [paper.info?.primary_category ?? "", dateText(paper.added_at)].filter((part) => part !== "").join(" · ");
+export function stateLabel(paper: PaperSummary, now: number): string {
+  if (paper.state === "running") return [paper.stage ?? "", elapsed(paper.started_at, now)].filter((part) => part !== "").join(" ");
+  if (paper.state === "failed") return [paper.stage ?? "", "失败"].filter((part) => part !== "").join(" ");
+  if (paper.state === "interrupted") return [paper.stage ?? "", "中断"].filter((part) => part !== "").join(" ");
+  return [paper.primary_category ?? "", dateText(paper.added_at)].filter((part) => part !== "").join(" · ");
 }
 
-export function arxivVersion(status: PaperStatus): string | null {
-  if (!status.arxiv_id) return null;
-  return status.version === null ? status.arxiv_id : `${status.arxiv_id}v${status.version}`;
+type ArxivReference = { arxiv_id: string | null; version: number | null };
+
+export function arxivVersion(paper: ArxivReference): string | null {
+  if (!paper.arxiv_id) return null;
+  return paper.version === null ? paper.arxiv_id : `${paper.arxiv_id}v${paper.version}`;
 }
 
-export function arxivUrl(status: PaperStatus): string | null {
-  const id = arxivVersion(status);
+export function arxivUrl(paper: ArxivReference): string | null {
+  const id = arxivVersion(paper);
   return id ? `https://arxiv.org/abs/${id}` : null;
 }
 
@@ -256,12 +310,16 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function stageLine(paper: PaperEntry): string {
+function detailTitle(detail: PaperDetail): string {
+  return detail.meta?.title || paperTitle(detail.summary);
+}
+
+function stageLine(status: PaperStatus): string {
   return STAGES.map((name) => {
-    const stage = paper.status.stages.find((state) => state.name === name);
-    if (name === paper.stage) {
-      if (paper.state === "failed") return `**${name} ✗**`;
-      if (paper.state === "running") return `**${name}**`;
+    const stage = status.stages.find((state) => state.name === name);
+    if (name === status.stage) {
+      if (status.state === "failed") return `**${name} ✗**`;
+      if (status.state === "running") return `**${name}**`;
       return name;
     }
     return stage?.status === "ok" ? `${name} ✓` : name;
@@ -269,14 +327,14 @@ function stageLine(paper: PaperEntry): string {
 }
 
 export function completedMarkdown(
-  paper: PaperEntry,
+  detail: PaperDetail,
   thumbnail: string | null,
   notes: NotesFile | null,
   glossary: GlossaryFile | null,
 ): string {
-  const parts = [`# ${paperTitle(paper)}`];
+  const parts = [`# ${detailTitle(detail)}`];
   if (thumbnail) parts.push(`![](file://${encodeURI(thumbnail)})`);
-  if (paper.info?.abstract) parts.push(paper.info.abstract);
+  if (detail.meta?.abstract) parts.push(detail.meta.abstract);
   if (notes) {
     parts.push(`## 译者备注 · ${notes.notes.length} 条`);
     for (const note of notes.notes) {
@@ -292,25 +350,26 @@ export function completedMarkdown(
   return parts.join("\n\n");
 }
 
-export function runningMarkdown(paper: PaperEntry, now: number): string {
-  const parts = [`# ${paperTitle(paper)}`, stageLine(paper), `\`${paper.stage}\` 已运行 ${elapsed(paper.status.started_at, now)}`];
-  if (paper.recent_actions.length > 0) {
-    parts.push("## 会话最近的动作", paper.recent_actions.map((action) => `- ${oneLine(action)}`).join("\n"));
+export function runningMarkdown(detail: PaperDetail): string {
+  const parts = [`# ${detailTitle(detail)}`, stageLine(detail.status)];
+  if (detail.status.recent_actions.length > 0) {
+    parts.push("## 会话最近的动作", detail.status.recent_actions.map((action) => `- ${oneLine(action)}`).join("\n"));
   }
   return parts.join("\n\n");
 }
 
 export const UNFINISHED_NEXT_STEPS = [RUN_TITLES.retry, RUN_TITLES.retrySmart, "查看日志"];
 
-export function unfinishedMarkdown(paper: PaperEntry): string {
-  const failed = paper.status.stages.find((stage) => stage.name === paper.stage);
+export function unfinishedMarkdown(detail: PaperDetail): string {
+  const { status } = detail;
+  const failed = status.stages.find((stage) => stage.name === status.stage);
   const reason =
-    paper.state === "failed"
-      ? `\`${paper.stage}\` 失败：${oneLine(`${failed?.status ?? ""} ${failed?.message ?? ""}`)}`
-      : `在 \`${paper.stage}\` 阶段中断`;
+    status.state === "failed"
+      ? `\`${status.stage}\` 失败：${oneLine(`${failed?.status ?? ""} ${failed?.message ?? ""}`)}`
+      : `在 \`${status.stage}\` 阶段中断`;
   return [
-    `# ${paperTitle(paper)}`,
-    stageLine(paper),
+    `# ${detailTitle(detail)}`,
+    stageLine(status),
     "## 原因",
     reason,
     "## 下一步",
@@ -333,43 +392,56 @@ function durationText(seconds: number): string {
   return whole < 60 ? `${whole} 秒` : `${Math.floor(whole / 60)} 分 ${whole % 60} 秒`;
 }
 
-export function completedRows(paper: PaperEntry): Row[] {
-  const rows = arxivRow(paper.status);
-  if (paper.info?.authors.length) rows.push({ title: "作者", text: paper.info.authors.join(", ") });
-  if (paper.info) rows.push({ title: "分类与发表日期", text: `${paper.info.primary_category} · ${dateText(paper.info.published)}` });
-  rows.push({ title: "加入日期", text: dateText(paper.added_at) });
+export function completedRows(detail: PaperDetail): Row[] {
+  const { summary, status, meta } = detail;
+  const rows = arxivRow(status);
+  if (meta?.authors.length) rows.push({ title: "作者", text: meta.authors.join(", ") });
+  if (meta) rows.push({ title: "分类与发表日期", text: `${meta.primary_category} · ${dateText(meta.published)}` });
+  rows.push({ title: "加入日期", text: dateText(summary.added_at) });
   const pages = [
-    paper.pages === null ? "" : `中文 ${paper.pages} 页`,
-    paper.source_pages === null ? "" : `原文 ${paper.source_pages} 页`,
+    status.pages === null ? "" : `中文 ${status.pages} 页`,
+    status.source_pages === null ? "" : `原文 ${status.source_pages} 页`,
   ].filter((part) => part !== "");
   if (pages.length > 0) rows.push({ title: "页数", text: pages.join("，") });
-  rows.push(...modeRow(paper.status));
+  rows.push(...modeRow(status));
   const effort = [
-    paper.translate_seconds === null ? "" : durationText(paper.translate_seconds),
-    paper.translate_cost_usd === null ? "" : `$${paper.translate_cost_usd.toFixed(2)}`,
+    status.translate_seconds === null ? "" : durationText(status.translate_seconds),
+    status.translate_cost_usd === null ? "" : `$${status.translate_cost_usd.toFixed(2)}`,
   ].filter((part) => part !== "");
   if (effort.length > 0) rows.push({ title: "翻译耗时与费用", text: effort.join(" · ") });
-  const warnings = paper.status.stages.reduce((count, stage) => count + stage.warnings.length, 0);
+  const warnings = status.stages.reduce((count, stage) => count + stage.warnings.length, 0);
   rows.push({ title: "提醒", text: warnings === 0 ? "无" : `${warnings} 条` });
   return rows;
 }
 
-export function runningRows(paper: PaperEntry, now: number): Row[] {
-  const rows = [...arxivRow(paper.status), ...modeRow(paper.status)];
-  if (paper.status.started_at) {
-    rows.push({ title: "开始时间", text: dateTimeText(paper.status.started_at) });
-    rows.push({ title: "总用时", text: elapsed(paper.status.started_at, now) });
+export function runningRows(detail: PaperDetail, now: number): Row[] {
+  const { status } = detail;
+  const rows = [...arxivRow(status), ...modeRow(status)];
+  if (status.started_at) {
+    rows.push({ title: "开始时间", text: dateTimeText(status.started_at) });
+    rows.push({ title: "总用时", text: elapsed(status.started_at, now) });
   }
   return rows;
 }
 
-export function unfinishedRows(paper: PaperEntry): Row[] {
-  const rows = [...arxivRow(paper.status), ...modeRow(paper.status)];
-  if (paper.stage) {
-    rows.push({ title: paper.state === "failed" ? "失败的阶段" : "中断的阶段", text: paper.stage });
-    rows.push({ title: "已完成的阶段数", text: `${Math.max(0, STAGES.indexOf(paper.stage))} / ${STAGES.length}` });
+export function unfinishedRows(detail: PaperDetail): Row[] {
+  const { status } = detail;
+  const rows = [...arxivRow(status), ...modeRow(status)];
+  if (status.stage) {
+    rows.push({ title: status.state === "failed" ? "失败的阶段" : "中断的阶段", text: status.stage });
+    rows.push({ title: "已完成的阶段数", text: `${Math.max(0, STAGES.indexOf(status.stage))} / ${STAGES.length}` });
   }
   return rows;
+}
+
+export function confirmRows(meta: PaperMeta, mode: string): Row[] {
+  const rows = [
+    { title: "作者", text: meta.authors.join(", ") },
+    { title: "编号与版本", text: `${meta.arxiv_id}v${meta.version}` },
+    { title: "主分类", text: meta.primary_category },
+    { title: "发表日期", text: dateText(meta.published) },
+  ];
+  return mode === "" ? rows : [...rows, { title: "模式", text: mode }];
 }
 
 export const MODES = ["fast", "smart"];
@@ -444,10 +516,7 @@ export function configChanges(config: Config, form: FormValues): { pairs: string
 }
 
 export function configErrors(stderr: string, keys: string[]): { fields: Record<string, string>; first: string } {
-  const lines = stderr
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
+  const lines = nonEmptyLines(stderr);
   const fields: Record<string, string> = {};
   for (const line of lines) {
     const separator = line.indexOf(": ");

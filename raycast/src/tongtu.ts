@@ -87,14 +87,17 @@ export async function readConfig(): Promise<Config | null> {
   return result.code === 0 ? parseJson<Config>(result.stdout) : null;
 }
 
-export async function startRun(paper: string, runArguments: string[], mode: string | null): Promise<string> {
-  const runs = path.join(environment.supportPath, "runs");
-  fs.mkdirSync(runs, { recursive: true });
-  const script = launchScript(paper, runArguments, path.join(runs, logFileName(paper)), path.join(environment.assetsPath, "notify.js"));
-  spawn("/bin/zsh", ["-c", script], { detached: true, stdio: "ignore", env: ENV }).unref();
-  if (mode) return mode;
+export async function defaultMode(): Promise<string> {
   const config = await readConfig();
   return String(config?.[DEFAULT_MODE_KEY] ?? "");
+}
+
+export function startRun(paper: string, runArguments: string[], workdir: string | null): void {
+  const runs = path.join(environment.supportPath, "runs");
+  fs.mkdirSync(runs, { recursive: true });
+  const log = path.join(runs, logFileName(paper));
+  const script = launchScript(paper, runArguments, log, path.join(environment.assetsPath, "notify.js"), workdir);
+  spawn("/bin/zsh", ["-c", script], { detached: true, stdio: "ignore", env: ENV }).unref();
 }
 
 export function preview(file: string): void {

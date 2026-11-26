@@ -86,3 +86,11 @@ test("statusCommand sets the plugin PATH and quotes the paper", () => {
     "PATH='/Users/me/.local/bin:/Users/me/.cargo/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/bin:/bin' tongtu status 'it'\\''s' --json 2>/dev/null; echo \"exit=$?\"",
   );
 });
+
+test("statusCommand passes the working directory when it is given", () => {
+  assert.equal(
+    statusCommand("draft", "/Users/me", "/home/my papers/draft"),
+    "PATH='/Users/me/.local/bin:/Users/me/.cargo/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/bin:/bin' tongtu status 'draft' --workdir '/home/my papers/draft' --json 2>/dev/null; echo \"exit=$?\"",
+  );
+  assert.equal(statusCommand("draft", "/Users/me", undefined), statusCommand("draft", "/Users/me"));
+});

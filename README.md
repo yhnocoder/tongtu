@@ -59,7 +59,9 @@ agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动，安�
    - Tinycast：Settings → Extensions → Install → Add from folder，选 `raycast/dist`。
    - Raycast：在 `raycast/` 下执行 `npm run dev`。
 
-「翻译论文」没有填编号时，依次从浏览器当前标签页的地址和剪贴板里取 arXiv 编号。第一次读取浏览器地址时，系统会询问是否允许启动器控制浏览器，选择允许。
+「翻译论文」没有填编号时，依次从浏览器当前标签页的地址和剪贴板里取 arXiv 编号。编号来自参数或浏览器时直接开始翻译；来自剪贴板时先显示这篇论文的标题、作者等信息，确认后才开始。第一次读取浏览器地址时，系统会询问是否允许启动器控制浏览器，选择允许。
+
+「论文」在有论文正在翻译时每 5 秒刷新一次，其余时候每 60 秒一次，⌘R 立即刷新。
 
 ## 发版
 
