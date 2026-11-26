@@ -749,6 +749,7 @@ def _paper_summary(paper_workdir: Workdir, fetched: FetchManifest | None) -> Pap
         added_at=_modified_at(fetch_manifest) if fetch_manifest.is_file() else directory_time,
         updated_at=max(manifest_times, default=directory_time),
         started_at=snapshot.started_at,
+        mode=snapshot.mode,
         pdf=snapshot.pdf,
     )
 

@@ -60,12 +60,11 @@ export type PaperSummary = {
   added_at: string;
   updated_at: string;
   started_at: string | null;
+  mode: string | null;
   pdf: string | null;
 };
 
-export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "pdf"> & {
-  mode?: string | null;
-};
+export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "mode" | "pdf">;
 export type PaperDetail = { name: string; addedAt: string | null; status: PaperStatus; meta: PaperMeta | null };
 export type PaperSource = "argument" | "browser" | "clipboard";
 export type ConfigValue = string | number | boolean | null;
@@ -202,22 +201,22 @@ const RUN_OPTIONS: Record<RunAction, { options: string[]; redo: boolean }> = {
 
 const RETRY_MODES: Record<RetryAction, string | null> = { retry: null, retryFast: "fast", retrySmart: "smart" };
 
-export function retryActions(mode: string | null | undefined): RetryAction[] {
+export function retryActions(mode: string | null): RetryAction[] {
   const actions: RetryAction[] = ["retry", "retryFast", "retrySmart"];
   return actions.filter((action) => action === "retry" || RETRY_MODES[action] !== (mode || null));
 }
 
-export function runTitle(action: RunAction, mode: string | null | undefined): string {
+export function runTitle(action: RunAction, mode: string | null): string {
   return action === "retry" && mode ? `重试（${mode}）` : RUN_TITLES[action];
 }
 
-export function runOptions(action: RunAction, workdir: string, mode: string | null | undefined): { options: string[]; redo: boolean } {
+export function runOptions(action: RunAction, workdir: string, mode: string | null): { options: string[]; redo: boolean } {
   const { options, redo } = RUN_OPTIONS[action];
   const retryMode = action === "retry" && mode ? ["--mode", mode] : [];
   return { options: ["--workdir", workdir, ...options, ...retryMode], redo };
 }
 
-export function runMessage(action: RunAction, name: string, mode: string | null | undefined): string {
+export function runMessage(action: RunAction, name: string, mode: string | null): string {
   if (action === "recompile") return `重新编译 ${name}`;
   if (action === "redoFast" || action === "redoSmart") return `开始翻译 ${name}（${action === "redoFast" ? "fast" : "smart"}）`;
   const shown = action === "retry" ? mode || null : RETRY_MODES[action];
@@ -568,7 +567,7 @@ export function entryActions(lookup: Lookup): EntryAction[] {
   if (state === "none") return ["start", "startFast", "startSmart", ...arxiv];
   if (state === "ok") return ["detail", "openPdf", ...arxiv];
   if (state === "running") return ["detail", "stop"];
-  return ["detail", ...retryActions(lookup.status?.mode)];
+  return ["detail", ...retryActions(lookup.status?.mode ?? null)];
 }
 
 export function statusTarget(status: PaperStatus): PaperTarget {

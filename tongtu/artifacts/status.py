@@ -77,6 +77,7 @@ class PaperSummary(BaseModel):
     added_at: datetime
     updated_at: datetime
     started_at: datetime | None = None
+    mode: str | None = None
     pdf: Path | None = None
 
 

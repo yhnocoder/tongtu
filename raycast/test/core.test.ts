@@ -119,6 +119,7 @@ function paper(name: string, state: PaperState, overrides: Partial<PaperSummary>
     added_at: "2026-11-25T08:00:00Z",
     updated_at: "2026-11-25T09:00:00Z",
     started_at: null,
+    mode: null,
     pdf: state === "ok" ? `/home/papers/${name}/out/${name}.zh.pdf` : null,
     ...overrides,
   };
@@ -306,12 +307,18 @@ test("retryActions offers the last mode and the other one", () => {
   assert.deepEqual(retryActions("smart"), ["retry", "retryFast"]);
   assert.deepEqual(retryActions("fast"), ["retry", "retrySmart"]);
   assert.deepEqual(retryActions(null), ["retry", "retryFast", "retrySmart"]);
-  assert.deepEqual(retryActions(undefined), ["retry", "retryFast", "retrySmart"]);
   assert.equal(runTitle("retry", "smart"), "重试（smart）");
   assert.equal(runTitle("retry", null), "重试");
   assert.equal(runTitle("retryFast", "smart"), "用 fast 重试");
   assert.equal(runTitle("retrySmart", null), "用 smart 重试");
   assert.equal(runTitle("redoFast", "smart"), "用 fast 重新翻译");
+});
+
+test("a listed paper retries with the mode of its summary", () => {
+  const failed = paper("2611.15404v1", "failed", { mode: "fast" });
+  assert.deepEqual(retryActions(failed.mode), ["retry", "retrySmart"]);
+  assert.equal(runTitle("retry", failed.mode), "重试（fast）");
+  assert.deepEqual(runOptions("retry", failed.workdir, failed.mode).options, ["--workdir", "/home/papers/2611.15404v1", "--mode", "fast"]);
 });
 
 test("removableWorkdir needs an absolute path that ends in the paper name", () => {

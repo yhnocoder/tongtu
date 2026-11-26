@@ -795,6 +795,7 @@ class PaperSummary(BaseModel):
     added_at: datetime                          # fetch manifest 的修改时间；没有时取工作目录的修改时间
     updated_at: datetime                        # 已有 manifest 里最新的修改时间；没有时取工作目录的修改时间
     started_at: datetime | None                 # 有效运行标记里的开始时间；没有时为 null
+    mode: str | None                            # 与 tongtu status 的 mode 相同
     pdf: Path | None                            # 中文 PDF 的绝对路径；文件不存在时为 null</code></pre>
 
   <h3 id="info-json">tongtu info PAPER --json</h3>

@@ -2155,6 +2155,7 @@ def test_list_json_summarizes_a_finished_paper(tmp_path: Path, monkeypatch: pyte
         added_at=datetime.fromtimestamp(fetch_time, UTC),
         updated_at=datetime.fromtimestamp(latest_time, UTC),
         started_at=None,
+        mode="smart",
         pdf=workdir.zh_pdf,
     )
 
@@ -2175,10 +2176,22 @@ def test_list_and_status_report_the_failed_stage(tmp_path: Path, monkeypatch: py
     summary = summaries_by_name(list_json())["1412.6980v8"]
     assert (summary.state, summary.stage) == (PaperState.FAILED, "mask")
     assert (summary.title, summary.primary_category, summary.pdf, summary.started_at) == (None, None, None, None)
+    assert summary.mode is None
     snapshot = status_json("1412.6980v8")
     assert (snapshot.state, snapshot.stage) == (PaperState.FAILED, "mask")
     assert (snapshot.pages, snapshot.source_pages) == (None, None)
     assert (snapshot.translate_seconds, snapshot.translate_cost_usd) == (None, None)
+
+
+def test_list_json_takes_the_mode_like_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    workdir = write_paper(
+        papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"precompile": "precompile_failed"}
+    )
+    write_run_record(workdir, "fast")
+    summary = summaries_by_name(list_json())["1412.6980v8"]
+    assert (summary.state, summary.mode) == (PaperState.FAILED, "fast")
+    assert summary.mode == status_json("1412.6980v8").mode
 
 
 def test_status_json_takes_the_source_pages_from_precompile_first(
