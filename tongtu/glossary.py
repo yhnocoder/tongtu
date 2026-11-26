@@ -20,6 +20,7 @@ from .validation import (
     GlossaryFormatError,
     hits,
     kept_word_conflicts,
+    kept_word_in_source,
     merge_glossaries,
     parse_glossary,
     searchable,
@@ -88,8 +89,8 @@ def select(layers: Layers, masked: str) -> Selection:
     user_keys = {term_key(word) for word, _translation in user.entries()}
     unmatched = tuple(
         f"{_origin(layers.user, word)}: {word!r} does not occur in this paper"
-        for word, _translation in user.entries()
-        if not hits(word, text)
+        for word, translation in user.entries()
+        if not _occurs(word, translation, text)
     )
     fixed = _matching(user, text)
     conflicts = kept_word_conflicts(dict(fixed.terms), fixed.do_not_translate)
@@ -217,10 +218,14 @@ def _read_layer(path: Path, *, required: bool) -> Layer | None:
 
 def _matching(glossary: Glossary, text: str) -> Glossary:
     return Glossary(
-        terms=tuple(entry for entry in glossary.terms if hits(entry[0], text)),
-        do_not_translate=tuple(word for word in glossary.do_not_translate if hits(word, text)),
+        terms=tuple(entry for entry in glossary.terms if _occurs(*entry, text)),
+        do_not_translate=tuple(word for word in glossary.do_not_translate if _occurs(word, None, text)),
         style=glossary.style,
     )
+
+
+def _occurs(word: str, translation: str | None, text: str) -> bool:
+    return hits(word, text) if translation is not None else kept_word_in_source(word, text)
 
 
 def _origin(layers: Sequence[Layer], word: str) -> Path:

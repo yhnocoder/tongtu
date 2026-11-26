@@ -249,6 +249,10 @@ SECTION_HEADING_RE = re.compile(r"\\(?:sub){0,2}section\*?\s*(?:\[[^\]]*\])?\s*\
 
 PLURAL_SUFFIX_RE = re.compile(r"(?:es|s)$")
 
+COMPOUND_HYPHEN_BEFORE = r"(?<!(?<!-)-)"
+
+COMPOUND_HYPHEN_AFTER = r"(?!-(?!-))"
+
 
 class Category(StrEnum):
     STRUCTURE = "structure"
@@ -420,7 +424,7 @@ def _paragraph_problems(
                 )
             )
     for word in do_not_translate:
-        if hits(word, source_text, exact=True) and not hits(word, translation_text, exact=True):
+        if kept_word_in_source(word, source_text) and not hits(word, translation_text, exact=True):
             problems.append(
                 Problem(
                     Category.GLOSSARY,
@@ -488,11 +492,17 @@ def searchable(text: str) -> str:
     return COMMAND_NAME_RE.sub(" ", NON_TEXT_COMMAND_RE.sub(" ", stripped))
 
 
-def hits(word: str, text: str, exact: bool = False) -> bool:
+def hits(word: str, text: str, exact: bool = False, *, in_compounds: bool = True) -> bool:
     case_sensitive = exact or (any(character.isalpha() for character in word) and word == word.upper())
     body = r"\s+".join(re.escape(part) for part in word.split())
-    pattern = rf"(?<![0-9A-Za-z]){body}(?:es|s)?(?![0-9A-Za-z])"
+    before = "" if in_compounds else COMPOUND_HYPHEN_BEFORE
+    after = "" if in_compounds else COMPOUND_HYPHEN_AFTER
+    pattern = rf"(?<![0-9A-Za-z]){before}{body}(?:es|s)?(?![0-9A-Za-z]){after}"
     return re.search(pattern, text, 0 if case_sensitive else re.IGNORECASE) is not None
+
+
+def kept_word_in_source(word: str, source_text: str) -> bool:
+    return hits(word, source_text, exact=True, in_compounds=False)
 
 
 def term_key(word: str) -> str:

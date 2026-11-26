@@ -440,6 +440,31 @@ def test_a_do_not_translate_word_must_be_kept_with_its_case() -> None:
     assert "'Adafactor'" in report.problems[0].message
 
 
+KEPT_IN_COMPOUNDS: list[tuple[str, str, bool]] = [
+    ("rank", "We use a low-rank update for every layer of the large model.", False),
+    ("rank", "We use a rank-based update for every layer of the large model.", False),
+    ("rank", "We use a rank-1 update for every layer of the large model.", False),
+    ("rank", "Each PP rank holds two layers of the large model in memory.", True),
+    ("RL", "We compare RL-based methods on every one of the benchmarks.", False),
+    ("RL", "We compare RL training methods on every one of the benchmarks.", True),
+    ("KV-cache", "We compress the KV-cache of every layer of the large model.", True),
+]
+
+
+@pytest.mark.parametrize(("word", "source", "required"), KEPT_IN_COMPOUNDS)
+def test_a_do_not_translate_word_inside_a_hyphenated_compound_need_not_be_kept(
+    word: str, source: str, required: bool
+) -> None:
+    report = validation.check(source, "我们对大模型的每一层使用同一种方法。", do_not_translate=[word])
+    assert report.ok is not required
+    assert categories(report) == ([validation.Category.GLOSSARY] if required else [])
+
+
+def test_the_translation_side_still_finds_a_kept_word_inside_a_compound() -> None:
+    source = "Each PP rank holds two layers of the large model in memory."
+    assert validation.check(source, "每个 PP rank-0 进程保存大模型的两层。", do_not_translate=["rank"]).ok
+
+
 def test_a_term_must_keep_the_do_not_translate_word_it_contains() -> None:
     report = validation.check(EN, ZH, {"mixed RL training": "混合强化学习训练"}, ["RL"])
     assert categories(report) == [validation.Category.GLOSSARY]

@@ -129,6 +129,19 @@ def test_only_entries_found_in_the_paper_are_selected(home: Path, paper: Path) -
     assert all(warning.startswith(str(home / "glossary.json")) for warning in chosen.unmatched)
 
 
+def test_kept_words_are_selected_by_the_same_rule_as_the_validation(home: Path, paper: Path) -> None:
+    write(home / "glossary.learned.json", {"do_not_translate": ["rank", "PP", "KV-cache"]})
+    write(paper / "glossary.json", {"do_not_translate": ["RL", "SFT", "Adapter"]})
+    masked = "We train a low-rank adapter with RL-based tuning and a KV-cache, then run SFT with one PP group.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.do_not_translate == ("SFT",)
+    assert chosen.learned.do_not_translate == ("PP", "KV-cache")
+    assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == [
+        "'RL' does not occur in this paper",
+        "'Adapter' does not occur in this paper",
+    ]
+
+
 def test_learned_entries_go_to_the_session_glossary_unless_a_user_layer_covers_them(home: Path, paper: Path) -> None:
     write(
         home / "glossary.learned.json",
