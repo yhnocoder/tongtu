@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -57,7 +58,7 @@ from .model.config import (
     updated_config,
     write_config,
 )
-from .model.work import AGENTRUN_EXECUTABLE
+from .model.work import AGENTRUN_EXECUTABLE, agentrun_executable
 from .pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, translate
@@ -94,6 +95,11 @@ TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
 )
 
 MIN_TEXLIVE_YEAR = 2026
+
+TEXLIVE_INSTALL_HINTS: dict[str, str] = {
+    "Darwin": "install MacTeX: brew install --cask mactex-no-gui",
+    "Linux": "install TeX Live scheme-full with install-tl: https://tug.org/texlive/quickinstall.html",
+}
 
 VERSION_TIMEOUT_SECONDS = 30
 
@@ -661,7 +667,9 @@ def _print_doctor_rows(rows: list[tuple[str, str, bool, str]]) -> list[str]:
 def _toolchain_rows() -> list[tuple[str, str, bool, str]]:
     rows: list[tuple[str, str, bool, str]] = []
     for name, purpose in TOOLCHAIN_CHECKS:
-        rows.append((name, purpose, *_check_executable(name)))
+        found, detail = _check_executable(name)
+        hint = TEXLIVE_INSTALL_HINTS.get(platform.system())
+        rows.append((name, purpose, found, detail if found or hint is None else f"{detail}; {hint}"))
         if name == XELATEX:
             rows.append((TEXLIVE_CHECK_NAME, f"distribution year >= {MIN_TEXLIVE_YEAR}", *_check_texlive()))
     rows.append((FONT_CHECK_NAME, "bundled font files (LXGW WenKai, Source Han Sans SC)", *_check_fonts()))
@@ -678,21 +686,22 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
     path = config_path()
     detail = str(path) if path.exists() else f"{path} absent; using the defaults"
     rows = [(CONFIG_CHECK_NAME, "modes, fonts and pdf options", True, detail)]
+    executable, detail = agentrun_executable()
+    rows.append((AGENTRUN_EXECUTABLE, "starts every runtime session", executable is not None, detail))
+    if executable is None:
+        return rows
     targets: dict[str, Target] = {}
     for name in ModeName:
         target, _detail = mode_target(config, name)
         if target is not None:
             targets.setdefault(str(target), target)
     for target in targets.values():
-        rows += _runtime_rows(target)
+        rows += _runtime_rows(target, executable)
     return rows
 
 
-def _runtime_rows(target: Target) -> list[tuple[str, str, bool, str]]:
-    found, detail = _check_executable(AGENTRUN_EXECUTABLE)
-    if not found:
-        return [(str(target), "agentrun, which starts every runtime", False, detail)]
-    command = [detail, "doctor", target.runtime, "--json"] + (["--model", target.model] if target.model else [])
+def _runtime_rows(target: Target, executable: str) -> list[tuple[str, str, bool, str]]:
+    command = [executable, "doctor", target.runtime, "--json"] + (["--model", target.model] if target.model else [])
     try:
         completed = subprocess.run(command, capture_output=True, text=True)
     except OSError as error:

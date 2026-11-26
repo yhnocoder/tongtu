@@ -316,7 +316,7 @@ def test_compile_with_fix_latexmk_not_runnable(tmp_path: Path, monkeypatch: pyte
     attempt, session, failure = call_compile_with_fix(tmp_path, [])
     assert attempt is None and session is None
     assert "failed to run latexmk" in failure
-    assert "PATH" in failure
+    assert "tongtu doctor" in failure
 
 
 def test_compile_with_fix_first_timeout_skips_the_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

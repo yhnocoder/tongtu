@@ -314,7 +314,7 @@ def _expand(src: Path, main_file: str, warnings: list[str]) -> tuple[bytes | Non
                 None,
                 (
                     f"failed to run latexpand ({describe_error(error)}). latexpand ships with TeX Live; "
-                    "check that it is installed and in PATH."
+                    "run tongtu doctor to see how to install it."
                 ),
                 "",
             )

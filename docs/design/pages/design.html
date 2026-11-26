@@ -133,7 +133,8 @@ mode    smart  claude-code/claude-opus-5-5  medium
     <li><code>stage STAGE PAPER</code> 只运行一个阶段。它先删掉本阶段的旧产物再运行，不改动其他阶段的产物。上游产物不存在时拒绝执行，退出 2。</li>
     <li><code>status PAPER</code> 只读，列出每个阶段的状态、产物是否存在和 manifest 路径。它不联网。<code>--json</code> 的格式见<a href="#status">供其他程序读取的输出</a>。</li>
     <li><code>validate SRC DST</code> 对一对掩码文件运行 translate 判定时使用的同一套校验，逐类输出问题，有问题时退出 1。给了 <code>--glossary</code> 才检查术语。手工修改译文后用它确认。</li>
-    <li><code>doctor</code> 逐项检查环境：TeX 工具链（xelatex、latexmk、latexpand）、默认字体、<code>config.toml</code>、agentrun，以及每个模式引用的运行时与模型（对每个组合运行一次 <code>agentrun doctor</code>）。工具链或字体缺失时退出 1。<code>config.toml</code> 不存在不算缺失，这时检查默认的模式。工具链齐全时，退出 3 只在配置文件有错或运行时不可用时出现，这时 fetch、precompile、mask 仍然可以运行。</li>
+    <li><code>doctor</code> 逐项检查环境：TeX 工具链（xelatex、latexmk、latexpand）、默认字体、<code>config.toml</code>、agentrun，以及每个模式引用的运行时与模型（对每个组合运行一次 <code>agentrun doctor</code>）。工具链或字体缺失时退出 1。<code>config.toml</code> 不存在不算缺失，这时检查默认的模式。工具链齐全时，退出 3 只在配置文件有错或运行时不可用时出现，这时 fetch、precompile、mask 仍然可以运行。TeX 工具链缺失时，这一行给出当前系统的安装命令：macOS 是 MacTeX，Linux 是 install-tl 的 scheme-full。claude-code 与沙箱工具由 <code>agentrun doctor</code> 报告。</li>
+    <li>agentrun 由通途自动安装。doctor 检查运行时之前，以及每次启动 agent 会话之前，通途先在 <code>PATH</code> 里找 <code>agentrun</code>，再找 <code>~/.local/bin/agentrun</code>，找到就使用，不比较版本。都没有时，从 agentrun 的 GitHub release 下载 1.0.1 版本里与当前系统、架构对应的可执行文件，保存为 <code>~/.local/bin/agentrun</code>。下载失败或没有对应的文件时，会话以 error 结束，doctor 把 agentrun 记为缺失并退出 3。</li>
     <li><code>config</code> 查看和修改 <code>$TONGTU_HOME/config.toml</code>，有四种用法：
       <ul>
         <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。标准输入不是终端时退出 2。</li>

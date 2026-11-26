@@ -182,6 +182,19 @@ def test_doctor_missing_one_tool_exits_one(tmp_path: Path, monkeypatch: pytest.M
     assert result.exit_code == cli.EXIT_FAILURE
 
 
+@pytest.mark.parametrize(("system", "hint"), sorted(cli.TEXLIVE_INSTALL_HINTS.items()))
+def test_doctor_missing_tool_shows_the_install_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, hint: str
+) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "latexpand" else f"/usr/bin/{name}")
+    monkeypatch.setattr(cli.platform, "system", lambda: system)
+    fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert squeeze(f"latexpand not found in PATH; {hint}") in squeeze(result.stdout)
+
+
 def test_doctor_missing_toolchain_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     written_config(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -278,7 +291,7 @@ def test_doctor_reports_agentrun_missing_from_path(tmp_path: Path, monkeypatch: 
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
     output = squeeze(result.stdout)
-    assert "[missing]pi/deepseek/m1agentrun,whichstartseveryruntimeagentrunnotfoundinPATH" in output
+    assert "[missing]agentrunstartseveryruntimesessionagentrunisnotinPATHanddownloading" in output
     assert calls == [[cli.XELATEX, "--version"]]
     assert "toolchainandfontscomplete" in output
 

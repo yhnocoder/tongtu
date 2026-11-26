@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -12,6 +13,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PAPERS_DIR = REPO_ROOT / "examples" / "papers"
 
 FIXTURE_PAPERS: tuple[str, ...] = ("article", "revtex", "conference")
+
+
+@pytest.fixture(autouse=True)
+def agentrun_download_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    work = importlib.import_module("tongtu.model.work")
+    install_path = tmp_path / "local-bin" / "agentrun"
+    monkeypatch.setattr(work, "AGENTRUN_INSTALL_PATH", install_path)
+
+    def refuse(url: str, destination: Path) -> None:
+        raise OSError(f"tests do not download {url}")
+
+    monkeypatch.setattr(work, "_download_executable", refuse)
+    return install_path
 
 
 @pytest.fixture(scope="session")

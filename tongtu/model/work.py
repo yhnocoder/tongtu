@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -12,11 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+import httpx
 from pydantic import ValidationError
 
 from .. import fonts
 from ..artifacts.common import Session, StopReason, Usage
+from ..arxiv import REQUEST_TIMEOUT_SECONDS
 from ..assets import asset_path
+from ..manifests import describe_error
 from ..processes import OUTPUT_EXCERPT_CHARS, run_in_process_group
 from ..workdir import raw_log_path
 from .config import Target, load_config, mode_target
@@ -28,6 +32,24 @@ SKILL_DIR = ".skills/{skill}"
 PROMPT = "读 {skill_path}/SKILL.md，按它做；现场是当前目录这棵树，只在其中读写。"
 
 AGENTRUN_EXECUTABLE = "agentrun"
+
+AGENTRUN_VERSION = "1.0.1"
+
+AGENTRUN_INSTALL_PATH = Path("~/.local/bin/agentrun")
+
+AGENTRUN_RELEASE_URL = (
+    "https://github.com/yhnocoder/agentrun/releases/download/v{version}/agentrun-{version}-{platform}"
+)
+
+AGENTRUN_MANUAL_INSTALL = "https://github.com/yhnocoder/agentrun#install"
+
+AGENTRUN_PLATFORMS: dict[tuple[str, str], str] = {
+    ("Darwin", "arm64"): "macos-arm64",
+    ("Darwin", "x86_64"): "macos-x86_64",
+    ("Linux", "x86_64"): "linux-x86_64",
+    ("Linux", "aarch64"): "linux-arm64",
+    ("Linux", "arm64"): "linux-arm64",
+}
 
 AGENTRUN_GRACE_SECONDS = 120
 
@@ -105,9 +127,11 @@ def _launch(
     report: Callable[[str], None] | None,
     extra_prompt: str,
 ) -> tuple[StopReason, Usage | None, str]:
-    executable = shutil.which(AGENTRUN_EXECUTABLE)
+    executable, detail = agentrun_executable()
     if executable is None:
-        return StopReason.ERROR, None, f"{AGENTRUN_EXECUTABLE} is not in PATH; every session runs through it."
+        return StopReason.ERROR, None, detail
+    if report is not None and detail != executable:
+        report(detail)
 
     skill_path = skill_dir(skill)
     source = SKILL_ROOT / skill
@@ -186,6 +210,46 @@ def _launch(
     if stop_reason is not StopReason.ERROR:
         return stop_reason, usage, ""
     return StopReason.ERROR, usage, f"{AGENTRUN_EXECUTABLE} {end.get('status')}: {end.get('detail') or '(no detail)'}"
+
+
+def agentrun_executable() -> tuple[str | None, str]:
+    found = shutil.which(AGENTRUN_EXECUTABLE)
+    if found is not None:
+        return found, found
+    installed = AGENTRUN_INSTALL_PATH.expanduser()
+    if installed.is_file() and os.access(installed, os.X_OK):
+        return str(installed), str(installed)
+    system, machine = platform.system(), platform.machine()
+    release = AGENTRUN_PLATFORMS.get((system, machine))
+    if release is None:
+        return None, (
+            f"{AGENTRUN_EXECUTABLE} is not in PATH and has no release file for {system} {machine}; "
+            f"install it by hand: {AGENTRUN_MANUAL_INSTALL}"
+        )
+    url = AGENTRUN_RELEASE_URL.format(version=AGENTRUN_VERSION, platform=release)
+    try:
+        _download_executable(url, installed)
+    except (httpx.HTTPError, OSError) as error:
+        return None, (
+            f"{AGENTRUN_EXECUTABLE} is not in PATH and downloading {url} failed ({describe_error(error)}); "
+            f"install it by hand: {AGENTRUN_MANUAL_INSTALL}"
+        )
+    return str(installed), f"installed {AGENTRUN_EXECUTABLE} {AGENTRUN_VERSION} to {installed}"
+
+
+def _download_executable(url: str, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_name(f".{destination.name}.partial")
+    try:
+        with httpx.stream("GET", url, timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as response:
+            response.raise_for_status()
+            with partial.open("wb") as file:
+                for chunk in response.iter_bytes():
+                    file.write(chunk)
+        partial.chmod(0o755)
+        partial.replace(destination)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def session_usage(end: dict, turns: int, result: ResultUsage) -> Usage | None:

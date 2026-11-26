@@ -142,7 +142,7 @@ def compile_with_fix(
             None,
             fix_session,
             f"failed to run latexmk ({describe_error(error)}). latexmk ships with the TeX "
-            "distribution; check that it is installed and in PATH.",
+            "distribution; run tongtu doctor to see how to install it.",
         )
     if first.outcome.timed_out:
         return first, fix_session, timeout_message(first)
@@ -170,7 +170,11 @@ def compile_with_fix(
     try:
         final = attempt_compile(tree, main_filename)
     except OSError as error:
-        return None, session, f"failed to run latexmk for the verify compile ({describe_error(error)})."
+        return (
+            None,
+            session,
+            f"failed to run latexmk for the verify compile ({describe_error(error)}); run tongtu doctor to see how to install it.",
+        )
     if final.outcome.timed_out:
         return final, session, timeout_message(final)
     if not final.passed:
