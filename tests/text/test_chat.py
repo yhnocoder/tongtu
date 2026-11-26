@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+
 import httpx
 import pytest
 
@@ -92,6 +94,54 @@ def test_translate_abstract_reports_a_malformed_base_url(monkeypatch: pytest.Mon
     with pytest.raises(chat.ChatError) as raised:
         chat.translate_abstract(config, "We introduce Adam.")
     assert KEY not in str(raised.value)
+
+
+def unreachable_base_url(userinfo: str = "") -> str:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"http://{userinfo}127.0.0.1:{port}/v1?token=FAKE-QUERY-TOKEN"
+
+
+def test_a_real_network_error_names_only_its_type_and_host() -> None:
+    config = AbstractConfig(base_url=unreachable_base_url("FAKE-USER:FAKE-PASS@"), api_key="sk-FAKE-SECRET-1")
+    with pytest.raises(chat.ChatError) as raised:
+        chat.translate_abstract(config, "We introduce Adam.")
+    message = str(raised.value)
+    assert message == "request to 127.0.0.1 failed: ConnectError"
+    assert "sk-FAKE-SECRET-1" not in message
+    assert "FAKE-USER" not in message
+    assert "FAKE-PASS" not in message
+    assert "FAKE-QUERY-TOKEN" not in message
+
+
+@pytest.mark.parametrize("key", ["sk-FAKE\nSECRET-1", "sk-FAKE SECRET-1", "sk-FAKE\x00SECRET-1", "sk-FAKE-SECRET-é"])
+def test_a_key_that_cannot_go_into_a_header_sends_nothing(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    calls = wire_chat(monkeypatch, answer(200, completion("译文")))
+    with pytest.raises(chat.ChatError) as raised:
+        chat.translate_abstract(CONFIG.model_copy(update={"api_key": key}), "We introduce Adam.")
+    assert str(raised.value) == "abstract.api_key has characters that cannot be sent in a request header"
+    assert calls == []
+
+
+def test_a_key_with_a_trailing_newline_is_sent_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = wire_chat(monkeypatch, answer(200, completion("译文")))
+    config = AbstractConfig(base_url="https://chat.example.com", api_key="  sk-FAKE-SECRET-1\n")
+    assert chat.translate_abstract(config, "We introduce Adam.") == "译文"
+    assert calls[0]["headers"] == {"Authorization": "Bearer sk-FAKE-SECRET-1"}
+
+
+@pytest.mark.parametrize("response", [httpx.ConnectError("refused"), answer(500, "server error"), answer(200, "x")])
+def test_a_failure_does_not_name_the_userinfo_of_the_base_url(
+    monkeypatch: pytest.MonkeyPatch, response: httpx.Response | Exception
+) -> None:
+    wire_chat(monkeypatch, response)
+    config = CONFIG.model_copy(update={"base_url": "https://FAKE-USER:FAKE-PASS@chat.example.com/v1"})
+    with pytest.raises(chat.ChatError) as raised:
+        chat.translate_abstract(config, "We introduce Adam.")
+    assert "chat.example.com" in str(raised.value)
+    assert "FAKE-USER" not in str(raised.value)
+    assert "FAKE-PASS" not in str(raised.value)
 
 
 def test_abstract_prompt_states_the_rules() -> None:

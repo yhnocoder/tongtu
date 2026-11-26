@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 import httpx
 from pydantic import BaseModel, ValidationError
 
@@ -36,10 +38,25 @@ class _Completion(BaseModel):
     choices: list[_Choice]
 
 
+def _sendable_in_header(value: str) -> bool:
+    return value.isascii() and all(char.isprintable() and not char.isspace() for char in value)
+
+
+def _host(url: str) -> str:
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        host = None
+    return host or "abstract.base_url"
+
+
 def translate_abstract(config: AbstractConfig, text: str) -> str:
     if not config.api_key:
         raise ChatError("abstract.api_key is not set; set it with tongtu config set abstract.api_key KEY")
+    if not _sendable_in_header(config.api_key):
+        raise ChatError("abstract.api_key has characters that cannot be sent in a request header")
     url = f"{config.base_url.rstrip('/')}/chat/completions"
+    host = _host(url)
     body = {
         "model": config.model,
         "messages": [{"role": "system", "content": ABSTRACT_PROMPT}, {"role": "user", "content": text}],
@@ -54,14 +71,14 @@ def translate_abstract(config: AbstractConfig, text: str) -> str:
             timeout=ABSTRACT_TIMEOUT_SECONDS,
         )
     except (httpx.HTTPError, httpx.InvalidURL) as error:
-        raise ChatError(f"request to {url} failed: {type(error).__name__}: {error}") from error
+        raise ChatError(f"request to {host} failed: {type(error).__name__}") from error
     if not response.is_success:
-        raise ChatError(f"{url} answered HTTP {response.status_code}")
+        raise ChatError(f"{host} answered HTTP {response.status_code}")
     try:
         completion = _Completion.model_validate_json(response.content)
     except ValidationError as error:
-        raise ChatError(f"the answer from {url} is not a chat completion") from error
+        raise ChatError(f"the answer from {host} is not a chat completion") from error
     reply = (completion.choices[0].message.content or "").strip() if completion.choices else ""
     if not reply:
-        raise ChatError(f"the answer from {url} has no text")
+        raise ChatError(f"the answer from {host} has no text")
     return reply

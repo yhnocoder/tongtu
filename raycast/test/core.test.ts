@@ -33,12 +33,14 @@ import {
   entryRows,
   entrySubtitle,
   entryTitle,
+  expandedPath,
   formValues,
   infoFailure,
   initialOpened,
   isPathArgument,
   isUnread,
   launchScript,
+  localInfoId,
   localState,
   logFileName,
   lookupFailure,
@@ -61,6 +63,9 @@ import {
   sections,
   shellQuote,
   shownAbstract,
+  shownLookup,
+  startFailedMarkdown,
+  startSettled,
   startingMarkdown,
   statusTarget,
   stateLabel,
@@ -351,7 +356,7 @@ test("infoFailure tells a missing paper from other failures", () => {
 });
 
 function lookup(paper: string, found: PaperStatus | null, meta: PaperMeta | null, infoError = ""): Lookup {
-  return { paper, status: found, meta, infoError };
+  return { paper, status: found, meta, infoError, directoryMissing: false };
 }
 
 const NO_ENTRY = "cannot get info for 9999.99999: arXiv API has no entry for 9999.99999; check the id and version\n";
@@ -400,9 +405,6 @@ test("entryActions puts the action for return first in every state", () => {
     "arxiv",
     "detail",
     "openPdf",
-    "retry",
-    "retryFast",
-    "retrySmart",
     "start",
     "startFast",
     "startSmart",
@@ -796,9 +798,10 @@ test("configChanges writes the key only when it is filled in", () => {
   const withKey = { ...CONFIG, [API_KEY_KEY]: "********" };
   assert.deepEqual(configChanges(withKey, formValues(withKey)).pairs, []);
   assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "   " }).pairs, []);
-  assert.deepEqual(configChanges(CONFIG, { ...formValues(CONFIG), [API_KEY_KEY]: " sk-new " }).pairs, [API_KEY_KEY, '"sk-new"']);
-  assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "********" }).pairs, [API_KEY_KEY, '"********"']);
-  assert.deepEqual(CLEAR_API_KEY_PAIR, [API_KEY_KEY, '""']);
+  assert.deepEqual(configChanges(CONFIG, { ...formValues(CONFIG), [API_KEY_KEY]: " sk-new " }).pairs, [API_KEY_KEY, "sk-new"]);
+  assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "********" }).pairs, [API_KEY_KEY, "********"]);
+  assert.deepEqual(configChanges(CONFIG, { ...formValues(CONFIG), [API_KEY_KEY]: "123456" }).pairs, [API_KEY_KEY, "123456"]);
+  assert.deepEqual(CLEAR_API_KEY_PAIR, [API_KEY_KEY, ""]);
 });
 
 test("configChanges lists the changed abstract translation fields", () => {
@@ -826,4 +829,47 @@ test("the author rows use authorsText", () => {
     entryRows(lookup("2611.15404", null, many), ""),
   ];
   for (const found of rows) assert.equal(found.find((row) => row.title === "作者")?.text, expected);
+});
+
+test("lookupFailure reports a local directory that does not exist", () => {
+  assert.equal(lookupFailure({ ...lookup("~/papers/missing", null, null), directoryMissing: true }), "没有这个目录");
+});
+
+test("expandedPath expands only a leading home directory", () => {
+  assert.equal(expandedPath("~/papers/draft", "/Users/me"), "/Users/me/papers/draft");
+  assert.equal(expandedPath("~", "/Users/me"), "/Users/me");
+  assert.equal(expandedPath("~other/draft", "/Users/me"), "~other/draft");
+  assert.equal(expandedPath("./draft", "/Users/me"), "./draft");
+  assert.equal(expandedPath("/tmp/~/draft", "/Users/me"), "/tmp/~/draft");
+});
+
+test("shownLookup shows a lookup only for the paper of the current input", () => {
+  const found = lookup("2611.15404", null, META);
+  assert.equal(shownLookup(found, "2611.15404"), found);
+  assert.equal(shownLookup(found, " https://arxiv.org/abs/2611.15404 "), found);
+  assert.equal(shownLookup(found, "2611.1540"), null);
+  assert.equal(shownLookup(found, "2611.15405"), null);
+  assert.equal(shownLookup(found, ""), null);
+  assert.equal(shownLookup(null, "2611.15404"), null);
+});
+
+test("localInfoId names the local version when it differs from the info", () => {
+  const local = status("ok", ALL_OK);
+  assert.equal(localInfoId("2611.15404", local, { ...META, version: 3 }), "2611.15404v1");
+  assert.equal(localInfoId("2611.15404", local, null), "2611.15404v1");
+  assert.equal(localInfoId("2611.15404", local, META), null);
+  assert.equal(localInfoId("2611.15404v1", local, null), null);
+  assert.equal(localInfoId("2611.15404", null, META), null);
+  assert.equal(localInfoId("./draft", status("ok", ALL_OK, { arxiv_id: null, version: null }), null), null);
+  const old = status("ok", ALL_OK, { arxiv_id: "hep-th/9901001", version: 2, workdir: "/home/papers/hep-th_9901001v2" });
+  assert.equal(localInfoId("hep-th/9901001", old, { ...META, arxiv_id: "hep-th/9901001", version: 3 }), "hep-th/9901001v2");
+});
+
+test("startSettled waits for a running paper or a finished stage", () => {
+  assert.equal(startSettled(null), false);
+  assert.equal(startSettled(status("interrupted", [], { stage: "fetch" })), false);
+  assert.equal(startSettled(status("running", [], { stage: "fetch" })), true);
+  assert.equal(startSettled(status("failed", ["download_failed"], { stage: "fetch" })), true);
+  assert.equal(startSettled(status("interrupted", ["ok"], { stage: "precompile" })), true);
+  assert.equal(startFailedMarkdown("2611.15404"), "# 2611.15404\n\n没有启动成功，原因见系统通知");
 });

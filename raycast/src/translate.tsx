@@ -10,6 +10,7 @@ import {
   showToast,
   useNavigation,
 } from "@raycast/api";
+import fs from "node:fs";
 import { useEffect, useRef, useState } from "react";
 import {
   ENTRY_ACTION_TITLES,
@@ -21,26 +22,31 @@ import {
   PaperSource,
   PaperStatus,
   START_REFRESH_DELAY_SECONDS,
+  apiKeySet,
   arxivId,
   arxivIdFromUrl,
+  arxivVersion,
   browserUrlScript,
   entryActions,
   entryArxivUrl,
   entryRows,
   entrySubtitle,
   entryTitle,
+  expandedPath,
   isPathArgument,
+  localInfoId,
   lookupFailure,
   needsAbstractZh,
   runMode,
   runTitle,
   shownAbstract,
+  shownLookup,
   statusTarget,
   typedPaper,
   withAbstractZh,
 } from "./core";
 import { PaperDetailView, RefreshAction, feedback, openPdf, run, stop } from "./detail";
-import { defaultMode, installed, osascript, parseJson, startRun, tongtu } from "./tongtu";
+import { USER_HOME, defaultMode, installed, osascript, parseJson, readConfig, startRun, tongtu } from "./tongtu";
 
 const BROWSER_TIMEOUT_MILLISECONDS = 2000;
 
@@ -76,16 +82,30 @@ async function findPrefill(argument: string): Promise<Prefill | null> {
   return fromClipboard ? { text: fromClipboard, source: "clipboard" } : null;
 }
 
+async function info(paper: string): Promise<{ meta: PaperMeta | null; infoError: string }> {
+  const result = await tongtu(["info", paper, "--json"]);
+  return result.code === 0 ? { meta: parseJson<PaperMeta>(result.stdout), infoError: "" } : { meta: null, infoError: result.stderr };
+}
+
+function isDirectory(directory: string): boolean {
+  try {
+    return fs.statSync(directory).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function lookUp(paper: string): Promise<Lookup> {
-  const status = tongtu(["status", paper, "--json"]);
-  const info = isPathArgument(paper) ? null : tongtu(["info", paper, "--json"]);
-  const [statusResult, infoResult] = await Promise.all([status, info]);
-  return {
-    paper,
-    status: statusResult.code === 0 ? parseJson<PaperStatus>(statusResult.stdout) : null,
-    meta: infoResult?.code === 0 ? parseJson<PaperMeta>(infoResult.stdout) : null,
-    infoError: infoResult && infoResult.code !== 0 ? infoResult.stderr : "",
-  };
+  if (isPathArgument(paper) && !isDirectory(expandedPath(paper, USER_HOME))) {
+    return { paper, status: null, meta: null, infoError: "", directoryMissing: true };
+  }
+  const statusRequest = tongtu(["status", paper, "--json"]);
+  const infoRequest = isPathArgument(paper) ? null : info(paper);
+  const [statusResult, remote] = await Promise.all([statusRequest, infoRequest]);
+  const status = statusResult.code === 0 ? parseJson<PaperStatus>(statusResult.stdout) : null;
+  const local = localInfoId(paper, status, remote?.meta ?? null);
+  const found = local ? await info(local) : (remote ?? { meta: null, infoError: "" });
+  return { paper, status, ...found, directoryMissing: false };
 }
 
 export default function Translate(props: LaunchProps<{ arguments: { paper?: string; mode?: string } }>) {
@@ -134,14 +154,19 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
     const found = await lookUp(wanted);
     if (request !== latest.current) return;
     setLookup(found);
-    if (needsAbstractZh(found.meta)) translateAbstract(wanted);
+    if (found.meta && needsAbstractZh(found.meta)) translateAbstract(wanted, arxivVersion(found.meta) ?? wanted);
   }
 
-  async function translateAbstract(wanted: string): Promise<void> {
-    if (translating.current.has(wanted)) return;
-    translating.current.add(wanted);
-    const result = await tongtu(["info", wanted, "--json", "--zh"]);
-    translating.current.delete(wanted);
+  async function translateAbstract(wanted: string, id: string): Promise<void> {
+    if (translating.current.has(id)) return;
+    translating.current.add(id);
+    const config = await readConfig();
+    if (!config || !apiKeySet(config)) {
+      translating.current.delete(id);
+      return;
+    }
+    const result = await tongtu(["info", id, "--json", "--zh"]);
+    translating.current.delete(id);
     const translated = result.code === 0 ? parseJson<PaperMeta>(result.stdout) : null;
     setLookup((shown) => (shown && shown.paper === wanted ? { ...shown, meta: withAbstractZh(shown.meta, translated) } : shown));
   }
@@ -171,7 +196,7 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
       });
       return;
     }
-    push(<PaperDetailView paper={target} starting />);
+    push(<PaperDetailView paper={target} starting onClose={load} />);
     setTimeout(() => {
       launching.current = false;
       load();
@@ -179,34 +204,33 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
   }
 
   function entryAction(action: EntryAction, found: Lookup) {
-    const title = ENTRY_ACTION_TITLES[action];
     const local = found.status ? statusTarget(found.status) : null;
     const url = entryArxivUrl(found);
     if (action === "start") {
-      return <Action key={action} title={title} icon={Icon.Play} onAction={() => start(found.paper, runMode(props.arguments.mode))} />;
+      return <Action key={action} title={ENTRY_ACTION_TITLES.start} icon={Icon.Play} onAction={() => start(found.paper, runMode(props.arguments.mode))} />;
     }
-    if (action === "startFast") return <Action key={action} title={title} icon={Icon.Play} onAction={() => start(found.paper, "fast")} />;
-    if (action === "startSmart") return <Action key={action} title={title} icon={Icon.Play} onAction={() => start(found.paper, "smart")} />;
-    if (action === "arxiv") return url && <Action.OpenInBrowser key={action} title={title} url={url} />;
+    if (action === "startFast") return <Action key={action} title={ENTRY_ACTION_TITLES.startFast} icon={Icon.Play} onAction={() => start(found.paper, "fast")} />;
+    if (action === "startSmart") return <Action key={action} title={ENTRY_ACTION_TITLES.startSmart} icon={Icon.Play} onAction={() => start(found.paper, "smart")} />;
+    if (action === "arxiv") return url && <Action.OpenInBrowser key={action} title={ENTRY_ACTION_TITLES.arxiv} url={url} />;
     if (!local) return null;
     if (action === "detail") {
       return (
         <Action.Push
           key={action}
-          title={title}
+          title={ENTRY_ACTION_TITLES.detail}
           icon={Icon.Sidebar}
-          target={<PaperDetailView paper={local.name} workdir={local.workdir} />}
+          target={<PaperDetailView paper={local.name} workdir={local.workdir} onClose={load} />}
         />
       );
     }
-    if (action === "openPdf") return <Action key={action} title={title} icon={Icon.Document} onAction={() => openPdf(local)} />;
+    if (action === "openPdf") return <Action key={action} title={ENTRY_ACTION_TITLES.openPdf} icon={Icon.Document} onAction={() => openPdf(local)} />;
     if (action === "stop") {
-      return <Action key={action} title={title} icon={Icon.Stop} style={Action.Style.Destructive} onAction={() => stop(local, load)} />;
+      return <Action key={action} title={ENTRY_ACTION_TITLES.stop} icon={Icon.Stop} style={Action.Style.Destructive} onAction={() => stop(local, load)} />;
     }
     return <Action key={action} title={runTitle(action, local.mode)} icon={Icon.Play} onAction={() => run(local, action, load)} />;
   }
 
-  const current = lookup && lookup.paper === paper ? lookup : null;
+  const current = shownLookup(lookup, text);
   const failure = current ? lookupFailure(current) : null;
   const waiting = prefilling || typedPaper(text) !== paper || (paper !== null && current === null);
   const refreshOnly = (

@@ -59,6 +59,7 @@ from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest, write_manifest
 from .model import chat
 from .model.config import (
+    SECRET_KEYS,
     FontFamily,
     FontsConfig,
     ModelsConfig,
@@ -69,6 +70,7 @@ from .model.config import (
     mode_target,
     shown_entries,
     updated_config,
+    validation_lines,
     write_config,
 )
 from .model.work import AGENTRUN_EXECUTABLE, agentrun_executable
@@ -270,6 +272,13 @@ def _describe_paper(arxiv_id: str | None, version: int | None) -> str:
     return arxiv.versioned_id(arxiv_id, version)
 
 
+def _same_arxiv_id(asked: str, held: str) -> bool:
+    try:
+        return normalize_arxiv_id(asked) == normalize_arxiv_id(held)
+    except WorkdirError:
+        return False
+
+
 def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: FetchManifest | None) -> None:
     if fetched is None:
         return
@@ -277,7 +286,7 @@ def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: Fetch
         source_dir = paper_input.source_dir
         same_paper = source_dir is not None and source_dir.resolve() == Path(fetched.source).resolve()
     else:
-        same_paper = paper_input.arxiv_id == fetched.arxiv_id
+        same_paper = paper_input.arxiv_id is not None and _same_arxiv_id(paper_input.arxiv_id, fetched.arxiv_id)
     same_version = paper_input.version is None or fetched.version is None or paper_input.version == fetched.version
     if same_paper and same_version:
         return
@@ -312,6 +321,8 @@ def _paper_workdir(
         if fetched is not None and fetched.arxiv_id is None and paper == Path(fetched.source).name:
             paper_input = PaperInput(source_dir=Path(fetched.source))
         _check_fetched(paper_input, workdir, fetched)
+        if fetched is not None and fetched.arxiv_id is not None:
+            paper_input = replace(paper_input, arxiv_id=fetched.arxiv_id)
     if paper_input.arxiv_id is not None and paper_input.version is None:
         if latest:
             version = None
@@ -839,9 +850,13 @@ def _with_translated_abstract(found: arxiv.FoundMeta) -> arxiv.FoundMeta:
     config, reason = load_config()
     if config is not None:
         try:
-            return arxiv.save_abstract_zh(found, chat.translate_abstract(config.abstract, found.meta.abstract))
+            abstract_zh = chat.translate_abstract(config.abstract, found.meta.abstract)
         except chat.ChatError as error:
             reason = str(error)
+        except Exception as error:  # why(#191): 摘要翻译出任何异常时论文信息仍要输出，原因只写类型名，避免带出密钥
+            reason = f"unexpected {type(error).__name__}"
+        else:
+            return arxiv.save_abstract_zh(found, abstract_zh)
     name = arxiv.versioned_id(found.meta.arxiv_id, found.meta.version)
     error_console.print(
         f"cannot translate the abstract of {name}: {' '.join(reason.split())}",
@@ -1163,8 +1178,8 @@ def _display(value: object) -> str:
 
 
 def _print_validation_error(error: ValidationError) -> None:
-    for detail in error.errors():
-        error_console.print(f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}")
+    for line in validation_lines(error):
+        error_console.print(line, markup=False, highlight=False)
 
 
 def _entry_lines(entries: list[tuple[str, object]]) -> list[str]:
@@ -1172,7 +1187,9 @@ def _entry_lines(entries: list[tuple[str, object]]) -> list[str]:
     return [f"{key:<{width}}{_display(value)}" for key, value in entries]
 
 
-def _parse_value(text: str) -> object:
+def _parse_value(key: str, text: str) -> object:
+    if key in SECRET_KEYS:
+        return text
     if text == "":
         return None
     try:
@@ -1242,7 +1259,7 @@ def _edit_text(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
         if text == current:
             return config
         try:
-            changed = updated_config(config, key, _parse_value(text))
+            changed = updated_config(config, key, _parse_value(key, text))
         except ValidationError as error:
             _print_validation_error(error)
             continue
@@ -1250,7 +1267,18 @@ def _edit_text(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
         return changed
 
 
+def _edit_secret(config: ModelsConfig, key: str) -> ModelsConfig:
+    text = typer.prompt(key, default="", show_default=False, hide_input=True)
+    if not text.strip():
+        return config
+    changed = updated_config(config, key, _parse_value(key, text))
+    _saved(changed, key)
+    return changed
+
+
 def _edit_entry(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
+    if key in SECRET_KEYS:
+        return _edit_secret(config, key)
     if isinstance(value, bool):
         return _edit_choice(config, key, value, [True, False])
     if isinstance(value, StrEnum):
@@ -1297,7 +1325,8 @@ def config_set(
             metavar="KEY VALUE [KEY VALUE ...]",
             help=(
                 "dotted keys as tongtu config list prints them, each followed by a TOML value, or plain text taken "
-                "as a string; an empty string clears the field"
+                "as a string; an empty string clears the field; abstract.api_key always takes the text as it is, "
+                "without surrounding whitespace"
             ),
         ),
     ],
@@ -1310,7 +1339,7 @@ def config_set(
     keys = pairs[::2]
     for key, value in zip(keys, pairs[1::2], strict=True):
         try:
-            config = updated_config(config, key, _parse_value(value))
+            config = updated_config(config, key, _parse_value(key, value))
         except KeyError:
             error_console.print(f"config key {key} does not exist; run tongtu config list to see the keys")
             raise typer.Exit(EXIT_USAGE) from None

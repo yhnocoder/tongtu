@@ -24,6 +24,8 @@ import {
   Row,
   RunAction,
   START_REFRESH_DELAY_SECONDS,
+  START_WAIT_SECONDS,
+  apiKeySet,
   arxivUrl,
   arxivVersion,
   completedMarkdown,
@@ -38,6 +40,8 @@ import {
   runTitle,
   runningMarkdown,
   runningRows,
+  startFailedMarkdown,
+  startSettled,
   startingMarkdown,
   statusTarget,
   unfinishedMarkdown,
@@ -52,6 +56,7 @@ import {
   loadOpened,
   parseJson,
   readBase64,
+  readConfig,
   readJson,
   removePaperFiles,
   saveOpened,
@@ -64,7 +69,7 @@ const CLOCK_MILLISECONDS = 1000;
 
 export const feedback = { closesPanel: true };
 
-export type Shared = { papers: PaperSummary[] | null; missing: boolean; error: string; opened: string[] | null };
+type Shared = { papers: PaperSummary[] | null; missing: boolean; error: string; opened: string[] | null };
 
 let shared: Shared = { papers: null, missing: false, error: "", opened: null };
 let refreshing: Promise<void> | null = null;
@@ -243,6 +248,7 @@ function RunItem({ paper, action, icon, reload }: { paper: PaperTarget; action: 
 type ActionsProps = { paper: PaperTarget; reload: Reload; toggleView?: () => void; removed?: () => void };
 
 export function PaperActions({ paper, reload, toggleView, removed }: ActionsProps) {
+  const refreshFirst = paper.state === "running" && !toggleView;
   const original = path.join(paper.workdir, "build/precompile.pdf");
   const arxiv = arxivUrl(paper);
   const details = toggleView && (
@@ -265,6 +271,7 @@ export function PaperActions({ paper, reload, toggleView, removed }: ActionsProp
           </ActionPanel.Section>
         </>
       )}
+      {refreshFirst && <RefreshAction reload={reload} />}
       {paper.state === "running" && (
         <>
           {details}
@@ -283,7 +290,7 @@ export function PaperActions({ paper, reload, toggleView, removed }: ActionsProp
         </>
       )}
       <ActionPanel.Section>
-        <RefreshAction reload={reload} />
+        {!refreshFirst && <RefreshAction reload={reload} />}
         {toggleView && (
           <Action
             title="切换列表和网格"
@@ -315,21 +322,23 @@ function detailRows(detail: PaperDetail, now: number): Row[] {
   return detail.status.state === "ok" ? completedRows(detail) : unfinishedRows(detail);
 }
 
-type DetailProps = { paper: string; workdir?: string; starting?: boolean };
+type DetailProps = { paper: string; workdir?: string; starting?: boolean; onClose?: () => void };
+type StartPhase = "starting" | "gaveUp" | "settled";
 
-export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
+export function PaperDetailView({ paper, workdir, starting, onClose }: DetailProps) {
   const { papers } = useShared();
   const { pop } = useNavigation();
   const knownWorkdir = useRef(workdir);
+  const closed = useRef(onClose);
   const [status, setStatus] = useState<PaperStatus | null>(null);
   const [failure, setFailure] = useState("");
-  const [settling, setSettling] = useState(starting === true);
+  const [phase, setPhase] = useState<StartPhase>(starting ? "starting" : "settled");
   const [translated, setTranslated] = useState<PaperMeta | null>(null);
   const askedAbstractZh = useRef(false);
   const running = status?.state === "running";
   const now = useNow(running);
 
-  async function loadStatus(): Promise<void> {
+  async function loadStatus(): Promise<PaperStatus | null> {
     const known = knownWorkdir.current;
     const location = known ? [workdirName(known), "--workdir", known] : [paper];
     const result = await tongtu(["status", ...location, "--json"]);
@@ -339,14 +348,17 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
       setStatus(next);
     }
     setFailure(next ? "" : result.stderr.trim() || "tongtu status --json 没有给出结果");
+    return next;
   }
 
   async function reload(): Promise<void> {
-    await Promise.all([loadStatus(), refresh()]);
+    const [next] = await Promise.all([loadStatus(), refresh()]);
+    if (startSettled(next)) setPhase("settled");
   }
 
   useEffect(() => {
-    loadStatus();
+    if (phase !== "starting") loadStatus();
+    return () => closed.current?.();
   }, []);
 
   useEffect(() => {
@@ -354,16 +366,33 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
     const id = arxivVersion(status);
     if (!id || !needsAbstractZh(readJson<PaperMeta>(status.meta))) return;
     askedAbstractZh.current = true;
-    tongtu(["info", id, "--json", "--zh"]).then((result) => {
-      if (result.code === 0) setTranslated(parseJson<PaperMeta>(result.stdout));
+    readConfig().then((config) => {
+      if (!config || !apiKeySet(config)) return;
+      tongtu(["info", id, "--json", "--zh"]).then((result) => {
+        if (result.code === 0) setTranslated(parseJson<PaperMeta>(result.stdout));
+      });
     });
   }, [status]);
 
   useEffect(() => {
-    if (!settling) return;
-    const settle = setTimeout(() => reload().then(() => setSettling(false)), START_REFRESH_DELAY_SECONDS * 1000);
-    return () => clearTimeout(settle);
-  }, [settling]);
+    if (phase !== "starting") return;
+    const deadline = Date.now() + START_WAIT_SECONDS * 1000;
+    let busy = false;
+    let stopped = false;
+    const poll = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      const next = await loadStatus();
+      busy = false;
+      if (stopped) return;
+      if (startSettled(next)) setPhase("settled");
+      else if (Date.now() >= deadline) setPhase("gaveUp");
+    }, START_REFRESH_DELAY_SECONDS * 1000);
+    return () => {
+      stopped = true;
+      clearInterval(poll);
+    };
+  }, [phase]);
 
   useEffect(() => {
     if (!running) return;
@@ -385,7 +414,8 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
       <RefreshAction reload={reload} />
     </ActionPanel>
   );
-  if (settling && !running) return <Detail isLoading markdown={startingMarkdown(paper)} actions={refreshOnly} />;
+  if (phase === "starting") return <Detail isLoading markdown={startingMarkdown(paper)} actions={refreshOnly} />;
+  if (phase === "gaveUp") return <Detail markdown={startFailedMarkdown(paper)} actions={refreshOnly} />;
   if (!status) return <Detail isLoading={failure === ""} markdown={failure} actions={refreshOnly} />;
   const target = statusTarget(status);
   const detail = {

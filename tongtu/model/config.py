@@ -111,6 +111,11 @@ class AbstractConfig(BaseModel):
     model: str = "deepseek-flash"
     api_key: str = ""
 
+    @field_validator("api_key")
+    @classmethod
+    def stripped_api_key(cls, value: str) -> str:
+        return value.strip()
+
 
 class ModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -140,6 +145,13 @@ def mode_target(config: ModelsConfig, mode: str) -> tuple[Target | None, str]:
     return Target(runtime, model, entry.effort, entry.timeout_seconds), ""
 
 
+def validation_lines(error: ValidationError) -> list[str]:
+    return [
+        f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}"
+        for detail in error.errors(include_input=False, include_url=False)
+    ]
+
+
 def load_config() -> tuple[ModelsConfig | None, str]:
     path = config_path()
     try:
@@ -148,12 +160,14 @@ def load_config() -> tuple[ModelsConfig | None, str]:
         return ModelsConfig(), ""
     except OSError as error:
         return None, f"cannot read config file {path} ({type(error).__name__}: {error})."
+    except UnicodeDecodeError as error:
+        return None, f"cannot read config file {path} ({type(error).__name__})."
     except tomllib.TOMLDecodeError as error:
         return None, f"config file {path} is not valid TOML ({error})."
     try:
         config = ModelsConfig.model_validate(data)
     except ValidationError as error:
-        return None, f"config file {path} has invalid fields ({error})."
+        return None, f"config file {path} has invalid fields ({'; '.join(validation_lines(error))})."
     return config, ""
 
 
