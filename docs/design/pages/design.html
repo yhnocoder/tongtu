@@ -207,7 +207,7 @@ sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.o
 
 [pdf]
 crop_margins = false</code></pre>
-  <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 1800 秒。配置里出现未知字段时，加载配置报错。</p>
+  <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 3600 秒。配置里出现未知字段时，加载配置报错。</p>
 
   <h3>manifest</h3>
   <p>每个阶段结束时写 <code>build/manifests/&lt;阶段&gt;.json</code>。各阶段的 manifest 继承同一个基类，<code>status</code> 在 JSON 里排第一。<code>run</code> 与 <code>status</code> 只读 manifest 判断一个阶段是否完成。</p>
@@ -491,7 +491,7 @@ dropout 率为 $0.1$。</code></pre></div>
       <dd><p><code>build/translated.tex</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>、<code>$TONGTU_HOME/glossary.learned.json</code>、<code>build/sandbox/translate/</code>、<code>logs/translate.jsonl</code>、<code>build/manifests/translate.json</code>。</p></dd>
       <dt>常量</dt>
       <dd>
-        <p>会话时限取模式的 <code>timeout_seconds</code>，默认 1800 秒。未译判定的门槛是 6 个英文单词。</p>
+        <p>会话时限取模式的 <code>timeout_seconds</code>，默认 3600 秒。未译判定的门槛是 6 个英文单词。</p>
         <p class="why"><b>理由</b>整篇论文在一次会话里翻译，全部译文由这一个会话写出。术语与专名的统一靠同一个上下文：会话先通读全文、定下术语，再逐节写译文，写后面的章节时看得到前面用过的译法。</p>
       </dd>
       <dt>产物类</dt>

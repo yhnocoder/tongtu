@@ -54,8 +54,8 @@ def failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> str:
 def test_template_parses_and_validates() -> None:
     config = ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE))
     assert config.modes.default is ModeName.SMART
-    assert mode_target(config, "fast") == (Target("claude-code", "claude-sonnet-5-5", "low", 1800), "")
-    assert mode_target(config, "smart") == (Target("claude-code", "claude-opus-5-5", "medium", 1800), "")
+    assert mode_target(config, "fast") == (Target("claude-code", "claude-sonnet-5-5", "low", 3600), "")
+    assert mode_target(config, "smart") == (Target("claude-code", "claude-opus-5-5", "medium", 3600), "")
 
 
 def test_modes_default_is_smart_when_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

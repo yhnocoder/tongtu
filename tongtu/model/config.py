@@ -60,7 +60,7 @@ class PdfConfig(BaseModel):
     crop_margins: bool = Field(default=False, strict=True)
 
 
-DEFAULT_TIMEOUT_SECONDS = 1800
+DEFAULT_TIMEOUT_SECONDS = 3600
 
 
 class ModeName(StrEnum):
@@ -150,7 +150,7 @@ CONFIG_TEMPLATE = """\
 # 命令行的 --mode 优先；不给时用 default
 # model 写成「运行时/模型」，只在第一个 / 处切分；运行时是 agentrun 支持的 codex、claude-code、pi
 # 只写运行时名时用运行时自己的默认模型；effort 不写就不传给运行时
-# timeout_seconds 是每次会话的时限，不写时为 1800 秒
+# timeout_seconds 是每次会话的时限，不写时为 3600 秒
 # 改了这一段之后，要用新的设置重译已经译完的论文，执行 tongtu run PAPER --from translate
 [modes]
 default = "smart"
