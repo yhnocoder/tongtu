@@ -7,7 +7,7 @@ name: papers
 #
 # CI 没有 Claude 凭据，[modes] 的 fast 与 smart 都用 pi 的 deepseek 服务商（model = "pi/deepseek/…"），
 # pi 从环境变量 DEEPSEEK_API_KEY 读密钥，secret 在 environment `llm` 里。
-# config.toml 由作业写：load_config 没有内置回退，tongtu setup 只写模板。
+# config.toml 由作业写：CI 没有 Claude 凭据，不能用默认的模式。
 #
 # 隔离边界是容器 + 一次性 runner。Actions 的非特权容器起不来 bwrap（#88），所以 agentrun 关掉沙箱
 #（AGENTRUN_SANDBOX=off）。

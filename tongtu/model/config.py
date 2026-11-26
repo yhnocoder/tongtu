@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ..config import config_path
@@ -95,14 +96,14 @@ class ModesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default: ModeName = ModeName.SMART
-    fast: ModeConfig
-    smart: ModeConfig
+    fast: ModeConfig = ModeConfig(model="claude-code/claude-sonnet-5-5", effort="low")
+    smart: ModeConfig = ModeConfig(model="claude-code/claude-opus-5-5", effort="medium")
 
 
 class ModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    modes: ModesConfig
+    modes: ModesConfig = ModesConfig()
     fonts: FontsConfig = FontsConfig()
     pdf: PdfConfig = PdfConfig()
 
@@ -130,11 +131,10 @@ def load_config() -> tuple[ModelsConfig | None, str]:
     path = config_path()
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ModelsConfig(), ""
     except OSError as error:
-        return (
-            None,
-            f"cannot read config file {path} ({type(error).__name__}: {error}). Run tongtu setup to write the template first.",
-        )
+        return None, f"cannot read config file {path} ({type(error).__name__}: {error})."
     except tomllib.TOMLDecodeError as error:
         return None, f"config file {path} is not valid TOML ({error})."
     try:
@@ -144,37 +144,37 @@ def load_config() -> tuple[ModelsConfig | None, str]:
     return config, ""
 
 
-CONFIG_TEMPLATE = """\
-# 模式：一次运行里的全部 agent 会话（翻译会话与两种修复会话）用同一个模式
-# fast：初步查看译文，费用最低；smart：准备用中文 PDF 代替原文来读
-# 命令行的 --mode 优先；不给时用 default
-# model 写成「运行时/模型」，只在第一个 / 处切分；运行时是 agentrun 支持的 codex、claude-code、pi
-# 只写运行时名时用运行时自己的默认模型；effort 不写就不传给运行时
-# timeout_seconds 是每次会话的时限，不写时为 3600 秒
-# 改了这一段之后，要用新的设置重译已经译完的论文，执行 tongtu run PAPER --from translate
-[modes]
-default = "smart"
+def _leaves(prefix: str, value: object) -> list[tuple[str, object]]:
+    if isinstance(value, dict):
+        return [entry for name, item in value.items() for entry in _leaves(f"{prefix}{name}.", item)]
+    return [(prefix.removesuffix("."), value)]
 
-[modes.fast]
-model  = "claude-code/claude-sonnet-5-5"
-effort = "low"
 
-[modes.smart]
-model  = "claude-code/claude-opus-5-5"
-effort = "medium"
+def config_entries(config: ModelsConfig) -> list[tuple[str, object]]:
+    return _leaves("", config.model_dump(mode="python"))
 
-# 中文字体：main 正文、sans 无衬线、mono 等宽（不写则用 main 的常规字体）
-# main 与 sans 写一族字体：只写一个文件表示这一族只有常规字形，粗体由 xeCJK 伪粗体生成；写成 { regular = …, bold = … } 同时给出粗体
-# 文件写仓库 fonts/ 里的文件名，或绝对路径、以 ~ 开头的路径；编译时由 TTFONTS / OPENTYPEFONTS 把这些目录交给 XeTeX
-# 不接受系统字体名：zh.tex 只写文件名，论文目录才能在不同机器之间搬动
-# 一族里有文件找不到时，这一族整体改用自带的字体，并在 precompile 的 manifest 里给出警告
-# 改了这一段之后从 precompile 重跑：tongtu run PAPER --from precompile
-[fonts]
-main = { regular = "LXGWWenKai-Light.ttf", bold = "LXGWWenKai-Medium.ttf" }
-sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.otf" }
 
-# 中文 PDF：crop_margins = true 时 compile 把 out/ 下 PDF 的页边白边裁掉（只改 CropBox，排版与链接不变，需要 Ghostscript）
-# 改了这一段之后从 compile 重跑：tongtu run PAPER --from compile
-[pdf]
-crop_margins = false
-"""
+def updated_config(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
+    if key not in dict(config_entries(config)):
+        raise KeyError(key)
+    data = config.model_dump(mode="python")
+    *parents, leaf = key.split(".")
+    table = data
+    for name in parents:
+        table = table[name]
+    table[leaf] = value
+    return ModelsConfig.model_validate(data)
+
+
+def write_config(config: ModelsConfig) -> Path:
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(tomli_w.dumps(config.model_dump(mode="json", exclude_none=True)), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def ensure_config_file() -> tuple[ModelsConfig | None, str]:
+    if not config_path().exists():
+        write_config(ModelsConfig())
+    return load_config()

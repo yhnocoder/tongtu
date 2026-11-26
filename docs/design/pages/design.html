@@ -78,7 +78,7 @@ tongtu stage    STAGE PAPER [--mode fast|smart] [--glossary FILE]... [--workdir 
 tongtu status   PAPER [--json] [--workdir DIR] [--dev]
 tongtu validate SRC DST [--glossary FILE]...
 tongtu doctor
-tongtu setup    [--dev]
+tongtu config   [list | set KEY VALUE | open] [--dev]
 tongtu          --version</code></pre>
   <p><code>PAPER</code> 是 arXiv 编号、arXiv 链接或本地源码目录。<code>STAGE</code> 取 <code>fetch</code>、<code>precompile</code>、<code>mask</code>、<code>translate</code>、<code>compile</code> 之一。终端输出、manifest 的 <code>message</code> 与 <code>warnings</code> 一律用英文。</p>
 
@@ -91,7 +91,7 @@ tongtu          --version</code></pre>
       <tr><td><code>--from STAGE</code></td><td>run</td><td class="wrap">从这个阶段起重跑，先删掉它及其下游的旧产物。</td></tr>
       <tr><td><code>--glossary FILE</code></td><td>run、stage、validate</td><td class="wrap">本次运行追加的术语表，可以给多个，靠后的优先。</td></tr>
       <tr><td><code>--workdir DIR</code></td><td>run、stage、status</td><td class="wrap">直接指定论文工作目录，代替按 <code>PAPER</code> 推出的默认位置。目录里已有 fetch 的 manifest 时，<code>PAPER</code> 必须是同一篇论文：编号相同；或者 manifest 记的是本地源码目录，<code>PAPER</code> 是同一个目录，或者是这个目录的名字。<code>PAPER</code> 不带版本号时取 manifest 里的版本；<code>PAPER</code> 写明的版本或 <code>--latest</code> 查到的版本与 manifest 不同时，命令报用法错误，退出码 2。</td></tr>
-      <tr><td><code>--dev</code></td><td>run、stage、status、setup</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
+      <tr><td><code>--dev</code></td><td>run、stage、status、config</td><td class="wrap">等于 <code>TONGTU_HOME=~/.tongtu-dev</code>。</td></tr>
     </tbody>
   </table>
 
@@ -133,8 +133,16 @@ mode    smart  claude-code/claude-opus-5-5  medium
     <li><code>stage STAGE PAPER</code> 只运行一个阶段。它先删掉本阶段的旧产物再运行，不改动其他阶段的产物。上游产物不存在时拒绝执行，退出 2。</li>
     <li><code>status PAPER</code> 只读，列出每个阶段的状态、产物是否存在和 manifest 路径。它不联网。<code>--json</code> 的格式见<a href="#status">供其他程序读取的输出</a>。</li>
     <li><code>validate SRC DST</code> 对一对掩码文件运行 translate 判定时使用的同一套校验，逐类输出问题，有问题时退出 1。给了 <code>--glossary</code> 才检查术语。手工修改译文后用它确认。</li>
-    <li><code>doctor</code> 逐项检查环境：TeX 工具链（xelatex、latexmk、latexpand）、默认字体、<code>config.toml</code>、agentrun，以及每个模式引用的运行时与模型（对每个组合运行一次 <code>agentrun doctor</code>）。工具链或字体缺失时退出 1；工具链齐全但配置或运行时不可用时退出 3，这时 fetch、precompile、mask 仍然可以运行。</li>
-    <li><code>setup</code> 在 <code>$TONGTU_HOME</code> 写出 <code>config.toml</code> 模板。</li>
+    <li><code>doctor</code> 逐项检查环境：TeX 工具链（xelatex、latexmk、latexpand）、默认字体、<code>config.toml</code>、agentrun，以及每个模式引用的运行时与模型（对每个组合运行一次 <code>agentrun doctor</code>）。工具链或字体缺失时退出 1。<code>config.toml</code> 不存在不算缺失，这时检查默认的模式。工具链齐全时，退出 3 只在配置文件有错或运行时不可用时出现，这时 fetch、precompile、mask 仍然可以运行。</li>
+    <li><code>config</code> 查看和修改 <code>$TONGTU_HOME/config.toml</code>，有四种用法：
+      <ul>
+        <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。标准输入不是终端时退出 2。</li>
+        <li><code>tongtu config list</code> 每行列出一个配置项及其当前值。配置文件不存在时列出默认值，不写文件。</li>
+        <li><code>tongtu config set KEY VALUE</code> 修改一项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。键不存在或值不合法时退出 2，不写文件。</li>
+        <li><code>tongtu config open</code> 输出配置文件的路径并打开它。环境变量 <code>EDITOR</code> 非空时用它打开，否则用系统默认的程序。</li>
+      </ul>
+      <p>除 <code>list</code> 外，配置文件不存在时先写出一份包含全部默认值的文件。配置文件存在但加载失败时，<code>config</code>、<code>list</code>、<code>set</code> 输出错误并退出 1。<code>config</code> 与 <code>set</code> 每次修改都整份重写文件，文件里原有的注释不保留。</p>
+    </li>
   </ul>
 </section>
 
@@ -207,7 +215,7 @@ sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.o
 
 [pdf]
 crop_margins = false</code></pre>
-  <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 3600 秒。配置里出现未知字段时，加载配置报错。</p>
+  <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 3600 秒。配置里出现未知字段时，加载配置报错。文件可以不存在，这时使用本节列出的值；文件里没写的字段也取本节的值。文件由 <code>tongtu config</code> 写出和修改。</p>
 
   <h3>manifest</h3>
   <p>每个阶段结束时写 <code>build/manifests/&lt;阶段&gt;.json</code>。各阶段的 manifest 继承同一个基类，<code>status</code> 在 JSON 里排第一。<code>run</code> 与 <code>status</code> 只读 manifest 判断一个阶段是否完成。</p>
@@ -620,7 +628,7 @@ class PaperKeptWord(BaseModel):
       <tr><td><code>smart</code></td><td>Claude Opus</td><td>medium</td><td class="wrap">准备用中文 PDF 代替原文来读</td></tr>
     </tbody>
   </table>
-  <p>模式的来源依次是命令行的 <code>--mode</code>、<code>config.toml</code> 的 <code>[modes] default</code>，模板里的默认值是 smart。translate 的 manifest 记下使用的模式。想用另一个模式重译一篇已经译完的论文，执行 <code>tongtu run PAPER --mode fast --from translate</code>，新译文覆盖旧译文。</p>
+  <p>模式的来源依次是命令行的 <code>--mode</code>、<code>config.toml</code> 的 <code>[modes] default</code>，默认值是 smart。translate 的 manifest 记下使用的模式。想用另一个模式重译一篇已经译完的论文，执行 <code>tongtu run PAPER --mode fast --from translate</code>，新译文覆盖旧译文。</p>
   <h3>会话怎样启动</h3>
   <p>模型调用层在 <code>tongtu/model/</code>，只有一个入口：在一个目录里启动一次 agent 会话。它不依赖具体产品，运行时由 agentrun 适配。</p>
   <ol>
