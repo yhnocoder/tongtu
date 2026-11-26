@@ -1,151 +1,57 @@
 {
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "tongtu",
-  "title": "Tongtu",
-  "description": "Translate arXiv papers into Chinese with tongtu and browse the results",
+  "title": "通途",
+  "description": "把 arXiv 论文翻译成中文 PDF，查看翻译进度和结果",
   "icon": "icon.png",
   "author": "zach",
   "license": "MIT",
   "commands": [
     {
       "name": "translate",
-      "title": "Translate Paper",
-      "description": "Run tongtu in the background and notify when the PDF is ready",
-      "mode": "no-view",
+      "title": "翻译论文",
+      "description": "查看一篇论文的状态，在后台启动 tongtu run，结束时发系统通知",
+      "mode": "view",
       "arguments": [
         {
           "name": "paper",
-          "placeholder": "arXiv id or URL",
+          "placeholder": "arXiv…",
           "type": "text",
-          "required": true
+          "required": false
+        },
+        {
+          "name": "mode",
+          "placeholder": "模式",
+          "type": "dropdown",
+          "required": false,
+          "data": [
+            {
+              "title": "默认",
+              "value": ""
+            },
+            {
+              "title": "fast",
+              "value": "fast"
+            },
+            {
+              "title": "smart",
+              "value": "smart"
+            }
+          ]
         }
       ]
     },
     {
-      "name": "recent",
-      "title": "Recent Papers",
-      "description": "Running translations and papers touched in the last days",
+      "name": "papers",
+      "title": "论文",
+      "description": "列出全部论文的状态，打开译文，重试或停止翻译",
       "mode": "view"
     },
     {
-      "name": "library",
-      "title": "Library",
-      "description": "Browse all translated papers, grouped and searchable",
+      "name": "settings",
+      "title": "设置",
+      "description": "修改 config.toml 里的模式、字体和 PDF 选项",
       "mode": "view"
-    }
-  ],
-  "preferences": [
-    {
-      "name": "repo",
-      "title": "tongtu repository",
-      "description": "Directory passed to uv run --directory",
-      "type": "textfield",
-      "required": false,
-      "default": "~/Projects/wenshu-ws/tongtu"
-    },
-    {
-      "name": "view",
-      "title": "Default view",
-      "description": "How Recent Papers and Library open; toggle at runtime with ⌘⇧V",
-      "type": "dropdown",
-      "required": false,
-      "default": "grid",
-      "data": [
-        {
-          "title": "Grid",
-          "value": "grid"
-        },
-        {
-          "title": "List",
-          "value": "list"
-        }
-      ]
-    },
-    {
-      "name": "groupBy",
-      "title": "Default grouping",
-      "description": "Sections in Library; change at runtime with the dropdown",
-      "type": "dropdown",
-      "required": false,
-      "default": "none",
-      "data": [
-        {
-          "title": "None",
-          "value": "none"
-        },
-        {
-          "title": "Month added",
-          "value": "added"
-        },
-        {
-          "title": "Month submitted",
-          "value": "submitted"
-        },
-        {
-          "title": "arXiv category",
-          "value": "category"
-        }
-      ]
-    },
-    {
-      "name": "thumbnail",
-      "title": "Thumbnail",
-      "description": "Which part of the first page to show",
-      "type": "dropdown",
-      "required": false,
-      "default": "half",
-      "data": [
-        {
-          "title": "Full page",
-          "value": "full"
-        },
-        {
-          "title": "Top half",
-          "value": "half"
-        },
-        {
-          "title": "Top third",
-          "value": "third"
-        }
-      ]
-    },
-    {
-      "name": "margin",
-      "title": "Thumbnail margin",
-      "description": "Percent trimmed from each page edge before cropping",
-      "type": "textfield",
-      "required": false,
-      "default": "6"
-    },
-    {
-      "name": "columns",
-      "title": "Grid columns",
-      "description": "",
-      "type": "dropdown",
-      "required": false,
-      "default": "5",
-      "data": [
-        {
-          "title": "4",
-          "value": "4"
-        },
-        {
-          "title": "5",
-          "value": "5"
-        },
-        {
-          "title": "6",
-          "value": "6"
-        }
-      ]
-    },
-    {
-      "name": "recentDays",
-      "title": "Recent window (days)",
-      "description": "Papers touched within this many days stay in the Recent section",
-      "type": "textfield",
-      "required": false,
-      "default": "7"
     }
   ],
   "dependencies": {
@@ -158,7 +64,8 @@
   },
   "scripts": {
     "dev": "ray develop",
-    "build": "ray build -e dist",
-    "lint": "ray lint"
+    "build": "ray build -e dist -o dist",
+    "lint": "ray lint",
+    "test": "node --test test/"
   }
 }

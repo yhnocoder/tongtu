@@ -691,7 +691,7 @@ class Note(BaseModel):
 
 <section id="status">
   <h2>供其他程序读取的输出</h2>
-  <p>其他程序通过七种输出读取通途的结果：<code>tongtu status --json</code>、<code>tongtu list --json</code>、<code>tongtu info --json</code>、<code>tongtu config list --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这七种格式可以修改，修改时读它们的程序一起改。仓库内的 Raycast 插件另外读 <code>logs/&lt;会话&gt;.jsonl</code>，显示会话最近的动作；这个文件是 agentrun 的事件格式。</p>
+  <p>其他程序通过七种输出读取通途的结果：<code>tongtu status --json</code>、<code>tongtu list --json</code>、<code>tongtu info --json</code>、<code>tongtu config list --json</code>、<code>out/&lt;ID&gt;.meta.json</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>。这七种格式可以修改，修改时读它们的程序一起改。仓库内的启动器插件（<code>raycast/</code>）只通过这七种输出读取结果。</p>
 
   <h3>out/&lt;ID&gt;.meta.json</h3>
   <p>内容来自 arXiv API 的同一次响应，是所选版本的信息。题目与摘要里的换行压成一个空格。</p>

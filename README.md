@@ -39,6 +39,36 @@ make format          # 自动修：ruff check --fix + ruff format
 
 agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动，安装方式见上一节。`uv run tongtu doctor` 对配置里用到的运行时运行 `agentrun doctor`。
 
+## 启动器插件
+
+`raycast/` 是一个启动器插件，可以装进 Raycast 或 Tinycast。它有三个命令：「翻译论文」查看一篇论文的状态并在后台启动 `tongtu run`，翻译结束时发系统通知；「论文」列出全部论文的状态，打开译文，重试或停止翻译；「设置」修改 `config.toml`。
+
+1. 安装 `tongtu` 命令。插件直接执行 `tongtu`，依次在 `~/.local/bin`、`~/.cargo/bin`、`/opt/homebrew/bin`、`/Library/TeX/texbin`、`/usr/bin`、`/bin` 里查找。从 git 安装：
+
+   ```
+   uv tool install git+https://github.com/yhnocoder/tongtu
+   ```
+
+   更新时重新安装：
+
+   ```
+   uv tool install --reinstall git+https://github.com/yhnocoder/tongtu
+   ```
+
+2. 构建插件，产物在 `raycast/dist/`：
+
+   ```
+   cd raycast && npm install && npm run build
+   ```
+
+3. 装进启动器：
+   - Tinycast：Settings → Extensions → Install → Add from folder，选 `raycast/dist`。
+   - Raycast：在 `raycast/` 下执行 `npm run dev`。
+
+「翻译论文」打开后停在一个带输入框的界面。输入框里预先填好编号，依次取命令参数、浏览器当前标签页的地址、剪贴板，三处都没有时为空，可以随时修改。下面显示这篇论文的标题、摘要、作者和状态。回车的动作随状态变化：还没有翻译的论文开始翻译并进入详情页，其余状态直接进入详情页。它不会自己开始翻译，也不会自己关闭面板。第一次读取浏览器地址时，系统会询问是否允许启动器控制浏览器，选择允许。
+
+「论文」在有论文正在翻译时每 5 秒刷新一次，其余时候每 60 秒一次，⌘R 立即刷新。
+
 ## 发版
 
 先开 PR 把 `tongtu/__init__.py` 的 `__version__` 升到新版本（SemVer，版本号只写这一处）并 merge，然后在 main 上打 tag：
