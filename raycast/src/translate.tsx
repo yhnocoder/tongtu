@@ -22,6 +22,7 @@ import {
   PaperSource,
   PaperStatus,
   START_REFRESH_DELAY_SECONDS,
+  apiKeySet,
   arxivId,
   arxivIdFromUrl,
   arxivVersion,
@@ -45,7 +46,7 @@ import {
   withAbstractZh,
 } from "./core";
 import { PaperDetailView, RefreshAction, feedback, openPdf, run, stop } from "./detail";
-import { USER_HOME, defaultMode, installed, osascript, parseJson, startRun, tongtu } from "./tongtu";
+import { USER_HOME, defaultMode, installed, osascript, parseJson, readConfig, startRun, tongtu } from "./tongtu";
 
 const BROWSER_TIMEOUT_MILLISECONDS = 2000;
 
@@ -86,8 +87,16 @@ async function info(paper: string): Promise<{ meta: PaperMeta | null; infoError:
   return result.code === 0 ? { meta: parseJson<PaperMeta>(result.stdout), infoError: "" } : { meta: null, infoError: result.stderr };
 }
 
+function isDirectory(directory: string): boolean {
+  try {
+    return fs.statSync(directory).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function lookUp(paper: string): Promise<Lookup> {
-  if (isPathArgument(paper) && !fs.existsSync(expandedPath(paper, USER_HOME))) {
+  if (isPathArgument(paper) && !isDirectory(expandedPath(paper, USER_HOME))) {
     return { paper, status: null, meta: null, infoError: "", directoryMissing: true };
   }
   const statusRequest = tongtu(["status", paper, "--json"]);
@@ -151,6 +160,11 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
   async function translateAbstract(wanted: string, id: string): Promise<void> {
     if (translating.current.has(id)) return;
     translating.current.add(id);
+    const config = await readConfig();
+    if (!config || !apiKeySet(config)) {
+      translating.current.delete(id);
+      return;
+    }
     const result = await tongtu(["info", id, "--json", "--zh"]);
     translating.current.delete(id);
     const translated = result.code === 0 ? parseJson<PaperMeta>(result.stdout) : null;
