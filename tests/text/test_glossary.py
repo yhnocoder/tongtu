@@ -260,6 +260,14 @@ def test_a_fixed_term_that_keeps_the_kept_word_is_valid(home: Path, paper: Path)
     assert selection(home, paper).fixed.terms == (("mixed RL training", "混合 RL 训练"),)
 
 
+def test_a_fixed_term_with_a_kept_word_inside_a_hyphenated_compound_is_valid(home: Path, paper: Path) -> None:
+    write(home / "glossary.json", {"do_not_translate": ["rank"], "terms": {"low-rank": "低秩"}})
+    masked = "We add a low-rank update to every layer.\n\nEach PP rank holds two layers.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.terms == (("low-rank", "低秩"),)
+    assert chosen.fixed.do_not_translate == ("rank",)
+
+
 def test_validation_uses_the_session_glossary_under_the_fixed_entries(home: Path, paper: Path) -> None:
     write(home / "glossary.json", {"terms": {"KV cache": "键值缓存"}})
     session = Glossary(terms=(("KV Cache", "KV 缓存"), ("vLLM", "某框架")), do_not_translate=("LLM",))

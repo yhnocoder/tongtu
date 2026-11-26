@@ -521,7 +521,7 @@ def kept_word_conflicts(terms: Mapping[str, str], do_not_translate: Sequence[str
         (word, translation, kept)
         for word, translation in terms.items()
         for kept in do_not_translate
-        if hits(kept, word, exact=True) and not hits(kept, translation, exact=True)
+        if hits(kept, word, exact=True, in_compounds=False) and not hits(kept, translation, exact=True)
     ]
 
 

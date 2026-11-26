@@ -473,6 +473,22 @@ def test_a_term_must_keep_the_do_not_translate_word_it_contains() -> None:
 
 
 @pytest.mark.parametrize(
+    ("word", "translation", "kept", "conflict"),
+    [
+        ("low-rank", "低秩", "rank", False),
+        ("low-rank adaptation", "低秩适配", "rank", False),
+        ("PP rank", "PP 秩", "rank", True),
+        ("mixed RL training", "混合强化学习训练", "RL", True),
+    ],
+)
+def test_a_kept_word_inside_a_hyphenated_compound_of_a_term_need_not_be_kept(
+    word: str, translation: str, kept: str, conflict: bool
+) -> None:
+    conflicts = validation.kept_word_conflicts({word: translation}, [kept])
+    assert conflicts == ([(word, translation, kept)] if conflict else [])
+
+
+@pytest.mark.parametrize(
     ("word", "text", "expected"),
     [
         ("LLM", "Recent LLMs scale well", True),
