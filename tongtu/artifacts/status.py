@@ -6,8 +6,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, PositiveInt
 
-from .fetch import PaperMeta
-
 ABSENT_STATUS = "absent"
 
 
@@ -32,6 +30,13 @@ class RunMarker(BaseModel):
     mode: str
 
 
+class PaperState(StrEnum):
+    RUNNING = "running"
+    OK = "ok"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
 class PaperStatus(BaseModel):
     workdir: Path
     arxiv_id: str | None = None
@@ -40,28 +45,13 @@ class PaperStatus(BaseModel):
     pid: int | None = None
     started_at: datetime | None = None
     mode: str | None = None
+    state: PaperState
+    stage: str | None = None
     stages: list[StageState]
     pdf: Path | None = None
     meta: Path | None = None
     glossary: Path | None = None
     notes: Path | None = None
-
-
-class PaperState(StrEnum):
-    RUNNING = "running"
-    OK = "ok"
-    FAILED = "failed"
-    INTERRUPTED = "interrupted"
-
-
-class PaperEntry(BaseModel):
-    name: str
-    state: PaperState
-    stage: str | None = None
-    status: PaperStatus
-    info: PaperMeta | None = None
-    added_at: datetime
-    updated_at: datetime
     pages: int | None = None
     source_pages: int | None = None
     translate_seconds: float | None = None
@@ -69,5 +59,20 @@ class PaperEntry(BaseModel):
     recent_actions: list[str] = []
 
 
+class PaperSummary(BaseModel):
+    name: str
+    workdir: Path
+    state: PaperState
+    stage: str | None = None
+    arxiv_id: str | None = None
+    version: int | None = None
+    title: str | None = None
+    primary_category: str | None = None
+    added_at: datetime
+    updated_at: datetime
+    started_at: datetime | None = None
+    pdf: Path | None = None
+
+
 class PaperListing(BaseModel):
-    papers: list[PaperEntry]
+    papers: list[PaperSummary]

@@ -40,10 +40,10 @@ from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
 from .artifacts.status import (
     ABSENT_STATUS,
-    PaperEntry,
     PaperListing,
     PaperState,
     PaperStatus,
+    PaperSummary,
     RunCommand,
     RunMarker,
     StageState,
@@ -634,6 +634,10 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
         mode = marker.mode
     else:
         mode = translate_manifest.mode if translate_manifest is not None else None
+    state, stage_name = _paper_state(stages, marker is not None)
+    compiled = load_manifest(paper_workdir.manifest_path(compile.STAGE_NAME), CompileManifest)
+    session = translate_manifest.session if translate_manifest is not None else None
+    log = SESSION_LOGS.get(stage_name or "")
     return PaperStatus(
         workdir=paper_workdir.path,
         arxiv_id=arxiv_id,
@@ -642,12 +646,30 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
         pid=marker.pid if marker is not None else None,
         started_at=marker.started_at if marker is not None else None,
         mode=mode,
+        state=state,
+        stage=stage_name,
         stages=stages,
         pdf=_existing(paper_workdir.zh_pdf),
         meta=_existing(paper_workdir.meta),
         glossary=_existing(paper_workdir.paper_glossary),
         notes=_existing(paper_workdir.notes),
+        pages=compiled.report.pages if compiled is not None and compiled.report is not None else None,
+        source_pages=compiled.baseline.pages if compiled is not None and compiled.baseline is not None else None,
+        translate_seconds=session.duration_seconds if session is not None else None,
+        translate_cost_usd=session.usage.cost_usd if session is not None and session.usage is not None else None,
+        recent_actions=_recent_actions(log(paper_workdir)) if state == PaperState.RUNNING and log else [],
     )
+
+
+def _paper_state(stages: list[StageState], running: bool) -> tuple[PaperState, str | None]:
+    pending = next((stage for stage in stages if stage.status != "ok"), None)
+    if running:
+        return PaperState.RUNNING, pending.name if pending is not None else None
+    if pending is None:
+        return PaperState.OK, None
+    if pending.status == ABSENT_STATUS:
+        return PaperState.INTERRUPTED, pending.name
+    return PaperState.FAILED, pending.name
 
 
 def _existing(path: Path) -> Path | None:
@@ -665,24 +687,19 @@ SESSION_LOGS: dict[str, Callable[[Workdir], Path]] = {
 def list_papers(dev: DevOpt = False, as_json: JsonOpt = False) -> None:
     _apply_dev(dev)
     papers = papers_dir()
-    entries = []
+    summaries = []
     for path in papers.iterdir() if papers.is_dir() else ():
         paper_workdir = Workdir(path)
         fetched = load_manifest(paper_workdir.manifest_path(fetch.STAGE_NAME), FetchManifest)
         if path.is_dir() and _listed(paper_workdir, fetched):
-            entries.append(_paper_entry(paper_workdir, fetched))
-    listing = PaperListing(papers=sorted(entries, key=lambda entry: entry.updated_at, reverse=True))
+            summaries.append(_paper_summary(paper_workdir, fetched))
+    listing = PaperListing(papers=sorted(summaries, key=lambda summary: summary.updated_at, reverse=True))
     if as_json:
-        typer.echo(listing.model_dump_json(indent=2).encode(ENCODING))
+        typer.echo(listing.model_dump_json().encode(ENCODING))
         return
     rows = [("paper", "state", "stage", "title")] + [
-        (
-            entry.name,
-            entry.state.value,
-            entry.stage or ABSENT_CELL,
-            entry.info.title if entry.info is not None else "",
-        )
-        for entry in listing.papers
+        (summary.name, summary.state.value, summary.stage or ABSENT_CELL, summary.title or "")
+        for summary in listing.papers
     ]
     widths = [max(len(row[column]) for row in rows) + COLUMN_GAP for column in range(3)]
     for index, (name, state, stage_cell, title) in enumerate(rows):
@@ -704,45 +721,30 @@ def _listed(paper_workdir: Workdir, fetched: FetchManifest | None) -> bool:
     return paper_workdir.path.name == expected
 
 
-def _paper_entry(paper_workdir: Workdir, fetched: FetchManifest | None) -> PaperEntry:
+def _paper_summary(paper_workdir: Workdir, fetched: FetchManifest | None) -> PaperSummary:
     snapshot = _status_snapshot(
         paper_workdir,
         fetched.arxiv_id if fetched is not None else None,
         fetched.version if fetched is not None else None,
     )
-    state, stage_name = _paper_state(snapshot)
-    compiled = load_manifest(paper_workdir.manifest_path(compile.STAGE_NAME), CompileManifest)
-    translated = load_manifest(paper_workdir.manifest_path(translate.STAGE_NAME), TranslateManifest)
-    session = translated.session if translated is not None else None
+    meta = load_manifest(paper_workdir.meta, PaperMeta)
     directory_time = _modified_at(paper_workdir.path)
     manifest_times = [_modified_at(stage.manifest) for stage in snapshot.stages if stage.manifest is not None]
     fetch_manifest = paper_workdir.manifest_path(fetch.STAGE_NAME)
-    log = SESSION_LOGS.get(stage_name or "")
-    return PaperEntry(
+    return PaperSummary(
         name=paper_workdir.path.name,
-        state=state,
-        stage=stage_name,
-        status=snapshot,
-        info=load_manifest(paper_workdir.meta, PaperMeta),
+        workdir=snapshot.workdir,
+        state=snapshot.state,
+        stage=snapshot.stage,
+        arxiv_id=snapshot.arxiv_id,
+        version=snapshot.version,
+        title=meta.title if meta is not None else None,
+        primary_category=meta.primary_category if meta is not None else None,
         added_at=_modified_at(fetch_manifest) if fetch_manifest.is_file() else directory_time,
         updated_at=max(manifest_times, default=directory_time),
-        pages=compiled.report.pages if compiled is not None and compiled.report is not None else None,
-        source_pages=compiled.baseline.pages if compiled is not None and compiled.baseline is not None else None,
-        translate_seconds=session.duration_seconds if session is not None else None,
-        translate_cost_usd=session.usage.cost_usd if session is not None and session.usage is not None else None,
-        recent_actions=_recent_actions(log(paper_workdir)) if state == PaperState.RUNNING and log else [],
+        started_at=snapshot.started_at,
+        pdf=snapshot.pdf,
     )
-
-
-def _paper_state(snapshot: PaperStatus) -> tuple[PaperState, str | None]:
-    pending = next((stage for stage in snapshot.stages if stage.status != "ok"), None)
-    if snapshot.running:
-        return PaperState.RUNNING, pending.name if pending is not None else None
-    if pending is None:
-        return PaperState.OK, None
-    if pending.status == ABSENT_STATUS:
-        return PaperState.INTERRUPTED, pending.name
-    return PaperState.FAILED, pending.name
 
 
 def _modified_at(path: Path) -> datetime:

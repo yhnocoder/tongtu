@@ -694,20 +694,28 @@ class Note(BaseModel):
     pdf_url: str               # https://arxiv.org/pdf/2412.19437v2</code></pre>
 
   <h3>tongtu status PAPER --json</h3>
+  <p><code>status --json</code> 与 <code>list --json</code> 分工如下：<code>list</code> 回答有哪些论文、各自处于什么状态，只给列表界面需要的概要；<code>status</code> 给出一篇论文的全部详情，包括各阶段的明细、页数、耗时与费用、会话最近的动作。两者的内容不重复，查看单篇论文时调用 <code>status</code>。</p>
   <p>读一次当前状态，向 stdout 输出一个 JSON 对象后立即退出，此外不输出任何文字。需要持续更新的程序按自己的间隔重复调用。工作目录已经确定但还不存在时照常输出，五个阶段都是 <code>absent</code>，退出 0。<code>PAPER</code> 是不带版本号的编号、本地又没有它带版本号的工作目录时，不输出 JSON，错误信息写到 stderr，退出 1，见<a href="#versions">论文编号与版本</a>。<code>PAPER</code> 不合法时退出 2，错误信息写到 stderr。</p>
   <pre><code class="language-python">class PaperStatus(BaseModel):
     workdir: Path                               # 绝对路径
     arxiv_id: str | None                        # 不带版本号；本地目录时为 null
     version: int | None
-    running: bool                               # 运行标记存在，且其中的进程还活着
+    running: bool                               # 运行标记有效
     pid: int | None
     started_at: datetime | None                 # 运行中时取运行标记里的开始时间，UTC
     mode: str | None                            # 运行中取运行标记，否则取 translate 的 manifest
+    state: PaperState                           # 见下表
+    stage: str | None                           # 见下表
     stages: list[StageState]                    # 五个阶段，按顺序
     pdf: Path | None                            # 以下四项在文件存在时给出绝对路径
     meta: Path | None
     glossary: Path | None
     notes: Path | None
+    pages: int | None                           # compile manifest 的 report.pages
+    source_pages: int | None                    # compile manifest 的 baseline.pages
+    translate_seconds: float | None             # translate manifest 的 session.duration_seconds
+    translate_cost_usd: float | None            # translate manifest 的 session.usage.cost_usd
+    recent_actions: list[str]                   # 只在 running 时填写，见下文
 
 class StageState(BaseModel):
     name: str
@@ -715,38 +723,14 @@ class StageState(BaseModel):
     outputs_present: bool
     message: str
     warnings: list[str]
-    manifest: Path | None</code></pre>
-  <p>翻译会话运行期间，<code>status</code> 给出 <code>running</code>、开始时间和各阶段的状态，正在运行的是第一个状态为 <code>absent</code> 的阶段。其他程序据此显示「翻译中」与已用时间。会话最近的动作由 <code>tongtu list --json</code> 的 <code>recent_actions</code> 给出。</p>
-
-  <h3 id="listing">tongtu list --json</h3>
-  <p>读一次 <code>$TONGTU_HOME/papers/</code> 下所有论文的状态，向 stdout 输出一个 JSON 对象后退出 0，写法与 <code>status --json</code> 相同。<code>papers/</code> 不存在时 <code>papers</code> 为空列表。对每个子目录读 fetch 的 manifest，按下面的规则决定是否列出：</p>
-  <ul>
-    <li>manifest 记的是本地源码目录（<code>arxiv_id</code> 为空）：列出。</li>
-    <li>manifest 记的是 arXiv 论文：<code>version</code> 不为空，且目录名等于带版本号的编号（编号里的 <code>/</code> 换成 <code>_</code>）时列出。v0.1 留下的不带版本号的目录因此不列出，与 <code>status</code> 的解析规则一致。</li>
-    <li>manifest 不存在或读不出：目录里有有效的运行标记时列出，这是 fetch 还没写出 manifest 的运行中论文；否则不列出。</li>
-  </ul>
-  <pre><code class="language-python">class PaperListing(BaseModel):
-    papers: list[PaperEntry]                    # 按 updated_at 从新到旧
-
-class PaperEntry(BaseModel):
-    name: str                                   # 工作目录名
-    state: PaperState
-    stage: str | None                           # 见下表
-    status: PaperStatus                         # 与 tongtu status --json 相同
-    info: PaperMeta | None                      # out/&lt;ID&gt;.meta.json 的内容；文件不存在时为 null
-    added_at: datetime                          # fetch manifest 的修改时间；没有时取工作目录的修改时间
-    updated_at: datetime                        # 已有 manifest 里最新的修改时间；没有时取工作目录的修改时间
-    pages: int | None                           # compile manifest 的 report.pages
-    source_pages: int | None                    # compile manifest 的 baseline.pages
-    translate_seconds: float | None             # translate manifest 的 session.duration_seconds
-    translate_cost_usd: float | None            # translate manifest 的 session.usage.cost_usd
-    recent_actions: list[str]                   # 只在 running 时填写，见下文
+    manifest: Path | None
 
 class PaperState(StrEnum):
     RUNNING = "running"
     OK = "ok"
     FAILED = "failed"
     INTERRUPTED = "interrupted"</code></pre>
+  <p><code>state</code> 与 <code>stage</code> 按下表推导，<code>status</code> 与 <code>list</code> 用同一套规则：</p>
   <table>
     <thead><tr><th><code>state</code></th><th>条件</th><th><code>stage</code></th></tr></thead>
     <tbody>
@@ -757,6 +741,31 @@ class PaperState(StrEnum):
     </tbody>
   </table>
   <p>manifest 里取不到的字段为 null，不报错。<code>recent_actions</code> 取 <code>stage</code> 对应的会话日志：precompile 是 <code>logs/precompile-fix.jsonl</code>，translate 是 <code>logs/translate.jsonl</code>，compile 是 <code>logs/compile-fix.jsonl</code>，其余阶段没有会话日志。日志逐行按 JSON 解析，取 <code>type</code> 为 <code>"tool"</code> 且 <code>summary</code> 是字符串的事件，保留最后 <code>RECENT_ACTIONS = 8</code> 条的 <code>summary</code>；解析不了的行跳过，文件不存在时为空列表。</p>
+  <p>翻译会话运行期间，<code>status</code> 给出 <code>running</code>、开始时间、正在运行的阶段和会话最近的动作。其他程序据此显示「翻译中」、已用时间与当前动作。</p>
+
+  <h3 id="listing">tongtu list --json</h3>
+  <p>读一次 <code>$TONGTU_HOME/papers/</code> 下所有论文的概要，向 stdout 输出一个紧凑格式（不缩进、不换行）的 JSON 对象后退出 0。<code>papers/</code> 不存在时 <code>papers</code> 为空列表。对每个子目录读 fetch 的 manifest，按下面的规则决定是否列出：</p>
+  <ul>
+    <li>manifest 记的是本地源码目录（<code>arxiv_id</code> 为空）：列出。</li>
+    <li>manifest 记的是 arXiv 论文：<code>version</code> 不为空，且目录名等于带版本号的编号（编号里的 <code>/</code> 换成 <code>_</code>）时列出。v0.1 留下的不带版本号的目录因此不列出，与 <code>status</code> 的解析规则一致。</li>
+    <li>manifest 不存在或读不出：目录里有有效的运行标记时列出，这是 fetch 还没写出 manifest 的运行中论文；否则不列出。</li>
+  </ul>
+  <pre><code class="language-python">class PaperListing(BaseModel):
+    papers: list[PaperSummary]                  # 按 updated_at 从新到旧
+
+class PaperSummary(BaseModel):
+    name: str                                   # 工作目录名
+    workdir: Path                               # 绝对路径
+    state: PaperState                           # 与 status --json 相同
+    stage: str | None                           # 与 status --json 相同
+    arxiv_id: str | None                        # 取自 fetch manifest；本地目录时为 null
+    version: int | None
+    title: str | None                           # 取自 out/&lt;ID&gt;.meta.json；文件不存在时为 null
+    primary_category: str | None                # 同上
+    added_at: datetime                          # fetch manifest 的修改时间；没有时取工作目录的修改时间
+    updated_at: datetime                        # 已有 manifest 里最新的修改时间；没有时取工作目录的修改时间
+    started_at: datetime | None                 # 有效运行标记里的开始时间；没有时为 null
+    pdf: Path | None                            # 中文 PDF 的绝对路径；文件不存在时为 null</code></pre>
 
   <h3 id="config-json">tongtu config list --json</h3>
   <p>向 stdout 输出一个 JSON 对象。键是 <code>tongtu config list</code> 列出的带点的键，顺序相同；值是字符串、数字或布尔，模式名取它的字符串值，未设置的可选字段为 null。配置文件不存在时输出默认值；配置文件加载失败时不输出 JSON，错误写到 stderr，退出 1。</p>
