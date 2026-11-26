@@ -13,7 +13,7 @@ import pytest
 from tongtu import fonts
 from tongtu.artifacts.common import StopReason, Usage
 from tongtu.model.config import DEFAULT_TIMEOUT_SECONDS
-from tongtu.model.work import PROMPT, result_cost, session_usage, skill_dir, work
+from tongtu.model.work import PROMPT, ResultUsage, result_usage, session_usage, skill_dir, work
 from tongtu.processes import OUTPUT_EXCERPT_CHARS, ProcessOutcome
 
 work_module = importlib.import_module("tongtu.model.work")
@@ -371,6 +371,69 @@ def test_usage_of_another_runtime_ignores_a_result_line(configured: Path, monkey
     assert outcome.session.usage.cost_usd is None
 
 
+RESULT_LINE = {
+    "type": "result",
+    "total_cost_usd": 0.46532460000000003,
+    "usage": {
+        "input_tokens": 28,
+        "cache_creation_input_tokens": 50680,
+        "cache_read_input_tokens": 656086,
+        "output_tokens": 19694,
+        "output_tokens_details": {"thinking_tokens": 3007},
+    },
+    "modelUsage": {
+        "claude-sonnet-5-5": {
+            "inputTokens": 28,
+            "outputTokens": 19694,
+            "cacheReadInputTokens": 656086,
+            "cacheCreationInputTokens": 50680,
+            "costUSD": 0.46532460000000003,
+            "thinkingTokens": 3007,
+        }
+    },
+}
+
+
+def test_usage_of_claude_code_takes_the_thinking_tokens_of_the_result_line(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = json.dumps(RESULT_LINE).encode() + b"\n"
+    record_run(monkeypatch, {}, exited(), (end_line("finished", usage=END_USAGE),), raw=raw)
+    outcome = run_work(configured, "smart")
+    assert outcome.session.usage is not None
+    assert outcome.session.usage.thinking_tokens == 3007
+    assert outcome.session.usage.cost_usd == 0.46532460000000003
+
+
+def test_usage_of_claude_code_without_thinking_details_still_has_the_cost(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    usage = {key: value for key, value in RESULT_LINE["usage"].items() if key != "output_tokens_details"}
+    raw = json.dumps({**RESULT_LINE, "usage": usage}).encode() + b"\n"
+    record_run(monkeypatch, {}, exited(), (end_line("finished", usage=END_USAGE),), raw=raw)
+    outcome = run_work(configured, "smart")
+    assert outcome.session.usage is not None
+    assert outcome.session.usage.thinking_tokens is None
+    assert outcome.session.usage.cost_usd == 0.46532460000000003
+
+
+def test_usage_of_another_runtime_has_no_thinking_tokens(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = json.dumps(RESULT_LINE).encode() + b"\n"
+    record_run(monkeypatch, {}, exited(), (end_line("finished", usage=END_USAGE),), raw=raw)
+    outcome = run_work(configured, "fast")
+    assert outcome.session.usage is not None
+    assert outcome.session.usage.thinking_tokens is None
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [None, "3007", {"output_tokens_details": None}, {"output_tokens_details": {"thinking_tokens": "3007"}}],
+)
+def test_result_usage_without_integer_thinking_tokens_gives_none(usage: object) -> None:
+    line = json.dumps({"type": "result", "total_cost_usd": 1, "usage": usage}).encode()
+    assert result_usage((line,)) == ResultUsage(cost_usd=1.0, thinking_tokens=None)
+
+
 def test_an_end_event_without_usage_gives_no_usage(configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record_run(monkeypatch, {}, exited(), (usage_line(None), end_line("finished")))
     assert run_work(configured).session.usage is None
@@ -379,7 +442,7 @@ def test_an_end_event_without_usage_gives_no_usage(configured: Path, monkeypatch
 @pytest.mark.parametrize("reported", [None, "4 tokens", {"input_tokens": 4}, {**END_USAGE, "output_tokens": "x"}])
 def test_session_usage_needs_every_token_count(reported: object) -> None:
     end = {"type": "end", "status": "finished"} if reported is None else {"type": "end", "usage": reported}
-    assert session_usage(end, 3, None) is None
+    assert session_usage(end, 3, ResultUsage()) is None
 
 
 @pytest.mark.parametrize(
@@ -393,8 +456,8 @@ def test_session_usage_needs_every_token_count(reported: object) -> None:
         ((b'{"type":"result","total_cost_usd":2.5}', b'{"type":"result"}'), None),
     ],
 )
-def test_result_cost_reads_the_last_result_line(lines: tuple[bytes, ...], expected: float | None) -> None:
-    assert result_cost(lines) == expected
+def test_result_usage_reads_the_cost_of_the_last_result_line(lines: tuple[bytes, ...], expected: float | None) -> None:
+    assert result_usage(lines).cost_usd == expected
 
 
 @pytest.mark.parametrize("model", ["codex/m1", "claude-code/m1", "pi/p/m1", "pi"])

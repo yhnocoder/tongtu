@@ -39,6 +39,18 @@ COST_RESULT_TYPE = "result"
 
 COST_FIELD = "total_cost_usd"
 
+THINKING_USAGE_FIELD = "usage"
+
+THINKING_DETAILS_FIELD = "output_tokens_details"
+
+THINKING_FIELD = "thinking_tokens"
+
+
+@dataclass(frozen=True)
+class ResultUsage:
+    cost_usd: float | None = None
+    thinking_tokens: int | None = None
+
 
 @dataclass(frozen=True)
 class WorkOutcome:
@@ -169,40 +181,47 @@ def _launch(
             f"{executable} exited with code {outcome.returncode} without an end event; stderr: {stderr or '(empty)'}",
         )
     end = events.ends[-1]
-    usage = session_usage(end, events.turns, _cost(target.runtime, raw_path))
+    usage = session_usage(end, events.turns, _result_usage(target.runtime, raw_path))
     stop_reason = _stop_reason(end)
     if stop_reason is not StopReason.ERROR:
         return stop_reason, usage, ""
     return StopReason.ERROR, usage, f"{AGENTRUN_EXECUTABLE} {end.get('status')}: {end.get('detail') or '(no detail)'}"
 
 
-def session_usage(end: dict, turns: int, cost_usd: float | None) -> Usage | None:
+def session_usage(end: dict, turns: int, result: ResultUsage) -> Usage | None:
     reported = end.get("usage")
     if not isinstance(reported, dict):
         return None
     try:
-        return Usage.model_validate({**reported, "turns": turns, "cost_usd": cost_usd})
+        return Usage.model_validate(
+            {**reported, "turns": turns, "cost_usd": result.cost_usd, "thinking_tokens": result.thinking_tokens}
+        )
     except ValidationError:
         return None
 
 
-def result_cost(raw_lines: Sequence[bytes]) -> float | None:
+def result_usage(raw_lines: Sequence[bytes]) -> ResultUsage:
     results = [record for record in map(_parse_event, raw_lines) if record and record.get("type") == COST_RESULT_TYPE]
     if not results:
-        return None
-    cost = results[-1].get(COST_FIELD)
-    if isinstance(cost, bool) or not isinstance(cost, int | float):
-        return None
-    return float(cost)
+        return ResultUsage()
+    last = results[-1]
+    cost = last.get(COST_FIELD)
+    usage = last.get(THINKING_USAGE_FIELD)
+    details = usage.get(THINKING_DETAILS_FIELD) if isinstance(usage, dict) else None
+    thinking = details.get(THINKING_FIELD) if isinstance(details, dict) else None
+    return ResultUsage(
+        cost_usd=None if isinstance(cost, bool) or not isinstance(cost, int | float) else float(cost),
+        thinking_tokens=None if isinstance(thinking, bool) or not isinstance(thinking, int) else thinking,
+    )
 
 
-def _cost(runtime: str, raw_path: Path) -> float | None:
+def _result_usage(runtime: str, raw_path: Path) -> ResultUsage:
     if runtime != COST_RUNTIME:
-        return None
+        return ResultUsage()
     try:
-        return result_cost(raw_path.read_bytes().splitlines())
+        return result_usage(raw_path.read_bytes().splitlines())
     except OSError:
-        return None
+        return ResultUsage()
 
 
 def _stop_reason(end: dict) -> StopReason:
