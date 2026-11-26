@@ -15,7 +15,7 @@
       "arguments": [
         {
           "name": "paper",
-          "placeholder": "arXiv 编号或链接（可不填）",
+          "placeholder": "arXiv…",
           "type": "text",
           "required": false
         },
