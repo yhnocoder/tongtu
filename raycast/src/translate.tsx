@@ -2,45 +2,47 @@ import {
   Action,
   ActionPanel,
   Clipboard,
-  Detail,
   Icon,
   LaunchProps,
   List,
-  PopToRootType,
   Toast,
   getFrontmostApplication,
-  open,
-  showHUD,
   showToast,
+  useNavigation,
 } from "@raycast/api";
 import { useEffect, useRef, useState } from "react";
 import {
+  ENTRY_ACTION_TITLES,
+  EntryAction,
+  INPUT_DEBOUNCE_SECONDS,
+  Lookup,
   NOT_INSTALLED,
   PaperMeta,
   PaperSource,
   PaperStatus,
+  START_REFRESH_DELAY_SECONDS,
   arxivId,
   arxivIdFromUrl,
   browserUrlScript,
-  confirmRows,
-  infoFailure,
-  isComplete,
-  paperArgument,
+  entryActions,
+  entryArxivUrl,
+  entryRows,
+  entrySubtitle,
+  entryTitle,
+  isPathArgument,
+  lookupFailure,
   runMode,
-  startMessage,
+  statusTarget,
   typedPaper,
-  workdirName,
 } from "./core";
-import { defaultMode, installed, markOpened, osascript, parseJson, startRun, tongtu } from "./tongtu";
+import { PaperDetailView, RefreshAction, feedback, openPdf, run, stop } from "./detail";
+import { defaultMode, installed, osascript, parseJson, startRun, tongtu } from "./tongtu";
 
 const BROWSER_TIMEOUT_MILLISECONDS = 2000;
 
-type Found = { paper: string; source: PaperSource };
-type Screen =
-  | { kind: "loading" }
-  | { kind: "input" }
-  | { kind: "message"; text: string; failed: boolean }
-  | { kind: "confirm"; paper: string; meta: PaperMeta; mode: string | null; shownMode: string };
+feedback.closesPanel = false;
+
+type Prefill = { text: string; source: PaperSource };
 
 async function browserPaper(): Promise<string | null> {
   try {
@@ -62,131 +64,176 @@ async function clipboardPaper(): Promise<string | null> {
   }
 }
 
-async function findPaper(argument: string): Promise<Found | null> {
-  if (argument.trim() !== "") return { paper: paperArgument(argument), source: "argument" };
+async function findPrefill(argument: string): Promise<Prefill | null> {
+  if (argument.trim() !== "") return { text: argument.trim(), source: "argument" };
   const fromBrowser = await browserPaper();
-  if (fromBrowser) return { paper: fromBrowser, source: "browser" };
+  if (fromBrowser) return { text: fromBrowser, source: "browser" };
   const fromClipboard = await clipboardPaper();
-  return fromClipboard ? { paper: fromClipboard, source: "clipboard" } : null;
+  return fromClipboard ? { text: fromClipboard, source: "clipboard" } : null;
 }
 
-function done(text: string): Screen {
-  return { kind: "message", text, failed: false };
-}
-
-function start(paper: string, mode: string | null, shownMode: string): Screen {
-  startRun(paper, mode ? ["--mode", mode] : [], null);
-  return done(startMessage(paper, shownMode));
-}
-
-function failure(error: unknown): Screen {
-  return { kind: "message", text: error instanceof Error ? error.message : String(error), failed: true };
-}
-
-async function proceed(found: Found, modeArgument: string | undefined): Promise<Screen> {
-  const result = await tongtu(["status", found.paper, "--json"]);
-  const status = result.code === 0 ? parseJson<PaperStatus>(result.stdout) : null;
-  if (status?.running) return done(`${workdirName(status.workdir)} 正在翻译`);
-  if (status?.pdf && isComplete(status)) {
-    await markOpened(workdirName(status.workdir));
-    await open(status.pdf);
-    return done(`已有译文，打开 ${workdirName(status.workdir)}`);
-  }
-  const mode = runMode(modeArgument);
-  const shownMode = mode ?? (await defaultMode());
-  if (found.source !== "clipboard") return start(found.paper, mode, shownMode);
-  const info = await tongtu(["info", found.paper, "--json"]);
-  const meta = info.code === 0 ? parseJson<PaperMeta>(info.stdout) : null;
-  if (!meta) return { kind: "message", text: infoFailure(found.paper, info.stderr), failed: true };
-  return { kind: "confirm", paper: found.paper, meta, mode, shownMode };
-}
-
-async function prepare(paperArgumentText: string, modeArgument: string | undefined): Promise<Screen> {
-  if (!installed()) return { kind: "message", text: NOT_INSTALLED, failed: true };
-  const found = await findPaper(paperArgumentText);
-  return found ? proceed(found, modeArgument) : { kind: "input" };
+async function lookUp(paper: string): Promise<Lookup> {
+  const status = tongtu(["status", paper, "--json"]);
+  const info = isPathArgument(paper) ? null : tongtu(["info", paper, "--json"]);
+  const [statusResult, infoResult] = await Promise.all([status, info]);
+  return {
+    paper,
+    status: statusResult.code === 0 ? parseJson<PaperStatus>(statusResult.stdout) : null,
+    meta: infoResult?.code === 0 ? parseJson<PaperMeta>(infoResult.stdout) : null,
+    infoError: infoResult && infoResult.code !== 0 ? infoResult.stderr : "",
+  };
 }
 
 export default function Translate(props: LaunchProps<{ arguments: { paper?: string; mode?: string } }>) {
-  const [screen, setScreen] = useState<Screen>({ kind: "loading" });
-  const [typed, setTyped] = useState("");
-  const prepared = useRef(false);
-  const launched = useRef(false);
+  const { push } = useNavigation();
+  const missing = !installed();
+  const [text, setText] = useState("");
+  const [source, setSource] = useState<PaperSource | null>(null);
+  const [prefilling, setPrefilling] = useState(!missing);
+  const [paper, setPaper] = useState<string | null>(null);
+  const [lookup, setLookup] = useState<Lookup | null>(null);
+  const [shownMode, setShownMode] = useState(runMode(props.arguments.mode) ?? "");
+  const edited = useRef(false);
+  const latest = useRef(0);
+  const shownPaper = useRef<string | null>(null);
+  const launching = useRef(false);
 
-  function show(next: Screen): void {
-    setScreen(next);
-    if (next.kind !== "message") return;
-    const shown = next.failed
-      ? showToast({ style: Toast.Style.Failure, title: next.text })
-      : showHUD(next.text, { clearRootSearch: true, popToRootType: PopToRootType.Immediate });
-    shown.catch(() => undefined);
-  }
+  useEffect(() => {
+    if (missing) return;
+    if (shownMode === "") defaultMode().then(setShownMode);
+    findPrefill(props.arguments.paper ?? "")
+      .then((prefill) => {
+        if (!prefill || edited.current) return;
+        setText(prefill.text);
+        setSource(prefill.source);
+        setPaper(typedPaper(prefill.text));
+      })
+      .finally(() => setPrefilling(false));
+  }, []);
 
-  function launch(paper: string, mode: string | null, shownMode: string): void {
-    if (launched.current) return;
-    launched.current = true;
-    try {
-      show(start(paper, mode, shownMode));
-    } catch (error) {
-      show(failure(error));
+  useEffect(() => {
+    if (!edited.current) return;
+    const debounce = setTimeout(() => setPaper(typedPaper(text)), INPUT_DEBOUNCE_SECONDS * 1000);
+    return () => clearTimeout(debounce);
+  }, [text]);
+
+  shownPaper.current = paper;
+
+  async function load(): Promise<void> {
+    const request = ++latest.current;
+    const wanted = shownPaper.current;
+    if (wanted === null) {
+      setLookup(null);
+      return;
     }
-  }
-
-  function submit(paper: string, mode: string | undefined): void {
-    if (launched.current) return;
-    launched.current = true;
-    setScreen({ kind: "loading" });
-    proceed({ paper, source: "argument" }, mode).then(show, (error) => show(failure(error)));
+    const found = await lookUp(wanted);
+    if (request === latest.current) setLookup(found);
   }
 
   useEffect(() => {
-    if (prepared.current) return;
-    prepared.current = true;
-    prepare(props.arguments.paper ?? "", props.arguments.mode).then(show, (error) => show(failure(error)));
-  }, []);
+    load();
+  }, [paper]);
 
-  if (screen.kind === "loading") return <Detail isLoading markdown="" />;
-  if (screen.kind === "message") return <Detail markdown={screen.text} />;
-  if (screen.kind === "input") {
-    const paper = typedPaper(typed);
-    return (
-      <List filtering={false} onSearchTextChange={setTyped} searchBarPlaceholder="输入 arXiv 编号或链接">
-        {paper === null ? (
-          <List.EmptyView title="没有找到 arXiv 编号" description="在上面输入编号或链接" />
-        ) : (
-          <List.Item
-            title={`翻译 ${paper}`}
-            icon={Icon.Play}
-            actions={
-              <ActionPanel>
-                <Action title="开始翻译" icon={Icon.Play} onAction={() => submit(paper, props.arguments.mode)} />
-                <Action title="用 fast 翻译" icon={Icon.Play} onAction={() => submit(paper, "fast")} />
-                <Action title="用 smart 翻译" icon={Icon.Play} onAction={() => submit(paper, "smart")} />
-              </ActionPanel>
-            }
-          />
-        )}
-      </List>
-    );
+  function changeText(next: string): void {
+    if (next === text) return;
+    edited.current = true;
+    setText(next);
+    setSource(null);
   }
-  const { paper, meta, mode, shownMode } = screen;
+
+  async function start(target: string, mode: string | null): Promise<void> {
+    if (launching.current) return;
+    launching.current = true;
+    try {
+      startRun(target, mode ? ["--mode", mode] : [], null);
+    } catch (error) {
+      launching.current = false;
+      await showToast({
+        style: Toast.Style.Failure,
+        title: `没有启动 ${target}`,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    push(<PaperDetailView paper={target} starting />);
+    setTimeout(() => {
+      launching.current = false;
+      load();
+    }, START_REFRESH_DELAY_SECONDS * 1000);
+  }
+
+  function entryAction(action: EntryAction, found: Lookup) {
+    const title = ENTRY_ACTION_TITLES[action];
+    const local = found.status ? statusTarget(found.status) : null;
+    const url = entryArxivUrl(found);
+    if (action === "start") {
+      return <Action key={action} title={title} icon={Icon.Play} onAction={() => start(found.paper, runMode(props.arguments.mode))} />;
+    }
+    if (action === "startFast") return <Action key={action} title={title} icon={Icon.Play} onAction={() => start(found.paper, "fast")} />;
+    if (action === "startSmart") return <Action key={action} title={title} icon={Icon.Play} onAction={() => start(found.paper, "smart")} />;
+    if (action === "arxiv") return url && <Action.OpenInBrowser key={action} title={title} url={url} />;
+    if (!local) return null;
+    if (action === "detail") {
+      return (
+        <Action.Push
+          key={action}
+          title={title}
+          icon={Icon.Sidebar}
+          target={<PaperDetailView paper={local.name} workdir={local.workdir} />}
+        />
+      );
+    }
+    if (action === "openPdf") return <Action key={action} title={title} icon={Icon.Document} onAction={() => openPdf(local)} />;
+    if (action === "stop") {
+      return <Action key={action} title={title} icon={Icon.Stop} style={Action.Style.Destructive} onAction={() => stop(local, load)} />;
+    }
+    return <Action key={action} title={title} icon={Icon.Play} onAction={() => run(local, "retry", load)} />;
+  }
+
+  const current = lookup && lookup.paper === paper ? lookup : null;
+  const failure = current ? lookupFailure(current) : null;
+  const waiting = prefilling || typedPaper(text) !== paper || (paper !== null && current === null);
+  const refreshOnly = (
+    <ActionPanel>
+      <RefreshAction reload={load} />
+    </ActionPanel>
+  );
   return (
-    <Detail
-      markdown={`# ${meta.title}`}
-      metadata={
-        <Detail.Metadata>
-          {confirmRows(meta, shownMode).map((row) => (
-            <Detail.Metadata.Label key={row.title} title={row.title} text={row.text} />
-          ))}
-        </Detail.Metadata>
-      }
-      actions={
-        <ActionPanel>
-          <Action title="开始翻译" icon={Icon.Play} onAction={() => launch(paper, mode, shownMode)} />
-          <Action title="用 fast 翻译" icon={Icon.Play} onAction={() => launch(paper, "fast", "fast")} />
-          <Action title="用 smart 翻译" icon={Icon.Play} onAction={() => launch(paper, "smart", "smart")} />
-        </ActionPanel>
-      }
-    />
+    <List
+      isLoading={waiting}
+      isShowingDetail={current !== null && failure === null}
+      filtering={false}
+      searchText={text}
+      onSearchTextChange={changeText}
+      searchBarPlaceholder="输入 arXiv 编号或链接"
+    >
+      {missing && <List.EmptyView title={NOT_INSTALLED} />}
+      {!missing && paper === null && !waiting && <List.EmptyView title="没有找到 arXiv 编号" description="在上面输入编号或链接" />}
+      {!missing && failure !== null && <List.EmptyView title={failure} actions={refreshOnly} />}
+      {!missing && current !== null && failure === null && (
+        <List.Item
+          title={entryTitle(current)}
+          subtitle={entrySubtitle(current, source)}
+          detail={
+            <List.Item.Detail
+              markdown={current.meta?.abstract ?? ""}
+              metadata={
+                <List.Item.Detail.Metadata>
+                  {entryRows(current, shownMode).map((row) => (
+                    <List.Item.Detail.Metadata.Label key={row.title} title={row.title} text={row.text} />
+                  ))}
+                </List.Item.Detail.Metadata>
+              }
+            />
+          }
+          actions={
+            <ActionPanel>
+              {entryActions(current).map((action) => entryAction(action, current))}
+              <RefreshAction reload={load} />
+            </ActionPanel>
+          }
+        />
+      )}
+    </List>
   );
 }

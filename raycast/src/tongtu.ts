@@ -14,7 +14,6 @@ import {
   shellQuote,
   toolDirectories,
   toolPath,
-  withOpened,
 } from "./core";
 
 const HOME = os.homedir();
@@ -115,11 +114,6 @@ export async function loadOpened(): Promise<string[] | null> {
 
 export async function saveOpened(opened: string[]): Promise<void> {
   await LocalStorage.setItem("opened", JSON.stringify(opened));
-}
-
-export async function markOpened(name: string): Promise<void> {
-  const opened = await loadOpened();
-  if (opened) await saveOpened(withOpened(opened, name));
 }
 
 export async function loadRecentDays(): Promise<number> {

@@ -10,7 +10,7 @@
     {
       "name": "translate",
       "title": "翻译论文",
-      "description": "在后台运行 tongtu run，结束时发系统通知",
+      "description": "查看一篇论文的状态，在后台启动 tongtu run，结束时发系统通知",
       "mode": "view",
       "arguments": [
         {

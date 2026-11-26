@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   FILTER_ALL,
+  ENTRY_ACTION_TITLES,
   FILTER_UNREAD,
+  LOCAL_STATE_TEXT,
   OLD_ARCHIVES,
   OTHER_MODEL,
   arxivId,
@@ -16,22 +18,27 @@ import {
   configChanges,
   configErrors,
   configFile,
-  confirmRows,
   dateText,
   dateTimeText,
   effortChoices,
   elapsed,
+  entryActions,
+  entryArxivUrl,
+  entryRows,
+  entrySubtitle,
+  entryTitle,
   formValues,
   infoFailure,
   initialOpened,
-  isComplete,
+  isPathArgument,
   isUnread,
   launchScript,
+  localState,
   logFileName,
+  lookupFailure,
   matches,
   minutesFromSeconds,
   modelChoices,
-  paperArgument,
   parseOpened,
   parseRecentDays,
   refreshSeconds,
@@ -44,7 +51,8 @@ import {
   secondsFromMinutes,
   sections,
   shellQuote,
-  startMessage,
+  startingMarkdown,
+  statusTarget,
   stateLabel,
   toolPath,
   typedPaper,
@@ -54,7 +62,7 @@ import {
   withoutOpened,
   workdirName,
 } from "../src/core.ts";
-import type { Config, PaperDetail, PaperMeta, PaperState, PaperStatus, PaperSummary } from "../src/core.ts";
+import type { Config, Lookup, PaperDetail, PaperMeta, PaperState, PaperStatus, PaperSummary } from "../src/core.ts";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
 const STAGE_NAMES = ["fetch", "precompile", "mask", "translate", "compile"];
@@ -118,7 +126,7 @@ const META: PaperMeta = {
 };
 
 function detail(state: PaperState, statuses: string[], overrides: Partial<PaperStatus> = {}, meta: PaperMeta | null = META): PaperDetail {
-  return { summary: paper("2611.15404v1", state), status: status(state, statuses, overrides), meta };
+  return { name: "2611.15404v1", addedAt: "2026-11-25T08:00:00Z", status: status(state, statuses, overrides), meta };
 }
 
 const CONFIG: Config = {
@@ -192,9 +200,12 @@ test("arxivIdFromUrl requires an arxiv.org host", () => {
   assert.equal(arxivIdFromUrl("2412.19437"), null);
 });
 
-test("paperArgument keeps text that holds no arXiv id", () => {
-  assert.equal(paperArgument(" https://arxiv.org/abs/2412.19437v2 "), "2412.19437v2");
-  assert.equal(paperArgument("  my draft  "), "my draft");
+test("isPathArgument recognises local paths", () => {
+  assert.equal(isPathArgument("/papers/draft"), true);
+  assert.equal(isPathArgument("~/draft"), true);
+  assert.equal(isPathArgument("./draft"), true);
+  assert.equal(isPathArgument("2611.15404"), false);
+  assert.equal(isPathArgument("hep-th/9901001"), false);
 });
 
 test("typedPaper accepts an id, a link or a path and nothing else", () => {
@@ -208,13 +219,6 @@ test("typedPaper accepts an id, a link or a path and nothing else", () => {
   assert.equal(typedPaper(" ~/papers/draft "), "~/papers/draft");
   assert.equal(typedPaper("/papers/1706.03762/src"), "/papers/1706.03762/src");
   assert.equal(typedPaper("./draft"), "./draft");
-});
-
-test("paperArgument takes a path as it is", () => {
-  assert.equal(paperArgument(" /papers/2412.19437v2/src "), "/papers/2412.19437v2/src");
-  assert.equal(paperArgument("~/papers/2412.19437"), "~/papers/2412.19437");
-  assert.equal(paperArgument("./2412.19437"), "./2412.19437");
-  assert.equal(paperArgument("../hep-th/9901001"), "../hep-th/9901001");
 });
 
 test("browserUrlScript covers the supported browsers only", () => {
@@ -271,14 +275,12 @@ test("runOptions maps every action to its tongtu run options", () => {
   assert.deepEqual(runOptions("recompile", "/w"), { options: ["--workdir", "/w", "--from", "compile"], redo: true });
 });
 
-test("runMessage and startMessage word the HUD by action", () => {
+test("runMessage words the result by action", () => {
   assert.equal(runMessage("retry", "2611.15404v1"), "继续翻译 2611.15404v1");
   assert.equal(runMessage("retrySmart", "2611.15404v1"), "继续翻译 2611.15404v1（smart）");
   assert.equal(runMessage("redoFast", "2611.15404v1"), "开始翻译 2611.15404v1（fast）");
   assert.equal(runMessage("redoSmart", "2611.15404v1"), "开始翻译 2611.15404v1（smart）");
   assert.equal(runMessage("recompile", "2611.15404v1"), "重新编译 2611.15404v1");
-  assert.equal(startMessage("2611.15404", "smart"), "开始翻译 2611.15404（smart）");
-  assert.equal(startMessage("2611.15404", ""), "开始翻译 2611.15404");
 });
 
 test("removableWorkdir needs an absolute path that ends in the paper name", () => {
@@ -288,14 +290,6 @@ test("removableWorkdir needs an absolute path that ends in the paper name", () =
   assert.equal(removableWorkdir("2611.15404v1", "papers/2611.15404v1"), false);
   assert.equal(removableWorkdir("", "/"), false);
   assert.equal(removableWorkdir("2611.15404v1", ""), false);
-});
-
-test("isComplete needs the ok state and a pdf", () => {
-  assert.equal(isComplete(status("ok", ALL_OK, { pdf: "/p.pdf" })), true);
-  assert.equal(isComplete(status("ok", ALL_OK)), false);
-  assert.equal(isComplete(status("failed", ["ok", "ok", "ok", "ok", "compile_failed"], { pdf: "/p.pdf" })), false);
-  assert.equal(isComplete(status("interrupted", ["ok", "ok", "ok"], { pdf: "/p.pdf" })), false);
-  assert.equal(workdirName("/home/papers/2611.15404v1/"), "2611.15404v1");
 });
 
 test("refreshSeconds is short only while a paper is running", () => {
@@ -316,15 +310,102 @@ test("infoFailure tells a missing paper from other failures", () => {
   assert.equal(infoFailure("2611.15404", ""), "tongtu info 2611.15404 没有给出结果");
 });
 
-test("confirmRows lists what the confirmation screen shows", () => {
-  assert.deepEqual(confirmRows(META, "smart"), [
+function lookup(paper: string, found: PaperStatus | null, meta: PaperMeta | null, infoError = ""): Lookup {
+  return { paper, status: found, meta, infoError };
+}
+
+const NO_ENTRY = "cannot get info for 9999.99999: arXiv API has no entry for 9999.99999; check the id and version\n";
+
+test("localState treats a missing or not yet fetched paper as untranslated", () => {
+  assert.equal(localState(null), "none");
+  assert.equal(localState(status("interrupted", [], { stage: "fetch" })), "none");
+  assert.equal(localState(status("running", [], { stage: "fetch" })), "running");
+  assert.equal(localState(status("failed", ["download_failed"], { stage: "fetch" })), "failed");
+  assert.equal(localState(status("interrupted", ["ok", "ok", "ok"])), "interrupted");
+  assert.equal(localState(status("ok", ALL_OK)), "ok");
+  assert.deepEqual(LOCAL_STATE_TEXT, {
+    none: "未翻译",
+    ok: "已翻译",
+    running: "正在翻译",
+    failed: "翻译失败",
+    interrupted: "翻译中断",
+  });
+});
+
+test("entryActions puts the action for return first in every state", () => {
+  assert.deepEqual(entryActions(lookup("2611.15404", null, META)), ["start", "startFast", "startSmart", "arxiv"]);
+  assert.deepEqual(entryActions(lookup("2611.15404v1", status("interrupted", [], { stage: "fetch" }), META)), [
+    "start",
+    "startFast",
+    "startSmart",
+    "arxiv",
+  ]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("ok", ALL_OK), META)), ["detail", "openPdf", "arxiv"]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("running", ["ok"]), META)), ["detail", "stop"]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("failed", ["ok", "x"], { stage: "precompile" }), META)), ["detail", "retry"]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("interrupted", ["ok", "ok", "ok"]), META)), ["detail", "retry"]);
+  assert.deepEqual(entryActions(lookup("~/papers/draft", null, null)), ["start", "startFast", "startSmart"]);
+  const local = status("ok", ALL_OK, { arxiv_id: null, version: null, workdir: "/home/papers/draft" });
+  assert.deepEqual(entryActions(lookup("~/papers/draft", local, null)), ["detail", "openPdf"]);
+  assert.deepEqual(Object.keys(ENTRY_ACTION_TITLES).sort(), ["arxiv", "detail", "openPdf", "retry", "start", "startFast", "startSmart", "stop"]);
+});
+
+test("lookupFailure reports a failed info only when the paper is not local", () => {
+  assert.equal(lookupFailure(lookup("9999.99999", null, null, NO_ENTRY)), "arXiv 上没有 9999.99999");
+  assert.equal(
+    lookupFailure(lookup("2611.15404", null, null, "cannot get info for 2611.15404: arXiv API request for 2611.15404 failed\n")),
+    "cannot get info for 2611.15404: arXiv API request for 2611.15404 failed",
+  );
+  assert.equal(lookupFailure(lookup("2611.15404v1", status("interrupted", [], { stage: "fetch" }), null, NO_ENTRY)), "arXiv 上没有 2611.15404v1");
+  assert.equal(lookupFailure(lookup("2611.15404", status("ok", ALL_OK), null, NO_ENTRY)), null);
+  assert.equal(lookupFailure(lookup("2611.15404", null, META)), null);
+  assert.equal(lookupFailure(lookup("./draft", null, null)), null);
+});
+
+test("entryTitle and entrySubtitle describe the paper and where the input came from", () => {
+  const remote = lookup("2611.15404", null, META);
+  assert.equal(entryTitle(remote), "Full Title");
+  assert.equal(entrySubtitle(remote, "clipboard"), "2611.15404v1 · cs.LG · 来自剪贴板");
+  assert.equal(entrySubtitle(remote, "browser"), "2611.15404v1 · cs.LG · 来自浏览器");
+  assert.equal(entrySubtitle(remote, "argument"), "2611.15404v1 · cs.LG · 来自参数");
+  assert.equal(entrySubtitle(remote, null), "2611.15404v1 · cs.LG");
+  const localOnly = lookup("2611.15404", status("ok", ALL_OK), null, NO_ENTRY);
+  assert.equal(entryTitle(localOnly), "2611.15404v1");
+  assert.equal(entrySubtitle(localOnly, null), "2611.15404v1");
+  assert.equal(entryArxivUrl(localOnly), "https://arxiv.org/abs/2611.15404v1");
+  const directory = lookup("~/papers/my draft/", null, null);
+  assert.equal(entryTitle(directory), "my draft");
+  assert.equal(entrySubtitle(directory, "argument"), "来自参数");
+  assert.equal(entrySubtitle(directory, null), "");
+  assert.equal(entryArxivUrl(directory), null);
+  assert.equal(entryArxivUrl(remote), "https://arxiv.org/abs/2611.15404v1");
+});
+
+test("entryRows shows authors, date, state and mode", () => {
+  assert.deepEqual(entryRows(lookup("2611.15404", null, META), "smart"), [
     { title: "作者", text: "Ada Lovelace, Alan Turing" },
-    { title: "编号与版本", text: "2611.15404v1" },
-    { title: "主分类", text: "cs.LG" },
     { title: "发表日期", text: "2026-11-11" },
+    { title: "状态", text: "未翻译" },
     { title: "模式", text: "smart" },
   ]);
-  assert.equal(confirmRows(META, "").length, 4);
+  assert.deepEqual(entryRows(lookup("./draft", status("running", ["ok"]), null), ""), [{ title: "状态", text: "正在翻译" }]);
+  assert.deepEqual(entryRows(lookup("./draft", status("failed", ["ok", "x"]), null), "fast"), [
+    { title: "状态", text: "翻译失败" },
+    { title: "模式", text: "fast" },
+  ]);
+});
+
+test("statusTarget carries what the actions need", () => {
+  assert.deepEqual(statusTarget(status("ok", ALL_OK, { pdf: "/home/papers/2611.15404v1/out/x.pdf" })), {
+    name: "2611.15404v1",
+    workdir: "/home/papers/2611.15404v1",
+    state: "ok",
+    stage: null,
+    arxiv_id: "2611.15404",
+    version: 1,
+    pdf: "/home/papers/2611.15404v1/out/x.pdf",
+  });
+  assert.equal(startingMarkdown("2611.15404"), "# 2611.15404\n\n正在启动");
 });
 
 test("sections groups papers by state and age and drops empty sections", () => {
@@ -428,7 +509,7 @@ test("completedMarkdown shows the title, the thumbnail and the abstract", () => 
   const complete = detail("ok", ALL_OK);
   assert.equal(completedMarkdown(complete, null), "# Full Title\n\nAn abstract.");
   assert.equal(completedMarkdown(complete, "iVBORw0KGgo="), "# Full Title\n\n![](data:image/png;base64,iVBORw0KGgo=)\n\nAn abstract.");
-  assert.equal(completedMarkdown(detail("ok", ALL_OK, {}, null), null), "# Title of 2611.15404v1");
+  assert.equal(completedMarkdown(detail("ok", ALL_OK, {}, null), null), "# 2611.15404v1");
 });
 
 test("completedRows leaves out what is not available", () => {
@@ -441,7 +522,7 @@ test("completedRows leaves out what is not available", () => {
     translate_seconds: 754.4,
     translate_cost_usd: 1.234,
   });
-  complete.summary.added_at = added;
+  complete.addedAt = added;
   assert.deepEqual(completedRows(complete), [
     { title: "arXiv", text: "2611.15404v1", link: "https://arxiv.org/abs/2611.15404v1" },
     { title: "作者", text: "Ada Lovelace, Alan Turing" },
@@ -452,8 +533,10 @@ test("completedRows leaves out what is not available", () => {
     { title: "翻译耗时与费用", text: "12 分 34 秒 · $1.23" },
   ]);
   const local = detail("ok", ALL_OK, { arxiv_id: null, version: null }, null);
-  local.summary.added_at = added;
+  local.addedAt = added;
   assert.deepEqual(completedRows(local), [{ title: "加入日期", text: "2026-11-25" }]);
+  local.addedAt = null;
+  assert.deepEqual(completedRows(local), []);
 });
 
 test("running detail marks the current stage and keeps the time in the metadata", () => {

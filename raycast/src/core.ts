@@ -5,6 +5,7 @@ export const ACTIVE_REFRESH_SECONDS = 5;
 export const IDLE_REFRESH_SECONDS = 60;
 export const DETAIL_REFRESH_SECONDS = 2;
 export const START_REFRESH_DELAY_SECONDS = 2;
+export const INPUT_DEBOUNCE_SECONDS = 0.3;
 
 export type StageState = {
   name: string;
@@ -61,7 +62,8 @@ export type PaperSummary = {
   pdf: string | null;
 };
 
-export type PaperDetail = { summary: PaperSummary; status: PaperStatus; meta: PaperMeta | null };
+export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "pdf">;
+export type PaperDetail = { name: string; addedAt: string | null; status: PaperStatus; meta: PaperMeta | null };
 export type PaperSource = "argument" | "browser" | "clipboard";
 export type ConfigValue = string | number | boolean | null;
 export type Config = Record<string, ConfigValue>;
@@ -128,11 +130,6 @@ export function arxivIdFromUrl(url: string): string | null {
   const host = URL_HOST.exec(url.trim())?.[1].toLowerCase();
   if (host !== "arxiv.org" && !host?.endsWith(".arxiv.org")) return null;
   return arxivId(url);
-}
-
-export function paperArgument(text: string): string {
-  const trimmed = text.trim();
-  return PATH_ARGUMENT.test(trimmed) ? trimmed : (arxivId(trimmed) ?? trimmed);
 }
 
 export function typedPaper(text: string): string | null {
@@ -202,15 +199,11 @@ export function runOptions(action: RunAction, workdir: string): { options: strin
   return { options: ["--workdir", workdir, ...options], redo };
 }
 
-export function startMessage(paper: string, mode: string): string {
-  return mode === "" ? `开始翻译 ${paper}` : `开始翻译 ${paper}（${mode}）`;
-}
-
 export function runMessage(action: RunAction, name: string): string {
   if (action === "retry") return `继续翻译 ${name}`;
   if (action === "retrySmart") return `继续翻译 ${name}（smart）`;
   if (action === "recompile") return `重新编译 ${name}`;
-  return startMessage(name, action === "redoFast" ? "fast" : "smart");
+  return `开始翻译 ${name}（${action === "redoFast" ? "fast" : "smart"}）`;
 }
 
 export function workdirName(workdir: string): string {
@@ -219,10 +212,6 @@ export function workdirName(workdir: string): string {
 
 export function removableWorkdir(name: string, workdir: string): boolean {
   return name !== "" && workdir.startsWith("/") && workdirName(workdir) === name;
-}
-
-export function isComplete(status: PaperStatus): boolean {
-  return status.state === "ok" && status.pdf !== null;
 }
 
 export function refreshSeconds(papers: PaperSummary[]): number {
@@ -347,7 +336,7 @@ function oneLine(text: string): string {
 }
 
 function detailTitle(detail: PaperDetail): string {
-  return detail.meta?.title || paperTitle(detail.summary);
+  return detail.meta?.title || detail.name;
 }
 
 function stageLine(status: PaperStatus): string {
@@ -412,11 +401,11 @@ function durationText(seconds: number): string {
 }
 
 export function completedRows(detail: PaperDetail): Row[] {
-  const { summary, status, meta } = detail;
+  const { addedAt, status, meta } = detail;
   const rows = arxivRow(status);
   if (meta?.authors.length) rows.push({ title: "作者", text: meta.authors.join(", ") });
   if (meta) rows.push({ title: "分类与发表日期", text: `${meta.primary_category} · ${dateText(meta.published)}` });
-  rows.push({ title: "加入日期", text: dateText(summary.added_at) });
+  if (addedAt) rows.push({ title: "加入日期", text: dateText(addedAt) });
   const pages = [
     status.pages === null ? "" : `中文 ${status.pages} 页`,
     status.source_pages === null ? "" : `原文 ${status.source_pages} 页`,
@@ -451,14 +440,104 @@ export function unfinishedRows(detail: PaperDetail): Row[] {
   return rows;
 }
 
-export function confirmRows(meta: PaperMeta, mode: string): Row[] {
-  const rows = [
-    { title: "作者", text: meta.authors.join(", ") },
-    { title: "编号与版本", text: `${meta.arxiv_id}v${meta.version}` },
-    { title: "主分类", text: meta.primary_category },
-    { title: "发表日期", text: dateText(meta.published) },
-  ];
-  return mode === "" ? rows : [...rows, { title: "模式", text: mode }];
+export type LocalState = "none" | PaperState;
+export type Lookup = { paper: string; status: PaperStatus | null; meta: PaperMeta | null; infoError: string };
+export type EntryAction = "start" | "startFast" | "startSmart" | "detail" | "openPdf" | "arxiv" | "stop" | "retry";
+
+export const LOCAL_STATE_TEXT: Record<LocalState, string> = {
+  none: "未翻译",
+  ok: "已翻译",
+  running: "正在翻译",
+  failed: "翻译失败",
+  interrupted: "翻译中断",
+};
+
+export const SOURCE_TEXT: Record<PaperSource, string> = {
+  argument: "来自参数",
+  browser: "来自浏览器",
+  clipboard: "来自剪贴板",
+};
+
+export const ENTRY_ACTION_TITLES: Record<EntryAction, string> = {
+  start: "开始翻译",
+  startFast: "用 fast 翻译",
+  startSmart: "用 smart 翻译",
+  detail: "查看详情",
+  openPdf: "打开中文 PDF",
+  arxiv: "打开 arXiv 页面",
+  stop: "停止",
+  retry: "重试",
+};
+
+export function isPathArgument(paper: string): boolean {
+  return PATH_ARGUMENT.test(paper);
+}
+
+export function localState(status: PaperStatus | null): LocalState {
+  if (!status) return "none";
+  if (status.state === "interrupted" && status.stage === STAGES[0]) return "none";
+  return status.state;
+}
+
+export function lookupFailure(lookup: Lookup): string | null {
+  if (isPathArgument(lookup.paper) || lookup.meta || localState(lookup.status) !== "none") return null;
+  return infoFailure(lookup.paper, lookup.infoError);
+}
+
+export function entryTitle(lookup: Lookup): string {
+  if (lookup.meta?.title) return lookup.meta.title;
+  if (isPathArgument(lookup.paper)) return workdirName(lookup.paper);
+  return lookup.status ? workdirName(lookup.status.workdir) : lookup.paper;
+}
+
+function entryVersion(lookup: Lookup): string {
+  if (lookup.meta) return `${lookup.meta.arxiv_id}v${lookup.meta.version}`;
+  if (isPathArgument(lookup.paper)) return "";
+  return (lookup.status && arxivVersion(lookup.status)) || lookup.paper;
+}
+
+export function entrySubtitle(lookup: Lookup, source: PaperSource | null): string {
+  const parts = [entryVersion(lookup), lookup.meta?.primary_category ?? "", source ? SOURCE_TEXT[source] : ""];
+  return parts.filter((part) => part !== "").join(" · ");
+}
+
+export function entryArxivUrl(lookup: Lookup): string | null {
+  const version = entryVersion(lookup);
+  return version === "" ? null : `https://arxiv.org/abs/${version}`;
+}
+
+export function entryRows(lookup: Lookup, mode: string): Row[] {
+  const rows: Row[] = [];
+  if (lookup.meta?.authors.length) rows.push({ title: "作者", text: lookup.meta.authors.join(", ") });
+  if (lookup.meta) rows.push({ title: "发表日期", text: dateText(lookup.meta.published) });
+  rows.push({ title: "状态", text: LOCAL_STATE_TEXT[localState(lookup.status)] });
+  if (mode !== "") rows.push({ title: "模式", text: mode });
+  return rows;
+}
+
+export function entryActions(lookup: Lookup): EntryAction[] {
+  const state = localState(lookup.status);
+  const arxiv: EntryAction[] = entryArxivUrl(lookup) ? ["arxiv"] : [];
+  if (state === "none") return ["start", "startFast", "startSmart", ...arxiv];
+  if (state === "ok") return ["detail", "openPdf", ...arxiv];
+  if (state === "running") return ["detail", "stop"];
+  return ["detail", "retry"];
+}
+
+export function statusTarget(status: PaperStatus): PaperTarget {
+  return {
+    name: workdirName(status.workdir),
+    workdir: status.workdir,
+    state: status.state,
+    stage: status.stage,
+    arxiv_id: status.arxiv_id,
+    version: status.version,
+    pdf: status.pdf,
+  };
+}
+
+export function startingMarkdown(paper: string): string {
+  return `# ${paper}\n\n正在启动`;
 }
 
 export const MODES = ["fast", "smart"];
