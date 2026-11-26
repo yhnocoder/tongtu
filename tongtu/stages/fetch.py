@@ -51,7 +51,7 @@ def _fetch_remote(paper: PaperInput, paper_workdir: Workdir, meta: PaperMeta | N
     _reset_outputs(paper_workdir)
     if meta is None:
         try:
-            meta = arxiv.query(paper.arxiv_id, paper.version)
+            meta = arxiv.find_meta(paper.arxiv_id, paper.version).meta
         except arxiv.ArxivError as error:
             return FetchManifest(status=FetchStatus.DOWNLOAD_FAILED, message=str(error), **identity)
     write_manifest(paper_workdir.meta, meta)

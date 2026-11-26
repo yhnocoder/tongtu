@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tongtu import config
-from tongtu.config import config_path, glossary_path, home_dir, legacy_dirs_present, papers_dir
+from tongtu.config import arxiv_cache_dir, config_path, glossary_path, home_dir, legacy_dirs_present, papers_dir
 
 
 def test_home_dir_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -32,6 +32,7 @@ def test_files_live_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert config_path() == tmp_path / "home" / "config.toml"
     assert glossary_path() == tmp_path / "home" / "glossary.json"
     assert papers_dir() == tmp_path / "home" / "papers"
+    assert arxiv_cache_dir() == tmp_path / "home" / "cache" / "arxiv"
 
 
 def test_legacy_dirs_present_lists_only_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

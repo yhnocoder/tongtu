@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import textwrap
 import time
 import tomllib
 from collections.abc import Callable, Iterator
@@ -33,13 +34,22 @@ from rich.progress import (
 from rich.table import Column
 from rich.text import Text
 
-from . import __version__, arxiv, validation
+from . import __version__, arxiv, processes, validation
 from .artifacts.common import Manifest
 from .artifacts.compile import CompileManifest
 from .artifacts.fetch import FetchManifest, PaperMeta
 from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
-from .artifacts.status import ABSENT_STATUS, PaperStatus, RunCommand, RunMarker, StageState
+from .artifacts.status import (
+    ABSENT_STATUS,
+    PaperListing,
+    PaperState,
+    PaperStatus,
+    PaperSummary,
+    RunCommand,
+    RunMarker,
+    StageState,
+)
 from .artifacts.translate import TranslateManifest
 from .arxiv import PaperArgumentError, PaperInput, parse_paper_argument
 from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_present, papers_dir
@@ -63,7 +73,7 @@ from .model.work import AGENTRUN_EXECUTABLE, agentrun_executable
 from .pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, translate
-from .workdir import ENCODING, Workdir, WorkdirError, resolve
+from .workdir import ENCODING, Workdir, WorkdirError, normalize_arxiv_id, resolve
 
 EXIT_FAILURE = 1
 
@@ -86,6 +96,18 @@ STATUS_WIDTH = 18
 SUMMARY_WIDTH = 44
 
 OUTPUTS_WIDTH = 9
+
+COLUMN_GAP = 2
+
+RECENT_ACTIONS = 8
+
+STOP_WAIT_SECONDS = 10
+
+STOP_POLL_SECONDS = 0.1
+
+MARKER_CLOCK_SLACK_SECONDS = 2
+
+PS_LSTART_FORMAT = "%a %b %d %H:%M:%S %Y"
 
 XELATEX = "xelatex"
 
@@ -264,9 +286,9 @@ def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: Fetch
     )
 
 
-def _query_latest(arxiv_id: str) -> PaperMeta:
+def _query_latest(arxiv_id: str, refresh: bool) -> PaperMeta:
     try:
-        return arxiv.query(arxiv_id)
+        return arxiv.find_meta(arxiv_id, refresh=refresh).meta
     except arxiv.ArxivError as error:
         error_console.print(f"cannot determine the version of {arxiv_id}: {error}")
         raise typer.Exit(EXIT_FAILURE) from error
@@ -296,7 +318,7 @@ def _paper_workdir(
         else:
             version = None if fetched is None else fetched.version
         if version is None and may_query:
-            meta = _query_latest(paper_input.arxiv_id)
+            meta = _query_latest(paper_input.arxiv_id, latest)
             version = meta.version
         if version is None and workdir is None:
             error_console.print(
@@ -501,6 +523,7 @@ def _running(workdir: Workdir, command: RunCommand, mode: str) -> Iterator[None]
     )
 
     def terminate(signum: int, frame: FrameType | None) -> None:
+        processes.terminate_active()
         _remove_run_marker(workdir)
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
@@ -526,10 +549,31 @@ def _live_marker(workdir: Workdir) -> RunMarker | None:
     try:
         os.kill(marker.pid, 0)
     except PermissionError:
-        return marker
+        pass
     except (ProcessLookupError, OverflowError):
         return None
+    process_started = _process_started_at(marker.pid)
+    if process_started is None:
+        return None
+    if process_started > marker.started_at + timedelta(seconds=MARKER_CLOCK_SLACK_SECONDS):
+        return None
     return marker
+
+
+def _process_started_at(pid: int) -> datetime | None:
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except OSError:
+        return None
+    try:
+        return datetime.strptime(" ".join(completed.stdout.split()), PS_LSTART_FORMAT).astimezone()
+    except ValueError:
+        return None
 
 
 JsonOpt = Annotated[
@@ -541,40 +585,7 @@ JsonOpt = Annotated[
 def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_json: JsonOpt = False) -> None:
     _apply_dev(dev)
     paper_input, paper_workdir, _ = _paper_workdir(paper, workdir)
-    stages = []
-    for name in STAGES:
-        manifest_path = paper_workdir.manifest_path(name)
-        manifest = load_manifest(manifest_path, Manifest)
-        stages.append(
-            StageState(
-                name=name,
-                status=manifest.status if manifest is not None else ABSENT_STATUS,
-                outputs_present=outputs_present(paper_workdir, name),
-                message=manifest.message if manifest is not None else "",
-                warnings=manifest.warnings if manifest is not None else [],
-                manifest=manifest_path if manifest_path.is_file() else None,
-            )
-        )
-    marker = _live_marker(paper_workdir)
-    translate_manifest = load_manifest(paper_workdir.manifest_path(translate.STAGE_NAME), TranslateManifest)
-    if marker is not None:
-        mode = marker.mode
-    else:
-        mode = translate_manifest.mode if translate_manifest is not None else None
-    snapshot = PaperStatus(
-        workdir=paper_workdir.path,
-        arxiv_id=paper_input.arxiv_id,
-        version=paper_input.version,
-        running=marker is not None,
-        pid=marker.pid if marker is not None else None,
-        started_at=marker.started_at if marker is not None else None,
-        mode=mode,
-        stages=stages,
-        pdf=_existing(paper_workdir.zh_pdf),
-        meta=_existing(paper_workdir.meta),
-        glossary=_existing(paper_workdir.paper_glossary),
-        notes=_existing(paper_workdir.notes),
-    )
+    snapshot = _status_snapshot(paper_workdir, paper_input.arxiv_id, paper_input.version)
     if as_json:
         typer.echo(snapshot.model_dump_json(indent=2).encode(ENCODING))
         return
@@ -599,8 +610,253 @@ def status(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False, as_
                 console.print(f"{'':<{NAME_WIDTH}}  {note}")
 
 
+def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int | None) -> PaperStatus:
+    stages = []
+    for name in STAGES:
+        manifest_path = paper_workdir.manifest_path(name)
+        manifest = load_manifest(manifest_path, Manifest)
+        stages.append(
+            StageState(
+                name=name,
+                status=manifest.status if manifest is not None else ABSENT_STATUS,
+                outputs_present=outputs_present(paper_workdir, name),
+                message=manifest.message if manifest is not None else "",
+                warnings=manifest.warnings if manifest is not None else [],
+                manifest=manifest_path if manifest_path.is_file() else None,
+            )
+        )
+    marker = _live_marker(paper_workdir)
+    translate_manifest = load_manifest(paper_workdir.manifest_path(translate.STAGE_NAME), TranslateManifest)
+    if marker is not None:
+        mode = marker.mode
+    else:
+        mode = translate_manifest.mode if translate_manifest is not None else None
+    state, stage_name = _paper_state(stages, marker is not None)
+    compiled = load_manifest(paper_workdir.manifest_path(compile.STAGE_NAME), CompileManifest)
+    session = translate_manifest.session if translate_manifest is not None else None
+    log = SESSION_LOGS.get(stage_name or "")
+    return PaperStatus(
+        workdir=paper_workdir.path,
+        arxiv_id=arxiv_id,
+        version=version,
+        running=marker is not None,
+        pid=marker.pid if marker is not None else None,
+        started_at=marker.started_at if marker is not None else None,
+        mode=mode,
+        state=state,
+        stage=stage_name,
+        stages=stages,
+        pdf=_existing(paper_workdir.zh_pdf),
+        meta=_existing(paper_workdir.meta),
+        glossary=_existing(paper_workdir.paper_glossary),
+        notes=_existing(paper_workdir.notes),
+        pages=compiled.report.pages if compiled is not None and compiled.report is not None else None,
+        source_pages=compiled.baseline.pages if compiled is not None and compiled.baseline is not None else None,
+        translate_seconds=session.duration_seconds if session is not None else None,
+        translate_cost_usd=session.usage.cost_usd if session is not None and session.usage is not None else None,
+        recent_actions=_recent_actions(log(paper_workdir)) if state == PaperState.RUNNING and log else [],
+    )
+
+
+def _paper_state(stages: list[StageState], running: bool) -> tuple[PaperState, str | None]:
+    pending = next((stage for stage in stages if stage.status != "ok"), None)
+    if running:
+        return PaperState.RUNNING, pending.name if pending is not None else None
+    if pending is None:
+        return PaperState.OK, None
+    if pending.status == ABSENT_STATUS:
+        return PaperState.INTERRUPTED, pending.name
+    return PaperState.FAILED, pending.name
+
+
 def _existing(path: Path) -> Path | None:
     return path if path.is_file() else None
+
+
+SESSION_LOGS: dict[str, Callable[[Workdir], Path]] = {
+    "precompile": lambda w: w.precompile_fix_log,
+    "translate": lambda w: w.translate_log,
+    "compile": lambda w: w.compile_fix_log,
+}
+
+
+@app.command("list")
+def list_papers(dev: DevOpt = False, as_json: JsonOpt = False) -> None:
+    _apply_dev(dev)
+    papers = papers_dir()
+    summaries = []
+    for path in papers.iterdir() if papers.is_dir() else ():
+        paper_workdir = Workdir(path)
+        fetched = load_manifest(paper_workdir.manifest_path(fetch.STAGE_NAME), FetchManifest)
+        if path.is_dir() and _listed(paper_workdir, fetched):
+            summaries.append(_paper_summary(paper_workdir, fetched))
+    listing = PaperListing(papers=sorted(summaries, key=lambda summary: summary.updated_at, reverse=True))
+    if as_json:
+        typer.echo(listing.model_dump_json().encode(ENCODING))
+        return
+    rows = [("paper", "state", "stage", "title")] + [
+        (summary.name, summary.state.value, summary.stage or ABSENT_CELL, summary.title or "")
+        for summary in listing.papers
+    ]
+    widths = [max(len(row[column]) for row in rows) + COLUMN_GAP for column in range(3)]
+    for index, (name, state, stage_cell, title) in enumerate(rows):
+        line = f"{name:<{widths[0]}}{state:<{widths[1]}}{stage_cell:<{widths[2]}}{title}".rstrip()
+        console.print(line, style=HEADER_STYLE if index == 0 else None, highlight=False, markup=False)
+
+
+def _listed(paper_workdir: Workdir, fetched: FetchManifest | None) -> bool:
+    if fetched is None:
+        return _live_marker(paper_workdir) is not None
+    if fetched.arxiv_id is None:
+        return True
+    if fetched.version is None:
+        return False
+    try:
+        expected = arxiv.versioned_id(normalize_arxiv_id(fetched.arxiv_id), fetched.version)
+    except WorkdirError:
+        return False
+    return paper_workdir.path.name == expected
+
+
+def _paper_summary(paper_workdir: Workdir, fetched: FetchManifest | None) -> PaperSummary:
+    snapshot = _status_snapshot(
+        paper_workdir,
+        fetched.arxiv_id if fetched is not None else None,
+        fetched.version if fetched is not None else None,
+    )
+    meta = load_manifest(paper_workdir.meta, PaperMeta)
+    directory_time = _modified_at(paper_workdir.path)
+    manifest_times = [_modified_at(stage.manifest) for stage in snapshot.stages if stage.manifest is not None]
+    fetch_manifest = paper_workdir.manifest_path(fetch.STAGE_NAME)
+    return PaperSummary(
+        name=paper_workdir.path.name,
+        workdir=snapshot.workdir,
+        state=snapshot.state,
+        stage=snapshot.stage,
+        arxiv_id=snapshot.arxiv_id,
+        version=snapshot.version,
+        title=meta.title if meta is not None else None,
+        primary_category=meta.primary_category if meta is not None else None,
+        added_at=_modified_at(fetch_manifest) if fetch_manifest.is_file() else directory_time,
+        updated_at=max(manifest_times, default=directory_time),
+        started_at=snapshot.started_at,
+        pdf=snapshot.pdf,
+    )
+
+
+def _modified_at(path: Path) -> datetime:
+    return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+
+
+def _recent_actions(log_path: Path) -> list[str]:
+    try:
+        lines = log_path.read_bytes().splitlines()
+    except OSError:
+        return []
+    summaries = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "tool" and isinstance(event.get("summary"), str):
+            summaries.append(event["summary"])
+    return summaries[-RECENT_ACTIONS:]
+
+
+@app.command()
+def stop(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False) -> None:
+    _apply_dev(dev)
+    _paper_input, paper_workdir, _ = _paper_workdir(paper, workdir)
+    name = paper_workdir.path.name
+    marker = _live_marker(paper_workdir)
+    if marker is None:
+        console.print(f"{name} is not running")
+        return
+    try:
+        os.kill(marker.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        console.print(f"stopped {name}")
+        return
+    except PermissionError:
+        error_console.print(f"{name} (pid {marker.pid}) belongs to another user; cannot send SIGTERM")
+        raise typer.Exit(EXIT_FAILURE) from None
+    deadline = time.monotonic() + STOP_WAIT_SECONDS
+    while _live_marker(paper_workdir) is not None:
+        if time.monotonic() >= deadline:
+            error_console.print(f"{name} (pid {marker.pid}) did not stop within {STOP_WAIT_SECONDS} seconds")
+            raise typer.Exit(EXIT_FAILURE)
+        time.sleep(STOP_POLL_SECONDS)
+    console.print(f"stopped {name}")
+
+
+@app.command()
+def info(
+    paper: Annotated[str, typer.Argument(metavar="PAPER", help="arXiv id or arXiv URL, with or without a version")],
+    as_json: Annotated[
+        bool, typer.Option("--json", help="print the paper info as one JSON object (UTF-8), the format of meta.json")
+    ] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="ask arXiv again instead of reading the cache")] = False,
+    dev: DevOpt = False,
+) -> None:
+    _apply_dev(dev)
+    try:
+        paper_input = parse_paper_argument(paper)
+    except (PaperArgumentError, WorkdirError) as error:
+        raise typer.BadParameter(str(error)) from error
+    if paper_input.arxiv_id is None:
+        raise typer.BadParameter(f"{paper} is a local source directory, which has no arXiv info")
+    try:
+        found = arxiv.find_meta(paper_input.arxiv_id, paper_input.version, refresh=refresh)
+    except arxiv.ArxivError as error:
+        name = _describe_paper(paper_input.arxiv_id, paper_input.version)
+        reason = " ".join(str(error).split())
+        error_console.print(f"cannot get info for {name}: {reason}", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(EXIT_FAILURE) from error
+    if as_json:
+        typer.echo(found.meta.model_dump_json(indent=2).encode(ENCODING))
+        return
+    for line in _info_lines(found, datetime.now(UTC), console.width):
+        console.print(line, markup=False, highlight=False, soft_wrap=True)
+
+
+def _info_lines(found: arxiv.FoundMeta, now: datetime, width: int) -> list[str]:
+    meta = found.meta
+    others = [category for category in meta.categories if category != meta.primary_category]
+    category = f"{meta.primary_category} ({', '.join(others)})" if others else meta.primary_category
+    rows = [
+        ("paper", arxiv.versioned_id(meta.arxiv_id, meta.version)),
+        ("title", meta.title),
+        ("authors", ", ".join(meta.authors)),
+        ("category", category),
+        ("published", meta.published.date().isoformat()),
+        ("updated", meta.updated.date().isoformat()),
+        ("comment", meta.comment),
+        ("journal", meta.journal_ref),
+        ("doi", meta.doi),
+        ("url", meta.abs_url),
+        ("source", _source_text(found, now)),
+    ]
+    present = [(label, value) for label, value in rows if value]
+    label_width = max(len(label) for label, _value in present) + COLUMN_GAP
+    lines = [f"{label:<{label_width}}{value}" for label, value in present]
+    abstract = textwrap.fill(meta.abstract, width=width, initial_indent="  ", subsequent_indent="  ")
+    return [*lines, "", "abstract", abstract]
+
+
+def _source_text(found: arxiv.FoundMeta, now: datetime) -> str:
+    if found.source == arxiv.MetaSource.ARXIV:
+        return "arXiv"
+    if found.source == arxiv.MetaSource.WORKDIR:
+        return "working directory"
+    minutes = int((now - found.fetched_at).total_seconds() // 60)
+    if minutes < 60:
+        age = f"{minutes} minutes"
+    elif minutes < 60 * 24:
+        age = f"{minutes // 60} hours"
+    else:
+        age = f"{minutes // (60 * 24)} days"
+    return f"cache, fetched {age} ago"
 
 
 @app.command()
@@ -898,9 +1154,11 @@ def _loaded_config(loaded: tuple[ModelsConfig | None, str]) -> ModelsConfig:
     return config
 
 
-def _saved(config: ModelsConfig, key: str) -> None:
+def _saved(config: ModelsConfig, *keys: str) -> None:
     write_config(config)
-    console.print(f"{key} = {_display(dict(config_entries(config))[key])}")
+    values = dict(config_entries(config))
+    for key in dict.fromkeys(keys):
+        console.print(f"{key} = {_display(values[key])}")
 
 
 def _menu(lines: list[str], cursor: int) -> Text:
@@ -985,34 +1243,46 @@ def config_menu(ctx: typer.Context, dev: DevOpt = False) -> None:
 
 
 @config_app.command("list")
-def config_list(dev: DevOpt = False) -> None:
+def config_list(dev: DevOpt = False, as_json: JsonOpt = False) -> None:
     _apply_dev(dev)
-    for line in _entry_lines(config_entries(_loaded_config(load_config()))):
+    entries = config_entries(_loaded_config(load_config()))
+    if as_json:
+        values = {key: value.value if isinstance(value, Enum) else value for key, value in entries}
+        typer.echo(json.dumps(values, ensure_ascii=False, indent=2).encode(ENCODING))
+        return
+    for line in _entry_lines(entries):
         console.print(line)
 
 
 @config_app.command("set")
 def config_set(
-    key: Annotated[str, typer.Argument(metavar="KEY", help="dotted key as tongtu config list prints it")],
-    value: Annotated[
-        str,
+    pairs: Annotated[
+        list[str],
         typer.Argument(
-            metavar="VALUE", help="a TOML value, or plain text taken as a string; an empty string clears the field"
+            metavar="KEY VALUE [KEY VALUE ...]",
+            help=(
+                "dotted keys as tongtu config list prints them, each followed by a TOML value, or plain text taken "
+                "as a string; an empty string clears the field"
+            ),
         ),
     ],
     dev: DevOpt = False,
 ) -> None:
     _apply_dev(dev)
+    if len(pairs) % 2:
+        raise typer.BadParameter("expected KEY VALUE pairs; the last key has no value")
     config = _loaded_config(load_config())
-    try:
-        changed = updated_config(config, key, _parse_value(value))
-    except KeyError:
-        error_console.print(f"config key {key} does not exist; run tongtu config list to see the keys")
-        raise typer.Exit(EXIT_USAGE) from None
-    except ValidationError as error:
-        _print_validation_error(error)
-        raise typer.Exit(EXIT_USAGE) from None
-    _saved(changed, key)
+    keys = pairs[::2]
+    for key, value in zip(keys, pairs[1::2], strict=True):
+        try:
+            config = updated_config(config, key, _parse_value(value))
+        except KeyError:
+            error_console.print(f"config key {key} does not exist; run tongtu config list to see the keys")
+            raise typer.Exit(EXIT_USAGE) from None
+        except ValidationError as error:
+            _print_validation_error(error)
+            raise typer.Exit(EXIT_USAGE) from None
+    _saved(config, *keys)
 
 
 @config_app.command("open")

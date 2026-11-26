@@ -16,6 +16,10 @@ GLOSSARY_FILENAME = "glossary.json"
 
 PAPERS_DIRNAME = "papers"
 
+CACHE_DIRNAME = "cache"
+
+ARXIV_CACHE_DIRNAME = "arxiv"
+
 LEGACY_DIRS: tuple[Path, ...] = (Path("~/.config/tongtu"), Path("~/.local/share/tongtu"))
 
 
@@ -37,6 +41,10 @@ def glossary_path(env: Mapping[str, str] | None = None) -> Path:
 
 def papers_dir(env: Mapping[str, str] | None = None) -> Path:
     return home_dir(env) / PAPERS_DIRNAME
+
+
+def arxiv_cache_dir(env: Mapping[str, str] | None = None) -> Path:
+    return home_dir(env) / CACHE_DIRNAME / ARXIV_CACHE_DIRNAME
 
 
 def legacy_dirs_present() -> list[Path]:

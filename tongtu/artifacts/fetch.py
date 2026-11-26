@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 from .common import Manifest
 
@@ -48,3 +48,8 @@ class PaperMeta(BaseModel):
     doi: str | None
     abs_url: str
     pdf_url: str
+
+
+class CachedMeta(BaseModel):
+    fetched_at: AwareDatetime
+    meta: PaperMeta

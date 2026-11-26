@@ -12,6 +12,8 @@ from typing import IO
 
 OUTPUT_EXCERPT_CHARS = 500
 
+_active: set[subprocess.Popen[bytes]] = set()
+
 
 @dataclass(frozen=True)
 class ProcessOutcome:
@@ -45,6 +47,28 @@ def run_in_process_group(
         start_new_session=True,
         env=env,
     )
+    _active.add(process)
+    try:
+        return _wait_for_outcome(process, started, timeout_seconds, input_bytes, on_stdout_line)
+    finally:
+        _active.discard(process)
+
+
+def terminate_active() -> None:
+    for process in list(_active):
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        except OSError:
+            continue
+
+
+def _wait_for_outcome(
+    process: subprocess.Popen[bytes],
+    started: float,
+    timeout_seconds: float | None,
+    input_bytes: bytes | None,
+    on_stdout_line: Callable[[bytes], None] | None,
+) -> ProcessOutcome:
     stdout_parts: list[bytes] = []
     stderr_parts: list[bytes] = []
     if on_stdout_line is None:

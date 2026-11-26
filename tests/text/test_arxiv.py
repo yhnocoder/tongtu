@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 
 from tongtu import arxiv
-from tongtu.workdir import WorkdirError
+from tongtu.artifacts.fetch import CachedMeta, PaperMeta
+from tongtu.manifests import load_manifest, write_manifest
+from tongtu.workdir import Workdir, WorkdirError
 
 LATEST_FEED = """<?xml version='1.0' encoding='UTF-8'?>
 <feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
@@ -121,6 +124,170 @@ def wire_api(monkeypatch: pytest.MonkeyPatch, feed: str, status_code: int = 200)
 
     monkeypatch.setattr(arxiv.httpx, "get", get)
     return urls
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    return tmp_path / "home"
+
+
+def cache_file(home: Path, key: str) -> Path:
+    return home / "cache" / "arxiv" / f"{key}.json"
+
+
+def write_cached(home: Path, key: str, meta: PaperMeta, fetched_at: datetime) -> None:
+    write_manifest(cache_file(home, key), CachedMeta(fetched_at=fetched_at, meta=meta))
+
+
+def adam(version: int = 8, title: str = "Adam") -> PaperMeta:
+    return PaperMeta(
+        arxiv_id="1412.6980",
+        version=version,
+        title=title,
+        authors=["Diederik Kingma", "Jimmy Ba"],
+        abstract="We introduce Adam.",
+        primary_category="cs.LG",
+        categories=["cs.LG"],
+        published=datetime(2014, 12, 22, 13, 54, 29, tzinfo=UTC),
+        updated=datetime(2015, 7, 23, 20, 27, 47, tzinfo=UTC),
+        comment=None,
+        journal_ref=None,
+        doi=None,
+        abs_url=f"https://arxiv.org/abs/1412.6980v{version}",
+        pdf_url=f"https://arxiv.org/pdf/1412.6980v{version}",
+    )
+
+
+def test_find_meta_without_version_asks_arxiv_and_writes_two_cache_entries(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    urls = wire_api(monkeypatch, LATEST_FEED)
+    found = arxiv.find_meta("2106.04426")
+    assert (found.source, found.meta.version) == (arxiv.MetaSource.ARXIV, 3)
+    assert urls == [f"{arxiv.API_URL}?id_list=2106.04426"]
+    for key in ("2106.04426", "2106.04426v3"):
+        cached = load_manifest(cache_file(isolated_home, key), CachedMeta)
+        assert cached is not None
+        assert (cached.meta, cached.fetched_at) == (found.meta, found.fetched_at)
+
+
+def test_find_meta_reads_a_fresh_latest_entry_from_the_cache(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetched_at = datetime.now(UTC) - timedelta(seconds=arxiv.LATEST_CACHE_SECONDS - 60)
+    write_cached(isolated_home, "1412.6980", adam(), fetched_at)
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980")
+    assert (found.source, found.meta, found.fetched_at) == (arxiv.MetaSource.CACHE, adam(), fetched_at)
+    assert urls == []
+
+
+def test_find_meta_asks_arxiv_again_once_the_latest_entry_expires(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetched_at = datetime.now(UTC) - timedelta(seconds=arxiv.LATEST_CACHE_SECONDS + 60)
+    write_cached(isolated_home, "1412.6980", adam(version=7), fetched_at)
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980")
+    assert (found.source, found.meta.version) == (arxiv.MetaSource.ARXIV, 8)
+    assert len(urls) == 1
+    cached = load_manifest(cache_file(isolated_home, "1412.6980"), CachedMeta)
+    assert cached is not None and cached.meta.version == 8
+
+
+def test_find_meta_keeps_a_versioned_entry_without_expiry(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fetched_at = datetime(2020, 1, 1, tzinfo=UTC)
+    write_cached(isolated_home, "1412.6980v8", adam(), fetched_at)
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980", 8)
+    assert (found.source, found.fetched_at) == (arxiv.MetaSource.CACHE, fetched_at)
+    assert urls == []
+
+
+def test_find_meta_with_version_writes_one_cache_entry(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980", 8)
+    assert found.source == arxiv.MetaSource.ARXIV
+    assert sorted(path.name for path in cache_file(isolated_home, "x").parent.iterdir()) == ["1412.6980v8.json"]
+
+
+def test_find_meta_uses_the_normalized_id_as_the_cache_key(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wire_api(monkeypatch, OLD_STYLE_FEED)
+    arxiv.find_meta("hep-th/9901001")
+    assert cache_file(isolated_home, "hep-th_9901001").is_file()
+    assert cache_file(isolated_home, "hep-th_9901001v3").is_file()
+
+
+def test_find_meta_prefers_the_meta_file_of_the_working_directory(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workdir = Workdir(isolated_home / "papers" / "1412.6980v8")
+    write_manifest(workdir.meta, adam(title="from the working directory"))
+    write_cached(isolated_home, "1412.6980v8", adam(title="from the cache"), datetime.now(UTC))
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980", 8)
+    assert (found.source, found.meta.title) == (arxiv.MetaSource.WORKDIR, "from the working directory")
+    assert found.fetched_at == datetime.fromtimestamp(workdir.meta.stat().st_mtime, UTC)
+    assert urls == []
+
+
+def test_find_meta_without_version_ignores_the_working_directory(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_manifest(Workdir(isolated_home / "papers" / "1412.6980v8").meta, adam())
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    assert arxiv.find_meta("1412.6980").source == arxiv.MetaSource.ARXIV
+    assert len(urls) == 1
+
+
+@pytest.mark.parametrize("content", ["{", '{"fetched_at": "2026-01-01T00:00:00Z"}'])
+def test_find_meta_treats_a_broken_cache_file_as_absent(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    path = cache_file(isolated_home, "1412.6980v8")
+    path.parent.mkdir(parents=True)
+    path.write_text(content, encoding="utf-8")
+    wire_api(monkeypatch, VERSIONED_FEED)
+    assert arxiv.find_meta("1412.6980", 8).source == arxiv.MetaSource.ARXIV
+    assert load_manifest(path, CachedMeta) is not None
+
+
+def test_find_meta_treats_a_cache_time_without_a_timezone_as_absent(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = cache_file(isolated_home, "1412.6980")
+    path.parent.mkdir(parents=True)
+    content = {"fetched_at": datetime.now().isoformat(), "meta": adam(version=7).model_dump(mode="json")}
+    path.write_text(json.dumps(content), encoding="utf-8")
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980")
+    assert (found.source, found.meta.version) == (arxiv.MetaSource.ARXIV, 8)
+    assert len(urls) == 1
+    cached = load_manifest(path, CachedMeta)
+    assert cached is not None and cached.fetched_at.tzinfo is not None
+
+
+def test_find_meta_refresh_skips_the_working_directory_and_the_cache(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_manifest(Workdir(isolated_home / "papers" / "1412.6980v8").meta, adam(title="old"))
+    write_cached(isolated_home, "1412.6980v8", adam(title="old"), datetime(2020, 1, 1, tzinfo=UTC))
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980", 8, refresh=True)
+    assert (found.source, found.meta.title) == (arxiv.MetaSource.ARXIV, "Adam: A Method for Stochastic Optimization")
+    assert len(urls) == 1
+    cached = load_manifest(cache_file(isolated_home, "1412.6980v8"), CachedMeta)
+    assert cached is not None and cached.meta == found.meta
+
+
+def test_find_meta_leaves_no_cache_entry_when_arxiv_fails(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_api(monkeypatch, MISSING_FEED)
+    with pytest.raises(arxiv.ArxivError):
+        arxiv.find_meta("2106.99999")
+    assert not cache_file(isolated_home, "2106.99999").exists()
 
 
 def test_split_version_separates_the_suffix() -> None:
