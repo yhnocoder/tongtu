@@ -2204,6 +2204,7 @@ def test_stop_treats_a_vanished_process_as_stopped(tmp_path: Path, monkeypatch: 
     assert result.stdout == "stopped paper\n"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may signal pid 1, so the test would terminate it")
 def test_stop_reports_a_process_of_another_user(tmp_path: Path) -> None:
     workdir = cli.Workdir(tmp_path / "paper")
     write_run_marker(workdir, 1)
