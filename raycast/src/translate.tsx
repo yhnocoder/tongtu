@@ -5,6 +5,7 @@ import {
   Detail,
   Icon,
   LaunchProps,
+  List,
   PopToRootType,
   Toast,
   getFrontmostApplication,
@@ -27,6 +28,7 @@ import {
   paperArgument,
   runMode,
   startMessage,
+  typedPaper,
   workdirName,
 } from "./core";
 import { defaultMode, installed, markOpened, osascript, parseJson, startRun, tongtu } from "./tongtu";
@@ -36,6 +38,7 @@ const BROWSER_TIMEOUT_MILLISECONDS = 2000;
 type Found = { paper: string; source: PaperSource };
 type Screen =
   | { kind: "loading" }
+  | { kind: "input" }
   | { kind: "message"; text: string; failed: boolean }
   | { kind: "confirm"; paper: string; meta: PaperMeta; mode: string | null; shownMode: string };
 
@@ -80,10 +83,7 @@ function failure(error: unknown): Screen {
   return { kind: "message", text: error instanceof Error ? error.message : String(error), failed: true };
 }
 
-async function prepare(paperArgumentText: string, modeArgument: string | undefined): Promise<Screen> {
-  if (!installed()) return { kind: "message", text: NOT_INSTALLED, failed: true };
-  const found = await findPaper(paperArgumentText);
-  if (!found) return { kind: "message", text: "没有找到 arXiv 编号", failed: true };
+async function proceed(found: Found, modeArgument: string | undefined): Promise<Screen> {
   const result = await tongtu(["status", found.paper, "--json"]);
   const status = result.code === 0 ? parseJson<PaperStatus>(result.stdout) : null;
   if (status?.running) return done(`${workdirName(status.workdir)} 正在翻译`);
@@ -101,8 +101,15 @@ async function prepare(paperArgumentText: string, modeArgument: string | undefin
   return { kind: "confirm", paper: found.paper, meta, mode, shownMode };
 }
 
+async function prepare(paperArgumentText: string, modeArgument: string | undefined): Promise<Screen> {
+  if (!installed()) return { kind: "message", text: NOT_INSTALLED, failed: true };
+  const found = await findPaper(paperArgumentText);
+  return found ? proceed(found, modeArgument) : { kind: "input" };
+}
+
 export default function Translate(props: LaunchProps<{ arguments: { paper?: string; mode?: string } }>) {
   const [screen, setScreen] = useState<Screen>({ kind: "loading" });
+  const [typed, setTyped] = useState("");
   const prepared = useRef(false);
   const launched = useRef(false);
 
@@ -125,6 +132,13 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
     }
   }
 
+  function submit(paper: string, mode: string | undefined): void {
+    if (launched.current) return;
+    launched.current = true;
+    setScreen({ kind: "loading" });
+    proceed({ paper, source: "argument" }, mode).then(show, (error) => show(failure(error)));
+  }
+
   useEffect(() => {
     if (prepared.current) return;
     prepared.current = true;
@@ -133,6 +147,28 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
 
   if (screen.kind === "loading") return <Detail isLoading markdown="" />;
   if (screen.kind === "message") return <Detail markdown={screen.text} />;
+  if (screen.kind === "input") {
+    const paper = typedPaper(typed);
+    return (
+      <List filtering={false} onSearchTextChange={setTyped} searchBarPlaceholder="输入 arXiv 编号或链接">
+        {paper === null ? (
+          <List.EmptyView title="没有找到 arXiv 编号" description="在上面输入编号或链接" />
+        ) : (
+          <List.Item
+            title={`翻译 ${paper}`}
+            icon={Icon.Play}
+            actions={
+              <ActionPanel>
+                <Action title="开始翻译" icon={Icon.Play} onAction={() => submit(paper, props.arguments.mode)} />
+                <Action title="用 fast 翻译" icon={Icon.Play} onAction={() => submit(paper, "fast")} />
+                <Action title="用 smart 翻译" icon={Icon.Play} onAction={() => submit(paper, "smart")} />
+              </ActionPanel>
+            }
+          />
+        )}
+      </List>
+    );
+  }
   const { paper, meta, mode, shownMode } = screen;
   return (
     <Detail

@@ -47,6 +47,7 @@ import {
   startMessage,
   stateLabel,
   toolPath,
+  typedPaper,
   unfinishedMarkdown,
   unfinishedRows,
   withOpened,
@@ -75,7 +76,6 @@ function status(state: PaperState, statuses: string[], overrides: Partial<PaperS
       status: statuses[index] ?? "absent",
       outputs_present: statuses[index] === "ok",
       message: "",
-      warnings: [],
       manifest: null,
     })),
     pdf: null,
@@ -195,6 +195,19 @@ test("arxivIdFromUrl requires an arxiv.org host", () => {
 test("paperArgument keeps text that holds no arXiv id", () => {
   assert.equal(paperArgument(" https://arxiv.org/abs/2412.19437v2 "), "2412.19437v2");
   assert.equal(paperArgument("  my draft  "), "my draft");
+});
+
+test("typedPaper accepts an id, a link or a path and nothing else", () => {
+  assert.equal(typedPaper(""), null);
+  assert.equal(typedPaper("   "), null);
+  assert.equal(typedPaper("attention is all you need"), null);
+  assert.equal(typedPaper("1706"), null);
+  assert.equal(typedPaper(" 1706.03762 "), "1706.03762");
+  assert.equal(typedPaper("https://arxiv.org/abs/1706.03762v7"), "1706.03762v7");
+  assert.equal(typedPaper("hep-th/9901001"), "hep-th/9901001");
+  assert.equal(typedPaper(" ~/papers/draft "), "~/papers/draft");
+  assert.equal(typedPaper("/papers/1706.03762/src"), "/papers/1706.03762/src");
+  assert.equal(typedPaper("./draft"), "./draft");
 });
 
 test("paperArgument takes a path as it is", () => {
@@ -429,7 +442,6 @@ test("completedRows leaves out what is not available", () => {
     translate_cost_usd: 1.234,
   });
   complete.summary.added_at = added;
-  complete.status.stages[1].warnings = ["one", "two"];
   assert.deepEqual(completedRows(complete), [
     { title: "arXiv", text: "2611.15404v1", link: "https://arxiv.org/abs/2611.15404v1" },
     { title: "作者", text: "Ada Lovelace, Alan Turing" },
@@ -438,14 +450,10 @@ test("completedRows leaves out what is not available", () => {
     { title: "页数", text: "中文 23 页，原文 21 页" },
     { title: "模式", text: "smart" },
     { title: "翻译耗时与费用", text: "12 分 34 秒 · $1.23" },
-    { title: "提醒", text: "2 条" },
   ]);
   const local = detail("ok", ALL_OK, { arxiv_id: null, version: null }, null);
   local.summary.added_at = added;
-  assert.deepEqual(completedRows(local), [
-    { title: "加入日期", text: "2026-11-25" },
-    { title: "提醒", text: "无" },
-  ]);
+  assert.deepEqual(completedRows(local), [{ title: "加入日期", text: "2026-11-25" }]);
 });
 
 test("running detail marks the current stage and keeps the time in the metadata", () => {

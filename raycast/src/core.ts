@@ -11,7 +11,6 @@ export type StageState = {
   status: string;
   outputs_present: boolean;
   message: string;
-  warnings: string[];
   manifest: string | null;
 };
 
@@ -134,6 +133,11 @@ export function arxivIdFromUrl(url: string): string | null {
 export function paperArgument(text: string): string {
   const trimmed = text.trim();
   return PATH_ARGUMENT.test(trimmed) ? trimmed : (arxivId(trimmed) ?? trimmed);
+}
+
+export function typedPaper(text: string): string | null {
+  const trimmed = text.trim();
+  return PATH_ARGUMENT.test(trimmed) ? trimmed : arxivId(trimmed);
 }
 
 export function browserUrlScript(application: string): string | null {
@@ -424,8 +428,6 @@ export function completedRows(detail: PaperDetail): Row[] {
     status.translate_cost_usd === null ? "" : `$${status.translate_cost_usd.toFixed(2)}`,
   ].filter((part) => part !== "");
   if (effort.length > 0) rows.push({ title: "翻译耗时与费用", text: effort.join(" · ") });
-  const warnings = status.stages.reduce((count, stage) => count + stage.warnings.length, 0);
-  rows.push({ title: "提醒", text: warnings === 0 ? "无" : `${warnings} 条` });
   return rows;
 }
 
