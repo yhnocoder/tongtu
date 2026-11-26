@@ -623,9 +623,12 @@ def doctor(dev: DevOpt = False) -> None:
     _apply_dev(dev)
     config, config_detail = load_config()
     environment = [_tex_group(), _fonts_group(config)]
-    sessions = [_config_group(config, config_detail), _agentrun_group()]
-    agentrun = sessions[-1].items[0]
-    sessions.append(_modes_group(config, agentrun.detail if agentrun.mark is DoctorMark.OK else None))
+    executable, agentrun_detail = agentrun_executable()
+    sessions = [
+        _config_group(config, config_detail),
+        _agentrun_group(executable, agentrun_detail),
+        _modes_group(config, executable),
+    ]
     groups = environment + sessions
     width = max(len(item.name) for group in groups for item in group.items)
     for group in groups:
@@ -797,8 +800,7 @@ def _config_group(config: ModelsConfig | None, detail: str) -> DoctorGroup:
     return DoctorGroup("config", [DoctorItem(CONFIG_CHECK_NAME, DoctorMark.OK, shown)])
 
 
-def _agentrun_group() -> DoctorGroup:
-    executable, detail = agentrun_executable()
+def _agentrun_group(executable: str | None, detail: str) -> DoctorGroup:
     if executable is None:
         return DoctorGroup("agentrun", [DoctorItem(AGENTRUN_EXECUTABLE, DoctorMark.FAILED, "", (detail,))])
     shown = detail if detail != executable else _home_relative(executable)

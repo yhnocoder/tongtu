@@ -189,6 +189,18 @@ def test_doctor_checks_the_configured_font_files(tmp_path: Path, monkeypatch: py
     assert "environmentincomplete:fontsmain" in output
 
 
+def test_doctor_runs_agentrun_from_its_full_path_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    written_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agentrun = f"{tmp_path}/.cargo/bin/agentrun"
+    monkeypatch.setattr(shutil, "which", lambda name: agentrun if name == "agentrun" else f"/usr/bin/{name}")
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+    assert "✓agentrun~/.cargo/bin/agentrun" in squeeze(result.stdout)
+    assert {command[0] for command in calls if command[1:2] == ["doctor"]} == {agentrun}
+
+
 def test_doctor_writes_paths_under_home_with_a_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     assert cli._home_relative(str(tmp_path / ".tongtu" / "config.toml")) == "~/.tongtu/config.toml"
