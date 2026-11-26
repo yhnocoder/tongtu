@@ -158,6 +158,18 @@ test("arxivId rejects digits and options that only look like ids", () => {
   assert.equal(arxivId("hep-th/99010012"), null);
 });
 
+test("arxivId needs a new-style id to start after a separator", () => {
+  assert.equal(arxivId("IMG_2024.12345.jpg"), null);
+  assert.equal(arxivId("v2024.12345"), null);
+  assert.equal(arxivId("1.2024.12345"), null);
+  assert.equal(arxivId("arXiv:2611.15404"), "2611.15404");
+  assert.equal(arxivId("abs/2611.15404v1"), "2611.15404v1");
+  assert.equal(arxivId("2611.15404"), "2611.15404");
+  assert.equal(arxivId("read\t2611.15404 today"), "2611.15404");
+  assert.equal(arxivId("line one\n2611.15404"), "2611.15404");
+  assert.equal(arxivId("IMG_2024.12345.jpg hep-th/9901001"), "hep-th/9901001");
+});
+
 test("arxivIdFromUrl requires an arxiv.org host", () => {
   assert.equal(arxivIdFromUrl("https://arxiv.org/abs/2412.19437v2"), "2412.19437v2");
   assert.equal(arxivIdFromUrl("https://www.arxiv.org/pdf/2412.19437"), "2412.19437");

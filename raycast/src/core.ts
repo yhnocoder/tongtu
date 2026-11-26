@@ -4,6 +4,7 @@ export const DEFAULT_RECENT_DAYS = 7;
 export const ACTIVE_REFRESH_SECONDS = 5;
 export const IDLE_REFRESH_SECONDS = 60;
 export const DETAIL_REFRESH_SECONDS = 2;
+export const START_REFRESH_DELAY_SECONDS = 2;
 
 export type StageState = {
   name: string;
@@ -74,7 +75,7 @@ export type FormValues = Record<string, string | boolean>;
 export type Row = { title: string; text: string; link?: string };
 export type Section = { title: string; papers: PaperSummary[] };
 
-const NEW_ARXIV_ID = /(?<!\d)\d{4}\.\d{4,5}(v\d+)?(?!\d|\.\d)/;
+const NEW_ARXIV_ID = /(?<![\w.])\d{4}\.\d{4,5}(v\d+)?(?!\d|\.\d)/;
 const OLD_ARXIV_ID = /(?<![A-Za-z-])[a-z][a-z-]*(\.[A-Z]{2})?\/\d{7}(v\d+)?(?!\d)/;
 const PATH_ARGUMENT = /^[/~.]/;
 const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i;

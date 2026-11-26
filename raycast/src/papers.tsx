@@ -32,6 +32,7 @@ import {
   RUN_TITLES,
   Row,
   RunAction,
+  START_REFRESH_DELAY_SECONDS,
   arxivUrl,
   categories,
   completedMarkdown,
@@ -175,6 +176,7 @@ async function run(paper: PaperSummary, action: RunAction, reload: () => Promise
   if (redo) await setOpened((opened) => withoutOpened(opened, paper.name));
   startRun(paper.name, options, paper.workdir);
   await reload();
+  setTimeout(reload, START_REFRESH_DELAY_SECONDS * 1000);
   await showHUD(runMessage(action, paper.name));
 }
 
