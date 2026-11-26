@@ -850,11 +850,13 @@ def _with_translated_abstract(found: arxiv.FoundMeta) -> arxiv.FoundMeta:
     config, reason = load_config()
     if config is not None:
         try:
-            return arxiv.save_abstract_zh(found, chat.translate_abstract(config.abstract, found.meta.abstract))
+            abstract_zh = chat.translate_abstract(config.abstract, found.meta.abstract)
         except chat.ChatError as error:
             reason = str(error)
         except Exception as error:  # why(#191): 摘要翻译出任何异常时论文信息仍要输出，原因只写类型名，避免带出密钥
             reason = f"unexpected {type(error).__name__}"
+        else:
+            return arxiv.save_abstract_zh(found, abstract_zh)
     name = arxiv.versioned_id(found.meta.arxiv_id, found.meta.version)
     error_console.print(
         f"cannot translate the abstract of {name}: {' '.join(reason.split())}",
@@ -1265,7 +1267,18 @@ def _edit_text(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
         return changed
 
 
+def _edit_secret(config: ModelsConfig, key: str) -> ModelsConfig:
+    text = typer.prompt(key, default="", show_default=False, hide_input=True)
+    if not text.strip():
+        return config
+    changed = updated_config(config, key, _parse_value(key, text))
+    _saved(changed, key)
+    return changed
+
+
 def _edit_entry(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
+    if key in SECRET_KEYS:
+        return _edit_secret(config, key)
     if isinstance(value, bool):
         return _edit_choice(config, key, value, [True, False])
     if isinstance(value, StrEnum):
@@ -1312,7 +1325,8 @@ def config_set(
             metavar="KEY VALUE [KEY VALUE ...]",
             help=(
                 "dotted keys as tongtu config list prints them, each followed by a TOML value, or plain text taken "
-                "as a string; an empty string clears the field; abstract.api_key always takes the text as it is"
+                "as a string; an empty string clears the field; abstract.api_key always takes the text as it is, "
+                "without surrounding whitespace"
             ),
         ),
     ],

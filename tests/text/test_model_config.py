@@ -405,3 +405,11 @@ def test_an_invalid_field_is_reported_without_its_value(tmp_path: Path, monkeypa
 def test_the_api_key_is_read_without_surrounding_whitespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = loaded(tmp_path, monkeypatch, '[abstract]\napi_key = "  sk-FAKE-SECRET-1\\n"\n')
     assert config.abstract.api_key == "sk-FAKE-SECRET-1"
+
+
+def test_load_config_reports_a_file_that_is_not_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_bytes(b'[abstract]\napi_key = "sk-FAKE-SECRET-1\xff"\n')
+    config, detail = load_config()
+    assert config is None
+    assert detail == f"cannot read config file {tmp_path / 'config.toml'} (UnicodeDecodeError)."

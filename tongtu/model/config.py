@@ -160,6 +160,8 @@ def load_config() -> tuple[ModelsConfig | None, str]:
         return ModelsConfig(), ""
     except OSError as error:
         return None, f"cannot read config file {path} ({type(error).__name__}: {error})."
+    except UnicodeDecodeError as error:
+        return None, f"cannot read config file {path} ({type(error).__name__})."
     except tomllib.TOMLDecodeError as error:
         return None, f"config file {path} is not valid TOML ({error})."
     try:

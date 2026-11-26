@@ -144,7 +144,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
     <li>agentrun 由通途自动安装。doctor 检查运行时之前，以及每次启动 agent 会话之前，通途先在 <code>PATH</code> 里找 <code>agentrun</code>，再找 <code>~/.local/bin/agentrun</code>，找到就使用，不比较版本。都没有时，从 agentrun 的 GitHub release 下载 1.0.1 版本里与当前系统、架构对应的可执行文件，保存为 <code>~/.local/bin/agentrun</code>。下载失败或没有对应的文件时，会话以 error 结束，doctor 把 agentrun 记为缺失并退出 3。</li>
     <li><code>config</code> 查看和修改 <code>$TONGTU_HOME/config.toml</code>，有四种用法：
       <ul>
-        <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。标准输入不是终端时退出 2。</li>
+        <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。<code>abstract.api_key</code> 例外：提示里不显示旧值，输入不回显，直接回车或只输入空白表示不改；选单不能清除密钥，清除用 <code>tongtu config set abstract.api_key ''</code>。标准输入不是终端时退出 2。</li>
         <li><code>tongtu config list</code> 每行列出一个配置项及其当前值。配置文件不存在时列出默认值，不写文件。<code>--json</code> 改为输出一个 JSON 对象，格式见<a href="#config-json">tongtu config list --json</a>。</li>
         <li><code>tongtu config set KEY VALUE [KEY VALUE ...]</code> 修改一项或多项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。<code>abstract.api_key</code> 的值不经过 TOML 解析，一律按原文当作字符串，空字符串清除密钥。各组按顺序应用到同一份配置上，全部通过后写一次文件，每个改动的键输出一行「键 = 新值」。参数个数为 0 或奇数、任何一组的键不存在或值不合法时退出 2，不写文件。</li>
         <li><code>tongtu config open</code> 输出配置文件的路径并打开它。环境变量 <code>EDITOR</code> 非空时用它打开，否则用系统默认的程序。</li>
@@ -246,7 +246,7 @@ base_url = "https://api.deepseek.com"
 model    = "deepseek-flash"
 api_key  = ""</code></pre>
   <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 3600 秒。配置里出现未知字段时，加载配置报错。文件可以不存在，这时使用本节列出的值；文件里没写的字段也取本节的值。文件由 <code>tongtu config</code> 写出和修改。</p>
-  <p><code>[abstract]</code> 是摘要翻译用的聊天接口，见<a href="#abstract-chat">摘要翻译</a>。<code>api_key</code> 为空表示不翻译摘要。<code>tongtu config</code> 的选单、<code>config list</code>（含 <code>--json</code>）以及 <code>config set</code> 输出的「键 = 新值」里，<code>abstract.api_key</code> 不为空时一律显示成固定的掩码 <code>********</code>，不输出原值，因为这些输出会出现在终端与启动器插件里；<code>config set abstract.api_key &lt;值&gt;</code> 照常写入原值，<code>config set abstract.api_key ''</code> 清除它。读入的密钥去掉首尾空白。配置文件的字段校验失败时，错误只写「带点的位置: 说明」，不写字段的值，因为写错的表名或类型会让密钥出现在校验错误里。</p>
+  <p><code>[abstract]</code> 是摘要翻译用的聊天接口，见<a href="#abstract-chat">摘要翻译</a>。<code>api_key</code> 为空表示不翻译摘要。<code>tongtu config</code> 的选单、<code>config list</code>（含 <code>--json</code>）以及 <code>config set</code> 输出的「键 = 新值」里，<code>abstract.api_key</code> 不为空时一律显示成固定的掩码 <code>********</code>，不输出原值，因为这些输出会出现在终端与启动器插件里，选单里输入密钥时也不回显；<code>config set abstract.api_key &lt;值&gt;</code> 照常写入原值，<code>config set abstract.api_key ''</code> 清除它。读入的密钥去掉首尾空白。配置文件的字段校验失败时，错误只写「带点的位置: 说明」，不写字段的值，因为写错的表名或类型会让密钥出现在校验错误里。</p>
 
   <h3>manifest</h3>
   <p>每个阶段结束时写 <code>build/manifests/&lt;阶段&gt;.json</code>。各阶段的 manifest 继承同一个基类，<code>status</code> 在 JSON 里排第一。<code>run</code> 与 <code>status</code> 只读 manifest 判断一个阶段是否完成。</p>

@@ -2727,18 +2727,6 @@ def test_config_set_takes_the_key_as_text(
     assert loaded_config().abstract.api_key == stored
 
 
-def test_config_menu_shows_the_key_masked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_with_key(tmp_path, monkeypatch)
-    before = path.read_text(encoding="utf-8")
-    queue = menu_keys(monkeypatch, [UP, UP, ENTER, DOWN, ENTER])
-    result = runner.invoke(app, ["config"], input="\n")
-    assert result.exit_code == 0, result.output
-    assert queue == []
-    assert SECRET_MASK in result.output
-    assert API_KEY not in result.output
-    assert path.read_text(encoding="utf-8") == before
-
-
 def fake_translation(monkeypatch: pytest.MonkeyPatch, reply: str | chat.ChatError) -> list[str]:
     calls: list[str] = []
 
@@ -2993,3 +2981,65 @@ def test_workdir_of_an_old_style_id_rejects_another_paper(tmp_path: Path) -> Non
     )
     assert result.exit_code == 2
     assert result.stdout == ""
+
+
+def test_info_zh_with_a_config_that_is_not_utf8_still_prints_the_info(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    home.mkdir(parents=True)
+    (home / "config.toml").write_bytes(f'[abstract]\napi_key = "{FAKE_KEY}\xff"\n'.encode("latin-1"))
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存"), STARTED_AT)
+    calls = fake_translation(monkeypatch, "译文")
+    result = runner.invoke(app, ["info", "2412.19437v2", "--zh"])
+    assert result.exit_code == 0
+    assert info_rows(result.stdout)["title"] == "缓存"
+    assert "(UnicodeDecodeError)." in " ".join(result.stderr.split())
+    assert FAKE_KEY not in result.output
+    assert calls == []
+    result = runner.invoke(app, ["config", "list"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert FAKE_KEY not in result.output
+
+
+def test_info_zh_does_not_report_a_failed_save_as_a_failed_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    write_config(ModelsConfig(abstract=AbstractConfig(api_key=FAKE_KEY)))
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存"), STARTED_AT)
+    fake_translation(monkeypatch, "译文")
+
+    def refuse(found: arxiv.FoundMeta, abstract_zh: str) -> arxiv.FoundMeta:
+        raise PermissionError("cache is read-only")
+
+    monkeypatch.setattr(cli.arxiv, "save_abstract_zh", refuse)
+    result = runner.invoke(app, ["info", "2412.19437v2", "--zh"])
+    assert isinstance(result.exception, PermissionError)
+    assert "cannot translate the abstract" not in result.output
+
+
+@pytest.mark.parametrize("typed", ["\n", "   \n"])
+def test_config_menu_keeps_the_key_on_an_empty_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, typed: str
+) -> None:
+    path = config_with_key(tmp_path, monkeypatch)
+    before = path.read_text(encoding="utf-8")
+    queue = menu_keys(monkeypatch, [UP, UP, ENTER, DOWN, ENTER])
+    result = runner.invoke(app, ["config"], input=typed)
+    assert result.exit_code == 0, result.output
+    assert queue == []
+    assert API_KEY not in result.output
+    assert SECRET_MASK not in result.output
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_config_menu_takes_a_new_key_without_echoing_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_with_key(tmp_path, monkeypatch)
+    queue = menu_keys(monkeypatch, [UP, UP, ENTER, DOWN, ENTER])
+    result = runner.invoke(app, ["config"], input=f" {FAKE_KEY} \n")
+    assert result.exit_code == 0, result.output
+    assert queue == []
+    assert loaded_config().abstract.api_key == FAKE_KEY
+    assert FAKE_KEY not in result.output
+    assert f"abstract.api_key = {SECRET_MASK}" in result.stdout
