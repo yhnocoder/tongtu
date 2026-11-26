@@ -1,4 +1,4 @@
-import { Action, ActionPanel, Alert, Detail, Form, Icon, LocalStorage, Toast, confirmAlert, showToast, trash } from "@raycast/api";
+import { Action, ActionPanel, Alert, Detail, Form, Icon, LocalStorage, Toast, confirmAlert, popToRoot, showToast, trash } from "@raycast/api";
 import fs from "node:fs";
 import { useEffect, useState } from "react";
 import {
@@ -139,6 +139,7 @@ export default function Settings() {
       actions={
         <ActionPanel>
           <Action.SubmitForm title="保存" icon={Icon.Check} onSubmit={save} />
+          <Action title="关闭" icon={Icon.XMarkCircle} onAction={() => popToRoot()} />
           {apiKeySet(loaded.config) && <Action title="清除摘要翻译的密钥" icon={Icon.Key} style={Action.Style.Destructive} onAction={clearApiKey} />}
           <Action title="打开 config.toml" icon={Icon.Document} onAction={openConfig} />
           <Action title="恢复默认值" icon={Icon.Trash} style={Action.Style.Destructive} onAction={reset} />
