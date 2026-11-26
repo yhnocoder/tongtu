@@ -102,6 +102,10 @@ STOP_WAIT_SECONDS = 10
 
 STOP_POLL_SECONDS = 0.1
 
+MARKER_CLOCK_SLACK_SECONDS = 2
+
+PS_LSTART_FORMAT = "%a %b %d %H:%M:%S %Y"
+
 XELATEX = "xelatex"
 
 TOOLCHAIN_CHECKS: tuple[tuple[str, str], ...] = (
@@ -548,10 +552,31 @@ def _live_marker(workdir: Workdir) -> RunMarker | None:
     try:
         os.kill(marker.pid, 0)
     except PermissionError:
-        return marker
+        pass
     except (ProcessLookupError, OverflowError):
         return None
+    process_started = _process_started_at(marker.pid)
+    if process_started is None:
+        return None
+    if process_started > marker.started_at + timedelta(seconds=MARKER_CLOCK_SLACK_SECONDS):
+        return None
     return marker
+
+
+def _process_started_at(pid: int) -> datetime | None:
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except OSError:
+        return None
+    try:
+        return datetime.strptime(" ".join(completed.stdout.split()), PS_LSTART_FORMAT).astimezone()
+    except ValueError:
+        return None
 
 
 JsonOpt = Annotated[
@@ -754,6 +779,9 @@ def stop(paper: PaperArg, workdir: WorkdirOpt = None, dev: DevOpt = False) -> No
     except ProcessLookupError:
         console.print(f"stopped {name}")
         return
+    except PermissionError:
+        error_console.print(f"{name} (pid {marker.pid}) belongs to another user; cannot send SIGTERM")
+        raise typer.Exit(EXIT_FAILURE) from None
     deadline = time.monotonic() + STOP_WAIT_SECONDS
     while _live_marker(paper_workdir) is not None:
         if time.monotonic() >= deadline:

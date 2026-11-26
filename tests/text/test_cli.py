@@ -9,7 +9,7 @@ import stat
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -1077,13 +1077,59 @@ def test_status_json_treats_a_killed_run_as_not_running(tmp_path: Path) -> None:
     assert (snapshot.running, snapshot.pid) == (False, None)
 
 
-STARTED_AT = datetime(2026, 11, 25, 8, 30, tzinfo=UTC)
+STARTED_AT = datetime.now(UTC).replace(microsecond=0)
 
 
-def write_run_marker(workdir: cli.Workdir, pid: int) -> None:
+def write_run_marker(workdir: cli.Workdir, pid: int, started_at: datetime = STARTED_AT) -> None:
     workdir.path.mkdir(parents=True, exist_ok=True)
-    marker = RunMarker(pid=pid, started_at=STARTED_AT, command=RunCommand.STAGE, mode="fast")
+    marker = RunMarker(pid=pid, started_at=started_at, command=RunCommand.STAGE, mode="fast")
     workdir.run_marker.write_text(marker.model_dump_json(), encoding="utf-8")
+
+
+def start_sleeper() -> subprocess.Popen[bytes]:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"], stdout=subprocess.PIPE
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline() == b"ready\n"
+    return child
+
+
+def test_a_run_marker_older_than_its_process_is_not_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    workdir = write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"precompile": "ok"})
+    child = start_sleeper()
+    try:
+        write_run_marker(workdir, child.pid, datetime.now(UTC) - timedelta(hours=1))
+        assert status_json("1412.6980v8").running is False
+        entry = entries_by_name(list_json())["1412.6980v8"]
+        assert (entry.state, entry.status.running) == (PaperState.INTERRUPTED, False)
+        result = runner.invoke(app, ["stop", "1412.6980v8"])
+        assert result.exit_code == 0
+        assert result.stdout == "1412.6980v8 is not running\n"
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_a_run_marker_within_the_clock_slack_is_live(tmp_path: Path) -> None:
+    child = start_sleeper()
+    try:
+        workdir = cli.Workdir(tmp_path / "paper")
+        slack = timedelta(seconds=cli.MARKER_CLOCK_SLACK_SECONDS - 1)
+        write_run_marker(workdir, child.pid, datetime.now(UTC).replace(microsecond=0) - slack)
+        assert status_json("2002.05202", "--workdir", str(workdir.path)).pid == child.pid
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_a_run_marker_without_a_process_start_time_is_not_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    write_run_marker(workdir, os.getpid())
+    monkeypatch.setattr(subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", ""))
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).running is False
 
 
 def test_status_json_reports_the_live_pid_of_the_run_marker(tmp_path: Path) -> None:
@@ -2133,7 +2179,7 @@ def test_stop_gives_up_on_a_process_that_ignores_sigterm(tmp_path: Path, monkeyp
         assert child.stdout is not None
         assert child.stdout.readline() == b"ready\n"
         workdir = cli.Workdir(tmp_path / "paper")
-        write_run_marker(workdir, child.pid)
+        write_run_marker(workdir, child.pid, datetime.now(UTC))
         result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
         assert result.exit_code == cli.EXIT_FAILURE
         assert child.poll() is None
@@ -2156,6 +2202,72 @@ def test_stop_treats_a_vanished_process_as_stopped(tmp_path: Path, monkeypatch: 
     result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert result.stdout == "stopped paper\n"
+
+
+def test_stop_reports_a_process_of_another_user(tmp_path: Path) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    write_run_marker(workdir, 1)
+    result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert result.stdout == ""
+    assert result.stderr.startswith("paper (pid 1) ")
+    assert len(result.stderr.splitlines()) == 1
+    assert workdir.run_marker.exists()
+
+
+GROUP_RUN = """
+import sys
+
+from tongtu import cli, processes
+from tongtu.artifacts.common import Manifest
+
+GRANDCHILD = "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)"
+
+
+def entry(options, display):
+    processes.run_in_process_group([sys.executable, "-c", GRANDCHILD, sys.argv[2]], options.workdir.path, 60.0)
+    return Manifest(status="ok", warnings=[])
+
+
+for name in list(cli.STAGE_ENTRIES):
+    cli.STAGE_ENTRIES[name] = entry
+cli.app(["run", "2002.05202v1", "--workdir", sys.argv[1]])
+"""
+
+
+def process_gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def test_stop_ends_the_process_group_of_the_running_stage(tmp_path: Path) -> None:
+    workdir = cli.Workdir(tmp_path / "paper")
+    pid_file = tmp_path / "grandchild.pid"
+    child = subprocess.Popen(
+        [sys.executable, "-c", GROUP_RUN, str(workdir.path), str(pid_file)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "TONGTU_HOME": str(tmp_path / "home")},
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not (pid_file.is_file() and pid_file.read_text(encoding="utf-8")):
+            assert child.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        grandchild = int(pid_file.read_text(encoding="utf-8"))
+        result = runner.invoke(app, ["stop", "2002.05202", "--workdir", str(workdir.path)])
+        assert result.exit_code == 0
+        assert child.wait(timeout=60) == -signal.SIGTERM
+        deadline = time.monotonic() + 10
+        while not process_gone(grandchild):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+    finally:
+        child.kill()
+        child.wait()
 
 
 def test_config_list_json_gives_every_key_in_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
