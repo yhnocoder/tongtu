@@ -22,9 +22,7 @@ import {
   DETAIL_REFRESH_SECONDS,
   FILTER_ALL,
   FILTER_UNREAD,
-  GlossaryFile,
   NOT_INSTALLED,
-  NotesFile,
   PaperDetail,
   PaperMeta,
   PaperStatus,
@@ -302,15 +300,14 @@ function PaperActions({ paper, reload, toggleView }: ActionsProps) {
   );
 }
 
+function shownThumbnail(name: string, pdf: string | null): string | null {
+  return thumbnail(name, pdf, () => publish({}));
+}
+
 function detailMarkdown(detail: PaperDetail): string {
   if (detail.status.state === "running") return runningMarkdown(detail);
   if (detail.status.state !== "ok") return unfinishedMarkdown(detail);
-  return completedMarkdown(
-    detail,
-    thumbnail(detail.summary.name, detail.status.pdf),
-    readJson<NotesFile>(detail.status.notes),
-    readJson<GlossaryFile>(detail.status.glossary),
-  );
+  return completedMarkdown(detail, shownThumbnail(detail.summary.name, detail.status.pdf));
 }
 
 function detailRows(detail: PaperDetail, now: number): Row[] {
@@ -446,7 +443,7 @@ export default function Papers() {
             {section.papers.map((paper) => (
               <Grid.Item
                 key={paper.name}
-                content={thumbnail(paper.name, paper.pdf) ?? "placeholder.png"}
+                content={shownThumbnail(paper.name, paper.pdf) ?? "placeholder.png"}
                 title={paperTitle(paper)}
                 subtitle={stateLabel(paper, now)}
                 keywords={[paper.name]}

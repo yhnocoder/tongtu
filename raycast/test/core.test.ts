@@ -413,21 +413,14 @@ test("arxivUrl carries the version and is empty for local papers", () => {
   assert.equal(arxivUrl(paper("local", "ok", { arxiv_id: null, version: null })), null);
 });
 
-test("completedMarkdown shows only the sections whose files exist", () => {
-  const complete = detail("ok", ALL_OK);
-  assert.equal(completedMarkdown(complete, null, null, null), "# Full Title\n\nAn abstract.");
-  const full = completedMarkdown(
-    complete,
-    "/cache dir/2611.15404v1.png",
-    { notes: [{ where: "main.tex:12", problem: "macro\nundefined", resolution: "kept the original" }] },
-    { terms: [{ word: "trust region", translation: "信赖域" }, { word: "a|b", translation: "甲" }] },
+test("completedMarkdown shows the title, the thumbnail and the abstract", () => {
+  const complete = detail("ok", ALL_OK, { notes: "/out/notes.json", glossary: "/out/glossary.json" });
+  assert.equal(completedMarkdown(complete, null), "# Full Title\n\nAn abstract.");
+  assert.equal(
+    completedMarkdown(complete, "/cache dir/2611.15404v1.png"),
+    "# Full Title\n\n![](file:///cache%20dir/2611.15404v1.png)\n\nAn abstract.",
   );
-  assert.ok(full.includes("![](file:///cache%20dir/2611.15404v1.png)"));
-  assert.ok(full.includes("## 译者备注 · 1 条"));
-  assert.ok(full.includes("**main.tex:12**\n\n问题：macro undefined\n\n处理：kept the original"));
-  assert.ok(full.includes("## 本篇术语 · 2 条"));
-  assert.ok(full.includes("| 原词 | 译法 |\n|---|---|\n| trust region | 信赖域 |\n| a\\|b | 甲 |"));
-  assert.equal(completedMarkdown(detail("ok", ALL_OK, {}, null), null, null, null), "# Title of 2611.15404v1");
+  assert.equal(completedMarkdown(detail("ok", ALL_OK, {}, null), null), "# Title of 2611.15404v1");
 });
 
 test("completedRows leaves out what is not available", () => {

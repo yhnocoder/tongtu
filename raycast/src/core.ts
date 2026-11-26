@@ -66,9 +66,6 @@ export type PaperSummary = {
 
 export type PaperDetail = { summary: PaperSummary; status: PaperStatus; meta: PaperMeta | null };
 export type PaperSource = "argument" | "browser" | "clipboard";
-export type Note = { where: string; problem: string; resolution: string };
-export type NotesFile = { notes: Note[] };
-export type GlossaryFile = { terms: { word: string; translation: string }[] };
 export type ConfigValue = string | number | boolean | null;
 export type Config = Record<string, ConfigValue>;
 export type FormValues = Record<string, string | boolean>;
@@ -363,27 +360,10 @@ function stageLine(status: PaperStatus): string {
   }).join(" → ");
 }
 
-export function completedMarkdown(
-  detail: PaperDetail,
-  thumbnail: string | null,
-  notes: NotesFile | null,
-  glossary: GlossaryFile | null,
-): string {
+export function completedMarkdown(detail: PaperDetail, thumbnail: string | null): string {
   const parts = [`# ${detailTitle(detail)}`];
   if (thumbnail) parts.push(`![](file://${encodeURI(thumbnail)})`);
   if (detail.meta?.abstract) parts.push(detail.meta.abstract);
-  if (notes) {
-    parts.push(`## 译者备注 · ${notes.notes.length} 条`);
-    for (const note of notes.notes) {
-      parts.push(`**${oneLine(note.where)}**\n\n问题：${oneLine(note.problem)}\n\n处理：${oneLine(note.resolution)}`);
-    }
-  }
-  if (glossary) {
-    const cell = (text: string) => oneLine(text).replace(/\|/g, "\\|");
-    const rows = glossary.terms.map((term) => `| ${cell(term.word)} | ${cell(term.translation)} |`);
-    parts.push(`## 本篇术语 · ${glossary.terms.length} 条`);
-    if (rows.length > 0) parts.push(["| 原词 | 译法 |", "|---|---|", ...rows].join("\n"));
-  }
   return parts.join("\n\n");
 }
 

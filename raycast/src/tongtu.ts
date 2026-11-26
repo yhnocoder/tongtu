@@ -134,13 +134,14 @@ function thumbnailFile(name: string): string {
 }
 
 const rendering = new Set<string>();
+const failedPdfTimes = new Map<string, number>();
 
-export function thumbnail(name: string, pdf: string | null): string | null {
+export function thumbnail(name: string, pdf: string | null, rendered: () => void): string | null {
   const pdfTime = pdf ? modified(pdf) : 0;
   if (!pdf || !pdfTime) return null;
   const png = thumbnailFile(name);
   if (modified(png) >= pdfTime) return png;
-  if (rendering.has(png)) return null;
+  if (rendering.has(png) || failedPdfTimes.get(png) === pdfTime) return null;
   rendering.add(png);
   const temporary = `${png}.tmp.png`;
   const margin = Math.round(THUMBNAIL_MARGIN * 1000);
@@ -152,7 +153,15 @@ export function thumbnail(name: string, pdf: string | null): string | null {
     `sips --cropOffset $((h * ${margin} / 1000)) $((w * ${margin} / 1000)) --cropToHeightWidth $ch $cw ${shellQuote(temporary)}`,
     `mv ${shellQuote(temporary)} ${shellQuote(png)}`,
   ].join(" && ");
-  execFile("/bin/zsh", ["-c", script], { env: ENV }, () => rendering.delete(png));
+  execFile("/bin/zsh", ["-c", script], { env: ENV }, (error) => {
+    rendering.delete(png);
+    if (error || modified(png) < pdfTime) {
+      failedPdfTimes.set(png, pdfTime);
+      return;
+    }
+    failedPdfTimes.delete(png);
+    rendered();
+  });
   return null;
 }
 
