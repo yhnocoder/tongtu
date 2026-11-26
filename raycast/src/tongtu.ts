@@ -100,8 +100,13 @@ export function startRun(paper: string, runArguments: string[], workdir: string 
   spawn("/bin/zsh", ["-c", script], { detached: true, stdio: "ignore", env: ENV }).unref();
 }
 
-export function preview(file: string): void {
-  spawn("/usr/bin/qlmanage", ["-p", file], { detached: true, stdio: "ignore", env: ENV }).unref();
+export function readBase64(file: string | null): string | null {
+  if (!file) return null;
+  try {
+    return fs.readFileSync(file).toString("base64");
+  } catch {
+    return null;
+  }
 }
 
 export async function loadOpened(): Promise<string[] | null> {

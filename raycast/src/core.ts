@@ -30,8 +30,6 @@ export type PaperStatus = {
   stages: StageState[];
   pdf: string | null;
   meta: string | null;
-  glossary: string | null;
-  notes: string | null;
   pages: number | null;
   source_pages: number | null;
   translate_seconds: number | null;
@@ -360,9 +358,9 @@ function stageLine(status: PaperStatus): string {
   }).join(" → ");
 }
 
-export function completedMarkdown(detail: PaperDetail, thumbnail: string | null): string {
+export function completedMarkdown(detail: PaperDetail, thumbnailBase64: string | null): string {
   const parts = [`# ${detailTitle(detail)}`];
-  if (thumbnail) parts.push(`![](file://${encodeURI(thumbnail)})`);
+  if (thumbnailBase64) parts.push(`![](data:image/png;base64,${thumbnailBase64})`);
   if (detail.meta?.abstract) parts.push(detail.meta.abstract);
   return parts.join("\n\n");
 }

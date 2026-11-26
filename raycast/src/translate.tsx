@@ -6,9 +6,11 @@ import {
   Icon,
   LaunchProps,
   PopToRootType,
+  Toast,
   getFrontmostApplication,
   open,
   showHUD,
+  showToast,
 } from "@raycast/api";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -34,7 +36,7 @@ const BROWSER_TIMEOUT_MILLISECONDS = 2000;
 type Found = { paper: string; source: PaperSource };
 type Screen =
   | { kind: "loading" }
-  | { kind: "message"; text: string; hud: boolean }
+  | { kind: "message"; text: string; failed: boolean }
   | { kind: "confirm"; paper: string; meta: PaperMeta; mode: string | null; shownMode: string };
 
 async function browserPaper(): Promise<string | null> {
@@ -66,7 +68,7 @@ async function findPaper(argument: string): Promise<Found | null> {
 }
 
 function done(text: string): Screen {
-  return { kind: "message", text, hud: true };
+  return { kind: "message", text, failed: false };
 }
 
 function start(paper: string, mode: string | null, shownMode: string): Screen {
@@ -75,13 +77,13 @@ function start(paper: string, mode: string | null, shownMode: string): Screen {
 }
 
 function failure(error: unknown): Screen {
-  return { kind: "message", text: error instanceof Error ? error.message : String(error), hud: false };
+  return { kind: "message", text: error instanceof Error ? error.message : String(error), failed: true };
 }
 
 async function prepare(paperArgumentText: string, modeArgument: string | undefined): Promise<Screen> {
-  if (!installed()) return { kind: "message", text: NOT_INSTALLED, hud: false };
+  if (!installed()) return { kind: "message", text: NOT_INSTALLED, failed: true };
   const found = await findPaper(paperArgumentText);
-  if (!found) return done("没有找到 arXiv 编号");
+  if (!found) return { kind: "message", text: "没有找到 arXiv 编号", failed: true };
   const result = await tongtu(["status", found.paper, "--json"]);
   const status = result.code === 0 ? parseJson<PaperStatus>(result.stdout) : null;
   if (status?.running) return done(`${workdirName(status.workdir)} 正在翻译`);
@@ -95,7 +97,7 @@ async function prepare(paperArgumentText: string, modeArgument: string | undefin
   if (found.source !== "clipboard") return start(found.paper, mode, shownMode);
   const info = await tongtu(["info", found.paper, "--json"]);
   const meta = info.code === 0 ? parseJson<PaperMeta>(info.stdout) : null;
-  if (!meta) return { kind: "message", text: infoFailure(found.paper, info.stderr), hud: false };
+  if (!meta) return { kind: "message", text: infoFailure(found.paper, info.stderr), failed: true };
   return { kind: "confirm", paper: found.paper, meta, mode, shownMode };
 }
 
@@ -106,8 +108,11 @@ export default function Translate(props: LaunchProps<{ arguments: { paper?: stri
 
   function show(next: Screen): void {
     setScreen(next);
-    if (next.kind !== "message" || !next.hud) return;
-    showHUD(next.text, { clearRootSearch: true, popToRootType: PopToRootType.Immediate }).catch(() => undefined);
+    if (next.kind !== "message") return;
+    const shown = next.failed
+      ? showToast({ style: Toast.Style.Failure, title: next.text })
+      : showHUD(next.text, { clearRootSearch: true, popToRootType: PopToRootType.Immediate });
+    shown.catch(() => undefined);
   }
 
   function launch(paper: string, mode: string | null, shownMode: string): void {

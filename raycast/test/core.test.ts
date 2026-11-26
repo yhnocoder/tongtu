@@ -80,8 +80,6 @@ function status(state: PaperState, statuses: string[], overrides: Partial<PaperS
     })),
     pdf: null,
     meta: null,
-    glossary: null,
-    notes: null,
     pages: null,
     source_pages: null,
     translate_seconds: null,
@@ -414,12 +412,9 @@ test("arxivUrl carries the version and is empty for local papers", () => {
 });
 
 test("completedMarkdown shows the title, the thumbnail and the abstract", () => {
-  const complete = detail("ok", ALL_OK, { notes: "/out/notes.json", glossary: "/out/glossary.json" });
+  const complete = detail("ok", ALL_OK);
   assert.equal(completedMarkdown(complete, null), "# Full Title\n\nAn abstract.");
-  assert.equal(
-    completedMarkdown(complete, "/cache dir/2611.15404v1.png"),
-    "# Full Title\n\n![](file:///cache%20dir/2611.15404v1.png)\n\nAn abstract.",
-  );
+  assert.equal(completedMarkdown(complete, "iVBORw0KGgo="), "# Full Title\n\n![](data:image/png;base64,iVBORw0KGgo=)\n\nAn abstract.");
   assert.equal(completedMarkdown(detail("ok", ALL_OK, {}, null), null), "# Title of 2611.15404v1");
 });
 

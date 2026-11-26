@@ -57,7 +57,7 @@ import {
   loadOpened,
   loadRecentDays,
   parseJson,
-  preview,
+  readBase64,
   readJson,
   removePaperFiles,
   saveOpened,
@@ -177,16 +177,19 @@ async function openPdf(paper: PaperSummary): Promise<void> {
   await open(paper.pdf);
 }
 
-async function previewPdf(paper: PaperSummary): Promise<void> {
-  if (!paper.pdf) return;
-  await setOpened((opened) => withOpened(opened, paper.name));
-  preview(paper.pdf);
-}
-
 async function run(paper: PaperSummary, action: RunAction, reload: () => Promise<void>): Promise<void> {
   const { options, redo } = runOptions(action, paper.workdir);
   if (redo) await setOpened((opened) => withoutOpened(opened, paper.name));
-  startRun(paper.name, options, paper.workdir);
+  try {
+    startRun(paper.name, options, paper.workdir);
+  } catch (error) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: `没有启动 ${paper.name}`,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   await reload();
   setTimeout(reload, START_REFRESH_DELAY_SECONDS * 1000);
   await showHUD(runMessage(action, paper.name));
@@ -249,9 +252,8 @@ function PaperActions({ paper, reload, toggleView }: ActionsProps) {
     <ActionPanel>
       {paper.state === "ok" && (
         <>
-          <Action title="打开中文 PDF" icon={Icon.Document} onAction={() => openPdf(paper)} />
-          <Action title="预览" icon={Icon.Eye} onAction={() => previewPdf(paper)} />
           {details}
+          <Action title="打开中文 PDF" icon={Icon.Document} onAction={() => openPdf(paper)} />
           {fs.existsSync(original) && <Action title="打开英文原文" icon={Icon.Document} onAction={() => open(original)} />}
           {arxiv && <Action.OpenInBrowser title="打开 arXiv 页面" url={arxiv} />}
           {finder}
@@ -307,7 +309,7 @@ function shownThumbnail(name: string, pdf: string | null): string | null {
 function detailMarkdown(detail: PaperDetail): string {
   if (detail.status.state === "running") return runningMarkdown(detail);
   if (detail.status.state !== "ok") return unfinishedMarkdown(detail);
-  return completedMarkdown(detail, shownThumbnail(detail.summary.name, detail.status.pdf));
+  return completedMarkdown(detail, readBase64(shownThumbnail(detail.summary.name, detail.status.pdf)));
 }
 
 function detailRows(detail: PaperDetail, now: number): Row[] {
