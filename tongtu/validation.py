@@ -424,7 +424,7 @@ def _paragraph_problems(
                 )
             )
     for word in do_not_translate:
-        if kept_word_in_source(word, source_text) and not hits(word, translation_text, exact=True):
+        if hits(word, source_text, exact=True, in_compounds=False) and not hits(word, translation_text, exact=True):
             problems.append(
                 Problem(
                     Category.GLOSSARY,
@@ -499,10 +499,6 @@ def hits(word: str, text: str, exact: bool = False, *, in_compounds: bool = True
     after = "" if in_compounds else COMPOUND_HYPHEN_AFTER
     pattern = rf"(?<![0-9A-Za-z]){before}{body}(?:es|s)?(?![0-9A-Za-z]){after}"
     return re.search(pattern, text, 0 if case_sensitive else re.IGNORECASE) is not None
-
-
-def kept_word_in_source(word: str, source_text: str) -> bool:
-    return hits(word, source_text, exact=True, in_compounds=False)
 
 
 def normalized_term(word: str) -> str:

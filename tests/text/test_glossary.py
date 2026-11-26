@@ -92,6 +92,14 @@ def test_a_user_term_covers_every_spelling_of_a_learned_kept_word(home: Path, pa
     assert chosen.learned == Glossary(do_not_translate=("LLM",))
 
 
+def test_a_paper_term_overrides_every_spelling_of_a_global_kept_word(home: Path, paper: Path) -> None:
+    write(home / "glossary.json", {"do_not_translate": ["seq2seq", "Seq2Seq"]})
+    write(paper / "glossary.json", {"terms": {"seq2seq": "序列到序列"}})
+    chosen = glossary.load_selection("We compare against a seq2seq baseline.\n", paper, (), env(home))
+    assert chosen.fixed.terms == (("seq2seq", "序列到序列"),)
+    assert chosen.fixed.do_not_translate == ()
+
+
 def test_a_term_and_a_kept_word_for_one_word_in_one_file_conflict(home: Path, paper: Path) -> None:
     write(paper / "glossary.json", {"terms": {"seq2seq": "序列到序列"}, "do_not_translate": ["Seq2Seq"]})
     with pytest.raises(glossary.GlossaryError, match="conflicting records"):
@@ -172,9 +180,7 @@ def test_a_global_glossary_found_in_full_adds_no_warning(home: Path, paper: Path
     assert [warning.split(": ", 1)[1] for warning in chosen.unmatched] == ["'transformer' does not occur in this paper"]
 
 
-def test_a_global_entry_overridden_by_the_paper_glossary_is_reported_by_the_paper_glossary(
-    home: Path, paper: Path
-) -> None:
+def test_a_global_entry_overridden_by_the_paper_glossary_is_counted_by_both_files(home: Path, paper: Path) -> None:
     general = write(home / "glossary.json", {"terms": {"transformer": "变换器", "KV cache": "键值缓存"}})
     paper_file = write(paper / "glossary.json", {"terms": {"Transformers": "Transformer 模型"}})
     assert selection(home, paper).unmatched == (

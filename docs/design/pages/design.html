@@ -475,7 +475,7 @@ dropout 率为 $0.1$。</code></pre></div>
             <tr><td>公式</td><td class="wrap">每段的行内公式与原文逐个相同。</td></tr>
             <tr><td>章节名</td><td class="wrap">三级章节命令的标题与原文逐字相同。</td></tr>
             <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。</td></tr>
-            <tr><td>术语</td><td class="wrap">原文命中某条术语的段落，译文里出现对应的译法；不译词按大小写原样保留。原文里紧贴连字符的出现不算原文有这个不译词：<code>rank</code> 不译时，只有 low-rank 的段落不要求译文保留 rank。不译词本身含连字符时（KV-cache）照常匹配。<code>\label</code>、<code>\ref</code>、<code>\cite</code> 一类命令参数里的词不计。章节标题不参加未译与术语两项检查。</td></tr>
+            <tr><td>术语</td><td class="wrap">原文命中某条术语的段落，译文里出现对应的译法；不译词按大小写原样保留。原文里紧贴单个连字符的出现不算原文有这个不译词：<code>rank</code> 不译时，只有 <code>low-rank</code> 的段落不要求译文保留 <code>rank</code>。不译词本身含连字符时（<code>KV-cache</code>）照常匹配。<code>\label</code>、<code>\ref</code>、<code>\cite</code> 一类命令参数里的词不计。章节标题不参加未译与术语两项检查。</td></tr>
           </tbody>
         </table>
         <p>会话外的校验使用 <code>build/masked.tex</code>、用户术语表的原始文件，以及会话结束时的 <code>glossary.json</code>。会话改动 <code>en.tex</code>、<code>glossary.fixed.json</code> 或 <code>check.py</code> 都不影响判定。</p>
