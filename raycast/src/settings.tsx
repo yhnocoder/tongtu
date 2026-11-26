@@ -201,7 +201,7 @@ export default function Settings() {
       {ABSTRACT_FIELDS.map(([key, title]) => (
         <Form.TextField key={key} id={key} title={title} value={text(key)} onChange={change(key)} error={error(key)} />
       ))}
-      <Form.PasswordField
+      <Form.TextField
         id={API_KEY_KEY}
         title="密钥"
         placeholder={apiKeyPlaceholder(loaded.config)}
