@@ -21,24 +21,28 @@ import {
   PaperStatus,
   PaperSummary,
   PaperTarget,
-  RUN_TITLES,
   Row,
   RunAction,
   START_REFRESH_DELAY_SECONDS,
   arxivUrl,
+  arxivVersion,
   completedMarkdown,
   completedRows,
   initialOpened,
+  needsAbstractZh,
   refreshSeconds,
   removableWorkdir,
+  retryActions,
   runMessage,
   runOptions,
+  runTitle,
   runningMarkdown,
   runningRows,
   startingMarkdown,
   statusTarget,
   unfinishedMarkdown,
   unfinishedRows,
+  withAbstractZh,
   withOpened,
   withoutOpened,
   workdirName,
@@ -176,7 +180,7 @@ export async function openPdf(paper: PaperTarget): Promise<void> {
 }
 
 export async function run(paper: PaperTarget, action: RunAction, reload: () => Promise<void>): Promise<void> {
-  const { options, redo } = runOptions(action, paper.workdir);
+  const { options, redo } = runOptions(action, paper.workdir, paper.mode);
   if (redo) await setOpened((opened) => withoutOpened(opened, paper.name));
   try {
     startRun(paper.name, options, paper.workdir);
@@ -186,7 +190,7 @@ export async function run(paper: PaperTarget, action: RunAction, reload: () => P
   }
   await reload();
   setTimeout(reload, START_REFRESH_DELAY_SECONDS * 1000);
-  await announce(runMessage(action, paper.name));
+  await announce(runMessage(action, paper.name, paper.mode));
 }
 
 async function stopRun(paper: PaperTarget): Promise<boolean> {
@@ -233,7 +237,7 @@ export function RefreshAction({ reload }: { reload: Reload }) {
 }
 
 function RunItem({ paper, action, icon, reload }: { paper: PaperTarget; action: RunAction; icon: Icon; reload: Reload }) {
-  return <Action title={RUN_TITLES[action]} icon={icon} onAction={() => run(paper, action, reload)} />;
+  return <Action title={runTitle(action, paper.mode)} icon={icon} onAction={() => run(paper, action, reload)} />;
 }
 
 type ActionsProps = { paper: PaperTarget; reload: Reload; toggleView?: () => void; removed?: () => void };
@@ -271,8 +275,9 @@ export function PaperActions({ paper, reload, toggleView, removed }: ActionsProp
       {(paper.state === "failed" || paper.state === "interrupted") && (
         <>
           {details}
-          <RunItem paper={paper} action="retry" icon={Icon.Play} reload={reload} />
-          <RunItem paper={paper} action="retrySmart" icon={Icon.Play} reload={reload} />
+          {retryActions(paper.mode).map((action) => (
+            <RunItem key={action} paper={paper} action={action} icon={Icon.Play} reload={reload} />
+          ))}
           <Action.ShowInFinder title="查看日志" icon={Icon.Text} path={path.join(paper.workdir, "logs")} />
           {finder}
         </>
@@ -319,6 +324,8 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
   const [status, setStatus] = useState<PaperStatus | null>(null);
   const [failure, setFailure] = useState("");
   const [settling, setSettling] = useState(starting === true);
+  const [translated, setTranslated] = useState<PaperMeta | null>(null);
+  const askedAbstractZh = useRef(false);
   const running = status?.state === "running";
   const now = useNow(running);
 
@@ -341,6 +348,16 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
   useEffect(() => {
     loadStatus();
   }, []);
+
+  useEffect(() => {
+    if (!status || status.state !== "ok" || askedAbstractZh.current) return;
+    const id = arxivVersion(status);
+    if (!id || !needsAbstractZh(readJson<PaperMeta>(status.meta))) return;
+    askedAbstractZh.current = true;
+    tongtu(["info", id, "--json", "--zh"]).then((result) => {
+      if (result.code === 0) setTranslated(parseJson<PaperMeta>(result.stdout));
+    });
+  }, [status]);
 
   useEffect(() => {
     if (!settling) return;
@@ -375,7 +392,7 @@ export function PaperDetailView({ paper, workdir, starting }: DetailProps) {
     name: target.name,
     addedAt: papers?.find((other) => other.name === target.name)?.added_at ?? null,
     status,
-    meta: readJson<PaperMeta>(status.meta),
+    meta: withAbstractZh(readJson<PaperMeta>(status.meta), translated),
   };
   return (
     <Detail

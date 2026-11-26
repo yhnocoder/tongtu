@@ -45,6 +45,7 @@ export type PaperMeta = {
   abstract: string;
   primary_category: string;
   published: string;
+  abstract_zh?: string | null;
 };
 
 export type PaperSummary = {
@@ -59,10 +60,11 @@ export type PaperSummary = {
   added_at: string;
   updated_at: string;
   started_at: string | null;
+  mode: string | null;
   pdf: string | null;
 };
 
-export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "pdf">;
+export type PaperTarget = Pick<PaperSummary, "name" | "workdir" | "state" | "stage" | "arxiv_id" | "version" | "mode" | "pdf">;
 export type PaperDetail = { name: string; addedAt: string | null; status: PaperStatus; meta: PaperMeta | null };
 export type PaperSource = "argument" | "browser" | "clipboard";
 export type ConfigValue = string | number | boolean | null;
@@ -114,12 +116,18 @@ const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i;
 const CHROMIUM_BROWSERS = ["Google Chrome", "Microsoft Edge", "Brave Browser", "Arc", "Chromium", "Vivaldi"];
 const TOOL_DIRECTORIES = ["~/.local/bin", "~/.cargo/bin", "/opt/homebrew/bin", "/Library/TeX/texbin", "/usr/bin", "/bin"];
 const DAY_MILLISECONDS = 86_400_000;
+export const SHOWN_AUTHORS = 12;
 
 function nonEmptyLines(text: string): string[] {
   return text
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "");
+}
+
+export function authorsText(authors: string[]): string {
+  const shown = authors.slice(0, SHOWN_AUTHORS).join(", ");
+  return authors.length > SHOWN_AUTHORS ? `${shown}, ...` : shown;
 }
 
 export function arxivId(text: string): string | null {
@@ -176,11 +184,13 @@ export function launchScript(
   return [`${run} > ${shellQuote(logFile)} 2>&1`, workdir === null ? notify : `${notify} ${shellQuote(workdir)}`].join("\n");
 }
 
-export type RunAction = "retry" | "retrySmart" | "redoFast" | "redoSmart" | "recompile";
+export type RetryAction = "retry" | "retryFast" | "retrySmart";
+export type RunAction = RetryAction | "redoFast" | "redoSmart" | "recompile";
 
-export const RUN_TITLES: Record<RunAction, string> = {
+const RUN_TITLES: Record<RunAction, string> = {
   retry: "重试",
-  retrySmart: "用 smart 模式重试",
+  retryFast: "用 fast 重试",
+  retrySmart: "用 smart 重试",
   redoFast: "用 fast 重新翻译",
   redoSmart: "用 smart 重新翻译",
   recompile: "只重新编译",
@@ -188,22 +198,35 @@ export const RUN_TITLES: Record<RunAction, string> = {
 
 const RUN_OPTIONS: Record<RunAction, { options: string[]; redo: boolean }> = {
   retry: { options: [], redo: false },
+  retryFast: { options: ["--mode", "fast"], redo: false },
   retrySmart: { options: ["--mode", "smart"], redo: false },
   redoFast: { options: ["--from", "translate", "--mode", "fast"], redo: true },
   redoSmart: { options: ["--from", "translate", "--mode", "smart"], redo: true },
   recompile: { options: ["--from", "compile"], redo: true },
 };
 
-export function runOptions(action: RunAction, workdir: string): { options: string[]; redo: boolean } {
-  const { options, redo } = RUN_OPTIONS[action];
-  return { options: ["--workdir", workdir, ...options], redo };
+const RETRY_MODES: Record<RetryAction, string | null> = { retry: null, retryFast: "fast", retrySmart: "smart" };
+
+export function retryActions(mode: string | null): RetryAction[] {
+  const actions: RetryAction[] = ["retry", "retryFast", "retrySmart"];
+  return actions.filter((action) => action === "retry" || RETRY_MODES[action] !== (mode || null));
 }
 
-export function runMessage(action: RunAction, name: string): string {
-  if (action === "retry") return `继续翻译 ${name}`;
-  if (action === "retrySmart") return `继续翻译 ${name}（smart）`;
+export function runTitle(action: RunAction, mode: string | null): string {
+  return action === "retry" && mode ? `重试（${mode}）` : RUN_TITLES[action];
+}
+
+export function runOptions(action: RunAction, workdir: string, mode: string | null): { options: string[]; redo: boolean } {
+  const { options, redo } = RUN_OPTIONS[action];
+  const retryMode = action === "retry" && mode ? ["--mode", mode] : [];
+  return { options: ["--workdir", workdir, ...options, ...retryMode], redo };
+}
+
+export function runMessage(action: RunAction, name: string, mode: string | null): string {
   if (action === "recompile") return `重新编译 ${name}`;
-  return `开始翻译 ${name}（${action === "redoFast" ? "fast" : "smart"}）`;
+  if (action === "redoFast" || action === "redoSmart") return `开始翻译 ${name}（${action === "redoFast" ? "fast" : "smart"}）`;
+  const shown = action === "retry" ? mode || null : RETRY_MODES[action];
+  return shown ? `继续翻译 ${name}（${shown}）` : `继续翻译 ${name}`;
 }
 
 export function workdirName(workdir: string): string {
@@ -351,10 +374,25 @@ function stageLine(status: PaperStatus): string {
   }).join(" → ");
 }
 
+export function shownAbstract(meta: PaperMeta | null): string {
+  return meta?.abstract_zh || meta?.abstract || "";
+}
+
+export function needsAbstractZh(meta: PaperMeta | null): boolean {
+  return meta !== null && !meta.abstract_zh;
+}
+
+export function withAbstractZh(meta: PaperMeta | null, translated: PaperMeta | null): PaperMeta | null {
+  if (!meta || !translated?.abstract_zh) return meta;
+  if (translated.arxiv_id !== meta.arxiv_id || translated.version !== meta.version) return meta;
+  return { ...meta, abstract_zh: translated.abstract_zh };
+}
+
 export function completedMarkdown(detail: PaperDetail, thumbnailBase64: string | null): string {
   const parts = [`# ${detailTitle(detail)}`];
   if (thumbnailBase64) parts.push(`![](data:image/png;base64,${thumbnailBase64})`);
-  if (detail.meta?.abstract) parts.push(detail.meta.abstract);
+  const abstract = shownAbstract(detail.meta);
+  if (abstract) parts.push(abstract);
   return parts.join("\n\n");
 }
 
@@ -366,7 +404,9 @@ export function runningMarkdown(detail: PaperDetail): string {
   return parts.join("\n\n");
 }
 
-export const UNFINISHED_NEXT_STEPS = [RUN_TITLES.retry, RUN_TITLES.retrySmart, "查看日志"];
+export function unfinishedNextSteps(mode: string | null): string[] {
+  return [...retryActions(mode).map((action) => runTitle(action, mode)), "查看日志"];
+}
 
 export function unfinishedMarkdown(detail: PaperDetail): string {
   const { status } = detail;
@@ -381,7 +421,7 @@ export function unfinishedMarkdown(detail: PaperDetail): string {
     "## 原因",
     reason,
     "## 下一步",
-    UNFINISHED_NEXT_STEPS.map((step) => `- ${step}`).join("\n"),
+    unfinishedNextSteps(status.mode).map((step) => `- ${step}`).join("\n"),
   ].join("\n\n");
 }
 
@@ -400,12 +440,22 @@ function durationText(seconds: number): string {
   return whole < 60 ? `${whole} 秒` : `${Math.floor(whole / 60)} 分 ${whole % 60} 秒`;
 }
 
-export function completedRows(detail: PaperDetail): Row[] {
+function paperRows(detail: PaperDetail): Row[] {
   const { addedAt, status, meta } = detail;
   const rows = arxivRow(status);
-  if (meta?.authors.length) rows.push({ title: "作者", text: meta.authors.join(", ") });
+  if (meta?.authors.length) rows.push({ title: "作者", text: authorsText(meta.authors) });
   if (meta) rows.push({ title: "分类与发表日期", text: `${meta.primary_category} · ${dateText(meta.published)}` });
   if (addedAt) rows.push({ title: "加入日期", text: dateText(addedAt) });
+  return rows;
+}
+
+function sourcePagesRow(status: PaperStatus): Row[] {
+  return status.source_pages === null ? [] : [{ title: "页数", text: `原文 ${status.source_pages} 页` }];
+}
+
+export function completedRows(detail: PaperDetail): Row[] {
+  const { status } = detail;
+  const rows = paperRows(detail);
   const pages = [
     status.pages === null ? "" : `中文 ${status.pages} 页`,
     status.source_pages === null ? "" : `原文 ${status.source_pages} 页`,
@@ -422,7 +472,7 @@ export function completedRows(detail: PaperDetail): Row[] {
 
 export function runningRows(detail: PaperDetail, now: number): Row[] {
   const { status } = detail;
-  const rows = [...arxivRow(status), ...modeRow(status)];
+  const rows = [...paperRows(detail), ...sourcePagesRow(status), ...modeRow(status)];
   if (status.started_at) {
     rows.push({ title: "开始时间", text: dateTimeText(status.started_at) });
     rows.push({ title: "总用时", text: elapsed(status.started_at, now) });
@@ -432,7 +482,7 @@ export function runningRows(detail: PaperDetail, now: number): Row[] {
 
 export function unfinishedRows(detail: PaperDetail): Row[] {
   const { status } = detail;
-  const rows = [...arxivRow(status), ...modeRow(status)];
+  const rows = [...paperRows(detail), ...sourcePagesRow(status), ...modeRow(status)];
   if (status.stage) {
     rows.push({ title: status.state === "failed" ? "失败的阶段" : "中断的阶段", text: status.stage });
     rows.push({ title: "已完成的阶段数", text: `${Math.max(0, STAGES.indexOf(status.stage))} / ${STAGES.length}` });
@@ -442,7 +492,7 @@ export function unfinishedRows(detail: PaperDetail): Row[] {
 
 export type LocalState = "none" | PaperState;
 export type Lookup = { paper: string; status: PaperStatus | null; meta: PaperMeta | null; infoError: string };
-export type EntryAction = "start" | "startFast" | "startSmart" | "detail" | "openPdf" | "arxiv" | "stop" | "retry";
+export type EntryAction = "start" | "startFast" | "startSmart" | "detail" | "openPdf" | "arxiv" | "stop" | RetryAction;
 
 export const LOCAL_STATE_TEXT: Record<LocalState, string> = {
   none: "未翻译",
@@ -467,6 +517,8 @@ export const ENTRY_ACTION_TITLES: Record<EntryAction, string> = {
   arxiv: "打开 arXiv 页面",
   stop: "停止",
   retry: "重试",
+  retryFast: "用 fast 重试",
+  retrySmart: "用 smart 重试",
 };
 
 export function isPathArgument(paper: string): boolean {
@@ -508,7 +560,7 @@ export function entryArxivUrl(lookup: Lookup): string | null {
 
 export function entryRows(lookup: Lookup, mode: string): Row[] {
   const rows: Row[] = [];
-  if (lookup.meta?.authors.length) rows.push({ title: "作者", text: lookup.meta.authors.join(", ") });
+  if (lookup.meta?.authors.length) rows.push({ title: "作者", text: authorsText(lookup.meta.authors) });
   if (lookup.meta) rows.push({ title: "发表日期", text: dateText(lookup.meta.published) });
   rows.push({ title: "状态", text: LOCAL_STATE_TEXT[localState(lookup.status)] });
   if (mode !== "") rows.push({ title: "模式", text: mode });
@@ -521,7 +573,7 @@ export function entryActions(lookup: Lookup): EntryAction[] {
   if (state === "none") return ["start", "startFast", "startSmart", ...arxiv];
   if (state === "ok") return ["detail", "openPdf", ...arxiv];
   if (state === "running") return ["detail", "stop"];
-  return ["detail", "retry"];
+  return ["detail", ...retryActions(lookup.status?.mode ?? null)];
 }
 
 export function statusTarget(status: PaperStatus): PaperTarget {
@@ -533,6 +585,7 @@ export function statusTarget(status: PaperStatus): PaperTarget {
     arxiv_id: status.arxiv_id,
     version: status.version,
     pdf: status.pdf,
+    mode: status.mode,
   };
 }
 
@@ -553,6 +606,13 @@ export const FONT_FIELDS: [string, string][] = [
   ["fonts.sans.bold", "无衬线粗体"],
   ["fonts.mono", "等宽"],
 ];
+
+export const ABSTRACT_FIELDS: [string, string][] = [
+  ["abstract.base_url", "接口地址"],
+  ["abstract.model", "模型"],
+];
+export const API_KEY_KEY = "abstract.api_key";
+export const CLEAR_API_KEY_PAIR = [API_KEY_KEY, '""'];
 
 export const modelKey = (mode: string) => `modes.${mode}.model`;
 export const customModelKey = (mode: string) => `modes.${mode}.model.custom`;
@@ -579,6 +639,14 @@ export function effortChoices(current: string): string[] {
   return EFFORTS.includes(current) ? EFFORTS : [...EFFORTS, current];
 }
 
+export function apiKeySet(config: Config): boolean {
+  return text(config[API_KEY_KEY]) !== "";
+}
+
+export function apiKeyPlaceholder(config: Config): string {
+  return apiKeySet(config) ? "已设置，留空表示不修改" : "未设置";
+}
+
 export function formValues(config: Config): FormValues {
   const values: FormValues = { [DEFAULT_MODE_KEY]: text(config[DEFAULT_MODE_KEY]), [CROP_KEY]: config[CROP_KEY] === true };
   for (const mode of MODES) {
@@ -588,6 +656,8 @@ export function formValues(config: Config): FormValues {
     values[timeoutKey(mode)] = minutesFromSeconds(Number(config[timeoutKey(mode)]));
   }
   for (const [key] of FONT_FIELDS) values[key] = text(config[key]);
+  for (const [key] of ABSTRACT_FIELDS) values[key] = text(config[key]);
+  values[API_KEY_KEY] = "";
   return values;
 }
 
@@ -607,6 +677,9 @@ export function configChanges(config: Config, form: FormValues): { pairs: string
     else if (seconds !== Number(config[timeoutKey(mode)])) pairs.push(timeoutKey(mode), String(seconds));
   }
   for (const [key] of FONT_FIELDS) set(key, String(form[key]).trim());
+  for (const [key] of ABSTRACT_FIELDS) set(key, String(form[key]).trim());
+  const apiKey = String(form[API_KEY_KEY] ?? "").trim();
+  if (apiKey !== "") pairs.push(API_KEY_KEY, JSON.stringify(apiKey));
   if (form[CROP_KEY] !== (config[CROP_KEY] === true)) pairs.push(CROP_KEY, form[CROP_KEY] ? "true" : "false");
   return { pairs, errors };
 }

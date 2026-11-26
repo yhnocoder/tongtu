@@ -412,3 +412,84 @@ def test_query_reports_a_response_that_is_not_xml(monkeypatch: pytest.MonkeyPatc
     wire_api(monkeypatch, "<html>")
     with pytest.raises(arxiv.ArxivError):
         arxiv.query("2106.04426")
+
+
+def translated(meta: PaperMeta, abstract_zh: str = "我们提出 Adam。") -> PaperMeta:
+    return meta.model_copy(update={"abstract_zh": abstract_zh})
+
+
+def test_paper_meta_without_abstract_zh_reads_as_absent(isolated_home: Path) -> None:
+    data = json.loads(CachedMeta(fetched_at=datetime.now(UTC), meta=adam()).model_dump_json())
+    del data["meta"]["abstract_zh"]
+    path = cache_file(isolated_home, "1412.6980v8")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    found = arxiv.find_meta("1412.6980", 8)
+    assert (found.source, found.meta.abstract_zh) == (arxiv.MetaSource.CACHE, None)
+
+
+def test_find_meta_takes_abstract_zh_from_the_versioned_entry_for_an_unversioned_query(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_cached(isolated_home, "1412.6980", adam(), datetime.now(UTC))
+    write_cached(isolated_home, "1412.6980v8", translated(adam()), datetime.now(UTC))
+    urls = wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980")
+    assert (found.source, found.meta.abstract_zh) == (arxiv.MetaSource.CACHE, "我们提出 Adam。")
+    assert urls == []
+
+
+def test_find_meta_prefers_abstract_zh_of_the_working_directory(isolated_home: Path) -> None:
+    write_manifest(Workdir(isolated_home / "papers" / "1412.6980v8").meta, translated(adam(), "工作目录"))
+    write_cached(isolated_home, "1412.6980", adam(), datetime.now(UTC))
+    write_cached(isolated_home, "1412.6980v8", translated(adam(), "缓存"), datetime.now(UTC))
+    assert arxiv.find_meta("1412.6980", 8).meta.abstract_zh == "工作目录"
+    assert arxiv.find_meta("1412.6980").meta.abstract_zh == "工作目录"
+
+
+def test_find_meta_falls_back_to_the_cache_when_the_meta_file_has_no_abstract_zh(isolated_home: Path) -> None:
+    write_manifest(Workdir(isolated_home / "papers" / "1412.6980v8").meta, adam(title="工作目录"))
+    write_cached(isolated_home, "1412.6980v8", translated(adam()), datetime.now(UTC))
+    found = arxiv.find_meta("1412.6980", 8)
+    assert (found.source, found.meta.title, found.meta.abstract_zh) == (
+        arxiv.MetaSource.WORKDIR,
+        "工作目录",
+        "我们提出 Adam。",
+    )
+
+
+@pytest.mark.parametrize("version", [8, None])
+def test_find_meta_refresh_keeps_abstract_zh(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, version: int | None
+) -> None:
+    write_cached(isolated_home, "1412.6980v8", translated(adam()), datetime(2020, 1, 1, tzinfo=UTC))
+    wire_api(monkeypatch, VERSIONED_FEED)
+    found = arxiv.find_meta("1412.6980", version, refresh=True)
+    assert (found.source, found.meta.abstract_zh) == (arxiv.MetaSource.ARXIV, "我们提出 Adam。")
+    cached = load_manifest(cache_file(isolated_home, "1412.6980v8"), CachedMeta)
+    assert cached is not None
+    assert cached.meta.title == "Adam: A Method for Stochastic Optimization"
+    assert cached.meta.abstract_zh == "我们提出 Adam。"
+
+
+def test_save_abstract_zh_updates_the_versioned_entry(isolated_home: Path) -> None:
+    fetched_at = datetime(2020, 1, 1, tzinfo=UTC)
+    write_cached(isolated_home, "1412.6980", adam(), datetime.now(UTC))
+    write_cached(isolated_home, "1412.6980v8", adam(), fetched_at)
+    found = arxiv.find_meta("1412.6980")
+    saved = arxiv.save_abstract_zh(found, "译文")
+    assert saved.meta == translated(adam(), "译文")
+    assert (saved.source, saved.fetched_at) == (found.source, found.fetched_at)
+    cached = load_manifest(cache_file(isolated_home, "1412.6980v8"), CachedMeta)
+    assert cached == CachedMeta(fetched_at=fetched_at, meta=translated(adam(), "译文"))
+    assert not (isolated_home / "papers").exists()
+
+
+def test_save_abstract_zh_writes_a_missing_entry_and_the_meta_file(isolated_home: Path) -> None:
+    workdir = Workdir(isolated_home / "papers" / "1412.6980v8")
+    write_manifest(workdir.meta, adam(title="工作目录"))
+    found = arxiv.find_meta("1412.6980", 8)
+    arxiv.save_abstract_zh(found, "译文")
+    assert load_manifest(workdir.meta, PaperMeta) == translated(adam(title="工作目录"), "译文")
+    cached = load_manifest(cache_file(isolated_home, "1412.6980v8"), CachedMeta)
+    assert cached == CachedMeta(fetched_at=found.fetched_at, meta=translated(adam(title="工作目录"), "译文"))

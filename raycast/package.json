@@ -50,7 +50,7 @@
     {
       "name": "settings",
       "title": "设置",
-      "description": "修改 config.toml 里的模式、字体和 PDF 选项",
+      "description": "修改 config.toml 里的模式、字体、PDF 与摘要翻译选项",
       "mode": "view"
     }
   ],

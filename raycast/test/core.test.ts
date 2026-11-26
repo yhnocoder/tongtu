@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  API_KEY_KEY,
+  CLEAR_API_KEY_PAIR,
   FILTER_ALL,
   ENTRY_ACTION_TITLES,
   FILTER_UNREAD,
   LOCAL_STATE_TEXT,
   OLD_ARCHIVES,
   OTHER_MODEL,
+  apiKeyPlaceholder,
+  apiKeySet,
+  SHOWN_AUTHORS,
   arxivId,
   arxivIdFromUrl,
+  authorsText,
   arxivUrl,
   browserUrlScript,
   categories,
@@ -39,18 +45,22 @@ import {
   matches,
   minutesFromSeconds,
   modelChoices,
+  needsAbstractZh,
   parseOpened,
   parseRecentDays,
   refreshSeconds,
   removableWorkdir,
   runMessage,
   runMode,
+  retryActions,
   runOptions,
+  runTitle,
   runningMarkdown,
   runningRows,
   secondsFromMinutes,
   sections,
   shellQuote,
+  shownAbstract,
   startingMarkdown,
   statusTarget,
   stateLabel,
@@ -58,6 +68,7 @@ import {
   typedPaper,
   unfinishedMarkdown,
   unfinishedRows,
+  withAbstractZh,
   withOpened,
   withoutOpened,
   workdirName,
@@ -110,6 +121,7 @@ function paper(name: string, state: PaperState, overrides: Partial<PaperSummary>
     added_at: "2026-11-25T08:00:00Z",
     updated_at: "2026-11-25T09:00:00Z",
     started_at: null,
+    mode: null,
     pdf: state === "ok" ? `/home/papers/${name}/out/${name}.zh.pdf` : null,
     ...overrides,
   };
@@ -143,6 +155,9 @@ const CONFIG: Config = {
   "fonts.sans.bold": "SourceHanSansSC-Bold.otf",
   "fonts.mono": null,
   "pdf.crop_margins": false,
+  "abstract.base_url": "https://api.deepseek.com",
+  "abstract.model": "deepseek-flash",
+  "abstract.api_key": "",
 };
 
 test("arxivId takes new-style and old-style ids out of text", () => {
@@ -268,19 +283,44 @@ test("launchScript passes the working directory to the notification script", () 
 });
 
 test("runOptions maps every action to its tongtu run options", () => {
-  assert.deepEqual(runOptions("retry", "/w"), { options: ["--workdir", "/w"], redo: false });
-  assert.deepEqual(runOptions("retrySmart", "/w"), { options: ["--workdir", "/w", "--mode", "smart"], redo: false });
-  assert.deepEqual(runOptions("redoFast", "/w"), { options: ["--workdir", "/w", "--from", "translate", "--mode", "fast"], redo: true });
-  assert.deepEqual(runOptions("redoSmart", "/w"), { options: ["--workdir", "/w", "--from", "translate", "--mode", "smart"], redo: true });
-  assert.deepEqual(runOptions("recompile", "/w"), { options: ["--workdir", "/w", "--from", "compile"], redo: true });
+  assert.deepEqual(runOptions("retry", "/w", null), { options: ["--workdir", "/w"], redo: false });
+  assert.deepEqual(runOptions("retry", "/w", "fast"), { options: ["--workdir", "/w", "--mode", "fast"], redo: false });
+  assert.deepEqual(runOptions("retryFast", "/w", "smart"), { options: ["--workdir", "/w", "--mode", "fast"], redo: false });
+  assert.deepEqual(runOptions("retrySmart", "/w", null), { options: ["--workdir", "/w", "--mode", "smart"], redo: false });
+  assert.deepEqual(runOptions("redoFast", "/w", "smart"), {
+    options: ["--workdir", "/w", "--from", "translate", "--mode", "fast"],
+    redo: true,
+  });
+  assert.deepEqual(runOptions("redoSmart", "/w", null), { options: ["--workdir", "/w", "--from", "translate", "--mode", "smart"], redo: true });
+  assert.deepEqual(runOptions("recompile", "/w", "fast"), { options: ["--workdir", "/w", "--from", "compile"], redo: true });
 });
 
 test("runMessage words the result by action", () => {
-  assert.equal(runMessage("retry", "2611.15404v1"), "继续翻译 2611.15404v1");
-  assert.equal(runMessage("retrySmart", "2611.15404v1"), "继续翻译 2611.15404v1（smart）");
-  assert.equal(runMessage("redoFast", "2611.15404v1"), "开始翻译 2611.15404v1（fast）");
-  assert.equal(runMessage("redoSmart", "2611.15404v1"), "开始翻译 2611.15404v1（smart）");
-  assert.equal(runMessage("recompile", "2611.15404v1"), "重新编译 2611.15404v1");
+  assert.equal(runMessage("retry", "2611.15404v1", null), "继续翻译 2611.15404v1");
+  assert.equal(runMessage("retry", "2611.15404v1", "fast"), "继续翻译 2611.15404v1（fast）");
+  assert.equal(runMessage("retryFast", "2611.15404v1", "smart"), "继续翻译 2611.15404v1（fast）");
+  assert.equal(runMessage("retrySmart", "2611.15404v1", null), "继续翻译 2611.15404v1（smart）");
+  assert.equal(runMessage("redoFast", "2611.15404v1", null), "开始翻译 2611.15404v1（fast）");
+  assert.equal(runMessage("redoSmart", "2611.15404v1", null), "开始翻译 2611.15404v1（smart）");
+  assert.equal(runMessage("recompile", "2611.15404v1", null), "重新编译 2611.15404v1");
+});
+
+test("retryActions offers the last mode and the other one", () => {
+  assert.deepEqual(retryActions("smart"), ["retry", "retryFast"]);
+  assert.deepEqual(retryActions("fast"), ["retry", "retrySmart"]);
+  assert.deepEqual(retryActions(null), ["retry", "retryFast", "retrySmart"]);
+  assert.equal(runTitle("retry", "smart"), "重试（smart）");
+  assert.equal(runTitle("retry", null), "重试");
+  assert.equal(runTitle("retryFast", "smart"), "用 fast 重试");
+  assert.equal(runTitle("retrySmart", null), "用 smart 重试");
+  assert.equal(runTitle("redoFast", "smart"), "用 fast 重新翻译");
+});
+
+test("a listed paper retries with the mode of its summary", () => {
+  const failed = paper("2611.15404v1", "failed", { mode: "fast" });
+  assert.deepEqual(retryActions(failed.mode), ["retry", "retrySmart"]);
+  assert.equal(runTitle("retry", failed.mode), "重试（fast）");
+  assert.deepEqual(runOptions("retry", failed.workdir, failed.mode).options, ["--workdir", "/home/papers/2611.15404v1", "--mode", "fast"]);
 });
 
 test("removableWorkdir needs an absolute path that ends in the paper name", () => {
@@ -342,12 +382,32 @@ test("entryActions puts the action for return first in every state", () => {
   ]);
   assert.deepEqual(entryActions(lookup("2611.15404", status("ok", ALL_OK), META)), ["detail", "openPdf", "arxiv"]);
   assert.deepEqual(entryActions(lookup("2611.15404", status("running", ["ok"]), META)), ["detail", "stop"]);
-  assert.deepEqual(entryActions(lookup("2611.15404", status("failed", ["ok", "x"], { stage: "precompile" }), META)), ["detail", "retry"]);
-  assert.deepEqual(entryActions(lookup("2611.15404", status("interrupted", ["ok", "ok", "ok"]), META)), ["detail", "retry"]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("failed", ["ok", "x"], { stage: "precompile" }), META)), [
+    "detail",
+    "retry",
+    "retryFast",
+    "retrySmart",
+  ]);
+  assert.deepEqual(entryActions(lookup("2611.15404", status("interrupted", ["ok", "ok", "ok"], { mode: "smart" }), META)), [
+    "detail",
+    "retry",
+    "retryFast",
+  ]);
   assert.deepEqual(entryActions(lookup("~/papers/draft", null, null)), ["start", "startFast", "startSmart"]);
   const local = status("ok", ALL_OK, { arxiv_id: null, version: null, workdir: "/home/papers/draft" });
   assert.deepEqual(entryActions(lookup("~/papers/draft", local, null)), ["detail", "openPdf"]);
-  assert.deepEqual(Object.keys(ENTRY_ACTION_TITLES).sort(), ["arxiv", "detail", "openPdf", "retry", "start", "startFast", "startSmart", "stop"]);
+  assert.deepEqual(Object.keys(ENTRY_ACTION_TITLES).sort(), [
+    "arxiv",
+    "detail",
+    "openPdf",
+    "retry",
+    "retryFast",
+    "retrySmart",
+    "start",
+    "startFast",
+    "startSmart",
+    "stop",
+  ]);
 });
 
 test("lookupFailure reports a failed info only when the paper is not local", () => {
@@ -396,7 +456,7 @@ test("entryRows shows authors, date, state and mode", () => {
 });
 
 test("statusTarget carries what the actions need", () => {
-  assert.deepEqual(statusTarget(status("ok", ALL_OK, { pdf: "/home/papers/2611.15404v1/out/x.pdf" })), {
+  assert.deepEqual(statusTarget(status("ok", ALL_OK, { pdf: "/home/papers/2611.15404v1/out/x.pdf", mode: "fast" })), {
     name: "2611.15404v1",
     workdir: "/home/papers/2611.15404v1",
     state: "ok",
@@ -404,6 +464,7 @@ test("statusTarget carries what the actions need", () => {
     arxiv_id: "2611.15404",
     version: 1,
     pdf: "/home/papers/2611.15404v1/out/x.pdf",
+    mode: "fast",
   });
   assert.equal(startingMarkdown("2611.15404"), "# 2611.15404\n\n正在启动");
 });
@@ -545,6 +606,7 @@ test("running detail marks the current stage and keeps the time in the metadata"
   const running = detail("running", ["ok", "ok", "ok"], {
     started_at: started,
     mode: "fast",
+    source_pages: 12,
     recent_actions: ["Read en.tex", "Write  parts/01.tex"],
   });
   assert.equal(
@@ -560,6 +622,10 @@ test("running detail marks the current stage and keeps the time in the metadata"
   assert.ok(!runningMarkdown(detail("running", ["ok", "ok", "ok"])).includes("会话最近的动作"));
   assert.deepEqual(runningRows(running, now), [
     { title: "arXiv", text: "2611.15404v1", link: "https://arxiv.org/abs/2611.15404v1" },
+    { title: "作者", text: "Ada Lovelace, Alan Turing" },
+    { title: "分类与发表日期", text: `cs.LG · ${dateText(META.published)}` },
+    { title: "加入日期", text: dateText("2026-11-25T08:00:00Z") },
+    { title: "页数", text: "原文 12 页" },
     { title: "模式", text: "fast" },
     { title: "开始时间", text: "2026-11-26 09:05" },
     { title: "总用时", text: "03:21" },
@@ -567,7 +633,7 @@ test("running detail marks the current stage and keeps the time in the metadata"
 });
 
 test("unfinished detail gives the reason and the next steps", () => {
-  const failed = detail("failed", ["ok", "ok", "ok", "ok", "compile_failed"], { stage: "compile", mode: "smart" });
+  const failed = detail("failed", ["ok", "ok", "ok", "ok", "compile_failed"], { stage: "compile", mode: "smart", source_pages: 12 });
   failed.status.stages[4].message = "latexmk exited\nwith 12";
   assert.equal(
     unfinishedMarkdown(failed),
@@ -577,18 +643,23 @@ test("unfinished detail gives the reason and the next steps", () => {
       "## 原因",
       "`compile` 失败：compile_failed latexmk exited with 12",
       "## 下一步",
-      "- 重试\n- 用 smart 模式重试\n- 查看日志",
+      "- 重试（smart）\n- 用 fast 重试\n- 查看日志",
     ].join("\n\n"),
   );
   assert.deepEqual(unfinishedRows(failed), [
     { title: "arXiv", text: "2611.15404v1", link: "https://arxiv.org/abs/2611.15404v1" },
+    { title: "作者", text: "Ada Lovelace, Alan Turing" },
+    { title: "分类与发表日期", text: `cs.LG · ${dateText(META.published)}` },
+    { title: "加入日期", text: dateText("2026-11-25T08:00:00Z") },
+    { title: "页数", text: "原文 12 页" },
     { title: "模式", text: "smart" },
     { title: "失败的阶段", text: "compile" },
     { title: "已完成的阶段数", text: "4 / 5" },
   ]);
-  const interrupted = detail("interrupted", ["ok", "ok", "ok"]);
+  const interrupted = { ...detail("interrupted", ["ok", "ok", "ok"], {}, null), addedAt: null };
   assert.ok(unfinishedMarkdown(interrupted).includes("fetch ✓ → precompile ✓ → mask ✓ → translate → compile"));
   assert.ok(unfinishedMarkdown(interrupted).includes("在 `translate` 阶段中断"));
+  assert.ok(unfinishedMarkdown(interrupted).includes("- 重试\n- 用 fast 重试\n- 用 smart 重试\n- 查看日志"));
   assert.deepEqual(unfinishedRows(interrupted).slice(1), [
     { title: "中断的阶段", text: "translate" },
     { title: "已完成的阶段数", text: "3 / 5" },
@@ -680,4 +751,79 @@ test("configErrors assigns stderr lines to form fields", () => {
 test("configFile follows TONGTU_HOME", () => {
   assert.equal(configFile("/Users/me", undefined), "/Users/me/.tongtu/config.toml");
   assert.equal(configFile("/Users/me", "/Users/me/.tongtu-dev"), "/Users/me/.tongtu-dev/config.toml");
+});
+
+test("shownAbstract prefers the Chinese abstract", () => {
+  assert.equal(shownAbstract(META), "An abstract.");
+  assert.equal(shownAbstract({ ...META, abstract_zh: null }), "An abstract.");
+  assert.equal(shownAbstract({ ...META, abstract_zh: "" }), "An abstract.");
+  assert.equal(shownAbstract({ ...META, abstract_zh: "中文摘要" }), "中文摘要");
+  assert.equal(shownAbstract(null), "");
+});
+
+test("completedMarkdown shows the Chinese abstract when there is one", () => {
+  const complete = detail("ok", ALL_OK, {}, { ...META, abstract_zh: "中文摘要" });
+  assert.equal(completedMarkdown(complete, null), "# Full Title\n\n中文摘要");
+});
+
+test("needsAbstractZh asks only for a paper with info and no Chinese abstract", () => {
+  assert.equal(needsAbstractZh(META), true);
+  assert.equal(needsAbstractZh({ ...META, abstract_zh: null }), true);
+  assert.equal(needsAbstractZh({ ...META, abstract_zh: "中文摘要" }), false);
+  assert.equal(needsAbstractZh(null), false);
+});
+
+test("withAbstractZh takes the Chinese abstract only from the same version", () => {
+  const translated = { ...META, title: "other", abstract_zh: "中文摘要" };
+  assert.deepEqual(withAbstractZh(META, translated), { ...META, abstract_zh: "中文摘要" });
+  assert.deepEqual(withAbstractZh(META, { ...translated, version: 2 }), META);
+  assert.deepEqual(withAbstractZh(META, { ...translated, arxiv_id: "2611.99999" }), META);
+  assert.deepEqual(withAbstractZh(META, { ...META, abstract_zh: null }), META);
+  assert.deepEqual(withAbstractZh(META, null), META);
+  assert.equal(withAbstractZh(null, translated), null);
+});
+
+test("apiKeyPlaceholder tells whether a key is set", () => {
+  assert.equal(apiKeySet(CONFIG), false);
+  assert.equal(apiKeyPlaceholder(CONFIG), "未设置");
+  const withKey = { ...CONFIG, [API_KEY_KEY]: "********" };
+  assert.equal(apiKeySet(withKey), true);
+  assert.equal(apiKeyPlaceholder(withKey), "已设置，留空表示不修改");
+  assert.equal(formValues(withKey)[API_KEY_KEY], "");
+});
+
+test("configChanges writes the key only when it is filled in", () => {
+  const withKey = { ...CONFIG, [API_KEY_KEY]: "********" };
+  assert.deepEqual(configChanges(withKey, formValues(withKey)).pairs, []);
+  assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "   " }).pairs, []);
+  assert.deepEqual(configChanges(CONFIG, { ...formValues(CONFIG), [API_KEY_KEY]: " sk-new " }).pairs, [API_KEY_KEY, '"sk-new"']);
+  assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "********" }).pairs, [API_KEY_KEY, '"********"']);
+  assert.deepEqual(CLEAR_API_KEY_PAIR, [API_KEY_KEY, '""']);
+});
+
+test("configChanges lists the changed abstract translation fields", () => {
+  const form = { ...formValues(CONFIG), "abstract.base_url": " https://chat.example.com ", "abstract.model": "deepseek-flash" };
+  assert.deepEqual(configChanges(CONFIG, form).pairs, ["abstract.base_url", "https://chat.example.com"]);
+});
+
+test("authorsText lists at most 12 authors", () => {
+  const names = Array.from({ length: 14 }, (_, index) => `A${index + 1}`);
+  assert.equal(SHOWN_AUTHORS, 12);
+  assert.equal(authorsText(names.slice(0, 1)), "A1");
+  assert.equal(authorsText(names.slice(0, 12)), names.slice(0, 12).join(", "));
+  assert.equal(authorsText(names.slice(0, 13)), `${names.slice(0, 12).join(", ")}, ...`);
+  assert.equal(authorsText(names), `${names.slice(0, 12).join(", ")}, ...`);
+});
+
+test("the author rows use authorsText", () => {
+  const many = { ...META, authors: Array.from({ length: 13 }, (_, index) => `A${index + 1}`) };
+  const expected = authorsText(many.authors);
+  assert.ok(expected.endsWith(", ..."));
+  const rows = [
+    completedRows(detail("ok", ALL_OK, {}, many)),
+    runningRows(detail("running", ["ok"], {}, many), NOW),
+    unfinishedRows(detail("failed", ["ok", "x"], { stage: "precompile" }, many)),
+    entryRows(lookup("2611.15404", null, many), ""),
+  ];
+  for (const found of rows) assert.equal(found.find((row) => row.title === "作者")?.text, expected);
 });

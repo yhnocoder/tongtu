@@ -16,6 +16,7 @@ import httpx
 import pytest
 import typer
 import typer.testing
+from rich.cells import cell_len
 from rich.progress import Progress
 from typer.testing import CliRunner
 
@@ -23,6 +24,7 @@ from tongtu import __version__, arxiv, cli
 from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session, StopReason, Usage
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.artifacts.fetch import CachedMeta, FetchManifest, FetchStatus, PaperMeta
+from tongtu.artifacts.precompile import PrecompileManifest, PrecompileStatus
 from tongtu.artifacts.status import (
     ABSENT_STATUS,
     PaperListing,
@@ -31,11 +33,21 @@ from tongtu.artifacts.status import (
     PaperSummary,
     RunCommand,
     RunMarker,
+    RunRecord,
 )
 from tongtu.artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
 from tongtu.manifests import load_manifest, write_manifest
-from tongtu.model.config import ModelsConfig, ModeName, config_entries, load_config, write_config
+from tongtu.model import chat
+from tongtu.model.config import (
+    SECRET_MASK,
+    AbstractConfig,
+    ModelsConfig,
+    ModeName,
+    config_entries,
+    load_config,
+    write_config,
+)
 from tongtu.pipeline import STAGES
 
 from .test_arxiv import ERROR_FEED, LATEST_FEED, OLD_STYLE_FEED, VERSIONED_FEED
@@ -425,7 +437,8 @@ def test_config_list_prints_the_defaults_without_writing(tmp_path: Path, monkeyp
     lines = result.stdout.splitlines()
     assert [line.split()[0] for line in lines] == [key for key, _value in config_entries(ModelsConfig())]
     assert lines[0].split() == ["modes.default", "smart"]
-    assert lines[-1].split() == ["pdf.crop_margins", "false"]
+    assert ["pdf.crop_margins", "false"] in [line.split() for line in lines]
+    assert lines[-1].split() == ["abstract.api_key"]
     assert [line.split() for line in lines if line.startswith("fonts.mono")] == [["fonts.mono"]]
     assert len({line.index(line.split()[1]) for line in lines if len(line.split()) == 2}) == 1
     assert not path.exists()
@@ -591,7 +604,7 @@ def test_config_menu_exits_from_the_last_line(tmp_path: Path, monkeypatch: pytes
 
 def test_config_menu_toggles_a_boolean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path(tmp_path, monkeypatch)
-    queue = menu_keys(monkeypatch, [UP, UP, ENTER, UP, ENTER, DOWN, ENTER])
+    queue = menu_keys(monkeypatch, [*[UP] * 5, ENTER, UP, ENTER, *[DOWN] * 4, ENTER])
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert queue == []
@@ -602,7 +615,7 @@ def test_config_menu_toggles_a_boolean(tmp_path: Path, monkeypatch: pytest.Monke
 def test_config_menu_keeps_an_unchanged_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
     path.write_text(TABLE, encoding="utf-8")
-    queue = menu_keys(monkeypatch, [UP, UP, ENTER, DOWN, DOWN, ENTER, DOWN, ENTER])
+    queue = menu_keys(monkeypatch, [*[UP] * 5, ENTER, DOWN, DOWN, ENTER, *[DOWN] * 4, ENTER])
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert queue == []
@@ -1012,6 +1025,19 @@ def test_run_keeps_the_run_marker_while_stages_run(tmp_path: Path, monkeypatch: 
     assert all(marker is not None and marker.mode == "smart" for marker in seen)
     assert not workdir.run_marker.exists()
     assert signal.getsignal(signal.SIGTERM) == previous
+    record = load_manifest(workdir.last_run, RunRecord)
+    assert record is not None and seen[0] is not None
+    assert (record.started_at, record.command, record.mode) == (seen[0].started_at, RunCommand.RUN, "smart")
+
+
+def test_run_overwrites_the_run_record_and_from_keeps_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_marker_probe(monkeypatch, [])
+    workdir = cli.Workdir(tmp_path / "paper")
+    assert runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path), "--mode", "fast"]).exit_code == 0
+    arguments = ["run", "2002.05202v1", "--workdir", str(workdir.path), "--from", "fetch", "--mode", "smart"]
+    assert runner.invoke(app, arguments).exit_code == 0
+    record = load_manifest(workdir.last_run, RunRecord)
+    assert record is not None and (record.command, record.mode) == (RunCommand.RUN, "smart")
 
 
 def test_stage_keeps_the_run_marker_while_the_stage_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1022,6 +1048,8 @@ def test_stage_keeps_the_run_marker_while_the_stage_runs(tmp_path: Path, monkeyp
     assert result.exit_code == 0
     assert [(marker.command, marker.mode) if marker else None for marker in seen] == [(RunCommand.STAGE, "smart")]
     assert not workdir.run_marker.exists()
+    record = load_manifest(workdir.last_run, RunRecord)
+    assert record is not None and (record.command, record.mode) == (RunCommand.STAGE, "smart")
 
 
 def test_stage_with_absent_upstream_writes_no_run_marker(tmp_path: Path) -> None:
@@ -1294,6 +1322,28 @@ def test_status_json_takes_the_mode_of_the_translate_manifest(tmp_path: Path) ->
     snapshot = status_json("2002.05202", "--workdir", str(workdir.path))
     assert (snapshot.running, snapshot.mode) == (False, "fast")
     assert next(state for state in snapshot.stages if state.name == "translate").status == "translate_failed"
+
+
+def write_run_record(workdir: cli.Workdir, mode: str) -> None:
+    write_manifest(workdir.last_run, RunRecord(started_at=STARTED_AT, command=RunCommand.RUN, mode=mode))
+
+
+def test_status_json_takes_the_mode_of_the_run_record_last(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    write_run_record(workdir, "smart")
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode == "smart"
+    write_manifest(workdir.manifest_path("translate"), TranslateManifest(status=TranslateStatus.OK, mode="fast"))
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode == "fast"
+    write_manifest(
+        workdir.run_marker, RunMarker(pid=os.getpid(), started_at=STARTED_AT, command=RunCommand.RUN, mode="smart")
+    )
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode == "smart"
+
+
+def test_status_json_ignores_an_unreadable_run_record(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch")
+    workdir.last_run.write_text("{", encoding="utf-8")
+    assert status_json("2002.05202", "--workdir", str(workdir.path)).mode is None
 
 
 def test_status_json_gives_the_four_output_files_once_they_exist(tmp_path: Path) -> None:
@@ -2105,6 +2155,7 @@ def test_list_json_summarizes_a_finished_paper(tmp_path: Path, monkeypatch: pyte
         added_at=datetime.fromtimestamp(fetch_time, UTC),
         updated_at=datetime.fromtimestamp(latest_time, UTC),
         started_at=None,
+        mode="smart",
         pdf=workdir.zh_pdf,
     )
 
@@ -2125,10 +2176,38 @@ def test_list_and_status_report_the_failed_stage(tmp_path: Path, monkeypatch: py
     summary = summaries_by_name(list_json())["1412.6980v8"]
     assert (summary.state, summary.stage) == (PaperState.FAILED, "mask")
     assert (summary.title, summary.primary_category, summary.pdf, summary.started_at) == (None, None, None, None)
+    assert summary.mode is None
     snapshot = status_json("1412.6980v8")
     assert (snapshot.state, snapshot.stage) == (PaperState.FAILED, "mask")
     assert (snapshot.pages, snapshot.source_pages) == (None, None)
     assert (snapshot.translate_seconds, snapshot.translate_cost_usd) == (None, None)
+
+
+def test_list_json_takes_the_mode_like_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    workdir = write_paper(
+        papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"precompile": "precompile_failed"}
+    )
+    write_run_record(workdir, "fast")
+    summary = summaries_by_name(list_json())["1412.6980v8"]
+    assert (summary.state, summary.mode) == (PaperState.FAILED, "fast")
+    assert summary.mode == status_json("1412.6980v8").mode
+
+
+def test_status_json_takes_the_source_pages_from_precompile_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    workdir = write_paper(papers, "1412.6980v8", arxiv_fetch_manifest("1412.6980", 8), {"mask": "mask_failed"})
+    precompiled = PrecompileManifest(status=PrecompileStatus.OK, report=COMPILE_REPORT.model_copy(update={"pages": 12}))
+    write_manifest(workdir.manifest_path("precompile"), precompiled)
+    snapshot = status_json("1412.6980v8")
+    assert (snapshot.state, snapshot.pages, snapshot.source_pages) == (PaperState.FAILED, None, 12)
+    baseline = COMPILE_REPORT.model_copy(update={"pages": 66})
+    write_manifest(workdir.manifest_path("compile"), CompileManifest(status=CompileStatus.OK, baseline=baseline))
+    assert status_json("1412.6980v8").source_pages == 12
+    write_manifest(workdir.manifest_path("precompile"), PrecompileManifest(status=PrecompileStatus.OK))
+    assert status_json("1412.6980v8").source_pages == 66
 
 
 def test_list_and_status_report_an_interrupted_paper_at_the_first_absent_manifest(
@@ -2582,3 +2661,198 @@ def test_info_dev_writes_the_cache_under_the_dev_home(tmp_path: Path, monkeypatc
     result = runner.invoke(app, ["info", "1412.6980v8", "--dev"])
     assert result.exit_code == 0
     assert (tmp_path / "dev" / "cache" / "arxiv" / "1412.6980v8.json").is_file()
+
+
+API_KEY = "sk-secret-key"
+
+
+def config_with_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = config_path(tmp_path, monkeypatch)
+    write_config(ModelsConfig(abstract=AbstractConfig(api_key=API_KEY)))
+    return path
+
+
+def test_config_list_masks_the_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_with_key(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "list"])
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[-1].split() == ["abstract.api_key", SECRET_MASK]
+    assert API_KEY not in result.output
+    result = runner.invoke(app, ["config", "list", "--json"])
+    values = json.loads(result.stdout)
+    assert values["abstract.api_key"] == SECRET_MASK
+    assert (values["abstract.base_url"], values["abstract.model"]) == ("https://api.deepseek.com", "deepseek-flash")
+    assert API_KEY not in result.output
+
+
+def test_config_list_json_gives_an_empty_unset_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    assert json.loads(runner.invoke(app, ["config", "list", "--json"]).stdout)["abstract.api_key"] == ""
+
+
+def test_config_set_writes_the_key_and_prints_the_mask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", "abstract.api_key", API_KEY])
+    assert result.exit_code == 0
+    assert result.stdout == f"abstract.api_key = {SECRET_MASK}\n"
+    assert loaded_config().abstract.api_key == API_KEY
+    assert f'api_key = "{API_KEY}"' in path.read_text(encoding="utf-8")
+
+
+def test_config_set_clears_the_key_with_an_empty_toml_string(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_with_key(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", "abstract.api_key", '""'])
+    assert result.exit_code == 0
+    assert result.stdout == "abstract.api_key = \n"
+    assert loaded_config().abstract.api_key == ""
+
+
+def test_config_menu_shows_the_key_masked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_with_key(tmp_path, monkeypatch)
+    before = path.read_text(encoding="utf-8")
+    queue = menu_keys(monkeypatch, [UP, UP, ENTER, DOWN, ENTER])
+    result = runner.invoke(app, ["config"], input="\n")
+    assert result.exit_code == 0, result.output
+    assert queue == []
+    assert SECRET_MASK in result.output
+    assert API_KEY not in result.output
+    assert path.read_text(encoding="utf-8") == before
+
+
+def fake_translation(monkeypatch: pytest.MonkeyPatch, reply: str | chat.ChatError) -> list[str]:
+    calls: list[str] = []
+
+    def translate_abstract(config: AbstractConfig, text: str) -> str:
+        calls.append(text)
+        if isinstance(reply, chat.ChatError):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(cli.chat, "translate_abstract", translate_abstract)
+    return calls
+
+
+def cached_abstract_zh(home: Path, key: str) -> str | None:
+    cached = load_manifest(home / "cache" / "arxiv" / f"{key}.json", CachedMeta)
+    assert cached is not None
+    return cached.meta.abstract_zh
+
+
+def info_json(*arguments: str) -> dict:
+    result = runner.invoke(app, ["info", *arguments, "--json"])
+    assert result.exit_code == 0, result.output
+    return json.loads(result.stdout)
+
+
+def test_info_zh_translates_and_saves_into_the_versioned_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("TONGTU_HOME", str(home))
+    write_config(ModelsConfig(abstract=AbstractConfig(api_key=API_KEY)))
+    calls = fake_translation(monkeypatch, "我们提出 Adam。")
+    wire_api(monkeypatch, VERSIONED_FEED)
+    assert info_json("1412.6980", "--zh")["abstract_zh"] == "我们提出 Adam。"
+    assert calls == ["We introduce Adam, an algorithm for first-order gradient-based optimization."]
+    assert cached_abstract_zh(home, "1412.6980v8") == "我们提出 Adam。"
+    assert info_json("1412.6980")["abstract_zh"] == "我们提出 Adam。"
+    assert info_json("1412.6980v8", "--zh")["abstract_zh"] == "我们提出 Adam。"
+    assert info_json("1412.6980v8", "--refresh", "--zh")["abstract_zh"] == "我们提出 Adam。"
+    assert len(calls) == 1
+
+
+def test_info_zh_writes_the_meta_file_of_the_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    meta_path = cli.Workdir(papers / "2412.19437v2").meta
+    write_manifest(meta_path, paper_meta("工作目录里的题目"))
+    fake_translation(monkeypatch, "中文摘要")
+    urls = wire_api(monkeypatch)
+    assert info_json("2412.19437v2", "--zh")["abstract_zh"] == "中文摘要"
+    meta = load_manifest(meta_path, PaperMeta)
+    assert meta is not None
+    assert (meta.title, meta.abstract_zh) == ("工作目录里的题目", "中文摘要")
+    assert cached_abstract_zh(papers.parent, "2412.19437v2") == "中文摘要"
+    assert urls == []
+
+
+def test_info_zh_with_a_translation_asks_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存").model_copy(update={"abstract_zh": "已有"}), STARTED_AT)
+    calls = fake_translation(monkeypatch, "新的")
+    assert info_json("2412.19437v2", "--zh")["abstract_zh"] == "已有"
+    assert calls == []
+
+
+def test_info_without_zh_asks_no_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存"), STARTED_AT)
+    calls = fake_translation(monkeypatch, "译文")
+    assert info_json("2412.19437v2")["abstract_zh"] is None
+    result = runner.invoke(app, ["info", "2412.19437v2"])
+    assert result.exit_code == 0
+    assert "abstract (zh)" not in result.stdout
+    assert calls == []
+
+
+def test_info_zh_without_a_key_still_prints_the_info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存"), STARTED_AT)
+
+    def refuse(url: str, **kwargs: object) -> httpx.Response:
+        raise AssertionError(url)
+
+    monkeypatch.setattr(httpx, "post", refuse)
+    result = runner.invoke(app, ["info", "2412.19437v2", "--zh"])
+    assert result.exit_code == 0
+    assert info_rows(result.stdout)["title"] == "缓存"
+    assert result.stderr.startswith("cannot translate the abstract of 2412.19437v2: ")
+    assert "abstract.api_key" in result.stderr
+    assert len(result.stderr.splitlines()) == 1
+    result = runner.invoke(app, ["info", "2412.19437v2", "--zh", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["abstract_zh"] is None
+    assert cached_abstract_zh(home, "2412.19437v2") is None
+
+
+def test_info_zh_reports_a_failed_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    write_config(ModelsConfig(abstract=AbstractConfig(api_key=API_KEY)))
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存"), STARTED_AT)
+    fake_translation(monkeypatch, chat.ChatError("https://api.deepseek.com/chat/completions answered HTTP 500"))
+    result = runner.invoke(app, ["info", "2412.19437v2", "--zh", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["abstract_zh"] is None
+    assert result.stderr == (
+        "cannot translate the abstract of 2412.19437v2: https://api.deepseek.com/chat/completions answered HTTP 500\n"
+    )
+    assert cached_abstract_zh(home, "2412.19437v2") is None
+
+
+def test_info_zh_reports_a_broken_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = papers_home(tmp_path, monkeypatch).parent
+    (home / "config.toml").parent.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text("[abstract\n", encoding="utf-8")
+    write_cache_entry(home, "2412.19437v2", paper_meta("缓存"), STARTED_AT)
+    calls = fake_translation(monkeypatch, "译文")
+    result = runner.invoke(app, ["info", "2412.19437v2", "--zh"])
+    assert result.exit_code == 0
+    assert result.stderr.startswith("cannot translate the abstract of 2412.19437v2: ")
+    assert "notvalidTOML" in squeeze(result.stderr)
+    assert calls == []
+
+
+def test_info_prints_the_chinese_abstract_after_the_english_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMNS", "24")
+    home = papers_home(tmp_path, monkeypatch).parent
+    abstract_zh = "我们提出一种基于一阶梯度的随机优化算法 Adam，它根据低阶矩的自适应估计更新参数。"
+    write_cache_entry(
+        home, "2412.19437v2", paper_meta("缓存").model_copy(update={"abstract_zh": abstract_zh}), STARTED_AT
+    )
+    result = runner.invoke(app, ["info", "2412.19437v2"])
+    assert result.exit_code == 0
+    english, chinese = result.stdout.split("\nabstract\n")[1].split("\n\nabstract (zh)\n")
+    assert english == "  摘要"
+    lines = chinese.splitlines()
+    assert len(lines) > 1
+    assert all(line.startswith("  ") and cell_len(line) <= 24 for line in lines)
+    assert "".join(lines).replace(" ", "") == abstract_zh.replace(" ", "")

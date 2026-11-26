@@ -1,4 +1,4 @@
-.PHONY: lint format install-hooks design
+.PHONY: lint format install-hooks design raycast
 
 lint:
 	uv run pre-commit run --all-files
@@ -12,3 +12,7 @@ install-hooks:
 
 design:
 	uv run scripts/check_design.py
+
+raycast:
+	cd raycast && npm install && npm run build
+	@echo "$(CURDIR)/raycast/dist"

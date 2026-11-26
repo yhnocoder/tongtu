@@ -13,6 +13,8 @@ MANIFESTS_DIRNAME = "manifests"
 
 RUN_MARKER_FILENAME = "running.json"
 
+LAST_RUN_FILENAME = "last_run.json"
+
 ENCODING = "utf-8"
 
 LOG_SUFFIX = ".jsonl"
@@ -56,6 +58,10 @@ class Workdir:
     @property
     def run_marker(self) -> Path:
         return self.path / RUN_MARKER_FILENAME
+
+    @property
+    def last_run(self) -> Path:
+        return self.path / LAST_RUN_FILENAME
 
     @property
     def src(self) -> Path:

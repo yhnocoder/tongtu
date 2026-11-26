@@ -160,6 +160,13 @@ def test_clean_from_fetch_removes_all_outputs(tmp_path: Path) -> None:
     assert first_pending(workdir) == "fetch"
 
 
+def test_clean_from_fetch_keeps_the_run_record(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    workdir.last_run.write_text("{}", encoding="utf-8")
+    clean_from(workdir, "fetch")
+    assert workdir.last_run.read_text(encoding="utf-8") == "{}"
+
+
 def test_clean_from_tolerates_a_missing_workdir(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / "absent")
     clean_from(workdir, "fetch")

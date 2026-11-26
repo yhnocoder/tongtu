@@ -48,6 +48,7 @@ from .artifacts.status import (
     PaperSummary,
     RunCommand,
     RunMarker,
+    RunRecord,
     StageState,
 )
 from .artifacts.translate import TranslateManifest
@@ -56,16 +57,17 @@ from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_prese
 from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest, write_manifest
+from .model import chat
 from .model.config import (
     FontFamily,
     FontsConfig,
     ModelsConfig,
     ModeName,
     Target,
-    config_entries,
     ensure_config_file,
     load_config,
     mode_target,
+    shown_entries,
     updated_config,
     write_config,
 )
@@ -518,9 +520,9 @@ def stage(
 
 @contextmanager
 def _running(workdir: Workdir, command: RunCommand, mode: str) -> Iterator[None]:
-    write_manifest(
-        workdir.run_marker, RunMarker(pid=os.getpid(), started_at=datetime.now(UTC), command=command, mode=mode)
-    )
+    started_at = datetime.now(UTC)
+    write_manifest(workdir.run_marker, RunMarker(pid=os.getpid(), started_at=started_at, command=command, mode=mode))
+    write_manifest(workdir.last_run, RunRecord(started_at=started_at, command=command, mode=mode))
 
     def terminate(signum: int, frame: FrameType | None) -> None:
         processes.terminate_active()
@@ -627,12 +629,19 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
         )
     marker = _live_marker(paper_workdir)
     translate_manifest = load_manifest(paper_workdir.manifest_path(translate.STAGE_NAME), TranslateManifest)
+    last_run = load_manifest(paper_workdir.last_run, RunRecord)
     if marker is not None:
         mode = marker.mode
+    elif translate_manifest is not None:
+        mode = translate_manifest.mode
     else:
-        mode = translate_manifest.mode if translate_manifest is not None else None
+        mode = last_run.mode if last_run is not None else None
     state, stage_name = _paper_state(stages, marker is not None)
     compiled = load_manifest(paper_workdir.manifest_path(compile.STAGE_NAME), CompileManifest)
+    precompiled = load_manifest(paper_workdir.manifest_path(precompile.STAGE_NAME), PrecompileManifest)
+    source_report = precompiled.report if precompiled is not None else None
+    if source_report is None and compiled is not None:
+        source_report = compiled.baseline
     session = translate_manifest.session if translate_manifest is not None else None
     log = SESSION_LOGS.get(stage_name or "")
     return PaperStatus(
@@ -651,7 +660,7 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
         glossary=_existing(paper_workdir.paper_glossary),
         notes=_existing(paper_workdir.notes),
         pages=compiled.report.pages if compiled is not None and compiled.report is not None else None,
-        source_pages=compiled.baseline.pages if compiled is not None and compiled.baseline is not None else None,
+        source_pages=source_report.pages if source_report is not None else None,
         translate_seconds=session.duration_seconds if session is not None else None,
         translate_cost_usd=session.usage.cost_usd if session is not None and session.usage is not None else None,
         recent_actions=_recent_actions(log(paper_workdir)) if state == PaperState.RUNNING and log else [],
@@ -740,6 +749,7 @@ def _paper_summary(paper_workdir: Workdir, fetched: FetchManifest | None) -> Pap
         added_at=_modified_at(fetch_manifest) if fetch_manifest.is_file() else directory_time,
         updated_at=max(manifest_times, default=directory_time),
         started_at=snapshot.started_at,
+        mode=snapshot.mode,
         pdf=snapshot.pdf,
     )
 
@@ -797,6 +807,9 @@ def info(
         bool, typer.Option("--json", help="print the paper info as one JSON object (UTF-8), the format of meta.json")
     ] = False,
     refresh: Annotated[bool, typer.Option("--refresh", help="ask arXiv again instead of reading the cache")] = False,
+    zh: Annotated[
+        bool, typer.Option("--zh", help="translate the abstract into Chinese when it has no translation yet")
+    ] = False,
     dev: DevOpt = False,
 ) -> None:
     _apply_dev(dev)
@@ -813,11 +826,30 @@ def info(
         reason = " ".join(str(error).split())
         error_console.print(f"cannot get info for {name}: {reason}", markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(EXIT_FAILURE) from error
+    if zh and not found.meta.abstract_zh:
+        found = _with_translated_abstract(found)
     if as_json:
         typer.echo(found.meta.model_dump_json(indent=2).encode(ENCODING))
         return
     for line in _info_lines(found, datetime.now(UTC), console.width):
         console.print(line, markup=False, highlight=False, soft_wrap=True)
+
+
+def _with_translated_abstract(found: arxiv.FoundMeta) -> arxiv.FoundMeta:
+    config, reason = load_config()
+    if config is not None:
+        try:
+            return arxiv.save_abstract_zh(found, chat.translate_abstract(config.abstract, found.meta.abstract))
+        except chat.ChatError as error:
+            reason = str(error)
+    name = arxiv.versioned_id(found.meta.arxiv_id, found.meta.version)
+    error_console.print(
+        f"cannot translate the abstract of {name}: {' '.join(reason.split())}",
+        markup=False,
+        highlight=False,
+        soft_wrap=True,
+    )
+    return found
 
 
 def _info_lines(found: arxiv.FoundMeta, now: datetime, width: int) -> list[str]:
@@ -841,7 +873,10 @@ def _info_lines(found: arxiv.FoundMeta, now: datetime, width: int) -> list[str]:
     label_width = max(len(label) for label, _value in present) + COLUMN_GAP
     lines = [f"{label:<{label_width}}{value}" for label, value in present]
     abstract = textwrap.fill(meta.abstract, width=width, initial_indent="  ", subsequent_indent="  ")
-    return [*lines, "", "abstract", abstract]
+    if not meta.abstract_zh:
+        return [*lines, "", "abstract", abstract]
+    abstract_zh = [f"  {line.plain.rstrip()}" for line in Text(meta.abstract_zh).wrap(console, width - 2)]
+    return [*lines, "", "abstract", abstract, "", "abstract (zh)", *abstract_zh]
 
 
 def _source_text(found: arxiv.FoundMeta, now: datetime) -> str:
@@ -1156,7 +1191,7 @@ def _loaded_config(loaded: tuple[ModelsConfig | None, str]) -> ModelsConfig:
 
 def _saved(config: ModelsConfig, *keys: str) -> None:
     write_config(config)
-    values = dict(config_entries(config))
+    values = dict(shown_entries(config))
     for key in dict.fromkeys(keys):
         console.print(f"{key} = {_display(values[key])}")
 
@@ -1234,7 +1269,7 @@ def config_menu(ctx: typer.Context, dev: DevOpt = False) -> None:
     config = _loaded_config(ensure_config_file())
     cursor = 0
     while True:
-        entries = config_entries(config)
+        entries = shown_entries(config)
         cursor = _choose([*_entry_lines(entries), MENU_EXIT], cursor)
         if cursor == len(entries):
             return
@@ -1245,7 +1280,7 @@ def config_menu(ctx: typer.Context, dev: DevOpt = False) -> None:
 @config_app.command("list")
 def config_list(dev: DevOpt = False, as_json: JsonOpt = False) -> None:
     _apply_dev(dev)
-    entries = config_entries(_loaded_config(load_config()))
+    entries = shown_entries(_loaded_config(load_config()))
     if as_json:
         values = {key: value.value if isinstance(value, Enum) else value for key, value in entries}
         typer.echo(json.dumps(values, ensure_ascii=False, indent=2).encode(ENCODING))

@@ -135,15 +135,47 @@ def find_meta(arxiv_id: str, version: int | None = None, *, refresh: bool = Fals
             meta_path = Workdir(papers_dir() / key).meta
             meta = load_manifest(meta_path, PaperMeta)
             if meta is not None:
-                return FoundMeta(meta, MetaSource.WORKDIR, datetime.fromtimestamp(meta_path.stat().st_mtime, UTC))
+                fetched_at = datetime.fromtimestamp(meta_path.stat().st_mtime, UTC)
+                return FoundMeta(_with_abstract_zh(meta), MetaSource.WORKDIR, fetched_at)
         cached = load_manifest(_cache_path(key), CachedMeta)
         if cached is not None and (version is not None or _fresh(cached.fetched_at)):
-            return FoundMeta(cached.meta, MetaSource.CACHE, cached.fetched_at)
-    meta = query(arxiv_id, version)
+            return FoundMeta(_with_abstract_zh(cached.meta), MetaSource.CACHE, cached.fetched_at)
+    meta = _with_abstract_zh(query(arxiv_id, version))
     fetched_at = datetime.now(UTC)
     for cache_key in dict.fromkeys((key, versioned_id(normalized, meta.version))):
         write_manifest(_cache_path(cache_key), CachedMeta(fetched_at=fetched_at, meta=meta))
     return FoundMeta(meta, MetaSource.ARXIV, fetched_at)
+
+
+def save_abstract_zh(found: FoundMeta, abstract_zh: str) -> FoundMeta:
+    key = _versioned_key(found.meta)
+    cache_path = _cache_path(key)
+    cached = load_manifest(cache_path, CachedMeta)
+    entry = cached or CachedMeta(fetched_at=found.fetched_at, meta=found.meta)
+    write_manifest(cache_path, entry.model_copy(update={"meta": _translated(entry.meta, abstract_zh)}))
+    meta_path = Workdir(papers_dir() / key).meta
+    workdir_meta = load_manifest(meta_path, PaperMeta)
+    if workdir_meta is not None:
+        write_manifest(meta_path, _translated(workdir_meta, abstract_zh))
+    return FoundMeta(_translated(found.meta, abstract_zh), found.source, found.fetched_at)
+
+
+def _translated(meta: PaperMeta, abstract_zh: str) -> PaperMeta:
+    return meta.model_copy(update={"abstract_zh": abstract_zh})
+
+
+def _versioned_key(meta: PaperMeta) -> str:
+    return versioned_id(normalize_arxiv_id(meta.arxiv_id), meta.version)
+
+
+def _with_abstract_zh(meta: PaperMeta) -> PaperMeta:
+    key = _versioned_key(meta)
+    workdir_meta = load_manifest(Workdir(papers_dir() / key).meta, PaperMeta)
+    cached = load_manifest(_cache_path(key), CachedMeta)
+    for source in (workdir_meta, cached.meta if cached is not None else None):
+        if source is not None and source.abstract_zh:
+            return _translated(meta, source.abstract_zh)
+    return meta
 
 
 def _cache_path(key: str) -> Path:
