@@ -63,6 +63,8 @@ def test_a_glossary_file_accepts_the_three_optional_fields(home: Path, paper: Pa
         {"do_not_translate": [""]},
         {"terms": {"LLM": "大模型"}, "do_not_translate": ["LLMs"]},
         {"terms": {"long context": "长上下文", "Long-Contexts": "长语境"}},
+        {"terms": {"cache": "缓存", "caches": "缓冲区"}},
+        {"terms": {"loss": "损失", "Losses": "损耗"}},
         ["LLM"],
     ],
 )
@@ -126,6 +128,15 @@ def test_the_highest_layer_wins_for_the_same_normalized_word(home: Path, paper: 
     assert chosen.fixed.terms == (("KV cache", "键值缓存"),)
     assert chosen.fixed.do_not_translate == ("long contexts",)
     assert chosen.fixed.style == "论文级风格"
+
+
+def test_a_user_entry_covers_learned_entries_that_differ_by_a_plural_ending(home: Path, paper: Path) -> None:
+    write(home / "glossary.learned.json", {"terms": {"kv-caches": "KV 缓存", "batch": "批"}})
+    write(paper / "glossary.json", {"terms": {"KV cache": "键值缓存"}})
+    masked = "Each batch reads the KV cache, and all kv-caches stay on the device.\n"
+    chosen = glossary.load_selection(masked, paper, (), env(home))
+    assert chosen.fixed.terms == (("KV cache", "键值缓存"),)
+    assert chosen.learned == Glossary(terms=(("batch", "批"),))
 
 
 def test_a_lower_layer_style_survives_when_higher_layers_write_none(home: Path, paper: Path) -> None:

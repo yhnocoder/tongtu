@@ -247,7 +247,7 @@ COMMAND_NAME_RE = re.compile(r"\\[A-Za-z@]+")
 
 SECTION_HEADING_RE = re.compile(r"\\(?:sub){0,2}section\*?\s*(?:\[[^\]]*\])?\s*\{")
 
-PLURAL_SUFFIX_RE = re.compile(r"(?:es|s)$")
+PLURAL_SUFFIXES: tuple[str, ...] = ("s", "es")
 
 COMPOUND_HYPHEN_BEFORE = r"(?<!(?<!-)-)"
 
@@ -505,9 +505,19 @@ def kept_word_in_source(word: str, source_text: str) -> bool:
     return hits(word, source_text, exact=True, in_compounds=False)
 
 
-def term_key(word: str) -> str:
-    collapsed = " ".join(word.replace("-", " ").split()).casefold()
-    return PLURAL_SUFFIX_RE.sub("", collapsed)
+def normalized_term(word: str) -> str:
+    return " ".join(word.replace("-", " ").split()).casefold()
+
+
+def term_forms(word: str) -> frozenset[str]:
+    base = normalized_term(word)
+    added = {base + suffix for suffix in PLURAL_SUFFIXES}
+    removed = {base.removesuffix(suffix) for suffix in PLURAL_SUFFIXES if base.endswith(suffix)}
+    return frozenset({base, *added, *removed})
+
+
+def same_term(first: str, second: str) -> bool:
+    return normalized_term(first) in term_forms(second)
 
 
 def kept_word_conflicts(terms: Mapping[str, str], do_not_translate: Sequence[str]) -> list[tuple[str, str, str]]:
@@ -538,14 +548,14 @@ def parse_glossary(content: str, origin: str) -> Glossary:
     )
     seen: dict[str, list[tuple[str, str | None]]] = {}
     for entry in glossary.entries():
-        same = seen.setdefault(term_key(entry[0]), [])
-        for previous in same:
-            if previous != entry and not _both_kept(previous, entry):
-                raise GlossaryFormatError(
-                    f"{origin} gives two conflicting records for the same word: "
-                    f"{_describe_entry(previous)} and {_describe_entry(entry)}"
-                )
-        same.append(entry)
+        for form in term_forms(entry[0]):
+            for previous in seen.get(form, []):
+                if previous != entry and not _both_kept(previous, entry):
+                    raise GlossaryFormatError(
+                        f"{origin} gives two conflicting records for the same word: "
+                        f"{_describe_entry(previous)} and {_describe_entry(entry)}"
+                    )
+        seen.setdefault(normalized_term(entry[0]), []).append(entry)
     return glossary
 
 
@@ -632,8 +642,8 @@ def merge_glossaries(glossaries: Sequence[Glossary]) -> Glossary:
     style: str | None = None
     for glossary in glossaries:
         layer = list(dict.fromkeys(glossary.entries()))
-        keys = {term_key(word) for word, _translation in layer}
-        entries = [entry for entry in entries if term_key(entry[0]) not in keys]
+        forms = {form for word, _translation in layer for form in term_forms(word)}
+        entries = [entry for entry in entries if normalized_term(entry[0]) not in forms]
         entries.extend(layer)
         if glossary.style is not None:
             style = glossary.style or None

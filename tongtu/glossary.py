@@ -22,9 +22,11 @@ from .validation import (
     kept_word_conflicts,
     kept_word_in_source,
     merge_glossaries,
+    normalized_term,
     parse_glossary,
+    same_term,
     searchable,
-    term_key,
+    term_forms,
 )
 from .workdir import ENCODING
 
@@ -86,7 +88,7 @@ def read_layers(paper_dir: Path, cli_paths: Sequence[Path], env: Mapping[str, st
 def select(layers: Layers, masked: str) -> Selection:
     text = searchable(masked)
     user = merge_glossaries([layer.glossary for layer in layers.user])
-    user_keys = {term_key(word) for word, _translation in user.entries()}
+    user_forms = {form for word, _translation in user.entries() for form in term_forms(word)}
     unmatched = tuple(
         f"{_origin(layers.user, word)}: {word!r} does not occur in this paper"
         for word, translation in user.entries()
@@ -103,8 +105,8 @@ def select(layers: Layers, masked: str) -> Selection:
         raise GlossaryError(f"the translation of a term must keep the do-not-translate words it contains: {listed}")
     learned = Glossary() if layers.learned is None else layers.learned.glossary
     unshadowed = Glossary(
-        terms=tuple(entry for entry in learned.terms if term_key(entry[0]) not in user_keys),
-        do_not_translate=tuple(word for word in learned.do_not_translate if term_key(word) not in user_keys),
+        terms=tuple(entry for entry in learned.terms if normalized_term(entry[0]) not in user_forms),
+        do_not_translate=tuple(word for word in learned.do_not_translate if normalized_term(word) not in user_forms),
     )
     return Selection(fixed=fixed, learned=_matching(unshadowed, text), unmatched=unmatched)
 
@@ -136,7 +138,7 @@ def validation_glossary(selection: Selection, session: Glossary) -> Glossary:
 
 
 def paper_glossary(selection: Selection, session: Glossary) -> PaperGlossary:
-    fixed_keys = {term_key(word) for word, _translation in selection.fixed.entries()}
+    fixed_forms = {form for word, _translation in selection.fixed.entries() for form in term_forms(word)}
     initial = set(selection.learned.entries())
     terms = [
         PaperTerm(word=word, translation=translation, source="user") for word, translation in selection.fixed.terms
@@ -144,7 +146,7 @@ def paper_glossary(selection: Selection, session: Glossary) -> PaperGlossary:
     kept = [PaperKeptWord(word=word, source="user") for word in selection.fixed.do_not_translate]
     for entry in session.entries():
         word, translation = entry
-        if term_key(word) in fixed_keys:
+        if normalized_term(word) in fixed_forms:
             continue
         source: Literal["learned", "new"] = "learned" if entry in initial else "new"
         if translation is None:
@@ -155,8 +157,10 @@ def paper_glossary(selection: Selection, session: Glossary) -> PaperGlossary:
 
 
 def grow(learned: Glossary, selection: Selection, session: Glossary) -> tuple[Glossary, int]:
-    known = {term_key(word) for word, _translation in (*learned.entries(), *selection.fixed.entries())}
-    added = [entry for entry in session.entries() if term_key(entry[0]) not in known]
+    known = {
+        form for word, _translation in (*learned.entries(), *selection.fixed.entries()) for form in term_forms(word)
+    }
+    added = [entry for entry in session.entries() if normalized_term(entry[0]) not in known]
     grown = Glossary(
         terms=(*learned.terms, *((word, translation) for word, translation in added if translation is not None)),
         do_not_translate=(*learned.do_not_translate, *(word for word, translation in added if translation is None)),
@@ -229,9 +233,8 @@ def _occurs(word: str, translation: str | None, text: str) -> bool:
 
 
 def _origin(layers: Sequence[Layer], word: str) -> Path:
-    key = term_key(word)
     return next(
         layer.path
         for layer in reversed(layers)
-        if any(term_key(entry_word) == key for entry_word, _translation in layer.glossary.entries())
+        if any(same_term(entry_word, word) for entry_word, _translation in layer.glossary.entries())
     )

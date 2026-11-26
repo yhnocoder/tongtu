@@ -487,6 +487,26 @@ def test_hits_matches_whole_words_with_plurals(word: str, text: str, expected: b
     assert validation.hits(word, text) is expected
 
 
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        ("cache", "caches", True),
+        ("batch", "batches", True),
+        ("loss", "losses", True),
+        ("class", "classes", True),
+        ("box", "boxes", True),
+        ("KV cache", "kv-caches", True),
+        ("Long  Context", "long-contexts", True),
+        ("plan", "plane", False),
+        ("cache", "cached", False),
+        ("batches", "batch", True),
+    ],
+)
+def test_same_term_ignores_case_hyphens_and_a_plural_ending(first: str, second: str, expected: bool) -> None:
+    assert validation.same_term(first, second) is expected
+    assert validation.same_term(second, first) is expected
+
+
 def test_exact_hits_respect_case() -> None:
     assert validation.hits("Adafactor", "the adafactor optimizer") is True
     assert validation.hits("Adafactor", "the adafactor optimizer", exact=True) is False
