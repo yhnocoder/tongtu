@@ -390,3 +390,18 @@ def test_ensure_config_file_writes_the_defaults_once(tmp_path: Path, monkeypatch
     config, _detail = ensure_config_file()
     assert config is not None
     assert config.modes.default is ModeName.FAST
+
+
+def test_an_invalid_field_is_reported_without_its_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    detail = failed(
+        tmp_path, monkeypatch, '[abstracts]\napi_key = "sk-FAKE-SECRET-1"\n\n[abstract]\napi_key = 123456\n'
+    )
+    assert "abstracts: Extra inputs are not permitted" in detail
+    assert "abstract.api_key: Input should be a valid string" in detail
+    assert "sk-FAKE-SECRET-1" not in detail
+    assert "123456" not in detail
+
+
+def test_the_api_key_is_read_without_surrounding_whitespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(tmp_path, monkeypatch, '[abstract]\napi_key = "  sk-FAKE-SECRET-1\\n"\n')
+    assert config.abstract.api_key == "sk-FAKE-SECRET-1"

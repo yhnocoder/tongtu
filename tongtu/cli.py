@@ -59,6 +59,7 @@ from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest, write_manifest
 from .model import chat
 from .model.config import (
+    SECRET_KEYS,
     FontFamily,
     FontsConfig,
     ModelsConfig,
@@ -69,6 +70,7 @@ from .model.config import (
     mode_target,
     shown_entries,
     updated_config,
+    validation_lines,
     write_config,
 )
 from .model.work import AGENTRUN_EXECUTABLE, agentrun_executable
@@ -842,6 +844,8 @@ def _with_translated_abstract(found: arxiv.FoundMeta) -> arxiv.FoundMeta:
             return arxiv.save_abstract_zh(found, chat.translate_abstract(config.abstract, found.meta.abstract))
         except chat.ChatError as error:
             reason = str(error)
+        except Exception as error:  # why(#191): 摘要翻译出任何异常时论文信息仍要输出，原因只写类型名，避免带出密钥
+            reason = f"unexpected {type(error).__name__}"
     name = arxiv.versioned_id(found.meta.arxiv_id, found.meta.version)
     error_console.print(
         f"cannot translate the abstract of {name}: {' '.join(reason.split())}",
@@ -1163,8 +1167,8 @@ def _display(value: object) -> str:
 
 
 def _print_validation_error(error: ValidationError) -> None:
-    for detail in error.errors():
-        error_console.print(f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}")
+    for line in validation_lines(error):
+        error_console.print(line, markup=False, highlight=False)
 
 
 def _entry_lines(entries: list[tuple[str, object]]) -> list[str]:
@@ -1172,7 +1176,9 @@ def _entry_lines(entries: list[tuple[str, object]]) -> list[str]:
     return [f"{key:<{width}}{_display(value)}" for key, value in entries]
 
 
-def _parse_value(text: str) -> object:
+def _parse_value(key: str, text: str) -> object:
+    if key in SECRET_KEYS:
+        return text
     if text == "":
         return None
     try:
@@ -1242,7 +1248,7 @@ def _edit_text(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
         if text == current:
             return config
         try:
-            changed = updated_config(config, key, _parse_value(text))
+            changed = updated_config(config, key, _parse_value(key, text))
         except ValidationError as error:
             _print_validation_error(error)
             continue
@@ -1297,7 +1303,7 @@ def config_set(
             metavar="KEY VALUE [KEY VALUE ...]",
             help=(
                 "dotted keys as tongtu config list prints them, each followed by a TOML value, or plain text taken "
-                "as a string; an empty string clears the field"
+                "as a string; an empty string clears the field; abstract.api_key always takes the text as it is"
             ),
         ),
     ],
@@ -1310,7 +1316,7 @@ def config_set(
     keys = pairs[::2]
     for key, value in zip(keys, pairs[1::2], strict=True):
         try:
-            config = updated_config(config, key, _parse_value(value))
+            config = updated_config(config, key, _parse_value(key, value))
         except KeyError:
             error_console.print(f"config key {key} does not exist; run tongtu config list to see the keys")
             raise typer.Exit(EXIT_USAGE) from None

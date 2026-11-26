@@ -146,7 +146,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
       <ul>
         <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。标准输入不是终端时退出 2。</li>
         <li><code>tongtu config list</code> 每行列出一个配置项及其当前值。配置文件不存在时列出默认值，不写文件。<code>--json</code> 改为输出一个 JSON 对象，格式见<a href="#config-json">tongtu config list --json</a>。</li>
-        <li><code>tongtu config set KEY VALUE [KEY VALUE ...]</code> 修改一项或多项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。各组按顺序应用到同一份配置上，全部通过后写一次文件，每个改动的键输出一行「键 = 新值」。参数个数为 0 或奇数、任何一组的键不存在或值不合法时退出 2，不写文件。</li>
+        <li><code>tongtu config set KEY VALUE [KEY VALUE ...]</code> 修改一项或多项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。<code>abstract.api_key</code> 的值不经过 TOML 解析，一律按原文当作字符串，空字符串清除密钥。各组按顺序应用到同一份配置上，全部通过后写一次文件，每个改动的键输出一行「键 = 新值」。参数个数为 0 或奇数、任何一组的键不存在或值不合法时退出 2，不写文件。</li>
         <li><code>tongtu config open</code> 输出配置文件的路径并打开它。环境变量 <code>EDITOR</code> 非空时用它打开，否则用系统默认的程序。</li>
       </ul>
       <p>配置文件不存在时，<code>tongtu config</code> 与 <code>open</code> 先写出一份包含全部默认值的文件；<code>set</code> 在默认值上修改，修改成功时写出文件。校验失败时每条错误输出一行，格式是「键: 原因」。配置文件存在但加载失败时，<code>config</code>、<code>list</code>、<code>set</code> 输出错误并退出 1。<code>config</code> 与 <code>set</code> 每次修改都整份重写文件，文件里原有的注释不保留。</p>
@@ -246,7 +246,7 @@ base_url = "https://api.deepseek.com"
 model    = "deepseek-flash"
 api_key  = ""</code></pre>
   <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 3600 秒。配置里出现未知字段时，加载配置报错。文件可以不存在，这时使用本节列出的值；文件里没写的字段也取本节的值。文件由 <code>tongtu config</code> 写出和修改。</p>
-  <p><code>[abstract]</code> 是摘要翻译用的聊天接口，见<a href="#abstract-chat">摘要翻译</a>。<code>api_key</code> 为空表示不翻译摘要。<code>tongtu config</code> 的选单、<code>config list</code>（含 <code>--json</code>）以及 <code>config set</code> 输出的「键 = 新值」里，<code>abstract.api_key</code> 不为空时一律显示成固定的掩码 <code>********</code>，不输出原值，因为这些输出会出现在终端与启动器插件里；<code>config set abstract.api_key &lt;值&gt;</code> 照常写入原值，<code>config set abstract.api_key '""'</code> 清除它。</p>
+  <p><code>[abstract]</code> 是摘要翻译用的聊天接口，见<a href="#abstract-chat">摘要翻译</a>。<code>api_key</code> 为空表示不翻译摘要。<code>tongtu config</code> 的选单、<code>config list</code>（含 <code>--json</code>）以及 <code>config set</code> 输出的「键 = 新值」里，<code>abstract.api_key</code> 不为空时一律显示成固定的掩码 <code>********</code>，不输出原值，因为这些输出会出现在终端与启动器插件里；<code>config set abstract.api_key &lt;值&gt;</code> 照常写入原值，<code>config set abstract.api_key ''</code> 清除它。读入的密钥去掉首尾空白。配置文件的字段校验失败时，错误只写「带点的位置: 说明」，不写字段的值，因为写错的表名或类型会让密钥出现在校验错误里。</p>
 
   <h3>manifest</h3>
   <p>每个阶段结束时写 <code>build/manifests/&lt;阶段&gt;.json</code>。各阶段的 manifest 继承同一个基类，<code>status</code> 在 JSON 里排第一。<code>run</code> 与 <code>status</code> 只读 manifest 判断一个阶段是否完成。</p>
@@ -685,7 +685,7 @@ class Usage(BaseModel):
     thinking_tokens: int | None      # output_tokens 当中用于思考的部分，只有 claude-code 有值</code></pre>
   <p><code>thinking_tokens</code> 包含在 <code>output_tokens</code> 之内，不另外计费。它与 <code>cost_usd</code> 一样只有 claude-code 有值，取自 claude-code 原始输出的 result 行。agentrun 的结束事件没有这两项数据，所以暂时从原始输出读取。</p>
   <h3 id="abstract-chat">摘要翻译</h3>
-  <p><code>tongtu info --zh</code> 的摘要翻译是 agent 会话之外唯一的模型调用：它直接请求 <code>config.toml</code> 的 <code>[abstract]</code> 指定的 OpenAI 兼容聊天接口（<code>POST &lt;base_url&gt;/chat/completions</code>），一条 system 消息是写在 <code>tongtu/model/chat.py</code> 里的提示词，一条 user 消息是英文摘要。理由是启动一次 agent 会话对一段摘要来说太慢。请求关闭 DeepSeek 的思考模式（<code>"thinking": {"type": "disabled"}</code>）以缩短耗时，这个参数对其他兼容服务是否有效不作保证。超时 <code>ABSTRACT_TIMEOUT_SECONDS = 60</code>，<code>ABSTRACT_TEMPERATURE = 0.2</code>。没有密钥、网络错误、非 2xx 与响应里取不到文本都是预期内的失败，由 <code>info</code> 报告；密钥不写进任何日志、错误信息或输出。标题不翻译。</p>
+  <p><code>tongtu info --zh</code> 的摘要翻译是 agent 会话之外唯一的模型调用：它直接请求 <code>config.toml</code> 的 <code>[abstract]</code> 指定的 OpenAI 兼容聊天接口（<code>POST &lt;base_url&gt;/chat/completions</code>），一条 system 消息是写在 <code>tongtu/model/chat.py</code> 里的提示词，一条 user 消息是英文摘要。理由是启动一次 agent 会话对一段摘要来说太慢。请求关闭 DeepSeek 的思考模式（<code>"thinking": {"type": "disabled"}</code>）以缩短耗时，这个参数对其他兼容服务是否有效不作保证。超时 <code>ABSTRACT_TIMEOUT_SECONDS = 60</code>，<code>ABSTRACT_TEMPERATURE = 0.2</code>。没有密钥、密钥含空白、控制字符或非 ASCII 字符（不发请求）、网络错误、非 2xx 与响应里取不到文本都是预期内的失败，由 <code>info</code> 报告；其他异常同样只让翻译失败，原因只写异常的类型名。密钥不写进任何日志、错误信息或输出：错误信息里的接口只写主机名，网络错误只写异常的类型名，因为 httpx 的异常文本可能带请求头，<code>base_url</code> 也可能带用户信息。标题不翻译。</p>
   <h3>会话记下的问题</h3>
   <p>每次 agent 会话结束前，按 skill 的要求在会话目录写一个 <code>notes.json</code>，逐条记下这次遇到的问题、当时的处理办法和预期的解决方法。没有遇到问题时写空列表。会话结束后，通途读这个文件，给每条加上会话的名字，写进 <code>out/&lt;ID&gt;.notes.json</code>，然后删掉会话目录里的那一份。一个会话的条目与它的工作成果同存亡：precompile 与 compile 每次运行都从头做，开始时先去掉自己的修复会话以前写进去的条目；translate 的条目在会话目录被清空时（<code>--from</code> 或 <code>stage translate</code>）去掉，直接采用已有译文时保留，接着已有译文再启动会话时新条目追加在已有条目之后。</p>
   <p>通途只收集这些条目。<code>notes.json</code> 读不出来或格式不对时记一条 warning，阶段的状态不受影响。条目不参加判定，也不触发后续动作；之后由人或别的工具读这个文件，决定怎样补充 skill、规则或校验脚本。</p>
