@@ -14,6 +14,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+import typer
+import typer.testing
 from rich.progress import Progress
 from typer.testing import CliRunner
 
@@ -25,7 +27,7 @@ from tongtu.artifacts.status import ABSENT_STATUS, PaperStatus, RunCommand, RunM
 from tongtu.artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
 from tongtu.manifests import load_manifest, write_manifest
-from tongtu.model.config import CONFIG_TEMPLATE
+from tongtu.model.config import ModelsConfig, ModeName, config_entries, load_config, write_config
 from tongtu.pipeline import STAGES
 
 from .test_arxiv import ERROR_FEED, LATEST_FEED, VERSIONED_FEED
@@ -113,49 +115,31 @@ def written_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def test_setup_writes_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_without_config_uses_the_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup"])
-    assert result.exit_code == 0
-    assert path.read_text(encoding="utf-8") == CONFIG_TEMPLATE
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-
-
-def test_setup_does_not_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    path.write_text("手改过的配置\n", encoding="utf-8")
-    result = runner.invoke(app, ["setup"])
-    assert result.exit_code == 0
-    assert path.read_text(encoding="utf-8") == "手改过的配置\n"
-    assert "notoverwriting" in squeeze(result.stdout)
-
-
-def test_setup_rejects_the_interactive_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = config_path(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["setup", "-i"])
-    assert result.exit_code == 2
-    assert not path.exists()
-
-
-def test_doctor_without_config_exits_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path(tmp_path, monkeypatch)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == cli.EXIT_NOT_CONFIGURED
-    output = squeeze(result.stdout)
-    assert "tongtusetup" in output
-    assert "toolchainandfontscomplete" in output
-    assert "fetch,precompileandmaskstillcan" in output
-    assert calls == [[cli.XELATEX, "--version"]]
+    assert result.exit_code == 0
+    assert f"[ok]config.tomlmodes,fontsandpdfoptions{path}absent;usingthedefaults" in squeeze(result.stdout)
+    assert [command[1:] for command in calls if command[1:2] == ["doctor"]] == [
+        ["doctor", "claude-code", "--json", "--model", "claude-sonnet-5-5"],
+        ["doctor", "claude-code", "--json", "--model", "claude-opus-5-5"],
+    ]
+    assert not path.exists()
 
 
 def test_doctor_with_unreadable_config_exits_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path(tmp_path, monkeypatch).write_text("[modes\n", encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    fake_xelatex_version(monkeypatch, VERSION_2026)
+    calls = fake_xelatex_version(monkeypatch, VERSION_2026)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_NOT_CONFIGURED
+    output = squeeze(result.stdout)
+    assert "[missing]config.toml" in output
+    assert "toolchainandfontscomplete" in output
+    assert "fetch,precompileandmaskstillcan" in output
+    assert calls == [[cli.XELATEX, "--version"]]
 
 
 def test_doctor_reports_an_old_roles_config_as_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,7 +167,7 @@ def test_doctor_missing_fonts_exits_one(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 def test_doctor_missing_toolchain_and_config_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path(tmp_path, monkeypatch)
+    config_path(tmp_path, monkeypatch).write_text("[modes\n", encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == cli.EXIT_FAILURE
@@ -378,20 +362,285 @@ def test_doctor_does_not_ask_to_delete_a_legacy_directory_in_use(
     assert "environmentcomplete." in squeeze(result.stdout)
 
 
-def test_setup_dev_writes_under_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
-    result = runner.invoke(app, ["setup", "--dev"], env={"TONGTU_HOME": str(tmp_path / "home")})
+def test_config_list_prints_the_defaults_without_writing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "list"])
     assert result.exit_code == 0
-    assert (tmp_path / "dev" / "config.toml").read_text(encoding="utf-8") == CONFIG_TEMPLATE
+    lines = result.stdout.splitlines()
+    assert [line.split()[0] for line in lines] == [key for key, _value in config_entries(ModelsConfig())]
+    assert lines[0].split() == ["modes.default", "smart"]
+    assert lines[-1].split() == ["pdf.crop_margins", "false"]
+    assert [line.split() for line in lines if line.startswith("fonts.mono")] == [["fonts.mono"]]
+    assert len({line.index(line.split()[1]) for line in lines if len(line.split()) == 2}) == 1
+    assert not path.exists()
+
+
+def test_config_list_reports_a_broken_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text("[modes\n", encoding="utf-8")
+    result = runner.invoke(app, ["config", "list"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert "notvalidTOML" in squeeze(result.stderr)
+
+
+def loaded_config() -> ModelsConfig:
+    config, detail = load_config()
+    assert config is not None, detail
+    return config
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected", "printed"),
+    [
+        ("modes.fast.model", "codex/gpt-6", "codex/gpt-6", "codex/gpt-6"),
+        ("modes.fast.model", '"pi/m"', "pi/m", "pi/m"),
+        ("pdf.crop_margins", "true", True, "true"),
+        ("modes.smart.timeout_seconds", "60", 60, "60"),
+        ("modes.smart.timeout_seconds", "90.5", 90.5, "90.5"),
+        ("modes.default", "fast", ModeName.FAST, "fast"),
+        ("fonts.main.bold", "", None, ""),
+    ],
+)
+def test_config_set_changes_one_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, value: str, expected: object, printed: str
+) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    write_config(ModelsConfig())
+    result = runner.invoke(app, ["config", "set", key, value])
+    assert result.exit_code == 0
+    assert result.stdout == f"{key} = {printed}\n"
+    assert dict(config_entries(loaded_config()))[key] == expected
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_config_set_writes_the_file_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", "modes.fast.effort", "high"])
+    assert result.exit_code == 0
+    assert path.is_file()
+    config = loaded_config()
+    assert config.modes.fast.effort == "high"
+    assert config.modes.smart == ModelsConfig().modes.smart
+
+
+def test_config_set_rejects_an_unknown_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    write_config(ModelsConfig())
+    before = path.read_text(encoding="utf-8")
+    result = runner.invoke(app, ["config", "set", "modes.fast.jobs", "4"])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert "runtongtuconfiglisttoseethekeys" in squeeze(result.stderr)
+    assert path.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(("key", "value"), [("modes.fast.model", "ghost/m"), ("pdf.crop_margins", "yes")])
+def test_config_set_rejects_an_invalid_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(TABLE, encoding="utf-8")
+    result = runner.invoke(app, ["config", "set", key, value])
+    assert result.exit_code == cli.EXIT_USAGE
+    lines = result.stderr.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith(f"{key}: ")
+    assert "errors.pydantic.dev" not in result.stderr
+    assert "input_value" not in result.stderr
+    assert path.read_text(encoding="utf-8") == TABLE
+
+
+def test_config_set_without_a_file_leaves_no_file_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", "modes.fast.jobs", "4"])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert not path.exists()
+    result = runner.invoke(app, ["config", "set", "modes.fast.model", "ghost/m"])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert not path.exists()
+
+
+def test_config_list_shows_the_same_numbers_before_and_after_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path(tmp_path, monkeypatch)
+    before = runner.invoke(app, ["config", "list"]).stdout.splitlines()
+    write_config(ModelsConfig())
+    after = runner.invoke(app, ["config", "list"]).stdout.splitlines()
+    timeout = [line for line in before if line.startswith("modes.fast.timeout_seconds")]
+    assert timeout == [line for line in after if line.startswith("modes.fast.timeout_seconds")]
+    assert timeout[0].split() == ["modes.fast.timeout_seconds", "3600"]
+
+
+def test_config_set_reports_a_broken_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text("[modes\n", encoding="utf-8")
+    result = runner.invoke(app, ["config", "set", "pdf.crop_margins", "true"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert path.read_text(encoding="utf-8") == "[modes\n"
+
+
+@pytest.mark.parametrize("arguments", [["config", "--dev", "list"], ["config", "list", "--dev"]])
+def test_config_dev_reads_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: list[str]) -> None:
+    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / "config.toml").write_text('[modes]\ndefault = "fast"\n', encoding="utf-8")
+    result = runner.invoke(app, arguments, env={"TONGTU_HOME": str(tmp_path / "home")})
+    assert result.exit_code == 0
+    assert result.stdout.splitlines()[0].split() == ["modes.default", "fast"]
+
+
+def test_config_set_dev_writes_under_the_dev_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "DEV_HOME", tmp_path / "dev")
+    home = {"TONGTU_HOME": str(tmp_path / "home")}
+    result = runner.invoke(app, ["config", "set", "pdf.crop_margins", "true", "--dev"], env=home)
+    assert result.exit_code == 0
+    assert (tmp_path / "dev" / "config.toml").is_file()
     assert not (tmp_path / "home").exists()
 
 
-def test_setup_keeps_the_path_on_one_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_menu_needs_a_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
-    monkeypatch.setenv("COLUMNS", "60")
-    result = runner.invoke(app, ["setup"])
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == cli.EXIT_USAGE
+    assert "tongtuconfigneedsaterminal" in squeeze(result.stderr)
+    assert not path.exists()
+
+
+UP = "\x1b[A"
+
+DOWN = "\x1b[B"
+
+ENTER = "\r"
+
+
+def menu_keys(monkeypatch: pytest.MonkeyPatch, keys: list[str]) -> list[str]:
+    queue = list(keys)
+    monkeypatch.setattr(typer.testing._NamedTextIOWrapper, "isatty", lambda self: True)
+    monkeypatch.setattr(typer, "getchar", lambda: queue.pop(0))
+    return queue
+
+
+def menu_index(key: str) -> int:
+    return [entry for entry, _value in config_entries(ModelsConfig())].index(key)
+
+
+def test_config_menu_exits_from_the_last_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    queue = menu_keys(monkeypatch, ["x", UP, ENTER])
+    result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
-    assert [line for line in result.stdout.splitlines() if "wrote" in line and str(path) in line]
+    assert queue == []
+    assert load_config() == (ModelsConfig(), "")
+    assert path.is_file()
+
+
+def test_config_menu_toggles_a_boolean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    queue = menu_keys(monkeypatch, [UP, UP, ENTER, UP, ENTER, DOWN, ENTER])
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert queue == []
+    assert loaded_config().pdf.crop_margins is True
+    assert "pdf.crop_margins = true" in result.stdout
+
+
+def test_config_menu_keeps_an_unchanged_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(TABLE, encoding="utf-8")
+    queue = menu_keys(monkeypatch, [UP, UP, ENTER, DOWN, DOWN, ENTER, DOWN, ENTER])
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert queue == []
+    assert path.read_text(encoding="utf-8") == TABLE
+
+
+def test_config_menu_chooses_a_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    queue = menu_keys(monkeypatch, [ENTER, UP, ENTER, UP, ENTER])
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert queue == []
+    assert loaded_config().modes.default is ModeName.FAST
+    assert "modes.default = fast" in result.stdout
+
+
+def test_config_menu_keeps_a_text_value_on_enter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(TABLE, encoding="utf-8")
+    queue = menu_keys(monkeypatch, [DOWN, ENTER, UP, UP, ENTER])
+    result = runner.invoke(app, ["config"], input="\n")
+    assert result.exit_code == 0
+    assert queue == []
+    assert path.read_text(encoding="utf-8") == TABLE
+
+
+def test_config_menu_changes_a_text_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    downs = [DOWN] * menu_index("modes.fast.effort")
+    queue = menu_keys(monkeypatch, [*downs, ENTER, UP, UP, UP, ENTER])
+    result = runner.invoke(app, ["config"], input="high\n")
+    assert result.exit_code == 0, result.output
+    assert queue == []
+    assert loaded_config().modes.fast.effort == "high"
+    assert "modes.fast.effort = high" in result.stdout
+
+
+def test_config_menu_asks_again_after_an_invalid_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    queue = menu_keys(monkeypatch, [DOWN, ENTER, UP, UP, ENTER])
+    result = runner.invoke(app, ["config"], input="ghost/m\npi/m\n")
+    assert result.exit_code == 0, result.output
+    assert queue == []
+    assert "modes.fast.model: " in result.stderr
+    assert "errors.pydantic.dev" not in result.stderr
+    assert loaded_config().modes.fast.model == "pi/m"
+
+
+def test_config_menu_reports_a_broken_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text("[modes\n", encoding="utf-8")
+    menu_keys(monkeypatch, [])
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == cli.EXIT_FAILURE
+    assert "notvalidTOML" in squeeze(result.stderr)
+
+
+def recording_editor(tmp_path: Path) -> tuple[Path, Path]:
+    record = tmp_path / "editor-arguments"
+    editor = tmp_path / "editor"
+    editor.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{record}"\n', encoding="utf-8")
+    editor.chmod(0o755)
+    return editor, record
+
+
+def test_config_open_runs_the_editor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    path.write_text(TABLE, encoding="utf-8")
+    editor, record = recording_editor(tmp_path)
+    monkeypatch.setenv("EDITOR", f"{editor} --wait")
+    result = runner.invoke(app, ["config", "open"])
+    assert result.exit_code == 0
+    assert str(path) in result.stdout
+    assert record.read_text(encoding="utf-8").splitlines() == ["--wait", str(path)]
+    assert path.read_text(encoding="utf-8") == TABLE
+
+
+def test_config_open_writes_the_file_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    editor, record = recording_editor(tmp_path)
+    monkeypatch.setenv("EDITOR", str(editor))
+    result = runner.invoke(app, ["config", "open"])
+    assert result.exit_code == 0
+    assert record.read_text(encoding="utf-8").splitlines() == [str(path)]
+    assert load_config() == (ModelsConfig(), "")
+
+
+def test_config_open_without_an_editor_launches_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    monkeypatch.setenv("EDITOR", "")
+    launched: list[str] = []
+    monkeypatch.setattr(typer, "launch", lambda target: launched.append(target) or 0)
+    result = runner.invoke(app, ["config", "open"])
+    assert result.exit_code == 0
+    assert launched == [str(path)]
 
 
 def test_entry_point_refuses_to_run_inside_a_session(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -555,7 +804,7 @@ def test_run_without_effort_prints_only_the_model(tmp_path: Path, monkeypatch: p
     assert result.stdout.splitlines()[1] == "mode    smart  pi/deepseek/m1"
 
 
-def test_run_without_a_config_uses_smart_and_says_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_without_a_config_uses_the_default_modes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path(tmp_path, monkeypatch)
     calls: list[str] = []
     captured: list[RunOptions] = []
@@ -563,8 +812,19 @@ def test_run_without_a_config_uses_smart_and_says_why(tmp_path: Path, monkeypatc
     result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
     assert result.exit_code == 0
     mode_line = squeeze(result.stdout.splitlines()[1])
-    assert mode_line.startswith("modesmart(cannotreadconfigfile")
+    assert mode_line == "modesmartclaude-code/claude-opus-5-5medium"
     assert calls == list(STAGES)
+    assert captured[0].mode == "smart"
+
+
+def test_run_with_a_broken_config_uses_smart_and_says_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch).write_text("[modes\n", encoding="utf-8")
+    calls: list[str] = []
+    captured: list[RunOptions] = []
+    wire_entries(monkeypatch, calls, captured=captured)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
+    assert result.exit_code == 0
+    assert squeeze(result.stdout.splitlines()[1]).startswith("modesmart(configfile")
     assert captured[0].mode == "smart"
 
 
