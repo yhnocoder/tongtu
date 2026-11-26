@@ -272,6 +272,13 @@ def _describe_paper(arxiv_id: str | None, version: int | None) -> str:
     return arxiv.versioned_id(arxiv_id, version)
 
 
+def _same_arxiv_id(asked: str, held: str) -> bool:
+    try:
+        return normalize_arxiv_id(asked) == normalize_arxiv_id(held)
+    except WorkdirError:
+        return False
+
+
 def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: FetchManifest | None) -> None:
     if fetched is None:
         return
@@ -279,7 +286,7 @@ def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: Fetch
         source_dir = paper_input.source_dir
         same_paper = source_dir is not None and source_dir.resolve() == Path(fetched.source).resolve()
     else:
-        same_paper = paper_input.arxiv_id == fetched.arxiv_id
+        same_paper = paper_input.arxiv_id is not None and _same_arxiv_id(paper_input.arxiv_id, fetched.arxiv_id)
     same_version = paper_input.version is None or fetched.version is None or paper_input.version == fetched.version
     if same_paper and same_version:
         return
@@ -314,6 +321,8 @@ def _paper_workdir(
         if fetched is not None and fetched.arxiv_id is None and paper == Path(fetched.source).name:
             paper_input = PaperInput(source_dir=Path(fetched.source))
         _check_fetched(paper_input, workdir, fetched)
+        if fetched is not None and fetched.arxiv_id is not None:
+            paper_input = replace(paper_input, arxiv_id=fetched.arxiv_id)
     if paper_input.arxiv_id is not None and paper_input.version is None:
         if latest:
             version = None

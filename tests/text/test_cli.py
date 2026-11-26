@@ -2950,3 +2950,46 @@ def test_info_zh_with_an_unexpected_error_still_prints_the_info(
     assert result.stderr == "cannot translate the abstract of 2412.19437v2: unexpected UnicodeEncodeError\n"
     assert FAKE_KEY not in result.output
 
+
+OLD_STYLE_NAME = "hep-th_9901001v1"
+
+
+@pytest.mark.parametrize("paper", [OLD_STYLE_NAME, "hep-th/9901001v1", "hep-th/9901001", "hep-th_9901001"])
+def test_status_with_workdir_of_an_old_style_id_accepts_its_name(tmp_path: Path, paper: str) -> None:
+    workdir = tmp_path / "home" / "papers" / OLD_STYLE_NAME
+    write_fetch_manifest(workdir, "hep-th/9901001", 1)
+    snapshot = status_with_home(tmp_path / "home", paper, "--workdir", str(workdir))
+    assert (snapshot.workdir, snapshot.arxiv_id, snapshot.version) == (workdir, "hep-th/9901001", 1)
+
+
+@pytest.mark.parametrize("paper", [OLD_STYLE_NAME, "hep-th/9901001v1"])
+def test_stop_with_workdir_of_an_old_style_id_accepts_its_name(tmp_path: Path, paper: str) -> None:
+    workdir = tmp_path / "home" / "papers" / OLD_STYLE_NAME
+    write_fetch_manifest(workdir, "hep-th/9901001", 1)
+    result = runner.invoke(app, ["stop", paper, "--workdir", str(workdir)], env={"TONGTU_HOME": str(tmp_path / "home")})
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"{OLD_STYLE_NAME} is not running\n"
+
+
+@pytest.mark.parametrize("paper", [OLD_STYLE_NAME, "hep-th/9901001v1"])
+def test_run_with_workdir_of_an_old_style_id_accepts_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paper: str
+) -> None:
+    urls = wire_api(monkeypatch)
+    workdir = tmp_path / "home" / "papers" / OLD_STYLE_NAME
+    write_fetch_manifest(workdir, "hep-th/9901001", 1)
+    result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, "run", paper, "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    assert urls == []
+    assert captured[0].workdir.path == workdir
+    assert (captured[0].paper.arxiv_id, captured[0].paper.version) == ("hep-th/9901001", 1)
+
+
+def test_workdir_of_an_old_style_id_rejects_another_paper(tmp_path: Path) -> None:
+    workdir = tmp_path / "home" / "papers" / OLD_STYLE_NAME
+    write_fetch_manifest(workdir, "hep-th/9901001", 1)
+    result = runner.invoke(
+        app, ["status", "hep-th_9901002v1", "--workdir", str(workdir), "--json"], env={"TONGTU_HOME": str(tmp_path)}
+    )
+    assert result.exit_code == 2
+    assert result.stdout == ""
