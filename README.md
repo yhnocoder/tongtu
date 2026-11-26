@@ -55,10 +55,10 @@ agent 会话经 [agentrun](https://github.com/yhnocoder/agentrun) 启动，安�
    uv tool install --reinstall git+https://github.com/yhnocoder/tongtu
    ```
 
-2. 构建插件，产物在 `raycast/dist/`：
+2. 在仓库根目录构建插件。命令安装依赖并构建，最后打印产物目录 `raycast/dist/` 的绝对路径：
 
    ```
-   cd raycast && npm install && npm run build
+   make raycast
    ```
 
 3. 装进启动器：
