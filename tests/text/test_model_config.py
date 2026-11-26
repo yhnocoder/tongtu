@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import stat
 import tomllib
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from tongtu.config import config_path
 from tongtu.model.config import (
-    CONFIG_TEMPLATE,
     DEFAULT_TIMEOUT_SECONDS,
     RUNTIME_NAMES,
     FontFamily,
@@ -15,8 +16,12 @@ from tongtu.model.config import (
     ModelsConfig,
     ModeName,
     Target,
+    config_entries,
+    ensure_config_file,
     load_config,
     mode_target,
+    updated_config,
+    write_config,
 )
 
 TABLE = """
@@ -30,7 +35,7 @@ timeout_seconds = 60.5
 """
 
 
-def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
+def written_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
     path = tmp_path / "config.toml"
     path.write_text(text, encoding="utf-8")
@@ -38,21 +43,21 @@ def write_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> 
 
 
 def loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str = TABLE) -> ModelsConfig:
-    write_config(tmp_path, monkeypatch, text)
+    written_file(tmp_path, monkeypatch, text)
     config, detail = load_config()
     assert config is not None, detail
     return config
 
 
 def failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> str:
-    write_config(tmp_path, monkeypatch, text)
+    written_file(tmp_path, monkeypatch, text)
     config, detail = load_config()
     assert config is None
     return detail
 
 
-def test_template_parses_and_validates() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE))
+def test_defaults_name_the_modes() -> None:
+    config = ModelsConfig()
     assert config.modes.default is ModeName.SMART
     assert mode_target(config, "fast") == (Target("claude-code", "claude-sonnet-5-5", "low", 3600), "")
     assert mode_target(config, "smart") == (Target("claude-code", "claude-opus-5-5", "medium", 3600), "")
@@ -72,14 +77,14 @@ def test_modes_default_must_name_a_mode(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("mode", ["fast", "smart"])
-def test_each_mode_must_be_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+def test_an_unwritten_mode_takes_its_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     kept = "smart" if mode == "fast" else "fast"
-    detail = failed(tmp_path, monkeypatch, f'[modes.{kept}]\nmodel = "claude-code/m"\n')
-    assert f"modes.{mode}" in detail
+    config = loaded(tmp_path, monkeypatch, f'[modes.{kept}]\nmodel = "claude-code/m"\n')
+    assert getattr(config.modes, mode) == getattr(ModelsConfig().modes, mode)
 
 
-def test_a_config_without_modes_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert "modes" in failed(tmp_path, monkeypatch, "[pdf]\ncrop_margins = true\n")
+def test_a_config_without_modes_takes_the_default_modes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert loaded(tmp_path, monkeypatch, "[pdf]\ncrop_margins = true\n").modes == ModelsConfig().modes
 
 
 def test_a_mode_needs_a_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,20 +157,27 @@ def test_config_path_follows_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert config_path() == tmp_path / "config.toml"
 
 
-def test_load_config_reports_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_without_a_file_returns_the_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    assert load_config() == (ModelsConfig(), "")
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_load_config_reports_an_unreadable_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    (tmp_path / "config.toml").mkdir()
     config, detail = load_config()
     assert config is None
-    assert "tongtu setup" in detail
+    assert "cannot read config file" in detail
+    assert "setup" not in detail
 
 
 def test_load_config_reports_broken_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert "TOML" in failed(tmp_path, monkeypatch, "[modes.fast\n")
 
 
-def test_template_fonts_match_defaults() -> None:
-    config = ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE))
-    assert config.fonts == FontsConfig()
+def test_default_fonts() -> None:
+    config = ModelsConfig()
     assert config.fonts.main == FontFamily(regular="LXGWWenKai-Light.ttf", bold="LXGWWenKai-Medium.ttf")
     assert config.fonts.sans == FontFamily(regular="SourceHanSansSC-Regular.otf", bold="SourceHanSansSC-Bold.otf")
     assert config.fonts.mono is None
@@ -195,7 +207,7 @@ def test_fonts_table_family_without_bold(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_fonts_table_rejects_old_bold_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nbold = "LXGWWenKai-Medium.ttf"\nsans_bold = "Bold.otf"\n')
+    written_file(tmp_path, monkeypatch, TABLE + '\n[fonts]\nbold = "LXGWWenKai-Medium.ttf"\nsans_bold = "Bold.otf"\n')
     config, detail = load_config()
     assert config is None
     assert "fonts.bold" in detail
@@ -203,7 +215,7 @@ def test_fonts_table_rejects_old_bold_keys(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_fonts_table_rejects_unknown_family_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "R.ttf", italic = "I.ttf" }\n')
+    written_file(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = { regular = "R.ttf", italic = "I.ttf" }\n')
     config, detail = load_config()
     assert config is None
     assert "fonts.main" in detail
@@ -211,7 +223,7 @@ def test_fonts_table_rejects_unknown_family_keys(tmp_path: Path, monkeypatch: py
 
 
 def test_fonts_table_rejects_family_without_regular(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { bold = "B.otf" }\n')
+    written_file(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { bold = "B.otf" }\n')
     config, detail = load_config()
     assert config is None
     assert "fonts.sans" in detail
@@ -219,7 +231,7 @@ def test_fonts_table_rejects_family_without_regular(tmp_path: Path, monkeypatch:
 
 
 def test_fonts_table_rejects_fallback_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(
+    written_file(
         tmp_path,
         monkeypatch,
         TABLE + '\n[fonts]\nmain = ["Source Han Serif SC", "LXGWWenKai-Light.ttf"]\nsans = ["Noto Sans CJK SC"]\n',
@@ -231,7 +243,7 @@ def test_fonts_table_rejects_fallback_lists(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_fonts_table_rejects_relative_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "myfonts/MyFont.ttf"\nmono = "fonts/Mono.otf"\n')
+    written_file(tmp_path, monkeypatch, TABLE + '\n[fonts]\nmain = "myfonts/MyFont.ttf"\nmono = "fonts/Mono.otf"\n')
     config, detail = load_config()
     assert config is None
     assert "fonts.main" in detail
@@ -240,7 +252,7 @@ def test_fonts_table_rejects_relative_paths(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_fonts_table_rejects_relative_paths_in_a_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { regular = "Sans.otf", bold = "fonts/Bold.otf" }\n')
+    written_file(tmp_path, monkeypatch, TABLE + '\n[fonts]\nsans = { regular = "Sans.otf", bold = "fonts/Bold.otf" }\n')
     config, detail = load_config()
     assert config is None
     assert "fonts.sans" in detail
@@ -265,11 +277,11 @@ def test_fonts_table_defaults_when_absent(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_crop_margins_is_off_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert loaded(tmp_path, monkeypatch).pdf.crop_margins is False
-    assert ModelsConfig.model_validate(tomllib.loads(CONFIG_TEMPLATE)).pdf.crop_margins is False
+    assert ModelsConfig().pdf.crop_margins is False
 
 
 def test_unknown_pdf_field_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + "\n[pdf]\ncrop = true\n")
+    written_file(tmp_path, monkeypatch, TABLE + "\n[pdf]\ncrop = true\n")
     config, detail = load_config()
     assert config is None
     assert "crop" in detail
@@ -281,7 +293,83 @@ def test_crop_margins_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.parametrize("value", ['"yes"', "1"])
 def test_crop_margins_must_be_a_boolean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
-    write_config(tmp_path, monkeypatch, TABLE + "\n[pdf]\ncrop_margins = " + value + "\n")
+    written_file(tmp_path, monkeypatch, TABLE + "\n[pdf]\ncrop_margins = " + value + "\n")
     config, detail = load_config()
     assert config is None
     assert "crop_margins" in detail
+
+
+DEFAULT_KEYS = [
+    "modes.default",
+    "modes.fast.model",
+    "modes.fast.effort",
+    "modes.fast.timeout_seconds",
+    "modes.smart.model",
+    "modes.smart.effort",
+    "modes.smart.timeout_seconds",
+    "fonts.main.regular",
+    "fonts.main.bold",
+    "fonts.sans.regular",
+    "fonts.sans.bold",
+    "fonts.mono",
+    "pdf.crop_margins",
+]
+
+
+def test_config_entries_of_the_defaults() -> None:
+    entries = config_entries(ModelsConfig())
+    assert [key for key, _value in entries] == DEFAULT_KEYS
+    values = dict(entries)
+    assert values["modes.default"] is ModeName.SMART
+    assert values["fonts.mono"] is None
+    assert values["pdf.crop_margins"] is False
+
+
+def test_config_entries_of_a_single_font_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    keys = [key for key, _value in config_entries(loaded(tmp_path, monkeypatch, '[fonts]\nmain = "MyFont.ttf"\n'))]
+    assert "fonts.main" in keys
+    assert "fonts.main.regular" not in keys
+
+
+def test_updated_config_replaces_one_leaf() -> None:
+    config = updated_config(ModelsConfig(), "modes.fast.effort", "high")
+    assert config.modes.fast.effort == "high"
+    assert config.modes.smart == ModelsConfig().modes.smart
+
+
+def test_updated_config_clears_an_optional_field() -> None:
+    assert updated_config(ModelsConfig(), "fonts.main.bold", None).fonts.main == FontFamily(
+        regular="LXGWWenKai-Light.ttf"
+    )
+
+
+def test_updated_config_rejects_an_unknown_key() -> None:
+    with pytest.raises(KeyError):
+        updated_config(ModelsConfig(), "modes.fast.jobs", 4)
+
+
+def test_updated_config_validates_the_value() -> None:
+    with pytest.raises(ValidationError):
+        updated_config(ModelsConfig(), "modes.fast.model", "ghost/m")
+
+
+def test_write_config_round_trips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    config = updated_config(ModelsConfig(), "modes.default", "fast")
+    path = write_config(config)
+    assert path == tmp_path / "home" / "config.toml"
+    assert load_config() == (config, "")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert "mono" not in data["fonts"]
+
+
+def test_ensure_config_file_writes_the_defaults_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path))
+    assert ensure_config_file() == (ModelsConfig(), "")
+    path = tmp_path / "config.toml"
+    assert path.is_file()
+    path.write_text('[modes]\ndefault = "fast"\n', encoding="utf-8")
+    config, _detail = ensure_config_file()
+    assert config is not None
+    assert config.modes.default is ModeName.FAST

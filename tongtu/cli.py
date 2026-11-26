@@ -3,20 +3,25 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import time
+import tomllib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 from types import FrameType
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
+from rich.live import Live
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -25,6 +30,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.table import Column
+from rich.text import Text
 
 from . import __version__, arxiv, validation
 from .artifacts.common import Manifest
@@ -39,7 +45,18 @@ from .config import DEV_HOME, HOME_ENV, config_path, home_dir, legacy_dirs_prese
 from .console import console, error_console
 from .fonts import FONTS_DIR, family_files
 from .manifests import describe_error, load_manifest, write_manifest
-from .model.config import CONFIG_TEMPLATE, FontsConfig, ModeName, Target, load_config, mode_target
+from .model.config import (
+    FontsConfig,
+    ModelsConfig,
+    ModeName,
+    Target,
+    config_entries,
+    ensure_config_file,
+    load_config,
+    mode_target,
+    updated_config,
+    write_config,
+)
 from .model.work import AGENTRUN_EXECUTABLE
 from .pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
@@ -658,7 +675,9 @@ def _config_rows() -> list[tuple[str, str, bool, str]]:
             (CONFIG_CHECK_NAME, "modes, fonts and pdf options", False, detail),
             ("runtimes", "runtimes and models of the modes", False, "cannot check: config.toml is unreadable"),
         ]
-    rows = [(CONFIG_CHECK_NAME, "modes, fonts and pdf options", True, str(config_path()))]
+    path = config_path()
+    detail = str(path) if path.exists() else f"{path} absent; using the defaults"
+    rows = [(CONFIG_CHECK_NAME, "modes, fonts and pdf options", True, detail)]
     targets: dict[str, Target] = {}
     for name in ModeName:
         target, _detail = mode_target(config, name)
@@ -731,17 +750,189 @@ def _check_fonts() -> tuple[bool, str]:
     return True, str(FONTS_DIR)
 
 
-@app.command()
-def setup(dev: DevOpt = False) -> None:
+config_app = typer.Typer(
+    invoke_without_command=True,
+    help="Show and change config.toml; without a subcommand, open a menu driven by the arrow keys and Enter.",
+)
+app.add_typer(config_app, name="config")
+
+MENU_UP = "\x1b[A"
+
+MENU_DOWN = "\x1b[B"
+
+MENU_ENTER = ("\r", "\n")
+
+MENU_EXIT = "exit"
+
+CURRENT_MARK = " (current)"
+
+
+def _display(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _print_validation_error(error: ValidationError) -> None:
+    for detail in error.errors():
+        error_console.print(f"{'.'.join(str(part) for part in detail['loc'])}: {detail['msg']}")
+
+
+def _entry_lines(entries: list[tuple[str, object]]) -> list[str]:
+    width = max(len(key) for key, _value in entries) + 2
+    return [f"{key:<{width}}{_display(value)}" for key, value in entries]
+
+
+def _parse_value(text: str) -> object:
+    if text == "":
+        return None
+    try:
+        return tomllib.loads(f"value = {text}")["value"]
+    except tomllib.TOMLDecodeError:
+        return text
+
+
+def _loaded_config(loaded: tuple[ModelsConfig | None, str]) -> ModelsConfig:
+    config, detail = loaded
+    if config is None:
+        error_console.print(detail)
+        raise typer.Exit(EXIT_FAILURE)
+    return config
+
+
+def _saved(config: ModelsConfig, key: str) -> None:
+    write_config(config)
+    console.print(f"{key} = {_display(dict(config_entries(config))[key])}")
+
+
+def _menu(lines: list[str], cursor: int) -> Text:
+    text = Text()
+    for index, line in enumerate(lines):
+        if index == cursor:
+            text.append(f"> {line}\n", style="bold")
+        else:
+            text.append(f"  {line}\n")
+    return text
+
+
+def _choose(lines: list[str], cursor: int) -> int:
+    with Live(_menu(lines, cursor), console=console, auto_refresh=False, transient=True) as live:
+        while True:
+            key = typer.getchar()
+            if key in MENU_ENTER:
+                return cursor
+            if key == MENU_UP:
+                cursor = (cursor - 1) % len(lines)
+            elif key == MENU_DOWN:
+                cursor = (cursor + 1) % len(lines)
+            else:
+                continue
+            live.update(_menu(lines, cursor), refresh=True)
+
+
+def _edit_choice(config: ModelsConfig, key: str, value: object, options: list[object]) -> ModelsConfig:
+    lines = [_display(option) + (CURRENT_MARK if option == value else "") for option in options]
+    chosen = options[_choose(lines, options.index(value))]
+    if chosen == value:
+        return config
+    try:
+        changed = updated_config(config, key, chosen)
+    except ValidationError as error:
+        _print_validation_error(error)
+        return config
+    _saved(changed, key)
+    return changed
+
+
+def _edit_text(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
+    current = _display(value)
+    while True:
+        text = typer.prompt(key, default=current, show_default=True)
+        if text == current:
+            return config
+        try:
+            changed = updated_config(config, key, _parse_value(text))
+        except ValidationError as error:
+            _print_validation_error(error)
+            continue
+        _saved(changed, key)
+        return changed
+
+
+def _edit_entry(config: ModelsConfig, key: str, value: object) -> ModelsConfig:
+    if isinstance(value, bool):
+        return _edit_choice(config, key, value, [True, False])
+    if isinstance(value, StrEnum):
+        return _edit_choice(config, key, value, list(type(value)))
+    return _edit_text(config, key, value)
+
+
+@config_app.callback()
+def config_menu(ctx: typer.Context, dev: DevOpt = False) -> None:
+    _apply_dev(dev)
+    if ctx.invoked_subcommand is not None:
+        return
+    if not sys.stdin.isatty():
+        error_console.print("tongtu config needs a terminal; use tongtu config list or tongtu config set KEY VALUE")
+        raise typer.Exit(EXIT_USAGE)
+    config = _loaded_config(ensure_config_file())
+    cursor = 0
+    while True:
+        entries = config_entries(config)
+        cursor = _choose([*_entry_lines(entries), MENU_EXIT], cursor)
+        if cursor == len(entries):
+            return
+        key, value = entries[cursor]
+        config = _edit_entry(config, key, value)
+
+
+@config_app.command("list")
+def config_list(dev: DevOpt = False) -> None:
+    _apply_dev(dev)
+    for line in _entry_lines(config_entries(_loaded_config(load_config()))):
+        console.print(line)
+
+
+@config_app.command("set")
+def config_set(
+    key: Annotated[str, typer.Argument(metavar="KEY", help="dotted key as tongtu config list prints it")],
+    value: Annotated[
+        str,
+        typer.Argument(
+            metavar="VALUE", help="a TOML value, or plain text taken as a string; an empty string clears the field"
+        ),
+    ],
+    dev: DevOpt = False,
+) -> None:
+    _apply_dev(dev)
+    config = _loaded_config(load_config())
+    try:
+        changed = updated_config(config, key, _parse_value(value))
+    except KeyError:
+        error_console.print(f"config key {key} does not exist; run tongtu config list to see the keys")
+        raise typer.Exit(EXIT_USAGE) from None
+    except ValidationError as error:
+        _print_validation_error(error)
+        raise typer.Exit(EXIT_USAGE) from None
+    _saved(changed, key)
+
+
+@config_app.command("open")
+def config_open(dev: DevOpt = False) -> None:
     _apply_dev(dev)
     path = config_path()
-    if path.exists():
-        console.print(f"config file {path} already exists; not overwriting. Edit that file to change the config.")
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(CONFIG_TEMPLATE, encoding="utf-8")
-    path.chmod(0o600)
-    console.print(f"wrote {path}.")
+    if not path.exists():
+        write_config(ModelsConfig())
+    console.print(str(path))
+    editor = os.environ.get("EDITOR", "").strip()
+    if editor:
+        subprocess.run([*shlex.split(editor), str(path)])
+    else:
+        typer.launch(str(path))
 
 
 def main() -> None:
