@@ -14,18 +14,20 @@ version: 1
 
 你只写 `rec.json` 和 `notes.json`。`rec.json` 的格式是 `{"编号": "LaTeX"}`，覆盖 `hints.json` 里的每个编号。通过校验的表格按截图原宽度缩放后替换论文里的截图，没通过的保留截图。
 
+用 Write 或 Edit 工具写或修改 `rec.json`，不要用 Bash 运行 python3 来写。运行时可能拒绝这类命令，例如 heredoc 里含有字典字面量的 python3 命令。
+
 ## 要求
 
 用 Read 工具逐张看图，每个编号写一段 `\begin{tabular}{...} ... \end{tabular}`，不带 table 或 figure 环境，不带图注：
 
 - 图中每一行可见的文字都是输出里的一行，字符与顺序相同。单元格里的文字在图中折成两行时写 `\makecell{第一行\\第二行}`，折行处与图中相同。跨行跨列的单元格用 `\multicolumn`、`\multirow`。
 - 粗体、斜体、下划线、颜色与图一致：文字颜色用 `\textcolor[HTML]{RRGGBB}{..}`，单元格底色用 `\cellcolor[HTML]{..}`。
-- 表线与图中可见的线一致：booktabs（`\toprule` `\midrule` `\bottomrule` `\cmidrule`），或 `\hline` 与 `|`。
-- 单元格里的数学写成 `$...$`。
+- 表线与图中可见的线一致：booktabs（`\toprule` `\midrule` `\bottomrule` `\cmidrule`），或 `\hline` 与 `|`。图中某条中间线与顶线、底线一样粗时写 `\midrule[\heavyrulewidth]`，`\cmidrule` 也用同样的可选参数，例如 `\cmidrule[\heavyrulewidth]{2-4}`；中间线比普通的 `\midrule` 粗或细时，用 `\midrule[0.8pt]` 这样写出具体粗细。
+- 单元格里的数学写成 `$...$`。整块加粗的数学写成 `$\bm{...}$`，不用 `\mathbf`，`\mathbf` 不会加粗希腊字母和符号。
 - 字符必须与文字层完全一致：✗ 写 `\ding{55}`，✓ 写 `\ding{51}`（pifont），不用 `\times` 或 `$\checkmark$`；间隔点、连字符与其他符号用与文字层相同的 Unicode 字符。
 - 旋转的文字用 `\rotatebox{90}{..}`。
 - 可用的宏包：amsmath、amssymb、bm、booktabs、multirow、makecell、array、graphicx（只用 `\rotatebox`）、pifont、xcolor（table 选项）。可以用 `\textsc`、`\underline`、`\textit`、`\textbf`。只有图中某个单元格的字明显比表格其余部分小时，才在这个单元格里用 `\small`、`\footnotesize`、`\scriptsize`、`\tiny`。
-- 禁止使用：`\resizebox` `\scalebox` `\hspace` `\vspace` `\raisebox` `\kern` `\phantom` `\rlap` `\llap` `\lower` `\raise`。出现即判为不通过。表格会在写回时按截图宽度整体缩放。不要为了通过校验去挪动文字，按表格本来的样子写。
+- 禁止使用：`\raisebox` `\hspace` `\vspace` `\hskip` `\vskip` `\kern` `\mkern` `\mskip` `\phantom` `\hphantom` `\vphantom` `\rlap` `\llap` `\mathrlap` `\mathllap` `\resizebox` `\scalebox` `\lower` `\raise`。出现即判为不通过。表格会在写回时按截图宽度整体缩放。不要为了通过校验去挪动文字，按表格本来的样子写。
 - 截图不是表格（图、曲线、文字框）时写 `SKIP`。截图里除了表格还有表格边框外的无关文字行时，边框内的写成 `\multicolumn` 行；边框外的无法作为表格行放进去时，整个编号写 `SKIP`。
 
 ## 自查

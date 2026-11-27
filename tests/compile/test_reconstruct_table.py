@@ -50,8 +50,8 @@ def test_missing_bold_names_the_cell(recognition_tree: tuple[Path, RegionsFile])
 
 def test_swapped_rows_are_a_layout_difference(recognition_tree: tuple[Path, RegionsFile]) -> None:
     swapped = TABLE_LATEX.replace(
-        r"Baseline & 25.8 & 1.0 \\ \textbf{Transformer} & \textbf{28.4} & 0.5 \\",
-        r"\textbf{Transformer} & \textbf{28.4} & 0.5 \\ Baseline & 25.8 & 1.0 \\",
+        r"Baseline & 25.8 & 1.0 \\ Transformer & \textbf{28.4} & 0.5 \\",
+        r"Transformer & \textbf{28.4} & 0.5 \\ Baseline & 25.8 & 1.0 \\",
     )
     verdict = table.verify(table_crop(recognition_tree), swapped)
     assert not verdict.passed

@@ -331,7 +331,7 @@ api_key  = ""</code></pre>
       <dd>
         <p>fetch 的 <code>route</code> 是 <code>"tex"</code> 时不做任何事，写 <code>ok</code>，<code>rebuilt</code> 为 false。<code>route</code> 是 <code>"pdf"</code> 时，在重建目录 <code>build/sandbox/reconstruct/</code> 里依次做：</p>
         <ol>
-          <li>规则重建：把 <code>build/original.pdf</code> 拷进重建目录，写出 <code>main.tex</code>、<code>crops/&lt;编号&gt;.pdf</code>（每个截图一个文件）与 <code>regions.json</code>。正文文字、标题、列表、脚注、目录、图注写成 LaTeX；图、表、算法、行间公式、参考文献、作者区从原 PDF 截取矢量区域插入，截取时用两遍 redaction 去掉区域外的内容，区域内的大号数学字形保留；行内公式截成小图，写成 <code>\im{编号}{下沉量}{提示}</code>。提示是这段截图在原文文字层里的字符，只给修复会话与识别会话参考，不排版。</li>
+          <li>规则重建：把 <code>build/original.pdf</code> 拷进重建目录，写出 <code>main.tex</code>、<code>crops/&lt;编号&gt;.pdf</code>（每个截图一个文件）与 <code>regions.json</code>。正文文字、标题、列表、脚注、目录、图注写成 LaTeX；图、表、算法、行间公式、参考文献、作者区从原 PDF 截取矢量区域插入，截取时用两遍 redaction 去掉区域外的内容，区域内的大号数学字形保留；行内公式截成小图，写成 <code>\im{编号}{下沉量}{提示}</code>。提示是这段截图在原文文字层里的字符，只给修复会话与识别会话参考，不排版。版心上边界取正文长行（超过 25 个字符）的最高位置，下边缘比它高出 2 bp 以上的行判为页眉。例外是第 1 页上字号大于正文字号加 <code>TITLE_SIZE_MARGIN = 0.6</code> bp 的行，它们不判为页眉，与版心内的行一样参与后续的分类。会议模板把论文标题与作者行排在版心之上，没有这条例外时它们会被当作页眉丢掉。导言区不使用含 <code>@</code> 的命令，正文字号用 <code>\fontsize{…}{…}\selectfont</code> 设定，避免 precompile 的 latexpand 报 warning。</li>
           <li>公式与表格识别，见下文：有行间或行内公式截图时启动一次公式识别会话，有表格截图时再启动一次表格识别会话。每个会话结束后，阶段在会话外重跑校验，把通过的条目写回 <code>main.tex</code> 替换截图，没通过的保留截图。</li>
           <li>编译：与 precompile 用同一条 latexmk 命令。</li>
           <li>核对，见下文。全部通过时跳到第 6 步。</li>
@@ -355,20 +355,21 @@ api_key  = ""</code></pre>
             <tr><td>单词召回率与精确率</td><td class="wrap">都不低于 <code>RECALL_MIN = 0.98</code>、<code>PRECISION_MIN = 0.98</code>。</td></tr>
             <tr><td>缺字</td><td class="wrap">编译日志里的 <code>Missing character</code> 为 0。</td></tr>
             <tr><td>阅读顺序</td><td class="wrap">不低于 <code>ORDER_MIN = 0.99</code>。</td></tr>
-            <tr><td>页数比</td><td class="wrap">重建页数除以原文页数在 <code>PAGE_RATIO_RANGE = (0.85, 1.20)</code> 之内。</td></tr>
+            <tr><td>页数</td><td class="wrap">重建页数不少于原文页数的 0.85 倍，不多于 <code>max(1.20 × 原文页数, 原文页数 + PAGE_EXTRA_MAX)</code>，其中 <code>PAGE_RATIO_RANGE = (0.85, 1.20)</code>，<code>PAGE_EXTRA_MAX = 2</code>。</td></tr>
           </tbody>
         </table>
         <p>单词召回率与精确率：两份 PDF 各自取文字，拆开连字，行尾的「字母-换行字母」合并为一个词，取所有至少 3 个字母的英文词，转成小写后计数。召回率是多重集交集除以原文词数，精确率是交集除以重建词数。截图里的文字层也计入，截图保留了原文的文字层，所以截错位置会表现为重复或缺失。</p>
-        <p>阅读顺序：从原文取词时去掉截图区域里的词，以及图注、脚注、页眉页脚与标题区所在的行。从重建结果取词前，重新编译一份去掉图注、脚注、页眉页脚，并用 <code>graphicx</code> 的 <code>draft</code> 选项不嵌入截图的版本。两边都取连续 <code>ORDER_GRAM_WORDS = 6</code> 个词的片段，只保留在两边各出现一次、且在原文全文（包括截图区域）里也只出现一次的片段。按原文顺序排列这些片段在重建结果中的位置，求最长递增子序列。分数是子序列长度除以片段数；没有片段时为 1。去掉图注的那次编译没有产出 PDF 时，阅读顺序也记为 1，并加一条 warning。</p>
+        <p>阅读顺序：从原文取词时去掉截图区域里的词，以及图注、脚注、页眉页脚与标题区所在的行。从重建结果取词前，重新编译一份去掉图注、脚注、页眉页脚，并用 <code>graphicx</code> 的 <code>draft</code> 选项不嵌入截图的版本。这次编译在临时目录里进行，只拷贝 <code>main.tex</code>、<code>crops/</code> 与 <code>regions.json</code>。修复会话的目录里有沙箱遮住的点文件，整个目录拷贝时会因为读不了它们而中止。两边都取连续 <code>ORDER_GRAM_WORDS = 6</code> 个词的片段，只保留在两边各出现一次、且在原文全文（包括截图区域）里也只出现一次的片段。按原文顺序排列这些片段在重建结果中的位置，求最长递增子序列。分数是子序列长度除以片段数；没有片段时为 1。去掉图注的那次编译没有产出 PDF 时，阅读顺序也记为 1，并加一条 warning。</p>
         <p>截图丢字（不参加判定，只记录）：对每个 <code>\im</code> 截图，比较它的文字层与提示里的字符（NFKC 规范化，去掉空白，按多重集比较）。截图缺了提示里的字符时记一处，写进 <code>crop_lost_glyphs</code> 并加一条 warning。召回率、准确率与阅读顺序只比较三个字母以上的英文单词，截图里缺了根号、上下标这类符号时，这几项看不出来。例如 Computer Modern 的根号挂在基线下方，裁切范围按字体框计算时会把它裁掉。</p>
         <p class="why"><b>理由</b>0.98 是试验中正确重建的论文都能达到、而段落错位或漏截时会跌破的值。阅读顺序 0.99 与页数比 0.85–1.20 由用户确认；超出这个页数比时，几乎都是规则把一块内容截错或重复排了。</p>
+        <p class="why"><b>理由</b>页数上限另给 <code>PAGE_EXTRA_MAX</code> 页的绝对余量。页数很少的文档，多出一两页就会超过比例上限。</p>
       </dd>
       <dt>公式与表格识别</dt>
       <dd>
         <p>规则重建之后、编译与核对之前，依次启动两个识别会话：有 <code>display</code> 或 <code>inline</code> 截图时启动公式识别会话（skill <code>reconstruct_formula</code>，会话目录 <code>build/sandbox/reconstruct_formula/</code>），有 <code>table</code> 截图时启动表格识别会话（skill <code>reconstruct_table</code>，会话目录 <code>build/sandbox/reconstruct_table/</code>）。只识别写回时能替换的截图：行间公式是单独成段的 <code>\includegraphics</code>（放在 <code>strip</code> 或 <code>figure*</code> 里的不识别），行内公式是 <code>\im</code>，表格是图注以 Table 开头的浮动体里的截图。两个会话都用本次运行的模式，日志分别写到 <code>logs/reconstruct-formula.jsonl</code> 与 <code>logs/reconstruct-table.jsonl</code>，会话的 <code>python3</code> 与 reconstruct_fix 一样是运行通途的解释器。</p>
         <p>会话目录里放 <code>img/&lt;编号&gt;.png</code>（每个截图的渲染图）、<code>hints.json</code>（每个截图的文字层，每段写成 <code>字体名#颜色:文字</code>；公式另记类别，表格另记截图宽度并按基线排序）与 <code>crops/&lt;编号&gt;.pdf</code>（截图原件，供会话里的 <code>check.py</code> 比对）。agent 把写好的 LaTeX 写进 <code>rec.json</code>（<code>{"编号": "LaTeX"}</code>，写不对的写 <code>SKIP</code>），并在会话里运行 <code>check.py</code>。它对 <code>rec.json</code> 的每一条做与会话外相同的校验，报告通过数和每条失败的差异，agent 按差异修改到全部通过。脚本不分轮重试。会话结束后，阶段用重建目录里的截图原件重跑校验，这是唯一的判定。</p>
         <p class="why"><b>理由</b>原则 2 要求脚本不对 agent 的过程做细粒度控制。agent 在会话里用同一个校验脚本自查，与 translate 的做法一致。</p>
-        <p><b>公式的校验</b>：把识别出的 LaTeX 用 pdflatex 单独编译（行间公式放进 <code>\[ \]</code>，行内公式放进 <code>$ $</code>），与截图的文字层逐个字形比较，以下几项全部一致才算通过：</p>
+        <p><b>公式的校验</b>：把识别出的 LaTeX 用 pdflatex 单独编译（导言区加载 T1 字体编码，<code>\_</code> 排成下划线字形，与原文文字层一致；行间公式放进 <code>\[ \]</code>，行内公式放进 <code>$ $</code>），与截图的文字层逐个字形比较，以下几项全部一致才算通过：</p>
         <ul>
           <li>字符序列。比较前做 NFKC 规范化，CMEX 字体的大号运算符映射成对应的 Unicode，根号不计。</li>
           <li>粗体：字体名含 MIB、BX、Bold、Medi 的算粗体（不分大小写），BlackboardBold 不算。参考实现里另外几种粗体字体名（CMBSY、BSY、-Bd、Black、txb、pxb）也算粗体。公式与表格用同一条规则。</li>

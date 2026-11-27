@@ -14,6 +14,8 @@ version: 1
 
 你只写 `rec.json` 和 `notes.json`。`rec.json` 的格式是 `{"编号": "LaTeX"}`，覆盖 `hints.json` 里的每个编号。通过校验的公式会替换论文里的截图，没通过的保留截图。
 
+用 Write 或 Edit 工具写或修改 `rec.json`，不要用 Bash 运行 python3 来写。运行时可能拒绝这类命令，例如 heredoc 里含有字典字面量的 python3 命令。
+
 ## 要求
 
 用 Read 工具看图，一次可以看几张；也可以用 PyMuPDF 把多张图拼成一张总览图再看。照图写出 LaTeX：
@@ -25,7 +27,7 @@ version: 1
 - 字号样式与图一致：小号分式写 `\tfrac` 或 `a/b`，小号矩阵用 `smallmatrix`。
 - 行间公式右侧有编号 (n) 时，在末尾写 ` \quad (n)`。
 - 只用 amsmath、amssymb、bm、mathtools、xcolor。
-- 禁止使用排版调整命令：`\raisebox` `\hspace` `\vspace` `\kern` `\mkern` `\phantom` `\rlap` `\llap` `\mathrlap` `\mathllap` `\lower` `\raise`，以及 `\tiny` 到 `\Huge` 的字号命令。出现即判为不通过。不要为了通过校验去挪动字形，按公式本来的样子写。
+- 禁止使用排版调整命令：`\raisebox` `\hspace` `\vspace` `\hskip` `\vskip` `\kern` `\mkern` `\mskip` `\phantom` `\hphantom` `\vphantom` `\rlap` `\llap` `\mathrlap` `\mathllap` `\resizebox` `\scalebox` `\lower` `\raise`，以及 `\tiny` 到 `\Huge` 的字号命令。出现即判为不通过。不要为了通过校验去挪动字形，按公式本来的样子写。
 - 行间公式只能用 aligned、split、array、matrix、pmatrix、bmatrix、cases、gathered 这几个环境。
 - 不是数学的截图（代码、表格、图、纯文字），以及以 `\text{...}` 写出的一行文字为主的行间公式，写 `SKIP`。
 

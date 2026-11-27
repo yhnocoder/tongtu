@@ -32,6 +32,10 @@ NARROW_WORDS = "the quick brown fox jumps over lazy dogs while seven wizards qui
 
 TEXTWIDTH_RE = re.compile(r"textwidth=[0-9.]+bp")
 
+SMALL_PRINT_PAGES = 6
+
+AT_COMMAND_RE = re.compile(r"\\[A-Za-z]*@")
+
 FixAction = Callable[[Path], None]
 
 
@@ -55,16 +59,17 @@ def template_pdf(tmp_path: Path, name: str) -> Path:
 
 def small_print_pdf(tmp_path: Path) -> Path:
     doc = pymupdf.open()
-    page = doc.new_page()
-    y = 30.0
     line_number = 0
-    while y < 820:
-        line = " ".join(
-            NARROW_WORDS[(line_number + k) % len(NARROW_WORDS)] + "x" * ((line_number + k) % 7) for k in range(15)
-        )
-        page.insert_text((20, y), line, fontsize=4)
-        y += 5
-        line_number += 3
+    for _ in range(SMALL_PRINT_PAGES):
+        page = doc.new_page()
+        y = 30.0
+        while y < 820:
+            line = " ".join(
+                NARROW_WORDS[(line_number + k) % len(NARROW_WORDS)] + "x" * ((line_number + k) % 7) for k in range(15)
+            )
+            page.insert_text((20, y), line, fontsize=4)
+            y += 5
+            line_number += 3
     path = tmp_path / "small.pdf"
     doc.save(path)
     return path
@@ -98,10 +103,10 @@ def fake_fix(calls: list[Path], action: FixAction) -> Callable[..., WorkOutcome]
 
 def widen_text(session_dir: Path) -> None:
     main = session_dir / "main.tex"
-    main.write_text(TEXTWIDTH_RE.sub("textwidth=555bp", main.read_text(encoding="utf-8"), count=1), encoding="utf-8")
+    main.write_text(TEXTWIDTH_RE.sub("textwidth=330bp", main.read_text(encoding="utf-8"), count=1), encoding="utf-8")
 
 
-@pytest.mark.parametrize("name", ["article", "revtex"])
+@pytest.mark.parametrize("name", ["article", "conference", "revtex"])
 def test_template_pdf_is_rebuilt_by_the_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(tongtu.model, "work", recognition_without_output)
@@ -114,6 +119,7 @@ def test_template_pdf_is_rebuilt_by_the_rules(tmp_path: Path, monkeypatch: pytes
     assert manifest.fix_session is None
     assert sum(manifest.regions.values()) > 0
     assert sorted(path.name for path in workdir.src.iterdir()) == ["crops.pdf", "main.tex"]
+    assert not AT_COMMAND_RE.search((workdir.src / "main.tex").read_text(encoding="utf-8"))
     packed = subprocess.run(
         ["latexmk", "-xelatex", "-interaction=nonstopmode", "main.tex"], cwd=workdir.src, capture_output=True
     )
@@ -197,7 +203,7 @@ def test_packed_page_count_differing_from_the_unpacked_one_is_reconstruct_failed
     workdir = pdf_workdir(tmp_path, small_print_pdf(tmp_path))
     manifest = reconstruct.run(workdir, mode="fast")
     assert manifest.status is ReconstructStatus.RECONSTRUCT_FAILED
-    assert "the packed source compiles to 2 pages, the unpacked one to 1" in manifest.message
+    assert "the packed source compiles to 8 pages, the unpacked one to 7" in manifest.message
     assert manifest.final_check is not None and manifest.final_check.passed
     assert not (workdir.src / "main.tex").exists()
 

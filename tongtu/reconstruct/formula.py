@@ -25,7 +25,8 @@ DISPLAY_CROP_RE = re.compile(
 )
 
 PREAMBLE = (
-    r"\documentclass[11pt]{article}\usepackage{amsmath,amssymb,bm,mathtools,mathrsfs,upgreek,amsfonts,xcolor}"
+    r"\documentclass[11pt]{article}\usepackage[T1]{fontenc}"
+    r"\usepackage{amsmath,amssymb,bm,mathtools,mathrsfs,upgreek,amsfonts,xcolor}"
     r"\pagestyle{empty}\begin{document}"
 )
 

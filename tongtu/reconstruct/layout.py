@@ -38,6 +38,8 @@ TEXT_FLAGS = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_LIGATURES
 
 HEAVY_PAGE_DRAWINGS = 20000
 
+TITLE_SIZE_MARGIN = 0.6
+
 Box = tuple[float, float, float, float]
 
 
@@ -438,7 +440,9 @@ class Layout:
             line.col = self.column(line.bbox)
             if id(line) in self.running:
                 line.kind = "header" if line.bbox.y0 < self.page_h / 2 else "footer"
-            elif line.bbox.y1 < self.top - 2:
+            elif line.bbox.y1 < self.top - 2 and not (
+                page_number == 0 and line.size > self.body_size + TITLE_SIZE_MARGIN
+            ):
                 line.kind = "header"
             elif line.bbox.y0 > self.bottom + 2 and (
                 len(line.text) <= 8 or line.bbox.y0 > self.bottom + 3 * self.leading
@@ -545,7 +549,7 @@ class Layout:
                 and first_body_y is None
                 and line.bbox.y1 <= self.first_heading_y(lines)
                 and (
-                    line.size > self.body_size + 0.6
+                    line.size > self.body_size + TITLE_SIZE_MARGIN
                     or line.bbox.width < 0.6 * (self.right - self.left)
                     or not PROSE_RE.search(line.text)
                 )

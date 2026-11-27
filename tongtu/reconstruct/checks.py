@@ -17,8 +17,8 @@ from .. import fonts, processes
 from ..artifacts.common import CompileReport
 from ..artifacts.reconstruct import CheckReport, RegionsFile
 from ..compiling import COMPILE_TIMEOUT_SECONDS
-from .crops import crop_path, open_crop
-from .rebuild import MAIN_FILENAME
+from .crops import CROPS_DIRNAME, crop_path, open_crop
+from .rebuild import MAIN_FILENAME, REGIONS_FILENAME
 
 RECALL_MIN = 0.98
 
@@ -27,6 +27,8 @@ PRECISION_MIN = 0.98
 ORDER_MIN = 0.99
 
 PAGE_RATIO_RANGE = (0.85, 1.20)
+
+PAGE_EXTRA_MAX = 2
 
 ORDER_GRAM_WORDS = 6
 
@@ -189,7 +191,12 @@ def draft_source(tex: str) -> str:
 def rebuilt_words(tree: Path) -> list[Word] | None:
     with tempfile.TemporaryDirectory(prefix="tongtu-order-") as temporary:
         draft = Path(temporary) / "tree"
-        shutil.copytree(tree, draft)
+        draft.mkdir()
+        shutil.copyfile(tree / MAIN_FILENAME, draft / MAIN_FILENAME)
+        if (tree / CROPS_DIRNAME).is_dir():
+            shutil.copytree(tree / CROPS_DIRNAME, draft / CROPS_DIRNAME)
+        if (tree / REGIONS_FILENAME).is_file():
+            shutil.copyfile(tree / REGIONS_FILENAME, draft / REGIONS_FILENAME)
         main = draft / MAIN_FILENAME
         main.write_text(draft_source(main.read_text(encoding="utf-8")), encoding="utf-8")
         pdf = main.with_suffix(".pdf")
@@ -237,8 +244,17 @@ def lost_glyphs(tree: Path) -> list[tuple[str, str]]:
     return lost
 
 
-def failed_items(report: CheckReport) -> list[str]:
+def page_count_problem(pages: int, source_pages: int) -> str:
     low, high = PAGE_RATIO_RANGE
+    ratio = pages / source_pages if source_pages else 0.0
+    if ratio < low:
+        return f"page ratio {pages}/{source_pages} below {low}"
+    if ratio > high and pages > source_pages + PAGE_EXTRA_MAX:
+        return f"page ratio {pages}/{source_pages} above {high} and more than {PAGE_EXTRA_MAX} pages over the source"
+    return ""
+
+
+def failed_items(report: CheckReport) -> list[str]:
     items = []
     if report.pages <= 0:
         items.append("no compiled PDF with pages")
@@ -250,9 +266,9 @@ def failed_items(report: CheckReport) -> list[str]:
         items.append(f"{report.missing_characters} missing characters")
     if report.order < ORDER_MIN:
         items.append(f"reading order {report.order:.4f} < {ORDER_MIN}")
-    ratio = report.pages / report.source_pages if report.source_pages else 0.0
-    if not low <= ratio <= high:
-        items.append(f"page ratio {report.pages}/{report.source_pages} outside {low}-{high}")
+    page_problem = page_count_problem(report.pages, report.source_pages)
+    if page_problem:
+        items.append(page_problem)
     return items
 
 
@@ -283,14 +299,12 @@ def check(original: Path, tree: Path, compiled: CompileReport | None, regions: R
         [word for word, _ in original_words(original, regions, masked=False)],
         [word for word, _ in drafted or []],
     )
-    low, high = PAGE_RATIO_RANGE
     passed = (
         recall >= RECALL_MIN
         and precision >= PRECISION_MIN
         and missing_characters == 0
         and order.score >= ORDER_MIN
-        and source_pages > 0
-        and low <= pages / source_pages <= high
+        and not page_count_problem(pages, source_pages)
     )
     report = CheckReport(
         source_pages=source_pages,
