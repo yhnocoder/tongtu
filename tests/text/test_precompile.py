@@ -30,7 +30,7 @@ LOG_OK = """Output written on main.xdv (7 pages, 12345 bytes).
 Overfull \\hbox (10.0pt too wide) in paragraph
 LaTeX Warning: Reference `fig:x' on page 1 undefined
 LaTeX Warning: Citation `adam' on page 2 undefined
-Missing character: There is no X in font
+Missing character: There is no ж (U+0436) in font larm1000!
 """
 
 LOG_ERROR = """! Undefined control sequence.
@@ -223,6 +223,7 @@ def test_ok_without_fix_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert manifest.report.undefined_references == 1
     assert manifest.report.undefined_citations == 1
     assert manifest.report.missing_characters == 1
+    assert "1 missing character in the compiled PDF (font has no glyph): ж x1" in manifest.warnings
     assert manifest.report.duration_seconds > 0
     assert calls == {"compile": 1, "clean": 1}
     assert outputs_present(workdir, "precompile")

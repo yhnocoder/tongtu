@@ -9,7 +9,7 @@ import pytest
 from pypdf import PdfReader
 
 import tongtu.model
-from tongtu import fonts, processes
+from tongtu import fonts, processes, texlog
 from tongtu.artifacts.common import Session, StopReason
 from tongtu.artifacts.precompile import PrecompileStatus
 from tongtu.model.config import FontFamily, FontsConfig
@@ -205,6 +205,25 @@ def test_pdftex_commands_in_a_package_of_the_paper_compile(tmp_path: Path) -> No
         for font in page["/Resources"]["/Font"].values()
     }
     assert "CMSY10" in fonts_used
+
+
+LEGACY_CYRILLIC_PAPER = (
+    "\\documentclass{article}\n\\usepackage{XCharter}\n\\begin{document}\n"
+    "中文正文 {\\fontencoding{T2A}\\selectfont Привет}\n\\end{document}\n"
+)
+
+
+def test_legacy_cyrillic_switch_compiles_without_missing_characters(tmp_path: Path) -> None:
+    warnings: list[str] = []
+    injected = precompile._inject_cjk(LEGACY_CYRILLIC_PAPER.encode("utf-8"), warnings, FontsConfig())
+    assert b"\\fontencoding" not in injected
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    log = (tmp_path / "main.log").read_text(encoding="utf-8", errors="replace")
+    assert texlog.parse_counts(log)["missing_characters"] == 0
+    text = "".join(page.extract_text() for page in PdfReader(tmp_path / "main.pdf").pages)
+    assert "Привет" in text
 
 
 XCHARTER_PAPER = (

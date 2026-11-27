@@ -321,7 +321,7 @@ api_key  = ""</code></pre>
           <li>用 latexpand 把 <code>\input</code> 与 <code>\include</code> 展开成单文件，有 <code>.bbl</code> 时一并内联。写在其他命令花括号参数里的 <code>\input</code>（例如 <code>\resizebox{…}{!}{\input{fig}}</code>）不展开，原样留给 TeX 在编译时读文件，每处在 manifest 里记一条 warning；裸分组与环境体里的照常展开。<p class="why"><b>理由</b>参数里的 <code>\input</code> 不展开。TeX 在执行到这条命令时才读文件；把文件内容内联进参数之后，内容按参数的方式读入，换行变成空格，依赖换行的内容（例如 pgfplots 的内联表格）读不出来，standalone 子文档的导言区也会进入主文件。这类文件里的文字不进入翻译，实际出现的都是图。</p></li>
           <li>处理注释：整行注释整行删掉；行尾注释删掉文字，只留 <code>%</code>，因为行尾的 <code>%</code> 决定换行处是否留空白。代码环境与 <code>\verb</code> 里的 <code>%</code> 是正文，不改动。</li>
           <li>前导区里取值确定的条件开关只保留生效的分支。</li>
-          <li>按 <code>tongtu/preamble.py</code> 的规则改写前导区里只适用于 pdflatex 的写法，再加入 xeCJK 与中文字体设置。行距是 <code>\linespread{1.4}</code>。文档类是 acmart 时，注入块在行距之后把 <code>\ACM@origbaselinestretch</code> 设为新的 <code>\baselinestretch</code>，因为 acmart 在文末检查行距是否被改过，不一致就报错停止编译。注入块为 xelatex 下未定义的 pdfTeX 专有命令（<code>\pdfglyphtounicode</code>、<code>\pdfsuppressptexinfo</code>、<code>\DeclareUnicodeCharacter</code>）提供替身，只在命令未定义时定义，覆盖作者自带的宏包。</li>
+          <li>按 <code>tongtu/preamble.py</code> 的规则改写前导区里只适用于 pdflatex 的写法，再加入 xeCJK 与中文字体设置。行距是 <code>\linespread{1.4}</code>。文档类是 acmart 时，注入块在行距之后把 <code>\ACM@origbaselinestretch</code> 设为新的 <code>\baselinestretch</code>，因为 acmart 在文末检查行距是否被改过，不一致就报错停止编译。注入块为 xelatex 下未定义的 pdfTeX 专有命令（<code>\pdfglyphtounicode</code>、<code>\pdfsuppressptexinfo</code>、<code>\DeclareUnicodeCharacter</code>）提供替身，只在命令未定义时定义，覆盖作者自带的宏包。整份文件里（正文也在内）切换到老式西里尔编码的 <code>\fontencoding{T2A}</code>（还有 <code>T2B</code>、<code>T2C</code>、<code>X2</code>）连同紧跟的 <code>\selectfont</code> 一并删掉，处理的次数在 manifest 里记一条 warning。<p class="why"><b>理由</b>这几种编码在 xelatex 下选中的是 8 位的 LH 字体，Unicode 西里尔字母在其中找不到字形，PDF 里变成空白；留在默认的 TU 编码下，OpenType 字体自带的西里尔字形可以直接使用。</p></li>
           <li>搭编译目录 <code>build/sandbox/tex/</code>：<code>src/</code> 的完整拷贝，主文件换成展开后的单文件，文件名不变。在其中用 latexmk 编译，通过后记下页数等计数作为基线，PDF 拷出为 <code>build/precompile.pdf</code>。</li>
           <li>展开时缺文件，或者编译不通过时，启动一次修复会话（skill <code>precompile_fix</code>），然后重新展开或编译一次，以这次结果为准。整个阶段只启动一次修复会话。</li>
         </ol>
@@ -345,6 +345,7 @@ api_key  = ""</code></pre>
       <dt>常量</dt>
       <dd>
         <p>编译命令是 <code>latexmk -norc -xelatex -interaction=nonstopmode -synctex=1 &lt;主文件&gt;</code>，与 compile 共用，超时 600 秒。latexpand 的超时是 10 秒。</p>
+        <p>编译通过且日志里有缺失字符（<code>missing_characters</code> 大于 0）时，warnings 里追加一条，按出现次数列出缺失的字符，最多列 10 种（<code>MISSING_CHARACTERS_LISTED</code>），其余只写种数。precompile 与 compile 的 warnings 都在终端逐条显示。</p>
         <p class="why"><b>理由</b>中文排版设置在翻译之前加入。宏包与 xeCJK 的冲突在这一步暴露并修好，修复的结果留在编译目录里，compile 直接使用。</p>
         <p class="why"><b>理由</b>主文件在编译目录里不改名。jobname 因此不变，作者随源码上传、按 jobname 命名的文件在两次编译里都能找到。</p>
       </dd>
@@ -593,6 +594,7 @@ class GlossaryCounts(BaseModel):
       <dt>常量</dt>
       <dd>
         <p>页数比的范围是 [0.7, 1.3]，用来发现整章丢失或整章重复。编译超时 600 秒。裁白边时四边各留 12 pt。</p>
+        <p>编译通过且日志里有缺失字符时，与 precompile 一样在 warnings 里追加一条，按出现次数列出最多 10 种缺失的字符（<code>MISSING_CHARACTERS_LISTED</code>）。</p>
         <p class="why"><b>理由</b>换回 <code>%</code> 时补换行。译文只要求与原文逐段对应，换回的结果不能依赖译文的换行位置：会话把占位符之后的文字写在同一行时，不补换行这半行会被 TeX 当成注释丢掉。<code>%</code> 加换行在 TeX 里吃掉换行和下一行行首的空白，含义与原文相同。</p>
         <p class="why"><b>理由</b>编译由 compile 阶段负责，翻译会话只负责译文。编译失败时才启动修复会话，两类会话的日志分开，便于从修复日志里找出可以写成规则的共性问题。</p>
       </dd>

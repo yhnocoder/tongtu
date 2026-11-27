@@ -39,6 +39,12 @@ GROUP_START_RE = re.compile(r"\s*\{")
 
 ASSIGNMENT_RE = re.compile(r"[ \t]*=?[ \t]*-?\d+(?:[ \t]*\\relax)?")
 
+LEGACY_CYRILLIC_ENCODINGS = frozenset({"T2A", "T2B", "T2C", "X2"})
+
+FONTENCODING_RE = re.compile(
+    r"\\fontencoding\s*\{\s*([^{}\s]*)\s*\}(?:[ \t]*\n?[ \t]*(\\selectfont)(?![A-Za-z@])[ \t]*)?"
+)
+
 CJK_ENV_RE = re.compile(r"\\begin\s*\{CJK\*?\}(?:\s*\{[^}]*\}){2}|\\end\s*\{CJK\*?\}|\\CJKfamily\s*\{[^}]*\}")
 
 
@@ -52,6 +58,7 @@ class Edit:
 
 
 def adapt(text: str, warnings: list[str]) -> str:
+    text = _strip_legacy_cyrillic(text, warnings)
     try:
         edits = _preamble_edits(text, _preamble_end(text))
     except MaskError as error:
@@ -67,6 +74,34 @@ def adapt(text: str, warnings: list[str]) -> str:
         if stripped:
             warnings.append(f"stripped {stripped} CJK environment wrappers and \\CJKfamily settings")
     return text
+
+
+def _strip_legacy_cyrillic(text: str, warnings: list[str]) -> str:
+    pieces: list[str] = []
+    kept_from = 0
+    stripped = 0
+    position = 0
+    while (match := TOKEN_RE.search(text, position)) is not None:
+        position = match.end()
+        if match.group() == "%":
+            position = _line_end(text, position)
+            continue
+        if match.group(1) != "fontencoding":
+            continue
+        switch = FONTENCODING_RE.match(text, match.start())
+        if switch is None or switch.group(1) not in LEGACY_CYRILLIC_ENCODINGS:
+            continue
+        keeps_line_end = switch.group(2) is not None and text.startswith("\n", switch.end())
+        pieces.append(text[kept_from : switch.start()] + ("%" if keeps_line_end else ""))
+        kept_from = position = switch.end()
+        stripped += 1
+    if not stripped:
+        return text
+    warnings.append(
+        f"removed {stripped} switches to legacy Cyrillic font encodings (\\fontencoding{{T2A}} and the like); "
+        "xelatex finds Cyrillic glyphs in the TU-encoded fonts"
+    )
+    return "".join(pieces) + text[kept_from:]
 
 
 def _preamble_end(text: str) -> int:

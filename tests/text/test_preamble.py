@@ -250,3 +250,70 @@ def test_unbalanced_braces_leave_the_text_alone() -> None:
     output, warnings = run(text)
     assert output == text
     assert len(warnings) == 1 and "not rewritten" in warnings[0]
+
+
+CYRILLIC_WARNING = (
+    "removed {} switches to legacy Cyrillic font encodings (\\fontencoding{{T2A}} and the like); "
+    "xelatex finds Cyrillic glyphs in the TU-encoded fonts"
+)
+
+
+def test_legacy_cyrillic_switch_with_selectfont_is_removed() -> None:
+    output, warnings = run(
+        "\\documentclass{article}\n\\begin{document}\n"
+        "A {\\fontencoding{T2A}\\selectfont Привет} and {\\fontencoding{X2} \n \\selectfont Мир}.\n"
+        "\\end{document}\n"
+    )
+    assert "A {Привет} and {Мир}." in output
+    assert "\\fontencoding" not in output
+    assert warnings == [CYRILLIC_WARNING.format(2)]
+
+
+def test_legacy_cyrillic_switch_without_selectfont_keeps_the_rest() -> None:
+    output, warnings = run(
+        "\\documentclass{article}\n\\begin{document}\n{\\fontencoding{T2A}\\fontfamily{cmr}\\selectfont Привет}\n\\end{document}\n"
+    )
+    assert "{\\fontfamily{cmr}\\selectfont Привет}" in output
+    assert warnings == [CYRILLIC_WARNING.format(1)]
+
+
+def test_selectfont_at_line_end_leaves_a_comment_mark() -> None:
+    output, _ = run(
+        "\\documentclass{article}\n\\begin{document}\n{\\fontencoding{T2A}\\selectfont\n  Привет}\n\\end{document}\n"
+    )
+    assert "{%\n  Привет}" in output
+
+
+def test_blank_line_before_selectfont_keeps_the_selectfont() -> None:
+    output, warnings = run(
+        "\\documentclass{article}\n\\begin{document}\n{\\fontencoding{T2A}\n\n\\selectfont Привет}\n\\end{document}\n"
+    )
+    assert "{\n\n\\selectfont Привет}" in output
+    assert "\\fontencoding" not in output
+    assert warnings == [CYRILLIC_WARNING.format(1)]
+
+
+def test_legacy_cyrillic_switch_in_the_preamble_is_removed() -> None:
+    output, _ = run(
+        "\\documentclass{article}\n\\newcommand\\cyr{\\fontencoding{T2C}\\selectfont}\n\\begin{document}\n\\end{document}\n"
+    )
+    assert "\\newcommand\\cyr{}" in output
+
+
+def test_selectfont_prefix_of_a_longer_command_is_kept() -> None:
+    output, _ = run(
+        "\\documentclass{article}\n\\begin{document}\n{\\fontencoding{T2B}\\selectfontx Привет}\n\\end{document}\n"
+    )
+    assert "{\\selectfontx Привет}" in output
+
+
+def test_comments_and_other_encodings_are_left_alone() -> None:
+    text = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "% {\\fontencoding{T2A}\\selectfont x}\n"
+        "{\\fontencoding{T1}\\selectfont Text}\n"
+        "\\end{document}\n"
+    )
+    output, warnings = run(text)
+    assert output == text
+    assert warnings == []

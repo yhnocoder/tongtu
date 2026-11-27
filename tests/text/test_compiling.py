@@ -370,3 +370,42 @@ def test_compile_with_fix_verify_still_fails(tmp_path: Path, monkeypatch: pytest
     assert attempt is not None and not attempt.passed
     assert session is not None
     assert failure.startswith("after the fix session the verify compile still fails the exit checks:")
+
+
+def missing_log(characters: str) -> str:
+    lines = [
+        f'Missing character: There is no {character} ("{ord(character):X}) in font larm1000!\n'
+        for index, character in enumerate(characters)
+        for _ in range(len(characters) - index)
+    ]
+    return "".join(lines) + LOG_OK
+
+
+def test_compile_with_fix_lists_the_missing_characters(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wire_latexmk(monkeypatch, [{"log": missing_log("он")}])
+    warnings: list[str] = []
+    attempt, _, failure = call_compile_with_fix(tmp_path, warnings)
+    assert failure == ""
+    assert attempt is not None and attempt.report.missing_characters == 3
+    assert warnings == ["3 missing characters in the compiled PDF (font has no glyph): о x2, н x1"]
+
+
+def test_compile_with_fix_truncates_the_missing_character_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    characters = "абвгдежзийклм"
+    wire_latexmk(monkeypatch, [{"returncode": 1, "log": LOG_ERROR}, {"log": missing_log(characters)}])
+    wire_work(monkeypatch, StopReason.FINISHED)
+    warnings: list[str] = []
+    attempt, session, failure = call_compile_with_fix(tmp_path, warnings)
+    assert failure == "" and session is not None
+    assert attempt is not None and attempt.report.missing_characters == 91
+    listed = ", ".join(f"{character} x{13 - index}" for index, character in enumerate(characters[:10]))
+    assert f"91 missing characters in the compiled PDF (font has no glyph): {listed}, and 3 more" in warnings
+
+
+def test_compile_with_fix_without_missing_characters_adds_no_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wire_latexmk(monkeypatch, [{}])
+    warnings: list[str] = []
+    call_compile_with_fix(tmp_path, warnings)
+    assert warnings == []
