@@ -267,7 +267,7 @@ api_key  = ""</code></pre>
       <dt>做什么</dt>
       <dd>
         <ol>
-          <li>向 arXiv API 请求论文信息（<code>https://export.arxiv.org/api/query?id_list=&lt;编号&gt;</code>），得到版本号与论文信息，写出 <code>out/&lt;ID&gt;.meta.json</code>。响应是 429 或 503 时等待后重试，最多重试 <code>ARXIV_RETRIES = 3</code> 次：响应带 <code>Retry-After</code> 头且是非负整数秒时等这么多秒，否则依次等 <code>ARXIV_RETRY_WAIT_SECONDS = (5, 15, 45)</code> 中对应的秒数，每次等待前在终端提示一行。arXiv 对频繁请求限流，过一会儿就恢复。其他状态码与网络错误立即报错；重试用完仍是 429 或 503 时报错，消息里写明已重试的次数。</li>
+          <li>向 arXiv API 请求论文信息（<code>https://export.arxiv.org/api/query?id_list=&lt;编号&gt;</code>），得到版本号与论文信息，写出 <code>out/&lt;ID&gt;.meta.json</code>。响应是 429 或 503 时等待后重试，最多重试 <code>ARXIV_RETRIES = 4</code> 次：响应带 <code>Retry-After</code> 头且是非负整数秒时，等这么多秒再加 0 到 <code>ARXIV_RETRY_AFTER_EXTRA_SECONDS = 5</code> 之间的随机秒数；否则取 <code>ARXIV_RETRY_WAIT_SECONDS = (10, 30, 60, 120)</code> 中对应的秒数，乘以 <code>ARXIV_RETRY_JITTER = (0.5, 1.5)</code> 范围内的随机系数。每次等待前在终端提示一行，秒数取整显示。加随机是为了让同时运行的几篇错开重试。arXiv 对频繁请求限流，过一会儿就恢复。其他状态码与网络错误立即报错；重试用完仍是 429 或 503 时报错，消息里写明已重试的次数。</li>
           <li>下载这个版本的源码包（<code>https://export.arxiv.org/e-print/&lt;ID&gt;</code>），原始字节写进 <code>build/e-print.bin</code>。</li>
           <li>按文件头判断格式并解包到 <code>src/</code>。格式可以是 tar.gz、tar、gz、单个 tex 或 PDF。tar 里的链接与设备文件不解包。</li>
           <li><code>PAPER</code> 是本地目录时不联网，把目录内容拷进 <code>src/</code>，不写论文信息。</li>

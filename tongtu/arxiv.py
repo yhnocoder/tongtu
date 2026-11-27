@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import re
 import time
 import xml.etree.ElementTree as ElementTree
@@ -43,9 +44,13 @@ PATH_NAVIGATION_LITERALS = frozenset({"", ".", "..", "~"})
 
 LATEST_CACHE_SECONDS = 86400
 
-ARXIV_RETRIES = 3
+ARXIV_RETRIES = 4
 
-ARXIV_RETRY_WAIT_SECONDS = (5, 15, 45)
+ARXIV_RETRY_WAIT_SECONDS = (10, 30, 60, 120)
+
+ARXIV_RETRY_JITTER = (0.5, 1.5)
+
+ARXIV_RETRY_AFTER_EXTRA_SECONDS = 5
 
 RETRYABLE_STATUS_CODES = frozenset({429, 503})
 
@@ -210,7 +215,7 @@ def query(arxiv_id: str, version: int | None = None) -> PaperMeta:
                 retries += 1
                 error_console.print(
                     f"arXiv rate limit (HTTP {response.status_code}), "
-                    f"retrying in {seconds} s ({retries}/{ARXIV_RETRIES})"
+                    f"retrying in {round(seconds)} s ({retries}/{ARXIV_RETRIES})"
                 )
                 time.sleep(seconds)
                 continue
@@ -223,11 +228,11 @@ def query(arxiv_id: str, version: int | None = None) -> PaperMeta:
         return parse_feed(response.text, paper_id)
 
 
-def retry_wait_seconds(retry_after: str | None, retries: int) -> int:
+def retry_wait_seconds(retry_after: str | None, retries: int) -> float:
     seconds = (retry_after or "").strip()
     if seconds.isascii() and seconds.isdigit():
-        return int(seconds)
-    return ARXIV_RETRY_WAIT_SECONDS[retries]
+        return int(seconds) + random.uniform(0, ARXIV_RETRY_AFTER_EXTRA_SECONDS)
+    return ARXIV_RETRY_WAIT_SECONDS[retries] * random.uniform(*ARXIV_RETRY_JITTER)
 
 
 def parse_feed(feed: str, paper_id: str) -> PaperMeta:
