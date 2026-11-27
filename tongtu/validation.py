@@ -65,6 +65,11 @@ NON_TEXT_ARGUMENT_COMMANDS: tuple[str, ...] = (
     "autoref",
     "cref",
     "Cref",
+    "crefalias",
+    "Crefalias",
+    "startcontents",
+    "stopcontents",
+    "printcontents",
     "cite[A-Za-z]*",
     "url",
 )

@@ -433,6 +433,21 @@ def test_a_paragraph_of_macro_definitions_needs_no_translation() -> None:
     assert report.paragraphs_total == 0
 
 
+APPENDIX_CONTENTS = r"""\appendix
+\crefalias{section}{appendix}
+\crefalias{subsection}{subappendix}
+\clearpage
+\section*{Appendix Table of Contents}
+\startcontents[sections]
+\printcontents[sections]{l}{1}{\setcounter{tocdepth}{2}}"""
+
+
+def test_a_paragraph_of_cleveref_and_titletoc_settings_needs_no_translation() -> None:
+    report = validation.check(APPENDIX_CONTENTS, APPENDIX_CONTENTS)
+    assert report.ok
+    assert report.paragraphs_total == 0
+
+
 @pytest.mark.parametrize(
     "definition",
     [
