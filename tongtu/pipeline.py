@@ -44,6 +44,12 @@ STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path | None], ...]] = {
     "fetch": (lambda w: w.src, lambda w: w.eprint, lambda w: w.original_pdf, lambda w: w.meta),
     "reconstruct": (
         lambda w: w.sandbox("reconstruct"),
+        lambda w: w.sandbox("reconstruct_formula"),
+        lambda w: w.sandbox("reconstruct_table"),
+        lambda w: w.reconstruct_formula_log,
+        lambda w: raw_log_path(w.reconstruct_formula_log),
+        lambda w: w.reconstruct_table_log,
+        lambda w: raw_log_path(w.reconstruct_table_log),
         lambda w: w.reconstruct_fix_log,
         lambda w: raw_log_path(w.reconstruct_fix_log),
         lambda w: w.src if _rebuilt(w) else None,
@@ -73,11 +79,11 @@ STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path | None], ...]] = {
     ),
 }
 
-STAGE_SESSIONS: dict[str, NoteSession] = {
-    "reconstruct": "reconstruct_fix",
-    "precompile": "precompile_fix",
-    "translate": "translate",
-    "compile": "compile_fix",
+STAGE_SESSIONS: dict[str, tuple[NoteSession, ...]] = {
+    "reconstruct": ("reconstruct_formula", "reconstruct_table", "reconstruct_fix"),
+    "precompile": ("precompile_fix",),
+    "translate": ("translate",),
+    "compile": ("compile_fix",),
 }
 
 
@@ -112,8 +118,7 @@ def downstream(stage: str) -> tuple[str, ...]:
 def clean(workdir: Workdir, stage: str) -> None:
     for entry in STAGE_REMOVES[stage]:
         _remove(entry(workdir))
-    session = STAGE_SESSIONS.get(stage)
-    if session is not None:
+    for session in STAGE_SESSIONS.get(stage, ()):
         notes.remove(workdir.notes, session)
     _remove(workdir.manifest_path(stage))
 

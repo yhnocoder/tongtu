@@ -434,8 +434,13 @@ def reconstruct_summary(manifest: ReconstructManifest) -> str:
     check = manifest.final_check
     if not manifest.rebuilt or check is None:
         return "source input"
-    summary = f"{check.pages} pages, recall {check.recall:.3f}, order {check.order:.3f}"
-    return f"{summary}, fixed" if manifest.fix_session is not None else summary
+    parts = [f"{check.pages} pages"]
+    if manifest.formulas is not None:
+        parts.append(f"math {manifest.formulas.passed}/{manifest.formulas.total}")
+    if manifest.tables is not None:
+        parts.append(f"tables {manifest.tables.passed}/{manifest.tables.total}")
+    summary = ", ".join(parts)
+    return f"{summary} fixed" if manifest.fix_session is not None else summary
 
 
 def _print_stage_header() -> None:
@@ -726,8 +731,14 @@ def _existing(path: Path) -> Path | None:
     return path if path.is_file() else None
 
 
+def _latest_reconstruct_log(workdir: Workdir) -> Path:
+    logs = [workdir.reconstruct_formula_log, workdir.reconstruct_table_log, workdir.reconstruct_fix_log]
+    existing = [path for path in logs if path.is_file()]
+    return max(existing, key=lambda path: path.stat().st_mtime) if existing else workdir.reconstruct_fix_log
+
+
 SESSION_LOGS: dict[str, Callable[[Workdir], Path]] = {
-    "reconstruct": lambda w: w.reconstruct_fix_log,
+    "reconstruct": _latest_reconstruct_log,
     "precompile": lambda w: w.precompile_fix_log,
     "translate": lambda w: w.translate_log,
     "compile": lambda w: w.compile_fix_log,

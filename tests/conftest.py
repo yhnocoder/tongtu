@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import shutil
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
 
 from tongtu import masking, synctex
+from tongtu.model.work import SKILL_ROOT
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,3 +72,11 @@ def synctex_file(inputs: Mapping[int, str], pages: Sequence[Sequence[str]]) -> s
         lines.extend([f"{{{number}", *page, f"}}{number}"])
     lines.append("Postamble:")
     return "\n".join(lines) + "\n"
+
+
+def run_skill_check(session_dir: Path, skill: str, *keys: str) -> subprocess.CompletedProcess[str]:
+    skill_copy = session_dir / ".skills" / skill
+    shutil.copytree(SKILL_ROOT / skill, skill_copy, dirs_exist_ok=True)
+    return subprocess.run(
+        [sys.executable, str(skill_copy / "check.py"), *keys], cwd=session_dir, capture_output=True, text=True
+    )

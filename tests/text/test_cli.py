@@ -25,7 +25,7 @@ from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session,
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.artifacts.fetch import CachedMeta, FetchManifest, FetchStatus, PaperMeta
 from tongtu.artifacts.precompile import PrecompileManifest, PrecompileStatus
-from tongtu.artifacts.reconstruct import CheckReport, ReconstructManifest, ReconstructStatus
+from tongtu.artifacts.reconstruct import CheckReport, RecognitionReport, ReconstructManifest, ReconstructStatus
 from tongtu.artifacts.status import (
     ABSENT_STATUS,
     PaperListing,
@@ -831,7 +831,12 @@ def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch
     assert not workdir.manifest_path("compile").exists()
     notes_file = load_manifest(workdir.notes, NotesFile)
     assert notes_file is not None
-    assert [note.session for note in notes_file.notes] == ["reconstruct_fix", "precompile_fix"]
+    assert [note.session for note in notes_file.notes] == [
+        "reconstruct_formula",
+        "reconstruct_table",
+        "reconstruct_fix",
+        "precompile_fix",
+    ]
 
 
 def test_run_stops_at_the_first_failed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1020,7 +1025,13 @@ def test_stage_cleans_its_own_outputs_before_running(tmp_path: Path, monkeypatch
     assert workdir.manifest_path("compile").is_file()
     notes_file = load_manifest(workdir.notes, NotesFile)
     assert notes_file is not None
-    assert [note.session for note in notes_file.notes] == ["reconstruct_fix", "precompile_fix", "compile_fix"]
+    assert [note.session for note in notes_file.notes] == [
+        "reconstruct_formula",
+        "reconstruct_table",
+        "reconstruct_fix",
+        "precompile_fix",
+        "compile_fix",
+    ]
 
 
 def test_stage_exits_one_when_the_stage_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1588,18 +1599,29 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
     )
 
 
-def test_reconstruct_summary_shows_the_final_check_and_the_fix_session() -> None:
+def test_reconstruct_summary_of_an_ok_stage_shows_pages_and_recognitions() -> None:
     check = CheckReport(
         source_pages=9, pages=10, recall=0.9912, precision=0.99, missing_characters=0, order=0.9954, passed=True
     )
     session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
     assert cli.stage_summary(ReconstructManifest(status=ReconstructStatus.OK)) == "source input"
     rebuilt = ReconstructManifest(status=ReconstructStatus.OK, rebuilt=True, final_check=check)
-    assert cli.stage_summary(rebuilt) == "10 pages, recall 0.991, order 0.995"
-    fixed = rebuilt.model_copy(update={"fix_session": session})
-    assert cli.stage_summary(fixed) == "10 pages, recall 0.991, order 0.995, fixed"
-    widest = fixed.model_copy(update={"final_check": check.model_copy(update={"pages": 999})})
-    assert len(cli.stage_summary(widest)) < cli.SUMMARY_WIDTH
+    assert cli.stage_summary(rebuilt) == "10 pages"
+    recognized = rebuilt.model_copy(
+        update={"formulas": RecognitionReport(total=95, passed=92), "tables": RecognitionReport(total=4, passed=4)}
+    )
+    assert cli.stage_summary(recognized) == "10 pages, math 92/95, tables 4/4"
+    assert cli.stage_summary(recognized.model_copy(update={"tables": None})) == "10 pages, math 92/95"
+    fixed = recognized.model_copy(update={"fix_session": session})
+    assert cli.stage_summary(fixed) == "10 pages, math 92/95, tables 4/4 fixed"
+    widest = fixed.model_copy(
+        update={
+            "final_check": check.model_copy(update={"pages": 999}),
+            "formulas": RecognitionReport(total=999, passed=999),
+            "tables": RecognitionReport(total=99, passed=99),
+        }
+    )
+    assert len(cli.stage_summary(widest)) <= cli.SUMMARY_WIDTH - 1
 
 
 def test_translate_summary_counts_paragraphs_and_new_terms() -> None:
@@ -2310,6 +2332,21 @@ def test_status_json_reports_a_running_paper_with_its_recent_actions(
     assert (snapshot.running, snapshot.pid) == (True, os.getpid())
     summary = summaries_by_name(list_json())["1412.6980v8"]
     assert (summary.state, summary.stage, summary.started_at) == (PaperState.RUNNING, "translate", STARTED_AT)
+
+
+def test_status_json_takes_the_recent_actions_of_the_latest_reconstruct_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = papers_home(tmp_path, monkeypatch)
+    fetched = FetchManifest(status=FetchStatus.OK, source="paper.pdf", kind="local_pdf", route="pdf")
+    workdir = write_paper(papers, "paper", fetched, {})
+    workdir.manifest_path("reconstruct").unlink()
+    write_run_marker(workdir, os.getpid())
+    write_events(workdir.reconstruct_formula_log, [tool_event("看公式")])
+    write_events(workdir.reconstruct_table_log, [tool_event("看表格")])
+    os.utime(workdir.reconstruct_formula_log, (1_000_000_000, 1_000_000_000))
+    snapshot = status_json("paper.pdf", "--workdir", str(workdir.path))
+    assert (snapshot.state, snapshot.stage, snapshot.recent_actions) == (PaperState.RUNNING, "reconstruct", ["看表格"])
 
 
 def test_status_json_gives_no_recent_actions_without_a_session_log(

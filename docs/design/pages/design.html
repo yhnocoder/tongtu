@@ -43,10 +43,10 @@
 
 <section id="flow">
   <h2>六个阶段</h2>
-  <p><code>tongtu run</code> 依次运行六个阶段。每个阶段读上一个阶段的产物，写出自己的产物和一份 manifest。只有 translate 每次都启动 agent 会话；reconstruct 只在重建结果核对不通过时、precompile 与 compile 只在展开或编译失败时各启动一次修复会话。</p>
+  <p><code>tongtu run</code> 依次运行六个阶段。每个阶段读上一个阶段的产物，写出自己的产物和一份 manifest。只有 translate 每次都启动 agent 会话。reconstruct 在重建结果里有公式或表格截图时各启动一次识别会话，在核对不通过时启动一次修复会话；precompile 与 compile 只在展开或编译失败时各启动一次修复会话。</p>
   <ol class="flow">
     <li><span class="n">1</span><span class="name">fetch</span><span class="what">查询版本与论文信息，下载并解包源码；没有 TeX 源码时取 PDF</span><span class="who">规则</span></li>
-    <li><span class="n">2</span><span class="name">reconstruct</span><span class="what">只有 PDF 时，从 PDF 重建出英文 LaTeX 源码并核对</span><span class="who">规则；失败时一次修复会话</span></li>
+    <li><span class="n">2</span><span class="name">reconstruct</span><span class="what">只有 PDF 时，从 PDF 重建出英文 LaTeX 源码，把公式与表格截图识别成 LaTeX，并核对</span><span class="who">规则；公式与表格各一次识别会话；失败时一次修复会话</span></li>
     <li><span class="n">3</span><span class="name">precompile</span><span class="what">展开成单文件，加入中文排版设置，确认原文能编译</span><span class="who">规则；失败时一次修复会话</span></li>
     <li><span class="n">4</span><span class="name">mask</span><span class="what">把公式、图表、代码等不翻译的部分换成占位符</span><span class="who">规则</span></li>
     <li class="agent"><span class="n">5</span><span class="name">translate</span><span class="what">一次会话译出全文，会话外重跑校验</span><span class="who">agent 会话</span></li>
@@ -113,7 +113,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
 <span class="ok">✓</span> mask        ok                183 blocks masked                           0:00:00
 <span class="ok">✓</span> translate   ok                164 paragraphs, 31 new terms                0:09:55
 <span class="ok">✓</span> compile     ok                56 pages, baseline 66                       0:00:47</div>
-  <p>reconstruct 的摘要在有 TeX 源码时是 <code>source input</code>；从 PDF 重建过时写重建结果的页数、单词召回率与阅读顺序，启动过修复会话时加 <code>fixed</code>，例如 <code>16 pages, recall 0.999, order 0.997, fixed</code>。translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
+  <p>reconstruct 的摘要在有 TeX 源码时是 <code>source input</code>；从 PDF 重建过时写重建结果的页数，有公式或表格截图时加识别通过的个数与总数（公式写作 <code>math</code>），启动过修复会话时在末尾加 <code>fixed</code>，例如 <code>15 pages, math 92/95, tables 4/4 fixed</code>。在 999 页、公式 999/999、表格 99/99 时，它也比摘要列的宽度 <code>SUMMARY_WIDTH = 44</code> 短。摘要只在阶段为 ok 时显示，失败时终端显示 <code>message</code>。translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
   <table>
     <thead><tr><th>情形</th><th>行为</th><th>退出码</th></tr></thead>
     <tbody>
@@ -207,12 +207,16 @@ mode    smart  claude-code/claude-opus-5-5  medium
         │   ├── manifests/           <span class="c">fetch.json … compile.json</span>
         │   └── sandbox/
         │       ├── reconstruct/     <span class="c">重建目录，也是 reconstruct 修复会话的目录</span>
+        │       ├── reconstruct_formula/ <span class="c">公式识别会话的目录</span>
+        │       ├── reconstruct_table/ <span class="c">表格识别会话的目录</span>
         │       ├── tex/             <span class="c">编译目录，precompile 与 compile 共用</span>
         │       └── translate/       <span class="c">翻译会话目录</span>
         ├── out/                     <span class="c">交给用户与其他程序的五个文件</span>
         └── logs/
             ├── translate.jsonl      <span class="c">翻译会话的事件记录</span>
             ├── translate.raw.jsonl  <span class="c">运行时的原始输出，每个会话各有一份</span>
+            ├── reconstruct-formula.jsonl <span class="c">启动过公式识别会话才有</span>
+            ├── reconstruct-table.jsonl <span class="c">启动过表格识别会话才有</span>
             ├── reconstruct-fix.jsonl <span class="c">启动过修复会话才有</span>
             ├── precompile-fix.jsonl
             └── compile-fix.jsonl</code></pre>
@@ -327,9 +331,10 @@ api_key  = ""</code></pre>
       <dd>
         <p>fetch 的 <code>route</code> 是 <code>"tex"</code> 时不做任何事，写 <code>ok</code>，<code>rebuilt</code> 为 false。<code>route</code> 是 <code>"pdf"</code> 时，在重建目录 <code>build/sandbox/reconstruct/</code> 里依次做：</p>
         <ol>
-          <li>规则重建：把 <code>build/original.pdf</code> 拷进重建目录，写出 <code>main.tex</code>、<code>crops/&lt;编号&gt;.pdf</code>（每个截图一个文件）与 <code>regions.json</code>。正文文字、标题、列表、脚注、目录、图注写成 LaTeX；图、表、算法、行间公式、参考文献、作者区从原 PDF 截取矢量区域插入，截取时用两遍 redaction 去掉区域外的内容，区域内的大号数学字形保留；行内公式截成小图，写成 <code>\im{编号}{下沉量}{提示}</code>。提示是这段截图在原文文字层里的字符，只给修复会话参考，不排版。</li>
+          <li>规则重建：把 <code>build/original.pdf</code> 拷进重建目录，写出 <code>main.tex</code>、<code>crops/&lt;编号&gt;.pdf</code>（每个截图一个文件）与 <code>regions.json</code>。正文文字、标题、列表、脚注、目录、图注写成 LaTeX；图、表、算法、行间公式、参考文献、作者区从原 PDF 截取矢量区域插入，截取时用两遍 redaction 去掉区域外的内容，区域内的大号数学字形保留；行内公式截成小图，写成 <code>\im{编号}{下沉量}{提示}</code>。提示是这段截图在原文文字层里的字符，只给修复会话与识别会话参考，不排版。</li>
+          <li>公式与表格识别，见下文：有行间或行内公式截图时启动一次公式识别会话，有表格截图时再启动一次表格识别会话。每个会话结束后，阶段在会话外重跑校验，把通过的条目写回 <code>main.tex</code> 替换截图，没通过的保留截图。</li>
           <li>编译：与 precompile 用同一条 latexmk 命令。</li>
-          <li>核对，见下文。全部通过时跳到第 5 步。</li>
+          <li>核对，见下文。全部通过时跳到第 6 步。</li>
           <li>编译或核对不通过时，在重建目录里启动一次修复会话（skill <code>reconstruct_fix</code>），会话结束后重新编译、重新核对，以这次结果为准。整个阶段只启动一次修复会话。</li>
           <li>打包：所有截图合进一个 <code>crops.pdf</code>，<code>\includegraphics{crops/x.pdf}</code> 改成 <code>{\includegraphics[page=N]{crops.pdf}}</code>，<code>\im</code> 改为按编号取页。保存时去掉重复资源并压缩（<code>garbage=4</code>、<code>deflate</code>，图片重新编码）。打包后再编译一次，页数必须与打包前相同。</li>
           <li>交付：清空 <code>src/</code>，把 <code>main.tex</code> 与 <code>crops.pdf</code> 拷进去。之后的 precompile 把它当普通源码处理。</li>
@@ -358,6 +363,42 @@ api_key  = ""</code></pre>
         <p>截图丢字（不参加判定，只记录）：对每个 <code>\im</code> 截图，比较它的文字层与提示里的字符（NFKC 规范化，去掉空白，按多重集比较）。截图缺了提示里的字符时记一处，写进 <code>crop_lost_glyphs</code> 并加一条 warning。召回率、准确率与阅读顺序只比较三个字母以上的英文单词，截图里缺了根号、上下标这类符号时，这几项看不出来。例如 Computer Modern 的根号挂在基线下方，裁切范围按字体框计算时会把它裁掉。</p>
         <p class="why"><b>理由</b>0.98 是试验中正确重建的论文都能达到、而段落错位或漏截时会跌破的值。阅读顺序 0.99 与页数比 0.85–1.20 由用户确认；超出这个页数比时，几乎都是规则把一块内容截错或重复排了。</p>
       </dd>
+      <dt>公式与表格识别</dt>
+      <dd>
+        <p>规则重建之后、编译与核对之前，依次启动两个识别会话：有 <code>display</code> 或 <code>inline</code> 截图时启动公式识别会话（skill <code>reconstruct_formula</code>，会话目录 <code>build/sandbox/reconstruct_formula/</code>），有 <code>table</code> 截图时启动表格识别会话（skill <code>reconstruct_table</code>，会话目录 <code>build/sandbox/reconstruct_table/</code>）。只识别写回时能替换的截图：行间公式是单独成段的 <code>\includegraphics</code>（放在 <code>strip</code> 或 <code>figure*</code> 里的不识别），行内公式是 <code>\im</code>，表格是图注以 Table 开头的浮动体里的截图。两个会话都用本次运行的模式，日志分别写到 <code>logs/reconstruct-formula.jsonl</code> 与 <code>logs/reconstruct-table.jsonl</code>，会话的 <code>python3</code> 与 reconstruct_fix 一样是运行通途的解释器。</p>
+        <p>会话目录里放 <code>img/&lt;编号&gt;.png</code>（每个截图的渲染图）、<code>hints.json</code>（每个截图的文字层，每段写成 <code>字体名#颜色:文字</code>；公式另记类别，表格另记截图宽度并按基线排序）与 <code>crops/&lt;编号&gt;.pdf</code>（截图原件，供会话里的 <code>check.py</code> 比对）。agent 把写好的 LaTeX 写进 <code>rec.json</code>（<code>{"编号": "LaTeX"}</code>，写不对的写 <code>SKIP</code>），并在会话里运行 <code>check.py</code>。它对 <code>rec.json</code> 的每一条做与会话外相同的校验，报告通过数和每条失败的差异，agent 按差异修改到全部通过。脚本不分轮重试。会话结束后，阶段用重建目录里的截图原件重跑校验，这是唯一的判定。</p>
+        <p class="why"><b>理由</b>原则 2 要求脚本不对 agent 的过程做细粒度控制。agent 在会话里用同一个校验脚本自查，与 translate 的做法一致。</p>
+        <p><b>公式的校验</b>：把识别出的 LaTeX 用 pdflatex 单独编译（行间公式放进 <code>\[ \]</code>，行内公式放进 <code>$ $</code>），与截图的文字层逐个字形比较，以下几项全部一致才算通过：</p>
+        <ul>
+          <li>字符序列。比较前做 NFKC 规范化，CMEX 字体的大号运算符映射成对应的 Unicode，根号不计。</li>
+          <li>粗体：字体名含 MIB、BX、Bold、Medi 的算粗体（不分大小写），BlackboardBold 不算。参考实现里另外几种粗体字体名（CMBSY、BSY、-Bd、Black、txb、pxb）也算粗体。公式与表格用同一条规则。</li>
+          <li>颜色。</li>
+          <li>每个字形相对最大字号字形的基线位置与字号：基线位置之差除以最大字号不超过 <code>BASELINE_TOLERANCE = 0.12</code>，字号的相对差不超过 <code>SIZE_TOLERANCE = 0.2</code>。</li>
+        </ul>
+        <p>粗体或颜色不一致时，校验依次再试去掉粗体、把 <code>\bm</code> 的范围收窄到底数、整条加粗，以及截图全部是同一种非黑颜色时整条加上这个颜色，取第一个粗体与颜色都一致的写法作为结果。</p>
+        <p>公式与表格共用一份排版调整命令的名单：<code>\raisebox</code> <code>\hspace</code> <code>\vspace</code> <code>\hskip</code> <code>\vskip</code> <code>\kern</code> <code>\mkern</code> <code>\mskip</code> <code>\phantom</code> <code>\hphantom</code> <code>\vphantom</code> <code>\rlap</code> <code>\llap</code> <code>\mathrlap</code> <code>\mathllap</code> <code>\resizebox</code> <code>\scalebox</code> <code>\lower</code> <code>\raise</code>。命令名之后紧跟的不是字母时就算出现，<code>\raise1pt</code> 这样的写法也算。公式输出里出现名单里的命令，或者 <code>\tiny</code> 到 <code>\Huge</code> 的字号命令时，直接判为不通过。行间公式以 <code>\text{…}</code> 里的一行文字为主，或者用了 aligned、split、array、matrix、pmatrix、bmatrix、cases、gathered 以外的环境时，也判为不通过。</p>
+        <p class="why"><b>理由</b>禁用排版调整命令。试验中 agent 会用这些命令把字形挪到对的位置来通过校验，这样得到的源码不能用。</p>
+        <p><b>表格的校验</b>：把识别出的 <code>tabular</code> 用 xelatex 单独编译，与截图的文字层比较以下三项，全部一致才算通过：</p>
+        <ul>
+          <li>文字：两边按基线与间距切成单元格，逐词按多重集比较（不分大小写）。词的边界不同时改为逐字比较，以覆盖连字、单元格内断行与旋转表头。比较前 CMEX 的大号求和符号与 Dingbats 字形映射成对应的 Unicode。旋转的文字按整串比较。</li>
+          <li>行列的相对位置：原文在上的不能到下面，同一行里在左的不能到右边，原文同一行的文字不能相距很远。重复出现的同一个词按位置配对。</li>
+          <li>粗体与颜色，逐字比较。</li>
+        </ul>
+        <p>表格输出里出现上面名单里的命令时直接判为不通过；单元格里的字号命令可以用。</p>
+        <p>表格比较的常量，都以相关文字的字号为单位：</p>
+        <ul>
+          <li><code>SAME_ROW = 0.35</code>：两个字形的基线之差小于这个比例时归入同一行。</li>
+          <li><code>SMALLER_SIZE = 0.85</code>：字号小于行内字号这个比例的字形算作较小的字形，例如上下标。</li>
+          <li><code>SMALLER_SAME_ROW = 0.6</code>：较小的字形与一行的基线之差小于行内字号的这个比例时，也归入这一行。</li>
+          <li><code>CELL_GAP = 0.18</code>：同一行里相邻字形的间距大于这个比例时切成两个单元格。</li>
+          <li><code>ABOVE_GAP = 0.8</code>：原文里一个单元格比另一个低出这个比例以上，才算「在下面」，用于判断上下次序是否颠倒。</li>
+          <li><code>SAME_LINE = 0.3</code>：两个单元格的基线之差小于这个比例时算在同一行，用于判断左右次序与同行关系。</li>
+          <li><code>FAR_APART = 1.5</code>：原文同一行的两个单元格，在识别结果里基线相差超过这个比例时算「相距很远」。</li>
+        </ul>
+        <p><b>写回</b>：通过的行间公式写成 <code>\begin{equation*}…\end{equation*}</code>，末尾的编号 <code>(n)</code> 前面至少有一个 <code>\quad</code>、<code>\qquad</code> 或 <code>\hfill</code> 时改成 <code>\tag*{(n)}</code>，没有时不当作编号，以免 <code>y = f(x)</code> 被改写；通过的行内公式写成 <code>$…$</code>，前后紧挨字母或数字时补一个空格。通过的表格写成 <code>\resizebox{截图宽度}{!}{…}</code>，按截图原宽度缩放。有条目写回时，在 <code>\usepackage{fontspec}</code> 前加一次 mathtools、mathrsfs、upgreek、xcolor（table 选项）、booktabs、multirow、makecell、array、pifont；表格里有中文而导言区没有 xeCJK 时加上 xeCJK。之后的 mask 像对待有源码论文的表格一样，把写回的 <code>tabular</code> 整块换成占位符，不翻译，见<a href="#mask">mask</a>。</p>
+        <p class="why"><b>理由</b>公式与表格写成 LaTeX 后字体与正文一致，可以搜索和复制。写回放在核对之前，核对与修复会话看到的是最终的源码。</p>
+        <p>会话以 error 或 timeout 结束、没有写出 <code>rec.json</code> 或 <code>rec.json</code> 格式不对时，记一条 warning，全部截图保留，阶段照常往下做。</p>
+      </dd>
       <dt>状态</dt>
       <dd>
         <table>
@@ -369,13 +410,13 @@ api_key  = ""</code></pre>
         </table>
       </dd>
       <dt>读</dt>
-      <dd><p><code>build/manifests/fetch.json</code> 的 <code>route</code>、<code>build/original.pdf</code>、<code>config.toml</code> 的 <code>[fonts]</code> 与模式、<code>skill/reconstruct_fix/</code>。</p></dd>
+      <dd><p><code>build/manifests/fetch.json</code> 的 <code>route</code>、<code>build/original.pdf</code>、<code>config.toml</code> 的 <code>[fonts]</code> 与模式、<code>skill/reconstruct_formula/</code>、<code>skill/reconstruct_table/</code>、<code>skill/reconstruct_fix/</code>。</p></dd>
       <dt>写</dt>
-      <dd><p><code>build/sandbox/reconstruct/</code>、<code>src/main.tex</code> 与 <code>src/crops.pdf</code>（重建过时）、<code>build/manifests/reconstruct.json</code>；启动过修复会话时另有 <code>logs/reconstruct-fix.jsonl</code> 与 <code>out/&lt;ID&gt;.notes.json</code> 里的条目。阶段的产物是 <code>src/main.tex</code>。重跑 reconstruct 时删掉重建目录、修复日志与 manifest；只在 <code>route</code> 是 <code>"pdf"</code> 时清空 <code>src/</code>，因为 <code>route</code> 是 <code>"tex"</code> 时 <code>src/</code> 属于 fetch。</p></dd>
+      <dd><p><code>build/sandbox/reconstruct/</code>、<code>src/main.tex</code> 与 <code>src/crops.pdf</code>（重建过时）、<code>build/manifests/reconstruct.json</code>；启动过识别会话时另有 <code>build/sandbox/reconstruct_formula/</code>、<code>build/sandbox/reconstruct_table/</code>、<code>logs/reconstruct-formula.jsonl</code>、<code>logs/reconstruct-table.jsonl</code>，启动过修复会话时另有 <code>logs/reconstruct-fix.jsonl</code>，以及各会话在 <code>out/&lt;ID&gt;.notes.json</code> 里的条目。阶段的产物是 <code>src/main.tex</code>。重跑 reconstruct 时删掉重建目录、两个识别会话的目录、三个会话的日志、三个会话的条目与 manifest；只在 <code>route</code> 是 <code>"pdf"</code> 时清空 <code>src/</code>，因为 <code>route</code> 是 <code>"tex"</code> 时 <code>src/</code> 属于 fetch。</p></dd>
       <dt>常量</dt>
       <dd>
-        <p>核对的阈值见上文。编译命令与超时与 precompile 相同。</p>
-        <p class="why"><b>理由</b>修复会话里的 <code>python3</code> 是运行通途的解释器，会话里的 <code>check.py</code>、<code>render.py</code>、<code>crop.py</code> 调用 <code>tongtu.reconstruct</code> 里的同一套函数，见<a href="#modes">模式与 agent 会话</a>。</p>
+        <p>核对的阈值与公式校验的容差见上文。编译命令与超时与 precompile 相同，识别校验里单条公式与单张表格的编译也用这个超时。</p>
+        <p class="why"><b>理由</b>修复会话与识别会话里的 <code>python3</code> 是运行通途的解释器，会话里的 <code>check.py</code>、<code>render.py</code>、<code>crop.py</code> 调用 <code>tongtu.reconstruct</code> 里的同一套函数，见<a href="#modes">模式与 agent 会话</a>。</p>
       </dd>
       <dt>产物类</dt>
       <dd>
@@ -387,6 +428,13 @@ api_key  = ""</code></pre>
     final_check: CheckReport | None  # 修复会话后的核对；没有修复会话时等于 rule_check
     crop_lost_glyphs: int
     fix_session: Session | None
+    formulas: RecognitionReport | None   # 没有可识别的公式截图时为 null
+    tables: RecognitionReport | None     # 没有可识别的表格截图时为 null
+
+class RecognitionReport(BaseModel):
+    total: int                       # 可识别的截图个数
+    passed: int                      # 通过校验并写回 main.tex 的个数
+    session: Session | None
 
 class CheckReport(BaseModel):
     source_pages: int
@@ -783,13 +831,13 @@ class PaperKeptWord(BaseModel):
   <h3>会话怎样启动</h3>
   <p>模型调用层在 <code>tongtu/model/</code>，只有一个入口：在一个目录里启动一次 agent 会话。它不依赖具体产品，运行时由 agentrun 适配。</p>
   <ol>
-    <li>把仓库里的 <code>skill/&lt;名字&gt;/</code> 拷进会话目录的 <code>.skills/&lt;名字&gt;/</code>。skill 有四个：<code>translate</code>、<code>reconstruct_fix</code>、<code>precompile_fix</code>、<code>compile_fix</code>。</li>
+    <li>把仓库里的 <code>skill/&lt;名字&gt;/</code> 拷进会话目录的 <code>.skills/&lt;名字&gt;/</code>。skill 有六个：<code>translate</code>、<code>reconstruct_formula</code>、<code>reconstruct_table</code>、<code>reconstruct_fix</code>、<code>precompile_fix</code>、<code>compile_fix</code>。</li>
     <li>经 agentrun 启动会话：会话目录是工作目录，沙箱开启，带 <code>--no-subagents</code>，模型、强度与时限取自模式。提示词是固定的一句话：读 skill，按它做，只在当前目录里读写。</li>
     <li>agentrun 输出的事件逐行写进日志，同时解析出当前动作，交给命令行显示在进度行上。</li>
-    <li>返回会话的结束方式。调用方不采用会话自己的结论，总是自己复验结果：translate 重跑校验，reconstruct 重新编译并核对，precompile 与 compile 重新编译。</li>
+    <li>返回会话的结束方式。调用方不采用会话自己的结论，总是自己复验结果：translate 重跑校验，reconstruct 的识别会话重跑识别校验、修复会话重新编译并核对，precompile 与 compile 重新编译。</li>
   </ol>
-  <p>会话的 <code>PATH</code> 最前面是一个只放 <code>python3</code> 的目录。translate、precompile_fix 与 compile_fix 的 <code>python3</code> 是指向基础解释器（<code>sys.base_prefix</code>）的符号链接。reconstruct_fix 的 <code>python3</code> 是一个 <code>exec</code> 到运行通途的解释器（<code>sys.executable</code>）的 shell 脚本，因为会话里的脚本要 <code>import pymupdf</code> 与 <code>tongtu</code>，基础解释器里没有这两个包。</p>
-  <p class="why"><b>理由</b>reconstruct_fix 的 <code>python3</code> 用 shell 脚本，不用符号链接。符号链接会让解释器找不到 venv 的 <code>pyvenv.cfg</code>，导入不到 venv 里的包。</p>
+  <p>会话的 <code>PATH</code> 最前面是一个只放 <code>python3</code> 的目录。translate、precompile_fix 与 compile_fix 的 <code>python3</code> 是指向基础解释器（<code>sys.base_prefix</code>）的符号链接。reconstruct_formula、reconstruct_table 与 reconstruct_fix 的 <code>python3</code> 是一个 <code>exec</code> 到运行通途的解释器（<code>sys.executable</code>）的 shell 脚本，因为会话里的脚本要 <code>import pymupdf</code> 与 <code>tongtu</code>，基础解释器里没有这两个包。</p>
+  <p class="why"><b>理由</b>reconstruct 各会话的 <code>python3</code> 用 shell 脚本，不用符号链接。符号链接会让解释器找不到 venv 的 <code>pyvenv.cfg</code>，导入不到 venv 里的包。</p>
   <pre><code class="language-python">class Session(BaseModel):            # 各阶段 manifest 共用
     stop_reason: "finished" | "timeout" | "error"
     model: str                       # "claude-code/claude-opus-5-5"
@@ -809,13 +857,14 @@ class Usage(BaseModel):
   <h3 id="abstract-chat">摘要翻译</h3>
   <p><code>tongtu info --zh</code> 的摘要翻译是 agent 会话之外唯一的模型调用：它直接请求 <code>config.toml</code> 的 <code>[abstract]</code> 指定的 OpenAI 兼容聊天接口（<code>POST &lt;base_url&gt;/chat/completions</code>），一条 system 消息是写在 <code>tongtu/model/chat.py</code> 里的提示词，一条 user 消息是英文摘要。理由是启动一次 agent 会话对一段摘要来说太慢。请求关闭 DeepSeek 的思考模式（<code>"thinking": {"type": "disabled"}</code>）以缩短耗时，这个参数对其他兼容服务是否有效不作保证。超时 <code>ABSTRACT_TIMEOUT_SECONDS = 60</code>，<code>ABSTRACT_TEMPERATURE = 0.2</code>。没有密钥、密钥含空白、控制字符或非 ASCII 字符（不发请求）、网络错误、非 2xx 与响应里取不到文本都是预期内的失败，由 <code>info</code> 报告；其他异常同样只让翻译失败，原因只写异常的类型名。密钥不写进任何日志、错误信息或输出：错误信息里的接口只写主机名，网络错误只写异常的类型名，因为 httpx 的异常文本可能带请求头，<code>base_url</code> 也可能带用户信息。标题不翻译。</p>
   <h3>会话记下的问题</h3>
-  <p>每次 agent 会话结束前，按 skill 的要求在会话目录写一个 <code>notes.json</code>，逐条记下这次遇到的问题、当时的处理办法和预期的解决方法。没有遇到问题时写空列表。会话结束后，通途读这个文件，给每条加上会话的名字，写进 <code>out/&lt;ID&gt;.notes.json</code>，然后删掉会话目录里的那一份。一个会话的条目与它的工作成果同存亡：precompile 与 compile 每次运行都从头做，开始时先去掉自己的修复会话以前写进去的条目；translate 的条目在会话目录被清空时（<code>--from</code> 或 <code>stage translate</code>）去掉，直接采用已有译文时保留，接着已有译文再启动会话时新条目追加在已有条目之后。</p>
+  <p>每次 agent 会话结束前，按 skill 的要求在会话目录写一个 <code>notes.json</code>，逐条记下这次遇到的问题、当时的处理办法和预期的解决方法。没有遇到问题时写空列表。会话结束后，通途读这个文件，给每条加上会话的名字，写进 <code>out/&lt;ID&gt;.notes.json</code>，然后删掉会话目录里的那一份。一个会话的条目与它的工作成果同存亡：reconstruct、precompile 与 compile 每次运行都从头做，开始时先去掉自己的会话以前写进去的条目；translate 的条目在会话目录被清空时（<code>--from</code> 或 <code>stage translate</code>）去掉，直接采用已有译文时保留，接着已有译文再启动会话时新条目追加在已有条目之后。</p>
   <p>通途只收集这些条目。<code>notes.json</code> 读不出来或格式不对时记一条 warning，阶段的状态不受影响。条目不参加判定，也不触发后续动作；之后由人或别的工具读这个文件，决定怎样补充 skill、规则或校验脚本。</p>
   <pre><code class="language-python">class NotesFile(BaseModel):          # out/&lt;ID&gt;.notes.json
     notes: list[Note]
 
 class Note(BaseModel):
-    session: "translate" | "reconstruct_fix" | "precompile_fix" | "compile_fix"   # 由通途填写
+    session: "translate" | "reconstruct_formula" | "reconstruct_table" | "reconstruct_fix"
+             | "precompile_fix" | "compile_fix"   # 由通途填写
     where: str                       # 位置：文件名与行号，或一段原文
     problem: str                     # 遇到了什么问题
     resolution: str                  # 这次会话怎样处理的
@@ -892,7 +941,7 @@ class PaperState(StrEnum):
       <tr><td><code>ok</code></td><td class="wrap">没有运行，六个阶段的 manifest 都是 ok。</td><td>null</td></tr>
     </tbody>
   </table>
-  <p>manifest 里取不到的字段为 null，不报错。<code>recent_actions</code> 取 <code>stage</code> 对应的会话日志：reconstruct 是 <code>logs/reconstruct-fix.jsonl</code>，precompile 是 <code>logs/precompile-fix.jsonl</code>，translate 是 <code>logs/translate.jsonl</code>，compile 是 <code>logs/compile-fix.jsonl</code>，其余阶段没有会话日志。日志逐行按 JSON 解析，取 <code>type</code> 为 <code>"tool"</code> 且 <code>summary</code> 是字符串的事件，保留最后 <code>RECENT_ACTIONS = 8</code> 条的 <code>summary</code>；解析不了的行跳过，文件不存在时为空列表。</p>
+  <p>manifest 里取不到的字段为 null，不报错。<code>recent_actions</code> 取 <code>stage</code> 对应的会话日志：reconstruct 是 <code>logs/reconstruct-formula.jsonl</code>、<code>logs/reconstruct-table.jsonl</code>、<code>logs/reconstruct-fix.jsonl</code> 中修改时间最晚的一个，precompile 是 <code>logs/precompile-fix.jsonl</code>，translate 是 <code>logs/translate.jsonl</code>，compile 是 <code>logs/compile-fix.jsonl</code>，其余阶段没有会话日志。日志逐行按 JSON 解析，取 <code>type</code> 为 <code>"tool"</code> 且 <code>summary</code> 是字符串的事件，保留最后 <code>RECENT_ACTIONS = 8</code> 条的 <code>summary</code>；解析不了的行跳过，文件不存在时为空列表。</p>
   <p>翻译会话运行期间，<code>status</code> 给出 <code>running</code>、开始时间、正在运行的阶段和会话最近的动作。其他程序据此显示「翻译中」、已用时间与当前动作。</p>
 
   <h3 id="listing">tongtu list --json</h3>

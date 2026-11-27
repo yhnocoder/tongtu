@@ -54,6 +54,12 @@ class CheckReport(BaseModel):
     passed: bool
 
 
+class RecognitionReport(BaseModel):
+    total: int
+    passed: int
+    session: Session | None = None
+
+
 class ReconstructManifest(Manifest):
     status: ReconstructStatus
     rebuilt: bool = False
@@ -62,3 +68,5 @@ class ReconstructManifest(Manifest):
     final_check: CheckReport | None = None
     crop_lost_glyphs: int = 0
     fix_session: Session | None = None
+    formulas: RecognitionReport | None = None
+    tables: RecognitionReport | None = None
