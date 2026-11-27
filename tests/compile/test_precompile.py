@@ -177,6 +177,31 @@ def test_fake_bold_without_a_bold_file_compiles_without_undefined_shapes(tmp_pat
     assert (tmp_path / "main.pdf").stat().st_size > 0
 
 
+ACMART_PAPER = """\\documentclass[sigconf]{acmart}
+\\settopmatter{printacmref=false}
+\\setcopyright{none}
+\\renewcommand\\footnotetextcopyrightpermission[1]{}
+\\title{A Minimal ACM Paper}
+\\author{Author}
+\\begin{document}
+\\maketitle
+\\section{Introduction}
+Plain body text in an ACM paper.
+\\end{document}
+"""
+
+
+def test_acmart_compiles_with_the_injected_line_spread(tmp_path: Path) -> None:
+    warnings: list[str] = []
+    injected = precompile._inject_cjk(ACMART_PAPER.encode("utf-8"), warnings, FontsConfig())
+    assert b"\\linespread{1.4}" in injected
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    assert "An attempt to redefine" not in completed.stdout
+    assert (tmp_path / "main.pdf").stat().st_size > 0
+
+
 TU_FONT_BODY = (
     "\\begin{document}\n"
     "中文正文 café, naïve, “curly” ‘single’ \\textbf{bold} \\textit{italic} \\textsf{sans} \\texttt{mono}\n"

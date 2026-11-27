@@ -124,8 +124,12 @@ FONT_SUBSTITUTION_TAIL = rb"""\def\tongtu@substitute#1#2{%
 XECJK_TAIL = rb"""\XeTeXlinebreaklocale "zh"
 \XeTeXlinebreakskip = 0pt plus 1pt
 \linespread{1.4}
-% ---- end tongtu (precompile) ----
 """
+
+ACMART_BASELINESTRETCH = rb"""\makeatletter\let\ACM@origbaselinestretch\baselinestretch\makeatother
+"""
+
+XECJK_END = b"% ---- end tongtu (precompile) ----\n"
 
 
 @dataclass(frozen=True)
@@ -550,7 +554,7 @@ def _inject_cjk(source: bytes, warnings: list[str], fonts: FontsConfig) -> bytes
         insert_at = 0
     else:
         insert_at = class_end_index + 1
-    return b"".join(lines[:insert_at]) + _xecjk_block(fonts, warnings) + b"".join(lines[insert_at:])
+    return b"".join(lines[:insert_at]) + _xecjk_block(fonts, warnings, documentclass) + b"".join(lines[insert_at:])
 
 
 def _adapt_preamble(output: bytes, warnings: list[str]) -> bytes:
@@ -562,7 +566,7 @@ def _adapt_preamble(output: bytes, warnings: list[str]) -> bytes:
     return preamble.adapt(text, warnings).encode("utf-8")
 
 
-def _xecjk_block(fonts: FontsConfig, warnings: list[str]) -> bytes:
+def _xecjk_block(fonts: FontsConfig, warnings: list[str], documentclass: bytes | None) -> bytes:
     main_regular, main_bold = _resolve_family("main", fonts.main, DEFAULT_FONTS.main, warnings)
     sans_regular, sans_bold = _resolve_family("sans", fonts.sans, DEFAULT_FONTS.sans, warnings)
     mono = (_resolve_font("mono", fonts.mono, warnings) if fonts.mono else None) or main_regular
@@ -574,6 +578,8 @@ def _xecjk_block(fonts: FontsConfig, warnings: list[str]) -> bytes:
             _font_command(rb"\setCJKmonofont", mono, None) + b"\n",
             _font_substitution(TU_FONT_SUBSTITUTES),
             XECJK_TAIL,
+            ACMART_BASELINESTRETCH if documentclass == b"acmart" else b"",
+            XECJK_END,
         )
     )
 
