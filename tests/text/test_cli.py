@@ -1738,7 +1738,7 @@ def test_run_latest_with_a_version_is_a_usage_error(tmp_path: Path, monkeypatch:
 
 
 @pytest.mark.parametrize(
-    ("feed", "status_code"), [(ERROR_FEED, 200), ("<feed xmlns='http://www.w3.org/2005/Atom'/>", 200), ("", 503)]
+    ("feed", "status_code"), [(ERROR_FEED, 200), ("<feed xmlns='http://www.w3.org/2005/Atom'/>", 200), ("", 500)]
 )
 def test_run_whose_version_query_fails_exits_one_without_a_workdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feed: str, status_code: int
@@ -2627,7 +2627,7 @@ def test_info_refresh_asks_arxiv_again(tmp_path: Path, monkeypatch: pytest.Monke
     assert len(urls) == 1
 
 
-@pytest.mark.parametrize(("feed", "status_code"), [(ERROR_FEED, 200), ("", 503)])
+@pytest.mark.parametrize(("feed", "status_code"), [(ERROR_FEED, 200), ("", 500)])
 def test_info_exits_one_when_arxiv_has_no_answer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feed: str, status_code: int
 ) -> None:
