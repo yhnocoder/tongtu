@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -40,6 +41,12 @@ ARXIV = "{http://arxiv.org/schemas/atom}"
 PATH_NAVIGATION_LITERALS = frozenset({"", ".", "..", "~"})
 
 LATEST_CACHE_SECONDS = 86400
+
+ARXIV_RETRIES = 3
+
+ARXIV_RETRY_WAIT_SECONDS = (5, 15, 45)
+
+RETRYABLE_STATUS_CODES = frozenset({429, 503})
 
 
 class PaperArgumentError(ValueError):
@@ -188,17 +195,33 @@ def _fresh(fetched_at: datetime) -> bool:
 
 def query(arxiv_id: str, version: int | None = None) -> PaperMeta:
     paper_id = arxiv_id if version is None else versioned_id(arxiv_id, version)
-    try:
-        response = httpx.get(
-            f"{API_URL}?id_list={paper_id}",
-            headers={"User-Agent": USER_AGENT},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-    except httpx.HTTPError as error:
-        raise ArxivError(f"arXiv API request for {paper_id} failed: {type(error).__name__}: {error}") from error
-    return parse_feed(response.text, paper_id)
+    retries = 0
+    while True:
+        try:
+            response = httpx.get(
+                f"{API_URL}?id_list={paper_id}",
+                headers={"User-Agent": USER_AGENT},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                follow_redirects=True,
+            )
+            if response.status_code in RETRYABLE_STATUS_CODES and retries < ARXIV_RETRIES:
+                time.sleep(retry_wait_seconds(response.headers.get("Retry-After"), retries))
+                retries += 1
+                continue
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            retried = f" after {retries} retries" if retries else ""
+            raise ArxivError(
+                f"arXiv API request for {paper_id} failed{retried}: {type(error).__name__}: {error}"
+            ) from error
+        return parse_feed(response.text, paper_id)
+
+
+def retry_wait_seconds(retry_after: str | None, retries: int) -> int:
+    seconds = (retry_after or "").strip()
+    if seconds.isascii() and seconds.isdigit():
+        return int(seconds)
+    return ARXIV_RETRY_WAIT_SECONDS[retries]
 
 
 def parse_feed(feed: str, paper_id: str) -> PaperMeta:

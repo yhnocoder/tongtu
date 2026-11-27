@@ -150,7 +150,7 @@ def test_fetch_writes_the_saved_abstract_zh_into_the_meta_file(tmp_path: Path, m
 
 @pytest.mark.parametrize(
     "api",
-    [respond(ERROR_FEED.encode()), respond(b"server error", 503)],
+    [respond(ERROR_FEED.encode()), respond(b"server error", 500)],
     ids=["error-entry", "http-error"],
 )
 def test_failed_api_request_is_download_failed(

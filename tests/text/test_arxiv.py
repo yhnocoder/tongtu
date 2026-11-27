@@ -414,6 +414,69 @@ def test_query_reports_a_response_that_is_not_xml(monkeypatch: pytest.MonkeyPatc
         arxiv.query("2106.04426")
 
 
+def wire_statuses(
+    monkeypatch: pytest.MonkeyPatch, statuses: list[int], headers: dict[str, str] | None = None
+) -> tuple[list[str], list[float]]:
+    urls: list[str] = []
+    waits: list[float] = []
+    pending = iter(statuses)
+
+    def get(url: str, **kwargs: object) -> httpx.Response:
+        urls.append(url)
+        status_code = next(pending)
+        feed = VERSIONED_FEED if status_code == 200 else ""
+        return httpx.Response(status_code, text=feed, headers=headers, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(arxiv.httpx, "get", get)
+    monkeypatch.setattr(arxiv.time, "sleep", waits.append)
+    return urls, waits
+
+
+def test_query_waits_and_retries_after_a_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls, waits = wire_statuses(monkeypatch, [429, 200])
+    meta = arxiv.query("1412.6980", 8)
+    assert (meta.arxiv_id, meta.version) == ("1412.6980", 8)
+    assert len(urls) == 2
+    assert waits == [5]
+
+
+def test_query_waits_for_the_retry_after_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls, waits = wire_statuses(monkeypatch, [429, 200], {"Retry-After": "2"})
+    arxiv.query("1412.6980", 8)
+    assert len(urls) == 2
+    assert waits == [2]
+
+
+def test_query_ignores_a_retry_after_header_that_is_not_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls, waits = wire_statuses(monkeypatch, [429, 200], {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    arxiv.query("1412.6980", 8)
+    assert len(urls) == 2
+    assert waits == [5]
+
+
+def test_query_retries_when_arxiv_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls, waits = wire_statuses(monkeypatch, [503, 503, 200])
+    arxiv.query("1412.6980", 8)
+    assert len(urls) == 3
+    assert waits == [5, 15]
+
+
+def test_query_raises_once_the_retries_run_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls, waits = wire_statuses(monkeypatch, [429, 429, 429, 429])
+    with pytest.raises(arxiv.ArxivError, match="after 3 retries"):
+        arxiv.query("1412.6980", 8)
+    assert len(urls) == 4
+    assert waits == [5, 15, 45]
+
+
+def test_query_does_not_retry_a_missing_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls, waits = wire_statuses(monkeypatch, [404])
+    with pytest.raises(arxiv.ArxivError, match="HTTPStatusError"):
+        arxiv.query("1412.6980", 8)
+    assert len(urls) == 1
+    assert waits == []
+
+
 def translated(meta: PaperMeta, abstract_zh: str = "我们提出 Adam。") -> PaperMeta:
     return meta.model_copy(update={"abstract_zh": abstract_zh})
 
