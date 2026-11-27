@@ -177,6 +177,36 @@ def test_fake_bold_without_a_bold_file_compiles_without_undefined_shapes(tmp_pat
     assert (tmp_path / "main.pdf").stat().st_size > 0
 
 
+PDFTEX_COMMANDS_STY = (
+    "\\ProvidesPackage{pdftexonly}\n"
+    "\\pdfsuppressptexinfo=15\n"
+    "\\pdfglyphtounicode{summationdisplay}{2211}\n"
+    "\\DeclareUnicodeCharacter{2192}{\\ensuremath{\\rightarrow}}\n"
+)
+
+PDFTEX_COMMANDS_PAPER = (
+    "\\documentclass{article}\n\\usepackage{pdftexonly}\n\\begin{document}\n中文正文 A → B\n\\end{document}\n"
+)
+
+
+def test_pdftex_commands_in_a_package_of_the_paper_compile(tmp_path: Path) -> None:
+    (tmp_path / "pdftexonly.sty").write_text(PDFTEX_COMMANDS_STY, encoding="utf-8")
+    injected = precompile._inject_cjk(PDFTEX_COMMANDS_PAPER.encode("utf-8"), [], FontsConfig())
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    reader = PdfReader(tmp_path / "main.pdf")
+    text = "".join(page.extract_text() for page in reader.pages)
+    assert "中文正文" in text
+    assert "→" in text
+    fonts_used = {
+        str(font.get_object()["/BaseFont"]).partition("+")[2]
+        for page in reader.pages
+        for font in page["/Resources"]["/Font"].values()
+    }
+    assert "CMSY10" in fonts_used
+
+
 XCHARTER_PAPER = (
     "\\documentclass{article}\n\\usepackage{XCharter}\n\\usepackage{url}\n\\begin{document}\n"
     "中文正文\\footnote{代码见 \\url{https://example.org/code}。}\n\\end{document}\n"

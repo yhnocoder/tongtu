@@ -300,6 +300,18 @@ def test_acmart_keeps_the_line_spread_past_its_baselinestretch_check() -> None:
     assert guard < output.index(b"\\begin{document}")
 
 
+def test_the_injected_block_starts_with_stand_ins_for_pdftex_commands() -> None:
+    output = precompile._inject_cjk(PLAIN_PAPER.encode("utf-8"), [], FontsConfig())
+    head = output.index(b"% ---- injected by tongtu (precompile) ----\n")
+    stand_ins = (
+        b"\\providecommand\\pdfglyphtounicode[2]{}\n",
+        b"\\ifdefined\\pdfsuppressptexinfo\\else\\newcount\\pdfsuppressptexinfo\\fi\n",
+        b"\\providecommand\\DeclareUnicodeCharacter[2]{",
+    )
+    positions = [output.index(stand_in) for stand_in in stand_ins]
+    assert head < positions[0] < positions[1] < positions[2] < output.index(b"{xeCJK}")
+
+
 def test_other_classes_do_not_touch_the_acmart_baselinestretch() -> None:
     output = precompile._inject_cjk(PLAIN_PAPER.encode("utf-8"), [], FontsConfig())
     assert b"\\linespread{1.4}\n% ---- end tongtu (precompile) ----\n" in output

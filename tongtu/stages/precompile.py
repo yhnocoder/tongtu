@@ -85,6 +85,10 @@ TU_FONT_SUBSTITUTES: dict[str, str] = {
 
 XECJK_HEAD = (
     rb"""% ---- injected by tongtu (precompile) ----
+\providecommand\pdfglyphtounicode[2]{}
+\ifdefined\pdfsuppressptexinfo\else\newcount\pdfsuppressptexinfo\fi
+\providecommand\DeclareUnicodeCharacter[2]{%
+  \begingroup\lccode`\~="#1\relax\lowercase{\endgroup\gdef~}{#2}\catcode"#1=\active}
 \PassOptionsToPackage{no-math}{fontspec}
 \makeatletter
 \edef\tongtu@author@rm{\rmdefault}\edef\tongtu@author@sf{\sfdefault}\edef\tongtu@author@tt{\ttdefault}
