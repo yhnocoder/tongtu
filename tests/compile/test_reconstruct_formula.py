@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ from ..conftest import run_skill_check
 from .conftest import DISPLAY_LATEX, INLINE_LATEX
 
 pytestmark = pytest.mark.compile
+
+UNDERSCORE_SOURCE = (
+    r"\documentclass{article}\usepackage[T1]{fontenc}\pagestyle{empty}"
+    r"\begin{document}$\min(step\_num, warmup\_steps)$\end{document}"
+)
 
 
 def region_id(regions: RegionsFile, kind: RegionKind, hint: str = "") -> str:
@@ -100,3 +106,10 @@ def test_check_script_reports_passed_and_failed_formulas(
     assert lines[1].startswith(f"{display}: Glyph sequence differs")
     only = run_skill_check(tmp_path, "reconstruct_formula", *inline)
     assert (only.returncode, only.stdout.strip()) == (0, "passed 3/3")
+
+
+def test_escaped_underscores_match_the_underscore_glyph(tmp_path: Path) -> None:
+    (tmp_path / "u.tex").write_text(UNDERSCORE_SOURCE, encoding="utf-8")
+    subprocess.run(["pdflatex", "-interaction=nonstopmode", "u.tex"], cwd=tmp_path, capture_output=True, check=True)
+    verdict = formula.verify(tmp_path / "u.pdf", r"\min(step\_num, warmup\_steps)", RegionKind.INLINE)
+    assert verdict.passed, verdict.problem

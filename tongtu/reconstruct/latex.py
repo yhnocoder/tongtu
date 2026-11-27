@@ -817,8 +817,8 @@ class LatexWriter:
             if "Libertine" in body_family
             else "",
             f"\\setmonofont{{texgyrecursor}}{GYRE_SHAPES}" if times else "",
-            f"\\makeatletter\\renewcommand\\normalsize{{\\@setfontsize\\normalsize{{{layout.body_size:.2f}bp}}"
-            f"{{{layout.leading:.2f}bp}}}}\\makeatother",
+            f"\\renewcommand\\normalsize{{\\fontsize{{{layout.body_size:.2f}bp}}"
+            f"{{{layout.leading:.2f}bp}}\\selectfont}}",
             INLINE_CROP_MACRO,
             FLOAT_PLACEMENT,
             "\\setlength\\parindent{0pt}"

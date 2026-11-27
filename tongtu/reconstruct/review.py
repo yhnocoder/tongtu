@@ -6,7 +6,7 @@ from pathlib import Path
 import pymupdf
 
 from ..artifacts.reconstruct import CheckReport
-from .checks import CheckDetail
+from .checks import CheckDetail, failed_items
 from .crops import Cropper, crop_path
 
 RENDER_ZOOM = 1.4
@@ -63,4 +63,5 @@ def summary_lines(detail: CheckDetail, lost: Sequence[tuple[str, str]]) -> list[
         *(f"out of order {run}" for run in detail.out_of_order),
         f"inline crops lacking hint glyphs {len(lost)} {list(lost[:LOST_EXAMPLES])}",
         *([DRAFT_FAILED_LINE] if detail.draft_failed else []),
+        *(f"failed: {item}" for item in failed_items(report)),
     ]

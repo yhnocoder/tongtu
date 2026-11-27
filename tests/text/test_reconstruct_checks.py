@@ -96,8 +96,10 @@ def test_failed_items_of_a_passing_report_is_empty() -> None:
         ({"precision": 0.9}, "precision 0.9000 < 0.98"),
         ({"missing_characters": 3}, "3 missing characters"),
         ({"order": 0.95}, "reading order 0.9500 < 0.99"),
-        ({"pages": 13}, "page ratio 13/10 outside 0.85-1.2"),
-        ({"pages": 8}, "page ratio 8/10 outside 0.85-1.2"),
+        ({"pages": 13}, "page ratio 13/10 above 1.2 and more than 2 pages over the source"),
+        ({"pages": 8}, "page ratio 8/10 below 0.85"),
+        ({"source_pages": 2, "pages": 5}, "page ratio 5/2 above 1.2 and more than 2 pages over the source"),
+        ({"source_pages": 30, "pages": 37}, "page ratio 37/30 above 1.2 and more than 2 pages over the source"),
     ],
 )
 def test_failed_items_names_each_failed_threshold(changes: dict[str, object], expected: str) -> None:
@@ -117,3 +119,12 @@ def test_lost_glyphs_of_an_unreadable_crop_names_the_crop(tmp_path: Path) -> Non
     (tmp_path / "crops" / "m-0002.pdf").write_bytes(b"not a pdf")
     with pytest.raises(CropError, match="cannot open the crop m-0002.pdf"):
         checks.lost_glyphs(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("source_pages", "pages", "passed"), [(2, 4, True), (2, 5, False), (30, 36, True), (30, 37, False)]
+)
+def test_page_count_allows_the_larger_of_the_ratio_and_two_extra_pages(
+    source_pages: int, pages: int, passed: bool
+) -> None:
+    assert (checks.page_count_problem(pages, source_pages) == "") is passed
