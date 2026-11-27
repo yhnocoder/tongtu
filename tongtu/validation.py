@@ -82,6 +82,8 @@ DIFFERENCE_ITEMS_MAX = 8
 
 PARAGRAPH_PREVIEW_LENGTH = 60
 
+KEEP_ENGLISH_MARKER = "% tongtu: keep-english:"
+
 OPEN_BRACE = "{"
 
 CLOSE_BRACE = "}"
@@ -287,10 +289,18 @@ class Problem:
 
 
 @dataclass(frozen=True)
+class KeptParagraph:
+    line: int
+    preview: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class Report:
     problems: tuple[Problem, ...]
     paragraphs_total: int
     paragraphs_translated: int
+    kept: tuple[KeptParagraph, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -331,16 +341,25 @@ def check(
         return Report(problems=(problem,), paragraphs_total=total, paragraphs_translated=0)
     problems = _caption_line_problems(translation)
     translated = 0
-    for (_line, source_paragraph), (line, translation_paragraph) in zip(
+    kept: list[KeptParagraph] = []
+    for (_line, source_paragraph), (line, marked_paragraph) in zip(
         source_paragraphs, translation_paragraphs, strict=True
     ):
         where = f"paragraph starting at line {line} of the translation"
+        translation_paragraph, reasons = split_keep_english_markers(marked_paragraph)
         problems.extend(
             Problem(Category.STRUCTURE, f"{where}, {failure.check}: {failure.message}")
             for failure in _structure_failures(source_paragraph, translation_paragraph)
         )
         problems.extend(_caption_paragraph_problems(where, source_paragraph, translation_paragraph))
         problems.extend(_paragraph_problems(where, source_paragraph, translation_paragraph, terms, do_not_translate))
+        if reasons:
+            if all(reasons):
+                preview = translation_paragraph[:PARAGRAPH_PREVIEW_LENGTH]
+                kept.append(KeptParagraph(line=line, preview=preview, reason="; ".join(reasons)))
+            else:
+                problems.append(Problem(Category.STRUCTURE, f"{where} has a keep-english marker without a reason"))
+            continue
         if not _needs_translation(source_paragraph):
             continue
         if CJK_RE.search(translation_paragraph):
@@ -356,7 +375,19 @@ def check(
         )
         for word, term_translation, kept in kept_word_conflicts(terms, do_not_translate)
     )
-    return Report(problems=tuple(problems), paragraphs_total=total, paragraphs_translated=translated)
+    return Report(problems=tuple(problems), paragraphs_total=total, paragraphs_translated=translated, kept=tuple(kept))
+
+
+def split_keep_english_markers(paragraph: str) -> tuple[str, tuple[str, ...]]:
+    lines: list[str] = []
+    reasons: list[str] = []
+    for line in paragraph.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith(KEEP_ENGLISH_MARKER):
+            reasons.append(stripped.removeprefix(KEEP_ENGLISH_MARKER).strip())
+        else:
+            lines.append(line)
+    return "\n".join(lines).strip(), tuple(reasons)
 
 
 def _caption_line_problems(translation: str) -> list[Problem]:
@@ -715,7 +746,10 @@ def main(argv: list[str]) -> int:
             return EXIT_FAILURE
     glossary = merge_glossaries(glossaries)
     report = check(source, translation, dict(glossary.terms), glossary.do_not_translate)
-    print(f"translated paragraphs {report.paragraphs_translated}/{report.paragraphs_total}")
+    counted = f"translated paragraphs {report.paragraphs_translated}/{report.paragraphs_total}"
+    print(f"{counted}, kept in English {len(report.kept)}" if report.kept else counted)
+    for kept in report.kept:
+        print(f"kept in English: paragraph starting at line {kept.line}: {kept.reason}")
     for problem in report.problems:
         print(f"[{problem.category}] {problem.message}")
     print("check passed" if report.ok else f"{len(report.problems)} problems")

@@ -9,7 +9,7 @@ import pytest
 
 from tongtu import model, validation
 from tongtu.artifacts.common import Note, NotesFile, Session, StopReason
-from tongtu.artifacts.translate import PaperGlossary, TranslateManifest, TranslateStatus
+from tongtu.artifacts.translate import KeptParagraph, PaperGlossary, TranslateManifest, TranslateStatus
 from tongtu.manifests import load_manifest, write_manifest
 from tongtu.model.work import WorkOutcome
 from tongtu.stages import translate
@@ -32,6 +32,12 @@ WITHOUT_KEPT_WORD = """\
 
 我们在长文本序列上使用键值缓存训练语言模型。
 """
+
+KEEP_REASON = "论文分析的英文例句"
+
+KEPT = MASKED.replace("\n\nWe train", f"\n\n% tongtu: keep-english: {KEEP_REASON}\nWe train")
+
+KEPT_WARNING = f"paragraph starting at line 3 of zh.tex is kept in English: {KEEP_REASON}"
 
 SESSION_GLOSSARY = {"terms": {"language model": "语言模型"}, "do_not_translate": []}
 
@@ -193,6 +199,29 @@ def test_a_translation_that_fails_the_checks_is_translate_failed(
     assert not workdir.paper_glossary.exists()
     assert (session_dir(workdir) / "zh.tex").read_text(encoding="utf-8") == MASKED
     assert read_notes(workdir) == [Note(session="translate", **NOTE)]
+
+
+def test_a_paragraph_kept_in_english_is_ok_and_listed(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_session(monkeypatch, writes(KEPT))
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.OK
+    assert manifest.problems == []
+    preview = MASKED.splitlines()[2][: validation.PARAGRAPH_PREVIEW_LENGTH]
+    assert manifest.kept == [KeptParagraph(line=3, preview=preview, reason=KEEP_REASON)]
+    assert (manifest.paragraphs_total, manifest.paragraphs_translated) == (1, 0)
+    assert KEPT_WARNING in manifest.warnings
+    assert workdir.translated.read_text(encoding="utf-8") == KEPT
+
+
+def test_a_failed_translation_still_lists_its_kept_paragraphs(
+    workdir: Workdir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_session(monkeypatch, writes(KEPT.replace("Training Setup", "训练设置")))
+    manifest = run(workdir)
+    assert manifest.status is TranslateStatus.TRANSLATE_FAILED
+    assert any(problem.startswith("[heading] ") for problem in manifest.problems)
+    assert [(kept.line, kept.reason) for kept in manifest.kept] == [(3, KEEP_REASON)]
+    assert KEPT_WARNING in manifest.warnings
 
 
 def test_a_session_without_zh_tex_is_translate_failed(workdir: Workdir, monkeypatch: pytest.MonkeyPatch) -> None:

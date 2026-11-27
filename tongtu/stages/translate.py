@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .. import glossary, model, notes, validation
 from ..artifacts.common import Session, StopReason
-from ..artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
+from ..artifacts.translate import GlossaryCounts, KeptParagraph, TranslateManifest, TranslateStatus
 from ..glossary import GlossaryError, Selection
 from ..manifests import describe_error, timeout_warning, write_manifest
 from ..model.work import skill_dir
@@ -32,10 +32,17 @@ class Verdict:
     problems: tuple[str, ...]
     paragraphs_total: int
     paragraphs_translated: int
+    kept: tuple[KeptParagraph, ...] = ()
 
     @property
     def ok(self) -> bool:
         return self.written and not self.problems
+
+    def warnings(self) -> list[str]:
+        return [
+            f"paragraph starting at line {kept.line} of {TRANSLATION_FILENAME} is kept in English: {kept.reason}"
+            for kept in self.kept
+        ]
 
 
 def run(
@@ -88,9 +95,10 @@ def _execute(
         session=session,
         paragraphs_total=verdict.paragraphs_total,
         paragraphs_translated=verdict.paragraphs_translated,
+        kept=list(verdict.kept),
         problems=list(verdict.problems),
         glossary=counts,
-        warnings=warnings,
+        warnings=[*warnings, *verdict.warnings()],
         message=_failure_message(verdict, session, session_dir),
     )
 
@@ -155,6 +163,7 @@ def _verify(masked: str, session_dir: Path, selection: Selection) -> Verdict:
         problems=tuple(problems),
         paragraphs_total=checked.paragraphs_total,
         paragraphs_translated=checked.paragraphs_translated,
+        kept=tuple(KeptParagraph(line=kept.line, preview=kept.preview, reason=kept.reason) for kept in checked.kept),
     )
 
 
@@ -176,8 +185,9 @@ def _accept(
         session=session,
         paragraphs_total=verdict.paragraphs_total,
         paragraphs_translated=verdict.paragraphs_translated,
+        kept=list(verdict.kept),
         glossary=counts.model_copy(update={"added": added}),
-        warnings=warnings,
+        warnings=[*warnings, *verdict.warnings()],
     )
 
 

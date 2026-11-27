@@ -36,11 +36,18 @@ class PaperGlossary(BaseModel):
     do_not_translate: list[PaperKeptWord]
 
 
+class KeptParagraph(BaseModel):
+    line: int
+    preview: str
+    reason: str
+
+
 class TranslateManifest(Manifest):
     status: TranslateStatus
     mode: str
     session: Session | None = None
     paragraphs_total: int = 0
     paragraphs_translated: int = 0
+    kept: list[KeptParagraph] = []
     problems: list[str] = []
     glossary: GlossaryCounts = GlossaryCounts()

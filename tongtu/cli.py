@@ -400,7 +400,11 @@ def stage_summary(manifest: Manifest) -> str:
     if isinstance(manifest, MaskManifest):
         return f"{manifest.blocks_total} blocks masked"
     if isinstance(manifest, TranslateManifest):
-        summary = f"{manifest.paragraphs_translated} paragraphs, {manifest.glossary.added} new terms"
+        parts = [f"{manifest.paragraphs_translated} paragraphs"]
+        if manifest.kept:
+            parts.append(f"{len(manifest.kept)} kept in English")
+        parts.append(f"{manifest.glossary.added} new terms")
+        summary = ", ".join(parts)
         return summary if manifest.session is not None else f"{summary}, reused existing translation"
     if isinstance(manifest, CompileManifest):
         parts = [f"{manifest.report.pages} pages"] if manifest.report else []

@@ -110,6 +110,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
 <span class="ok">✓</span> mask        ok                183 blocks masked                           0:00:00
 <span class="ok">✓</span> translate   ok                164 paragraphs, 31 new terms                0:09:55
 <span class="ok">✓</span> compile     ok                56 pages, baseline 66                       0:00:47</div>
+  <p>translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
   <table>
     <thead><tr><th>情形</th><th>行为</th><th>退出码</th></tr></thead>
     <tbody>
@@ -505,10 +506,14 @@ dropout 率为 $0.1$。</code></pre></div>
             <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。每个 <code>⟦CAP-n⟧</code> 位于行首，所在行没有其他占位符，含 CAP 的段落行数与原文相同：compile 换回图表标题时取走 CAP 所在的整行。不含 CAP 的段落不检查行数。</td></tr>
             <tr><td>公式</td><td class="wrap">每段的行内公式与原文逐个相同。</td></tr>
             <tr><td>章节名</td><td class="wrap">三级章节命令的标题与原文逐字相同。</td></tr>
-            <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。</td></tr>
+            <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。带保留英文标记的段落不做这项检查。</td></tr>
             <tr><td>术语</td><td class="wrap">原文命中某条术语的段落，译文里出现对应的译法；不译词按大小写原样保留。原文里紧贴单个连字符的出现不算原文有这个不译词：<code>rank</code> 不译时，只有 <code>low-rank</code> 的段落不要求译文保留 <code>rank</code>。不译词本身含连字符时（<code>KV-cache</code>）照常匹配。<code>\label</code>、<code>\ref</code>、<code>\cite</code> 一类命令参数里的词不计。章节标题不参加未译与术语两项检查。</td></tr>
           </tbody>
         </table>
+        <p>按内容应当保留原文的段落（模型的原始输出、论文分析的英文例句、逐字引用的原文），由会话在该段落里单独写一行标记，声明这段有意保留英文：</p>
+        <pre><code class="language-latex">% tongtu: keep-english: &lt;理由&gt;</code></pre>
+        <p>标记行属于所在的段落，与段落其他行之间没有空行，位置不限；行首允许空白。理由不能为空。校验先从段落里去掉标记行，再做结构、公式、章节名、术语各项检查，因此标记行不算多出的 <code>%</code>。带标记的段落不做未译检查，不计入 <code>paragraphs_translated</code>，记进 manifest 的 <code>kept</code>；源段落本来不需要翻译时同样记入。理由为空时报一条结构问题。标记是 LaTeX 注释，随 <code>zh.tex</code> 原样进入 compile，不产生输出。每个保留英文的段落另记一条 warning，写明它在 <code>zh.tex</code> 里的起始行与理由，终端随其他 warning 一起显示；<code>check.py</code> 的输出同样逐段列出。</p>
+        <p class="why"><b>理由</b>有些段落按内容应保留原文，检查必须给 agent 一个可以通过、并且让用户看得见的方式。标记写在段落里而不记行号，因为重跑、续跑时段落会被重新检查，行号会随编辑变化，段落本身不会。</p>
         <p>会话外的校验使用 <code>build/masked.tex</code>、用户术语表的原始文件，以及会话结束时的 <code>glossary.json</code>。会话改动 <code>en.tex</code>、<code>glossary.fixed.json</code> 或 <code>check.py</code> 都不影响判定。</p>
         <p class="why"><b>理由</b>判定放在会话之外。会话目录整体可写，会话自己报告的「检查通过」无法核对；在会话外用原始输入重跑同一套比对，结果只取决于译文本身。</p>
       </dd>
@@ -530,7 +535,7 @@ dropout 率为 $0.1$。</code></pre></div>
       <dd><p><code>build/translated.tex</code>、<code>out/&lt;ID&gt;.glossary.json</code>、<code>out/&lt;ID&gt;.notes.json</code>、<code>$TONGTU_HOME/glossary.learned.json</code>、<code>build/sandbox/translate/</code>、<code>logs/translate.jsonl</code>、<code>build/manifests/translate.json</code>。</p></dd>
       <dt>常量</dt>
       <dd>
-        <p>会话时限取模式的 <code>timeout_seconds</code>，默认 3600 秒。未译判定的门槛是 6 个英文单词。</p>
+        <p>会话时限取模式的 <code>timeout_seconds</code>，默认 3600 秒。未译判定的门槛是 6 个英文单词。保留英文的标记是 <code>% tongtu: keep-english:</code>。</p>
         <p class="why"><b>理由</b>整篇论文在一次会话里翻译，全部译文由这一个会话写出。术语与专名的统一靠同一个上下文：会话先通读全文、定下术语，再逐节写译文，写后面的章节时看得到前面用过的译法。</p>
       </dd>
       <dt>产物类</dt>
@@ -540,9 +545,15 @@ dropout 率为 $0.1$。</code></pre></div>
     mode: str                        # "fast" 或 "smart"
     session: Session | None          # 本次运行没有启动会话时为 null
     paragraphs_total: int            # masked.tex 里需要翻译的段落数
-    paragraphs_translated: int       # 译文里含中文的段落数
+    paragraphs_translated: int       # 译文里含中文的段落数，不含保留英文的段落
+    kept: list[KeptParagraph]        # 带保留英文标记的段落；失败时也记
     problems: list[str]              # 会话外校验报告的问题；ok 时为空
     glossary: GlossaryCounts
+
+class KeptParagraph(BaseModel):
+    line: int                        # 段落在 zh.tex 里的起始行
+    preview: str                     # 去掉标记后段落的前 60 个字符
+    reason: str                      # 标记里写的理由
 
 class GlossaryCounts(BaseModel):
     user: int                        # 用户术语表里本篇命中的条数
