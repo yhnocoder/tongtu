@@ -41,7 +41,16 @@ ORIGINAL = [["Model", "BLEU"], ["Base", "25.8"], ["Big", "28.4"]]
 
 @pytest.mark.parametrize(
     "latex",
-    [r"\resizebox{1cm}{!}{x}", r"\scalebox{2}{x}", r"a\hspace{1pt}b", r"\hphantom{x}", r"\lower 2pt\hbox{x}"],
+    [
+        r"\resizebox{1cm}{!}{x}",
+        r"\scalebox{2}{x}",
+        r"a\hspace{1pt}b",
+        r"\hphantom{x}",
+        r"\lower 2pt\hbox{x}",
+        r"\raise1pt\hbox{x}",
+        r"\kern1pt",
+        r"\vspace*{2pt}",
+    ],
 )
 def test_forbidden_commands_are_rejected(latex: str) -> None:
     verdict = table.verify(Path("absent.pdf"), latex)

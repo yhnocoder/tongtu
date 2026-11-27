@@ -113,7 +113,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
 <span class="ok">✓</span> mask        ok                183 blocks masked                           0:00:00
 <span class="ok">✓</span> translate   ok                164 paragraphs, 31 new terms                0:09:55
 <span class="ok">✓</span> compile     ok                56 pages, baseline 66                       0:00:47</div>
-  <p>reconstruct 的摘要在有 TeX 源码时是 <code>source input</code>；从 PDF 重建过时写重建结果的页数、单词召回率与阅读顺序，启动过修复会话时加 <code>fixed</code>，有公式或表格截图时再加识别通过的个数与总数，例如 <code>16 pages, recall 0.999, order 0.997, fixed, formulas 92/95, tables 3/3</code>。translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
+  <p>reconstruct 的摘要在有 TeX 源码时是 <code>source input</code>；从 PDF 重建过、阶段为 ok 时写重建结果的页数，有公式或表格截图时加识别通过的个数与总数（公式写作 <code>math</code>），启动过修复会话时在末尾加 <code>fixed</code>，例如 <code>15 pages, math 92/95, tables 4/4 fixed</code>；阶段失败时写页数、单词召回率与阅读顺序，不写识别数，例如 <code>16 pages, recall 0.951, order 0.997 fixed</code>。两种格式在 999 页、公式 999/999、表格 99/99 时都比摘要列的宽度 <code>SUMMARY_WIDTH = 44</code> 短。translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
   <table>
     <thead><tr><th>情形</th><th>行为</th><th>退出码</th></tr></thead>
     <tbody>

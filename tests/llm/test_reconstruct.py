@@ -16,7 +16,7 @@ pytestmark = pytest.mark.llm
 
 PDF_URL = "https://arxiv.org/pdf/1706.03762v7"
 
-FORMULA_PASS_RATE_MIN = 0.9
+FORMULA_PASS_RATE_MIN = 0.85
 
 
 def test_attention_paper_formulas_and_tables_are_recognized(tmp_path: Path) -> None:

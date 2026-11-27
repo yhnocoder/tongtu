@@ -44,7 +44,7 @@ COMPILE_COMMAND: tuple[str, ...] = ("xelatex", "-interaction=nonstopmode", "-hal
 
 FORBIDDEN_RE = re.compile(
     r"\\(raisebox|hspace|vspace|kern|mkern|phantom|hphantom|vphantom|rlap|llap|mathrlap|mathllap|resizebox"
-    r"|scalebox|lower|raise)\b"
+    r"|scalebox|lower|raise)(?![A-Za-z])"
 )
 
 CJK_RE = re.compile(r"[\u2e80-\u9fff]")

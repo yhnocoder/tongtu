@@ -434,14 +434,16 @@ def reconstruct_summary(manifest: ReconstructManifest) -> str:
     check = manifest.final_check
     if not manifest.rebuilt or check is None:
         return "source input"
-    parts = [f"{check.pages} pages", f"recall {check.recall:.3f}", f"order {check.order:.3f}"]
-    if manifest.fix_session is not None:
-        parts.append("fixed")
-    if manifest.formulas is not None:
-        parts.append(f"formulas {manifest.formulas.passed}/{manifest.formulas.total}")
-    if manifest.tables is not None:
-        parts.append(f"tables {manifest.tables.passed}/{manifest.tables.total}")
-    return ", ".join(parts)
+    parts = [f"{check.pages} pages"]
+    if not manifest.ok:
+        parts += [f"recall {check.recall:.3f}", f"order {check.order:.3f}"]
+    else:
+        if manifest.formulas is not None:
+            parts.append(f"math {manifest.formulas.passed}/{manifest.formulas.total}")
+        if manifest.tables is not None:
+            parts.append(f"tables {manifest.tables.passed}/{manifest.tables.total}")
+    summary = ", ".join(parts)
+    return f"{summary} fixed" if manifest.fix_session is not None else summary
 
 
 def _print_stage_header() -> None:

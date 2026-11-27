@@ -1599,35 +1599,47 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
     )
 
 
-def test_reconstruct_summary_shows_the_final_check_and_the_fix_session() -> None:
+def test_reconstruct_summary_of_an_ok_stage_shows_pages_and_recognitions() -> None:
     check = CheckReport(
         source_pages=9, pages=10, recall=0.9912, precision=0.99, missing_characters=0, order=0.9954, passed=True
     )
     session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
     assert cli.stage_summary(ReconstructManifest(status=ReconstructStatus.OK)) == "source input"
     rebuilt = ReconstructManifest(status=ReconstructStatus.OK, rebuilt=True, final_check=check)
-    assert cli.stage_summary(rebuilt) == "10 pages, recall 0.991, order 0.995"
-    fixed = rebuilt.model_copy(update={"fix_session": session})
-    assert cli.stage_summary(fixed) == "10 pages, recall 0.991, order 0.995, fixed"
-    widest = fixed.model_copy(update={"final_check": check.model_copy(update={"pages": 999})})
-    assert len(cli.stage_summary(widest)) < cli.SUMMARY_WIDTH
-
-
-def test_reconstruct_summary_adds_the_recognized_formulas_and_tables() -> None:
-    check = CheckReport(
-        source_pages=9, pages=10, recall=0.9912, precision=0.99, missing_characters=0, order=0.9954, passed=True
+    assert cli.stage_summary(rebuilt) == "10 pages"
+    recognized = rebuilt.model_copy(
+        update={"formulas": RecognitionReport(total=95, passed=92), "tables": RecognitionReport(total=4, passed=4)}
     )
-    rebuilt = ReconstructManifest(
-        status=ReconstructStatus.OK,
+    assert cli.stage_summary(recognized) == "10 pages, math 92/95, tables 4/4"
+    assert cli.stage_summary(recognized.model_copy(update={"tables": None})) == "10 pages, math 92/95"
+    fixed = recognized.model_copy(update={"fix_session": session})
+    assert cli.stage_summary(fixed) == "10 pages, math 92/95, tables 4/4 fixed"
+    widest = fixed.model_copy(
+        update={
+            "final_check": check.model_copy(update={"pages": 999}),
+            "formulas": RecognitionReport(total=999, passed=999),
+            "tables": RecognitionReport(total=99, passed=99),
+        }
+    )
+    assert len(cli.stage_summary(widest)) <= cli.SUMMARY_WIDTH - 1
+
+
+def test_reconstruct_summary_of_a_failed_stage_shows_the_check_without_recognitions() -> None:
+    check = CheckReport(
+        source_pages=9, pages=10, recall=0.9512, precision=0.99, missing_characters=0, order=0.9954, passed=False
+    )
+    session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
+    failed = ReconstructManifest(
+        status=ReconstructStatus.RECONSTRUCT_FAILED,
         rebuilt=True,
         final_check=check,
         formulas=RecognitionReport(total=95, passed=92),
-        tables=RecognitionReport(total=3, passed=3),
+        tables=RecognitionReport(total=4, passed=4),
     )
-    assert cli.stage_summary(rebuilt) == "10 pages, recall 0.991, order 0.995, formulas 92/95, tables 3/3"
-    assert cli.stage_summary(rebuilt.model_copy(update={"tables": None})) == (
-        "10 pages, recall 0.991, order 0.995, formulas 92/95"
-    )
+    assert cli.stage_summary(failed) == "10 pages, recall 0.951, order 0.995"
+    widest = failed.model_copy(update={"fix_session": session, "final_check": check.model_copy(update={"pages": 999})})
+    assert cli.stage_summary(widest) == "999 pages, recall 0.951, order 0.995 fixed"
+    assert len(cli.stage_summary(widest)) <= cli.SUMMARY_WIDTH - 1
 
 
 def test_translate_summary_counts_paragraphs_and_new_terms() -> None:
