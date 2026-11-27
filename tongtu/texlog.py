@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 PAGES_RE = re.compile(r"Output written on .*?\((\d+) pages?")
@@ -9,6 +10,8 @@ OVERFULL_HBOX_PREFIX = "Overfull \\hbox"
 UNDEFINED_REFERENCE_PREFIX = "LaTeX Warning: Reference"
 UNDEFINED_CITATION_PREFIX = "LaTeX Warning: Citation"
 MISSING_CHARACTER_MARKER = "Missing character"
+
+MISSING_CHARACTER_RE = re.compile(r"Missing character: There is no (.+?) \((?:U\+|\")[0-9A-Fa-f]+\)")
 
 ERROR_LINE_PREFIX = "!"
 
@@ -34,3 +37,7 @@ def parse_counts(log_text: str | None) -> dict[str, int]:
 
 def error_lines(log_text: str, limit: int) -> list[str]:
     return [line for line in log_text.splitlines() if line.startswith(ERROR_LINE_PREFIX)][:limit]
+
+
+def missing_characters(log_text: str) -> list[tuple[str, int]]:
+    return Counter(MISSING_CHARACTER_RE.findall(log_text)).most_common()

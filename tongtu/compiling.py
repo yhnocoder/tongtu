@@ -16,6 +16,8 @@ CLEAN_TIMEOUT_SECONDS = 60
 
 ERROR_LINE_LIMIT = 5
 
+MISSING_CHARACTERS_LISTED = 10
+
 LATEXMK_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-xelatex", "-interaction=nonstopmode", "-synctex=1")
 
 LATEXMK_CLEAN_COMMAND: tuple[str, ...] = ("latexmk", "-norc", "-C")
@@ -147,6 +149,7 @@ def compile_with_fix(
     if first.outcome.timed_out:
         return first, fix_session, timeout_message(first)
     if first.passed:
+        warnings.extend(missing_character_warnings(first))
         return first, fix_session, ""
     if fix_session is not None:
         return (
@@ -183,7 +186,21 @@ def compile_with_fix(
             session,
             f"after the fix session the verify compile still fails the exit checks: {failure_message(final)}",
         )
+    warnings.extend(missing_character_warnings(final))
     return final, session, ""
+
+
+def missing_character_warnings(attempt: CompileAttempt) -> list[str]:
+    count = attempt.report.missing_characters
+    if count == 0:
+        return []
+    found = texlog.missing_characters(attempt.log_text or "")
+    listed = ", ".join(f"{character} x{times}" for character, times in found[:MISSING_CHARACTERS_LISTED])
+    rest = len(found) - MISSING_CHARACTERS_LISTED
+    detail = f": {listed}" if listed else ""
+    more = f", and {rest} more" if rest > 0 else ""
+    noun = "character" if count == 1 else "characters"
+    return [f"{count} missing {noun} in the compiled PDF (font has no glyph){detail}{more}"]
 
 
 def timeout_message(attempt: CompileAttempt) -> str:

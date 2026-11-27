@@ -57,7 +57,7 @@ LOG_NOISY = """Output written on zh.xdv (5 pages, 12345 bytes).
 Overfull \\hbox (10.0pt too wide) in paragraph
 LaTeX Warning: Reference `fig:x' on page 1 undefined
 LaTeX Warning: Citation `adam' on page 2 undefined
-Missing character: There is no X in font
+Missing character: There is no ж (U+0436) in font larm1000!
 """
 
 LOG_ERROR = "! Undefined control sequence.\nl.42 \\pdfoutput\nOutput written on zh.xdv (0 pages, 8 bytes).\n"
@@ -538,7 +538,8 @@ def test_count_increases_become_warnings(tmp_path: Path, monkeypatch: pytest.Mon
     wire_latexmk(monkeypatch, [{"log": LOG_NOISY}])
     manifest = compile.run(workdir, mode="fast")
     assert manifest.status is CompileStatus.OK
-    assert len(manifest.warnings) == 4
+    assert len(manifest.warnings) == 5
+    assert "1 missing character in the compiled PDF (font has no glyph): ж x1" in manifest.warnings
     for name in ("overfull_hboxes", "undefined_references", "undefined_citations", "missing_characters"):
         assert any(line.startswith(f"{name} rose from 0") for line in manifest.warnings)
 
