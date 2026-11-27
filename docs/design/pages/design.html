@@ -320,7 +320,7 @@ api_key  = ""</code></pre>
           <li>用 latexpand 把 <code>\input</code> 与 <code>\include</code> 展开成单文件，有 <code>.bbl</code> 时一并内联。写在其他命令花括号参数里的 <code>\input</code>（例如 <code>\resizebox{…}{!}{\input{fig}}</code>）不展开，原样留给 TeX 在编译时读文件，每处在 manifest 里记一条 warning；裸分组与环境体里的照常展开。<p class="why"><b>理由</b>参数里的 <code>\input</code> 不展开。TeX 在执行到这条命令时才读文件；把文件内容内联进参数之后，内容按参数的方式读入，换行变成空格，依赖换行的内容（例如 pgfplots 的内联表格）读不出来，standalone 子文档的导言区也会进入主文件。这类文件里的文字不进入翻译，实际出现的都是图。</p></li>
           <li>处理注释：整行注释整行删掉；行尾注释删掉文字，只留 <code>%</code>，因为行尾的 <code>%</code> 决定换行处是否留空白。代码环境与 <code>\verb</code> 里的 <code>%</code> 是正文，不改动。</li>
           <li>前导区里取值确定的条件开关只保留生效的分支。</li>
-          <li>按 <code>tongtu/preamble.py</code> 的规则改写前导区里只适用于 pdflatex 的写法，再加入 xeCJK 与中文字体设置。行距是 <code>\linespread{1.4}</code>。</li>
+          <li>按 <code>tongtu/preamble.py</code> 的规则改写前导区里只适用于 pdflatex 的写法，再加入 xeCJK 与中文字体设置。行距是 <code>\linespread{1.4}</code>。文档类是 acmart 时，注入块在行距之后把 <code>\ACM@origbaselinestretch</code> 设为新的 <code>\baselinestretch</code>，因为 acmart 在文末检查行距是否被改过，不一致就报错停止编译。</li>
           <li>搭编译目录 <code>build/sandbox/tex/</code>：<code>src/</code> 的完整拷贝，主文件换成展开后的单文件，文件名不变。在其中用 latexmk 编译，通过后记下页数等计数作为基线，PDF 拷出为 <code>build/precompile.pdf</code>。</li>
           <li>展开时缺文件，或者编译不通过时，启动一次修复会话（skill <code>precompile_fix</code>），然后重新展开或编译一次，以这次结果为准。整个阶段只启动一次修复会话。</li>
         </ol>

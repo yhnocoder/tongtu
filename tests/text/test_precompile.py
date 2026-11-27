@@ -289,6 +289,23 @@ def test_author_font_families_are_captured_before_fontspec_resets_them() -> None
     assert output.index(b"\\@namedef{tongtu@gyre@ptm}{texgyretermes}") < output.index(b"\\XeTeXlinebreaklocale")
 
 
+ACMART_GUARD = b"\\makeatletter\\let\\ACM@origbaselinestretch\\baselinestretch\\makeatother\n"
+
+
+def test_acmart_keeps_the_line_spread_past_its_baselinestretch_check() -> None:
+    paper = PLAIN_PAPER.replace("\\documentclass[11pt]{article}", "\\documentclass[sigconf]{acmart}")
+    output = precompile._inject_cjk(paper.encode("utf-8"), [], FontsConfig())
+    guard = output.index(ACMART_GUARD)
+    assert output.index(b"\\linespread{1.4}") < guard < output.index(b"% ---- end tongtu (precompile) ----")
+    assert guard < output.index(b"\\begin{document}")
+
+
+def test_other_classes_do_not_touch_the_acmart_baselinestretch() -> None:
+    output = precompile._inject_cjk(PLAIN_PAPER.encode("utf-8"), [], FontsConfig())
+    assert b"\\linespread{1.4}\n% ---- end tongtu (precompile) ----\n" in output
+    assert b"ACM@origbaselinestretch" not in output
+
+
 DEFAULT_MAIN_LINE = "\\setCJKmainfont[BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}"
 
 DEFAULT_SANS_LINE = "\\setCJKsansfont[BoldFont=SourceHanSansSC-Bold.otf]{SourceHanSansSC-Regular.otf}"
