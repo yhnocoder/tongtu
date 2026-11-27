@@ -4,6 +4,7 @@ import json
 import math
 import os
 import platform
+import shlex
 import shutil
 import sys
 import tempfile
@@ -55,6 +56,8 @@ AGENTRUN_GRACE_SECONDS = 120
 
 PYTHON_EXECUTABLE = "python3"
 
+PYTHON_WRAPPER = '#!/bin/sh\nexec {interpreter} "$@"\n'
+
 COST_RUNTIME = "claude-code"
 
 COST_RESULT_TYPE = "result"
@@ -94,6 +97,7 @@ def work(
     log_path: Path,
     report: Callable[[str], None] | None = None,
     extra_prompt: str = "",
+    tongtu_python: bool = False,
 ) -> WorkOutcome:
     started = time.monotonic()
     config, detail = load_config()
@@ -102,7 +106,7 @@ def work(
     target, detail = mode_target(config, mode)
     if target is None:
         return _outcome(started, "", None, StopReason.ERROR, None, detail)
-    stop_reason, usage, detail = _launch(target, skill, session_dir, log_path, report, extra_prompt)
+    stop_reason, usage, detail = _launch(target, skill, session_dir, log_path, report, extra_prompt, tongtu_python)
     return _outcome(started, str(target), target.effort, stop_reason, usage, detail)
 
 
@@ -126,6 +130,7 @@ def _launch(
     log_path: Path,
     report: Callable[[str], None] | None,
     extra_prompt: str,
+    tongtu_python: bool,
 ) -> tuple[StopReason, Usage | None, str]:
     executable, detail = agentrun_executable()
     if executable is None:
@@ -143,15 +148,15 @@ def _launch(
     events = _Events(ends=[])
     with tempfile.TemporaryDirectory(prefix="tongtu-work-") as tmp_dir:
         python_bin = Path(tmp_dir) / "bin"
-        interpreter = Path(sys.base_prefix) / "bin" / PYTHON_EXECUTABLE
+        interpreter = Path(sys.executable) if tongtu_python else Path(sys.base_prefix) / "bin" / PYTHON_EXECUTABLE
         try:
             python_bin.mkdir()
-            (python_bin / PYTHON_EXECUTABLE).symlink_to(interpreter)
+            _install_python(python_bin / PYTHON_EXECUTABLE, interpreter, tongtu_python)
         except OSError as error:
             return (
                 StopReason.ERROR,
                 None,
-                f"failed to prepare the {PYTHON_EXECUTABLE} link to {interpreter} for the session"
+                f"failed to prepare {PYTHON_EXECUTABLE} for {interpreter} for the session"
                 f" ({type(error).__name__}: {error}).",
             )
         command = [
@@ -210,6 +215,14 @@ def _launch(
     if stop_reason is not StopReason.ERROR:
         return stop_reason, usage, ""
     return StopReason.ERROR, usage, f"{AGENTRUN_EXECUTABLE} {end.get('status')}: {end.get('detail') or '(no detail)'}"
+
+
+def _install_python(path: Path, interpreter: Path, wrapper: bool) -> None:
+    if not wrapper:
+        path.symlink_to(interpreter)
+        return
+    path.write_text(PYTHON_WRAPPER.format(interpreter=shlex.quote(str(interpreter))), encoding="utf-8")
+    path.chmod(0o755)
 
 
 def agentrun_executable() -> tuple[str | None, str]:

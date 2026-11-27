@@ -35,6 +35,10 @@ ABSTRACT_ENVIRONMENT = "abstract"
 
 METADATA_COMMANDS: frozenset[str] = frozenset({"title", "author", "date", "affiliation", "email"})
 
+INLINE_CROP_COMMAND = "im"
+
+INLINE_CROP_ARGUMENTS = 3
+
 CAPTION_COMMAND = "caption"
 CAPTION_OF_COMMAND = "captionof"
 
@@ -361,6 +365,9 @@ class _MaskRun:
             if name in METADATA_COMMANDS:
                 position = self._mask_metadata(position, after_name)
                 continue
+            if name == INLINE_CROP_COMMAND:
+                position = self._mask_inline_crop(position, after_name)
+                continue
             position = after_name
         if not seen_end_document:
             self.warnings.append("no \\end{document} met in the stream; no postamble block emitted")
@@ -420,6 +427,15 @@ class _MaskRun:
             return after_name
         end = match_group(self.text, position)
         self._emit_block(start, end, BlockCategory.METADATA, environment="", slots=[])
+        return end
+
+    def _mask_inline_crop(self, start: int, after_name: int) -> int:
+        end = after_name
+        for _ in range(INLINE_CROP_ARGUMENTS):
+            if end >= self.length or self.text[end] != "{":
+                return after_name
+            end = match_group(self.text, end)
+        self._emit_block(start, end, BlockCategory.MATH, environment="", slots=[])
         return end
 
     def _scan_environment_body(

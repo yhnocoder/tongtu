@@ -28,6 +28,8 @@ API_URL = "https://export.arxiv.org/api/query?id_list=1412.6980v8"
 
 EPRINT_URL = "https://export.arxiv.org/e-print/1412.6980v8"
 
+PDF_URL = "https://export.arxiv.org/pdf/1412.6980v8"
+
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,18 +172,108 @@ def test_failed_api_request_is_download_failed(
     assert FetchManifest.model_validate(read_manifest(workdir)).status is FetchStatus.DOWNLOAD_FAILED
 
 
-def test_remote_pdf_only_leaves_no_src(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_download(monkeypatch, b"%PDF-1.5 fake body")
+def test_remote_pdf_eprint_takes_the_pdf_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_download(monkeypatch, b"%PDF-1.5 fake body")
     workdir = make_workdir(tmp_path)
     manifest = fetch.run(PAPER, workdir)
-    assert manifest.status is FetchStatus.PDF_ONLY
+    assert manifest.status is FetchStatus.OK
     assert manifest.kind == "pdf"
-    assert manifest.message.startswith("1412.6980v8 has no TeX source")
-    assert "Other versions of 1412.6980 may have TeX source" in manifest.message
-    assert "earlier" not in manifest.message
+    assert manifest.route == "pdf"
+    assert manifest.message == ""
+    assert urls == [API_URL, EPRINT_URL]
     assert list(workdir.src.iterdir()) == []
+    assert workdir.original_pdf.read_bytes() == b"%PDF-1.5 fake body"
     assert (workdir.build / "e-print.bin").is_file()
     assert read_meta(workdir).version == 8
+
+
+def test_gzipped_pdf_eprint_takes_the_pdf_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = wire_download(monkeypatch, gzip.compress(b"%PDF-1.5 zipped"))
+    workdir = make_workdir(tmp_path)
+    manifest = fetch.run(PAPER, workdir)
+    assert (manifest.status, manifest.kind, manifest.route) == (FetchStatus.OK, "gz", "pdf")
+    assert urls == [API_URL, EPRINT_URL]
+    assert workdir.original_pdf.read_bytes() == b"%PDF-1.5 zipped"
+    assert list(workdir.src.iterdir()) == []
+
+
+def wire_pdf_download(
+    monkeypatch: pytest.MonkeyPatch, eprint: bytes, pdf: Callable[[str], httpx.Response]
+) -> list[str]:
+    def source(url: str) -> httpx.Response:
+        return respond(eprint)(url) if url == EPRINT_URL else pdf(url)
+
+    return wire_network(monkeypatch, respond(VERSIONED_FEED.encode()), source)
+
+
+def test_tex_shell_downloads_the_arxiv_pdf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shell = tar_payload({"main.tex": b"\\documentclass{article}", "main.pdf": b"%PDF-1.5 figure"})
+    urls = wire_pdf_download(monkeypatch, shell, respond(b"%PDF-1.7 paper"))
+    workdir = make_workdir(tmp_path)
+    manifest = fetch.run(PAPER, workdir)
+    assert (manifest.status, manifest.kind, manifest.route) == (FetchStatus.OK, "tar.gz", "pdf")
+    assert urls == [API_URL, EPRINT_URL, PDF_URL]
+    assert any("1000" in warning for warning in manifest.warnings)
+    assert workdir.original_pdf.read_bytes() == b"%PDF-1.7 paper"
+    assert list(workdir.src.iterdir()) == []
+
+
+def test_failed_pdf_download_is_download_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shell = tar_payload({"main.tex": b"\\documentclass{article}"})
+    wire_pdf_download(monkeypatch, shell, respond(b"busy", status_code=503))
+    workdir = make_workdir(tmp_path)
+    manifest = fetch.run(PAPER, workdir)
+    assert manifest.status is FetchStatus.DOWNLOAD_FAILED
+    assert manifest.route == "pdf"
+    assert "PDF download failed" in manifest.message
+    assert not workdir.original_pdf.exists()
+    assert list(workdir.src.iterdir()) == []
+
+
+def test_pdf_download_that_is_not_a_pdf_is_download_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shell = tar_payload({"main.tex": b"\\documentclass{article}"})
+    wire_pdf_download(monkeypatch, shell, respond(b"<html>captcha</html>"))
+    manifest = fetch.run(PAPER, make_workdir(tmp_path))
+    assert manifest.status is FetchStatus.DOWNLOAD_FAILED
+    assert "did not return a PDF" in manifest.message
+
+
+def test_local_pdf_file_takes_the_pdf_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-1.4 local")
+    urls = wire_download(monkeypatch, b"")
+    workdir = make_workdir(tmp_path)
+    manifest = fetch.run(PaperInput(source_pdf=source), workdir)
+    assert urls == []
+    assert (manifest.status, manifest.kind, manifest.route) == (FetchStatus.OK, "local_pdf", "pdf")
+    assert manifest.source == str(source)
+    assert (manifest.arxiv_id, manifest.version) == (None, None)
+    assert workdir.original_pdf.read_bytes() == b"%PDF-1.4 local"
+    assert list(workdir.out.iterdir()) == []
+    assert list(workdir.src.iterdir()) == []
+
+
+def test_local_pdf_file_that_vanished_is_source_missing(tmp_path: Path) -> None:
+    workdir = make_workdir(tmp_path)
+    manifest = fetch.run(PaperInput(source_pdf=tmp_path / "gone.pdf"), workdir)
+    assert manifest.status is FetchStatus.SOURCE_MISSING
+    assert manifest.kind == "local_pdf"
+    assert not workdir.original_pdf.exists()
+
+
+def test_local_directory_without_tex_source_is_empty(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "paper.pdf").write_bytes(b"%PDF-1.4")
+    manifest = fetch.run(PaperInput(source_dir=source), make_workdir(tmp_path))
+    assert manifest.status is FetchStatus.EMPTY
+    assert manifest.route == "tex"
+    assert "pass the PDF file as PAPER" in manifest.message
+
+
+def test_old_manifest_without_route_reads_as_tex() -> None:
+    manifest = FetchManifest.model_validate_json('{"status": "ok", "source": "x", "kind": "tar.gz"}')
+    assert manifest.route == "tex"
 
 
 def test_remote_download_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,20 +355,21 @@ def test_remote_tar_rejects_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 
 def test_small_tex_is_a_pdf_shell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wire_download(monkeypatch, tar_payload({"main.tex": b"\\documentclass{article}", "main.pdf": b"%PDF-1.5"}))
+    shell = tar_payload({"main.tex": b"\\documentclass{article}", "main.pdf": b"%PDF-1.5"})
+    wire_pdf_download(monkeypatch, shell, respond(b"%PDF-1.7 paper"))
     workdir = make_workdir(tmp_path)
     manifest = fetch.run(PAPER, workdir)
-    assert manifest.status is FetchStatus.PDF_ONLY
-    assert "1000" in manifest.message
+    assert (manifest.status, manifest.route) == (FetchStatus.OK, "pdf")
+    assert any("1000" in warning for warning in manifest.warnings)
     assert list(workdir.src.iterdir()) == []
 
 
 def test_includepdf_shell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shell = ("\\documentclass{article}\n\\usepackage{pdfpages}\n\\includepdf{paper.pdf}\n" + "%" * 2000).encode()
-    wire_download(monkeypatch, tar_payload({"main.tex": shell}))
+    wire_pdf_download(monkeypatch, tar_payload({"main.tex": shell}), respond(b"%PDF-1.7 paper"))
     manifest = fetch.run(PAPER, make_workdir(tmp_path))
-    assert manifest.status is FetchStatus.PDF_ONLY
-    assert "includepdf" in manifest.message
+    assert (manifest.status, manifest.route) == (FetchStatus.OK, "pdf")
+    assert any("includepdf" in warning for warning in manifest.warnings)
 
 
 def test_archive_without_tex_or_pdf_is_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

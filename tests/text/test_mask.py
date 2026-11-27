@@ -273,6 +273,22 @@ def test_unmask_keeps_a_comment_at_the_end_of_the_text(environments_table) -> No
     assert unmasked.text == "\\begin{document}\n文字。 % last"
 
 
+def test_inline_crop_is_one_math_block_with_its_three_arguments(environments_table) -> None:
+    crop = r"\im{m-0003}{2.1bp}{\alpha_{t}}"
+    source = wrap_in_skeleton(f"The rate {crop} decays.")
+    outcome = assert_roundtrip(source, environments_table)
+    crops = [block for block in outcome.blocks if block.tex == crop]
+    assert len(crops) == 1
+    assert crops[0].category is BlockCategory.MATH
+    assert "m-0003" not in outcome.masked
+
+
+def test_inline_crop_without_its_arguments_stays_text(environments_table) -> None:
+    source = wrap_in_skeleton(r"text \im{m-0001} more")
+    outcome = assert_roundtrip(source, environments_table)
+    assert "m-0001" in outcome.masked
+
+
 @pytest.mark.parametrize("character", SENTINEL_CHARACTERS)
 def test_sentinel_in_source_is_rejected(character: str, environments_table) -> None:
     with pytest.raises(masking.MaskError):

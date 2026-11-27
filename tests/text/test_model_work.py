@@ -104,6 +104,10 @@ def record_run(
             env=env,
             python_bin_entries=[entry.name for entry in python_bin.iterdir()],
             python3_target=(python_bin / "python3").resolve(),
+            python3_wrapper=(
+                "" if (python_bin / "python3").is_symlink() else (python_bin / "python3").read_text(encoding="utf-8")
+            ),
+            python3_executable=os.access(python_bin / "python3", os.X_OK),
         )
         if isinstance(outcome, Exception):
             raise outcome
@@ -208,6 +212,17 @@ def test_session_path_starts_with_the_base_python(configured: Path, monkeypatch:
     run_work(configured)
     assert recorded["python_bin_entries"] == ["python3"]
     assert recorded["python3_target"] == (Path(sys.base_prefix) / "bin" / "python3").resolve()
+
+
+def test_tongtu_python_session_runs_python3_with_the_tongtu_interpreter(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded: dict = {}
+    record_run(monkeypatch, recorded, exited())
+    run_work(configured, tongtu_python=True)
+    assert recorded["python_bin_entries"] == ["python3"]
+    assert recorded["python3_wrapper"] == f'#!/bin/sh\nexec {sys.executable} "$@"\n'
+    assert recorded["python3_executable"]
 
 
 def test_session_environment_disables_tongtu_and_carries_fonts(

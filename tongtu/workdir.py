@@ -94,6 +94,14 @@ class Workdir:
         return self.build / "e-print.bin"
 
     @property
+    def original_pdf(self) -> Path:
+        return self.build / "original.pdf"
+
+    @property
+    def reconstruct_fix_log(self) -> Path:
+        return self.logs / "reconstruct-fix.jsonl"
+
+    @property
     def precompile_tex(self) -> Path:
         return self.build / "precompile.tex"
 

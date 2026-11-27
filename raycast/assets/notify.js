@@ -1,4 +1,4 @@
-const STAGES = ["fetch", "precompile", "mask", "translate", "compile"];
+const STAGES = ["fetch", "reconstruct", "precompile", "mask", "translate", "compile"];
 const STOPPED_EXIT_CODE = 143;
 const TOOL_DIRECTORIES = ["~/.local/bin", "~/.cargo/bin", "/opt/homebrew/bin", "/Library/TeX/texbin", "/usr/bin", "/bin"];
 const UNTRANSLATABLE = {

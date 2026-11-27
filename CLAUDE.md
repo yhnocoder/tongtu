@@ -20,15 +20,16 @@
 
 ## 基本原则
 
-1. **LaTeX 源码是翻译的依据**：翻译 arXiv 提供的 e-print 源码，不解析 PDF。编译能否通过由机器检查，作为硬性指标。
+1. **LaTeX 源码是翻译的依据**：有 e-print 源码时翻译源码；只有 PDF 时，先按规则从 PDF 重建出 LaTeX 源码，规则核对不通过时由修复会话补救，核对通过后按同一条流程翻译。通途不在 PDF 页面上直接替换文字。编译能否通过由机器检查，作为硬性指标。
 2. **agent 做翻译，脚本做校验**：翻译由 agent 完成，结果是否正确以校验脚本的结果为准。脚本不对翻译过程做细粒度控制，例如不按段重试后再拼接。要提高译文质量，就修改提供给模型的信息（skill、上下文、术语表），不增加脚本逻辑。
-3. **修复先用规则，agent 只处理规则处理不了的情况**：precompile 与 compile 的修复会话（`precompile_fix`、`compile_fix`）只在规则处理失败后调用。调用 agent 成本高、耗时长，每次结果也不完全一样，这类流程里应尽量不调用 agent。修复会话的日志用来发现共性问题：同一类修复在多篇论文里重复出现、处理方式不依赖具体论文时，把它写成前面阶段的规则，之后这类问题不再进入修复会话。例如 #140 把 7 篇论文的修复会话都在处理的 pdflatex 遗留写成了 `tongtu/preamble.py` 里的规则。
+3. **修复先用规则，agent 只处理规则处理不了的情况**：precompile、reconstruct 与 compile 的修复会话（`precompile_fix`、`reconstruct_fix`、`compile_fix`）只在规则处理失败后调用。调用 agent 成本高、耗时长，每次结果也不完全一样，这类流程里应尽量不调用 agent。修复会话的日志用来发现共性问题：同一类修复在多篇论文里重复出现、处理方式不依赖具体论文时，把它写成前面阶段的规则，之后这类问题不再进入修复会话。例如 #140 把 7 篇论文的修复会话都在处理的 pdflatex 遗留写成了 `tongtu/preamble.py` 里的规则。
 4. **论文工作目录不在仓库内**：默认路径是 `~/.tongtu/papers/<编号加版本号>/`，可以用 `$TONGTU_HOME`（换整个目录，含 `config.toml` 与 `glossary.json`）、`--dev`（等于 `TONGTU_HOME=~/.tongtu-dev`）或 `--workdir` 修改。测试与试验也不在仓库里创建论文目录。
 5. **agent 运行时可以替换**：翻译与修复都通过在一个目录里启动一次 agent 会话完成，入口在 `tongtu/model/`。它不依赖具体产品，Claude Code、Codex 等运行时由 agentrun 适配。唯一的例外是摘要翻译这类单次的短文本，它直接调用 OpenAI 兼容的聊天接口。
 
 ## 当前状态
 
-- v0.2 已实现。fetch → precompile → mask → translate → compile 五个阶段，`tongtu run <arxiv_id>` 生成中文 PDF（`out/<工作目录名>.zh.pdf`）。translate 由一次 agent 会话整篇翻译，通途在会话外重跑校验。设计见 `docs/design/pages/design.html`。
+- v0.2 已实现。fetch → reconstruct → precompile → mask → translate → compile 六个阶段，`tongtu run <arxiv_id>` 生成中文 PDF（`out/<工作目录名>.zh.pdf`）。translate 由一次 agent 会话整篇翻译，通途在会话外重跑校验。设计见 `docs/design/pages/design.html`。
+- PDF 输入经 reconstruct 阶段重建为 LaTeX 后进入同一流程。
 - 后续方向记录在 GitHub Issues 中（`gh issue list --state open`），新会话先查看。
 
 ## 工作流程

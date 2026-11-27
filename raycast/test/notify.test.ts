@@ -3,7 +3,7 @@ import test from "node:test";
 import notify from "../assets/notify.js";
 
 const { failureReason, notification, parseStatusOutput, statusCommand, toolPath } = notify;
-const STAGE_NAMES = ["fetch", "precompile", "mask", "translate", "compile"];
+const STAGE_NAMES = ["fetch", "reconstruct", "precompile", "mask", "translate", "compile"];
 
 function status(statuses: string[]) {
   return {
@@ -13,7 +13,7 @@ function status(statuses: string[]) {
   };
 }
 
-const ALL_OK = ["ok", "ok", "ok", "ok", "ok"];
+const ALL_OK = ["ok", "ok", "ok", "ok", "ok", "ok"];
 
 test("a stopped run sends no notification", () => {
   assert.equal(notification("2611.15404", 143, status(["ok", "ok", "ok"]), "A Title", ""), null);
@@ -51,17 +51,17 @@ test("fetch states without usable source are reported as untranslatable", () => 
   });
 });
 
-test("five ok stages report completion", () => {
+test("six ok stages report completion", () => {
   assert.deepEqual(notification("2611.15404", 0, status(ALL_OK), "A Title", ""), { title: "翻译完成", body: "A Title" });
   assert.deepEqual(notification("2611.15404", 0, status(ALL_OK), "", ""), { title: "翻译完成", body: "2611.15404v1" });
 });
 
 test("other outcomes name the first stage that is not ok", () => {
-  assert.deepEqual(notification("2611.15404", 1, status(["ok", "ok", "ok", "validation_failed"]), "A Title", ""), {
+  assert.deepEqual(notification("2611.15404", 1, status(["ok", "ok", "ok", "ok", "validation_failed"]), "A Title", ""), {
     title: "翻译失败",
     body: "A Title 在 translate 阶段失败",
   });
-  assert.deepEqual(notification("2611.15404", 1, status(["ok", "ok", "ok", "ok"]), "", ""), {
+  assert.deepEqual(notification("2611.15404", 1, status(["ok", "ok", "ok", "ok", "ok"]), "", ""), {
     title: "翻译失败",
     body: "2611.15404v1 在 compile 阶段失败",
   });

@@ -195,6 +195,7 @@ def wire_work(
         log_path: Path,
         report=None,
         extra_prompt: str = "",
+        tongtu_python: bool = False,
     ):
         calls.append({"skill": skill, "session_dir": session_dir, "mode": mode, "log_path": log_path})
         log_path.write_text("{}\n", encoding="utf-8")

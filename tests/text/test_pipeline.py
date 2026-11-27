@@ -11,6 +11,7 @@ from tongtu.workdir import Workdir, raw_log_path
 
 OUTPUT_FILES: dict[str, tuple[str, ...]] = {
     "fetch": ("src/main.tex",),
+    "reconstruct": (),
     "precompile": ("build/precompile.tex", "build/precompile.pdf"),
     "mask": ("build/masked.tex", "build/blocks.json"),
     "translate": ("build/translated.tex",),
@@ -19,6 +20,11 @@ OUTPUT_FILES: dict[str, tuple[str, ...]] = {
 
 SIDE_FILES: dict[str, tuple[str, ...]] = {
     "fetch": ("build/e-print.bin", "out/paper.meta.json"),
+    "reconstruct": (
+        "build/sandbox/reconstruct/main.tex",
+        "logs/reconstruct-fix.jsonl",
+        "logs/reconstruct-fix.raw.jsonl",
+    ),
     "precompile": (
         "build/sandbox/tex/main.tex",
         "logs/precompile-fix.jsonl",
@@ -39,7 +45,7 @@ SIDE_FILES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-NOTE_SESSIONS = ("precompile_fix", "translate", "compile_fix")
+NOTE_SESSIONS = ("reconstruct_fix", "precompile_fix", "translate", "compile_fix")
 
 
 def note(session: str) -> Note:
@@ -71,7 +77,7 @@ def noted_sessions(workdir: Workdir) -> list[str]:
 
 
 def test_stage_order() -> None:
-    assert STAGES == ("fetch", "precompile", "mask", "translate", "compile")
+    assert STAGES == ("fetch", "reconstruct", "precompile", "mask", "translate", "compile")
 
 
 def test_downstream_starts_at_the_given_stage() -> None:
@@ -88,7 +94,7 @@ def test_first_pending_without_any_manifest(tmp_path: Path) -> None:
 
 
 def test_first_pending_resumes_after_the_stages_that_finished_ok(tmp_path: Path) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     assert first_pending(workdir) == "mask"
 
 
@@ -118,7 +124,7 @@ def test_empty_directory_counts_as_absent(tmp_path: Path) -> None:
 def test_clean_from_removes_stage_and_downstream(tmp_path: Path) -> None:
     workdir = write_outputs(tmp_path, *STAGES)
     clean_from(workdir, "translate")
-    for name in ("fetch", "precompile", "mask"):
+    for name in ("fetch", "reconstruct", "precompile", "mask"):
         assert outputs_present(workdir, name)
         assert workdir.manifest_path(name).is_file()
         for relative in SIDE_FILES[name]:
@@ -129,16 +135,17 @@ def test_clean_from_removes_stage_and_downstream(tmp_path: Path) -> None:
         for relative in (*OUTPUT_FILES[name], *SIDE_FILES[name]):
             assert not (workdir.path / relative).exists()
     assert not workdir.sandbox("translate").exists()
-    assert noted_sessions(workdir) == ["precompile_fix"]
+    assert noted_sessions(workdir) == ["reconstruct_fix", "precompile_fix"]
     assert first_pending(workdir) == "translate"
 
 
 @pytest.mark.parametrize(
     ("stage", "kept"),
     [
-        ("precompile", ["translate", "compile_fix"]),
-        ("translate", ["precompile_fix", "compile_fix"]),
-        ("compile", ["precompile_fix", "translate"]),
+        ("reconstruct", ["precompile_fix", "translate", "compile_fix"]),
+        ("precompile", ["reconstruct_fix", "translate", "compile_fix"]),
+        ("translate", ["reconstruct_fix", "precompile_fix", "compile_fix"]),
+        ("compile", ["reconstruct_fix", "precompile_fix", "translate"]),
         ("mask", list(NOTE_SESSIONS)),
     ],
 )
@@ -171,3 +178,49 @@ def test_clean_from_tolerates_a_missing_workdir(tmp_path: Path) -> None:
     workdir = Workdir(tmp_path / "absent")
     clean_from(workdir, "fetch")
     assert not workdir.path.exists()
+
+
+def write_pdf_route(workdir: Workdir) -> None:
+    manifest_path = workdir.manifest_path("fetch")
+    manifest_path.write_text(
+        '{"status": "ok", "source": "paper.pdf", "kind": "local_pdf", "route": "pdf"}\n', encoding="utf-8"
+    )
+    workdir.original_pdf.write_bytes(b"%PDF-1.5")
+
+
+def test_clean_reconstruct_keeps_src_of_a_tex_route(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    clean(workdir, "reconstruct")
+    assert (workdir.src / "main.tex").is_file()
+    assert outputs_present(workdir, "fetch")
+    assert outputs_present(workdir, "reconstruct")
+
+
+def test_clean_reconstruct_empties_src_of_a_pdf_route(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    write_pdf_route(workdir)
+    assert outputs_present(workdir, "fetch")
+    assert outputs_present(workdir, "reconstruct")
+    clean(workdir, "reconstruct")
+    assert not workdir.src.exists()
+    assert not workdir.sandbox("reconstruct").exists()
+    assert not workdir.reconstruct_fix_log.exists()
+    assert not raw_log_path(workdir.reconstruct_fix_log).exists()
+    assert workdir.original_pdf.is_file()
+    assert outputs_present(workdir, "fetch")
+    assert not outputs_present(workdir, "reconstruct")
+
+
+def test_pdf_route_fetch_output_is_the_original_pdf(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, "fetch")
+    write_pdf_route(workdir)
+    workdir.original_pdf.unlink()
+    assert not outputs_present(workdir, "fetch")
+
+
+def test_clean_fetch_removes_the_original_pdf(tmp_path: Path) -> None:
+    workdir = write_outputs(tmp_path, *STAGES)
+    write_pdf_route(workdir)
+    clean_from(workdir, "fetch")
+    assert not workdir.original_pdf.exists()
+    assert not workdir.src.exists()

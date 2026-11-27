@@ -55,6 +55,7 @@ def test_arxiv_1905_12322v3_double_missing_inputs(
         log_path: Path,
         report=None,
         extra_prompt: str = "",
+        tongtu_python: bool = False,
     ) -> WorkOutcome:
         assert skill == "precompile_fix"
         assert mode == "fast"

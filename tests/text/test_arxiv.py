@@ -306,6 +306,21 @@ def test_parse_paper_argument_recognizes_the_three_forms(tmp_path: Path) -> None
     assert arxiv.parse_paper_argument(str(tmp_path)) == arxiv.PaperInput(source_dir=tmp_path)
 
 
+def test_parse_paper_argument_recognizes_a_pdf_file(tmp_path: Path) -> None:
+    pdf = tmp_path / "Some Paper.PDF"
+    pdf.write_bytes(b"%PDF-1.5 body")
+    assert arxiv.parse_paper_argument(str(pdf)) == arxiv.PaperInput(source_pdf=pdf)
+    assert arxiv.pdf_workdir_name(pdf) == "Some Paper"
+    assert arxiv.pdf_workdir_name(tmp_path / "paper") == "paper"
+
+
+def test_parse_paper_argument_does_not_take_a_file_that_is_not_a_pdf(tmp_path: Path) -> None:
+    fake = tmp_path / "paper.pdf"
+    fake.write_bytes(b"<html>")
+    with pytest.raises(WorkdirError):
+        arxiv.parse_paper_argument(str(fake))
+
+
 def test_parse_paper_argument_reads_the_version(tmp_path: Path) -> None:
     assert arxiv.parse_paper_argument("2412.19437v2") == arxiv.PaperInput(arxiv_id="2412.19437", version=2)
     assert arxiv.parse_paper_argument("hep-th/9901001v3") == arxiv.PaperInput(arxiv_id="hep-th/9901001", version=3)

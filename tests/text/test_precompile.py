@@ -122,6 +122,7 @@ def wire_work(
         log_path: Path,
         report=None,
         extra_prompt: str = "",
+        tongtu_python: bool = False,
     ):
         calls.append({"role": skill, "workdir": session_dir, "trace_path": log_path, "mode": mode})
         if report is not None:

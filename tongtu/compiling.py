@@ -100,6 +100,7 @@ def fix(
     mode: str,
     notes_path: Path,
     report: Callable[[str], None] | None = None,
+    tongtu_python: bool = False,
 ) -> Session:
     log_name = Path(main_filename).with_suffix(".log").name
     outcome = model.work(
@@ -109,6 +110,7 @@ def fix(
         log_path=log_path,
         report=report,
         extra_prompt=FIX_PROMPT_FILES.format(main=main_filename, log=log_name),
+        tongtu_python=tongtu_python,
     )
     if outcome.session.stop_reason is StopReason.ERROR:
         warnings.append(
