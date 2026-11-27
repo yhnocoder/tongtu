@@ -12,7 +12,7 @@ import tongtu.model
 from tongtu import fonts, processes
 from tongtu.artifacts.common import Session, StopReason
 from tongtu.artifacts.precompile import PrecompileStatus
-from tongtu.model.config import FontsConfig
+from tongtu.model.config import FontFamily, FontsConfig
 from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.stages import precompile
@@ -168,13 +168,47 @@ def test_fake_bold_without_a_bold_file_compiles_without_undefined_shapes(tmp_pat
     injected = precompile._inject_cjk(FAKE_BOLD_PAPER.encode("utf-8"), warnings, config)
     assert warnings == []
     assert b"\\usepackage[AutoFakeBold=2]{xeCJK}\n" in injected
-    assert b"\\setCJKmainfont{LXGWWenKai-Light.ttf}\n" in injected
+    assert b"\\setCJKmainfont{LXGWWenKai-Light}[Extension=.ttf]\n" in injected
     (tmp_path / "main.tex").write_bytes(injected)
     completed = xelatex_main(tmp_path)
     assert completed.returncode == 0, completed.stdout[-2000:]
     log = (tmp_path / "main.log").read_text(encoding="utf-8", errors="replace")
     assert not [line for line in log.splitlines() if "Font shape" in line and "undefined" in line]
     assert (tmp_path / "main.pdf").stat().st_size > 0
+
+
+XCHARTER_PAPER = (
+    "\\documentclass{article}\n\\usepackage{XCharter}\n\\usepackage{url}\n\\begin{document}\n"
+    "中文正文\\footnote{代码见 \\url{https://example.org/code}。}\n\\end{document}\n"
+)
+
+
+def test_cjk_fonts_load_under_a_default_extension_set_by_the_paper(tmp_path: Path) -> None:
+    if subprocess.run(["kpsewhich", "XCharter.sty"], capture_output=True, check=False).returncode != 0:
+        pytest.skip("XCharter.sty not installed")
+    injected = precompile._inject_cjk(XCHARTER_PAPER.encode("utf-8"), [], FontsConfig())
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    log = (tmp_path / "main.log").read_text(encoding="utf-8", errors="replace")
+    assert "fontspec Error" not in log
+    assert (tmp_path / "main.pdf").stat().st_size > 0
+
+
+def test_a_bold_cjk_font_with_another_extension_compiles(tmp_path: Path) -> None:
+    config = FontsConfig(main=FontFamily(regular="LXGWWenKai-Light.ttf", bold="SourceHanSansSC-Bold.otf"))
+    injected = precompile._inject_cjk(FAKE_BOLD_PAPER.encode("utf-8"), [], config)
+    (tmp_path / "main.tex").write_bytes(injected)
+    completed = xelatex_main(tmp_path)
+    assert completed.returncode == 0, completed.stdout[-2000:]
+    reader = PdfReader(tmp_path / "main.pdf")
+    names = {
+        str(font.get_object()["/BaseFont"]).partition("+")[2]
+        for page in reader.pages
+        for font in page["/Resources"]["/Font"].values()
+    }
+    for expected in ("LXGWWenKai-Light", "SourceHanSansSC-Bold"):
+        assert any(name.startswith(expected) for name in names), names
 
 
 ACMART_PAPER = """\\documentclass[sigconf]{acmart}
