@@ -14,10 +14,11 @@ import tongtu.model
 from tongtu.artifacts.common import NotesFile, Session, StopReason
 from tongtu.artifacts.fetch import FetchManifest, FetchStatus
 from tongtu.artifacts.reconstruct import ReconstructStatus, RegionsFile
-from tongtu.manifests import load_manifest, write_manifest
+from tongtu.manifests import load_manifest, timeout_warning, write_manifest
 from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.reconstruct import review
+from tongtu.reconstruct.crops import crop_path
 from tongtu.stages import reconstruct
 from tongtu.workdir import Workdir
 
@@ -116,7 +117,7 @@ def test_template_pdf_is_rebuilt_by_the_rules(tmp_path: Path, monkeypatch: pytes
     packed = subprocess.run(
         ["latexmk", "-xelatex", "-interaction=nonstopmode", "main.tex"], cwd=workdir.src, capture_output=True
     )
-    assert (workdir.src / "main.pdf").is_file(), packed.stdout[-2000:]
+    assert packed.returncode == 0, packed.stdout[-2000:]
     assert len(pymupdf.open(workdir.src / "main.pdf")) == manifest.final_check.pages
     assert (workdir.sandbox(reconstruct.STAGE_NAME) / "regions.json").is_file()
     assert outputs_present(workdir, "reconstruct")
@@ -252,7 +253,7 @@ def fake_recognition(calls: list[tuple[str, Path, Path]], stop_reason: StopReaso
         assert skill != "reconstruct_fix", "reconstruct started a fix session"
         assert tongtu_python
         calls.append((skill, session_dir, log_path))
-        if stop_reason is StopReason.FINISHED:
+        if stop_reason is not StopReason.ERROR:
             hints = json.loads((session_dir / "hints.json").read_text(encoding="utf-8"))
             regions = RegionsFile.model_validate_json(
                 (session_dir.parent / reconstruct.STAGE_NAME / "regions.json").read_text(encoding="utf-8")
@@ -302,9 +303,10 @@ def test_recognized_formulas_and_tables_replace_their_crops(
     notes_file = load_manifest(workdir.notes, NotesFile)
     assert notes_file is not None
     assert [note.session for note in notes_file.notes] == ["reconstruct_formula", "reconstruct_table"]
-    subprocess.run(
+    packed = subprocess.run(
         ["latexmk", "-xelatex", "-interaction=nonstopmode", "main.tex"], cwd=workdir.src, capture_output=True
     )
+    assert packed.returncode == 0, packed.stdout[-2000:]
     assert len(pymupdf.open(workdir.src / "main.pdf")) == manifest.final_check.pages
 
 
@@ -338,3 +340,43 @@ def test_rebuild_without_formulas_or_tables_starts_no_recognition_session(
     manifest = reconstruct.run(workdir, mode="fast")
     assert (manifest.formulas, manifest.tables) == (None, None)
     assert calls == [workdir.sandbox(reconstruct.STAGE_NAME)]
+
+
+def test_timed_out_recognition_sessions_are_still_verified_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recognition_pdf: Path
+) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(tongtu.model, "work", fake_recognition([], StopReason.TIMEOUT))
+    workdir = pdf_workdir(tmp_path, recognition_pdf)
+    manifest = reconstruct.run(workdir, mode="fast")
+    assert manifest.status is ReconstructStatus.OK, manifest.message
+    assert manifest.formulas is not None and (manifest.formulas.total, manifest.formulas.passed) == (4, 3)
+    assert manifest.formulas.session is not None and manifest.formulas.session.stop_reason is StopReason.TIMEOUT
+    assert manifest.tables is not None and manifest.tables.passed == 1
+    assert manifest.warnings == [timeout_warning("reconstruct_formula"), timeout_warning("reconstruct_table")]
+
+
+def test_crop_broken_during_recognition_is_reconstruct_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recognition_pdf: Path
+) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+    recognize = fake_recognition([], StopReason.TIMEOUT)
+    broken: list[str] = []
+
+    def work(skill: str, session_dir: Path, **kwargs: object) -> WorkOutcome:
+        outcome = recognize(skill, session_dir, **kwargs)
+        key = next(iter(json.loads((session_dir / "hints.json").read_text(encoding="utf-8"))))
+        (session_dir.parent / reconstruct.STAGE_NAME / crop_path(key)).write_bytes(b"not a pdf")
+        broken.append(key)
+        return outcome
+
+    monkeypatch.setattr(tongtu.model, "work", work)
+    workdir = pdf_workdir(tmp_path, recognition_pdf)
+    manifest = reconstruct.run(workdir, mode="fast")
+    assert manifest.status is ReconstructStatus.RECONSTRUCT_FAILED
+    assert manifest.message.startswith(f"cannot open the crop {broken[0]}.pdf")
+    assert manifest.warnings == [timeout_warning("reconstruct_formula")]
+    assert manifest.formulas is not None and manifest.formulas.session is not None
+    assert (manifest.formulas.total, manifest.formulas.passed) == (4, 0)
+    assert manifest.tables is None
+    assert not outputs_present(workdir, "reconstruct")

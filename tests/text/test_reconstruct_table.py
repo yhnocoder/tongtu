@@ -7,9 +7,12 @@ import pymupdf
 import pytest
 
 from tongtu.artifacts.reconstruct import Region, RegionKind, RegionsFile
-from tongtu.reconstruct import table
-from tongtu.reconstruct.recognition import RECOGNITION_PACKAGES
-from tongtu.reconstruct.table import Glyph, TableVerdict
+from tongtu.manifests import write_manifest
+from tongtu.reconstruct import recognition, table
+from tongtu.reconstruct.recognition import RECOGNITION_PACKAGES, Verdict
+from tongtu.reconstruct.table import Glyph
+
+from ..conftest import run_skill_check
 
 CHAR_WIDTH = 5.0
 
@@ -55,16 +58,16 @@ ORIGINAL = [["Model", "BLEU"], ["Base", "25.8"], ["Big", "28.4"]]
 def test_forbidden_commands_are_rejected(latex: str) -> None:
     verdict = table.verify(Path("absent.pdf"), latex)
     assert not verdict.passed
-    assert verdict.problems[0].startswith("Your LaTeX failed: forbidden command")
+    assert verdict.problem.startswith("Your LaTeX failed: forbidden command")
 
 
 def test_size_commands_and_rotation_are_allowed() -> None:
-    assert table.FORBIDDEN_RE.search(r"{\small a} & \rotatebox{90}{b} & \raisebox") is not None
-    assert table.FORBIDDEN_RE.search(r"{\small a} & \rotatebox{90}{b} & \lowercase{c}") is None
+    assert recognition.layout_command(r"{\small a} & \rotatebox{90}{b} & \raisebox") == "\\raisebox"
+    assert recognition.layout_command(r"{\small a} & \rotatebox{90}{b} & \lowercase{c}") == ""
 
 
 def test_skip_is_not_verified() -> None:
-    assert table.verify(Path("absent.pdf"), "SKIP") == TableVerdict(False, "SKIP", ("SKIP",))
+    assert table.verify(Path("absent.pdf"), "SKIP") == Verdict(False, "SKIP", "SKIP")
 
 
 def test_identical_tables_pass() -> None:
@@ -144,8 +147,8 @@ def test_write_back_scales_the_passed_tables_to_the_crop_width(tmp_path: Path) -
     crop(tmp_path, "r-0001", 123.4)
     tex = PREAMBLE + "\\includegraphics{crops/r-0001.pdf}\n\\includegraphics{crops/r-0002.pdf}\n"
     verdicts = {
-        "r-0001": TableVerdict(True, f" {TABULAR} ", ()),
-        "r-0002": TableVerdict(False, TABULAR, ("Bold differs for: a",)),
+        "r-0001": Verdict(True, f" {TABULAR} ", ""),
+        "r-0002": Verdict(False, TABULAR, "Bold differs for: a"),
     }
     written, count = table.write_back(tex, verdicts, tmp_path)
     assert count == 1
@@ -160,7 +163,7 @@ def test_write_back_adds_xecjk_for_chinese_cells(tmp_path: Path) -> None:
     crop(tmp_path, "r-0001", 100)
     tex = PREAMBLE + "\\includegraphics{crops/r-0001.pdf}\n"
     chinese = r"\begin{tabular}{l}模型\end{tabular}"
-    written, _ = table.write_back(tex, {"r-0001": TableVerdict(True, chinese, ())}, tmp_path)
+    written, _ = table.write_back(tex, {"r-0001": Verdict(True, chinese, "")}, tmp_path)
     assert table.CJK_PACKAGE in written
 
 
@@ -178,12 +181,56 @@ def test_recognizable_keys_are_referenced_table_crops() -> None:
 
 def test_failure_lines_count_the_passed_and_list_the_failures() -> None:
     verdicts = {
-        "r-0001": TableVerdict(True, TABULAR, ()),
-        "r-0002": TableVerdict(False, TABULAR, ("Bold differs for: a", "Colour differs for: b")),
-        "r-0003": TableVerdict(False, "SKIP", ("SKIP",)),
+        "r-0001": Verdict(True, TABULAR, ""),
+        "r-0002": Verdict(False, TABULAR, "Bold differs for: a Colour differs for: b"),
+        "r-0003": Verdict(False, "SKIP", "SKIP"),
     }
     assert table.failure_lines(verdicts) == [
         "passed 1/3",
         "r-0002: Bold differs for: a Colour differs for: b",
         "SKIP 1: r-0003",
     ]
+
+
+@pytest.mark.parametrize(
+    ("char", "font", "text"),
+    [
+        ("P", "CMEX10", "∑"),
+        ("X", "LMMathExtension10", "∑"),
+        ("∑", "CMEX10", "∑"),
+        ("H", "CMEX10", ""),
+        ("3", "Dingbats", "\u2733"),
+        ("\x13", "Dingbats", "✓"),
+        ("3", "ZapfDingbats", "3"),
+        ("P", "CMR10", "P"),
+        ("√", "CMSY10", ""),
+        ("—", "CMR10", "-"),
+    ],
+)
+def test_extension_and_dingbats_glyphs_map_to_unicode(char: str, font: str, text: str) -> None:
+    assert table.glyph_text(char, font) == text
+
+
+def test_check_script_without_hints_fails(tmp_path: Path) -> None:
+    result = run_skill_check(tmp_path, "reconstruct_table")
+    assert result.returncode == 1
+    assert result.stdout.strip() == "cannot read hints.json"
+
+
+@pytest.mark.parametrize(
+    ("rec", "problem"),
+    [
+        (None, "the reconstruct_table session wrote no rec.json; every crop stays an image"),
+        ("[]", "cannot read rec.json written by the reconstruct_table session (ValidationError"),
+    ],
+)
+def test_check_script_with_a_bad_rec_json_fails(tmp_path: Path, rec: str | None, problem: str) -> None:
+    write_manifest(
+        tmp_path / "hints.json",
+        table.TableHints({"r-0001": table.TableHint(width_bp=100.0, spans_y_x=["y=1 x=1 CMR10#000000:a"])}),
+    )
+    if rec is not None:
+        (tmp_path / "rec.json").write_text(rec, encoding="utf-8")
+    result = run_skill_check(tmp_path, "reconstruct_table")
+    assert result.returncode == 1
+    assert result.stdout.startswith(problem)

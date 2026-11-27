@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import shutil
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .. import compiling, model, notes, pipeline
 from ..artifacts.common import NoteSession, Session, StopReason
@@ -20,6 +22,7 @@ from ..reconstruct import checks, formula, packing, recognition, review, table
 from ..reconstruct.crops import CropError
 from ..reconstruct.latex import ToolError
 from ..reconstruct.rebuild import MAIN_FILENAME, rebuild
+from ..reconstruct.recognition import Verdict
 from ..workdir import Workdir
 
 STAGE_NAME = "reconstruct"
@@ -39,6 +42,38 @@ LOST_GLYPH_EXAMPLES = 8
 SESSION_STATUS = "{skill} session"
 
 Report = Callable[[str, str], None]
+
+
+@dataclass(frozen=True)
+class Recognizer:
+    skill: NoteSession
+    noun: str
+    log: Callable[[Workdir], Path]
+    recognizable: Callable[[str, RegionsFile], Any]
+    prepare: Callable[[Path, Path, Any], None]
+    verify_all: Callable[[Path, Mapping[str, str], Any], dict[str, Verdict]]
+    write_back: Callable[[str, Mapping[str, Verdict], Path], tuple[str, int]]
+
+
+FORMULAS = Recognizer(
+    skill=FORMULA_SKILL,
+    noun="formulas",
+    log=lambda workdir: workdir.reconstruct_formula_log,
+    recognizable=formula.recognizable,
+    prepare=formula.prepare,
+    verify_all=formula.verify_all,
+    write_back=lambda tex, verdicts, tree: formula.write_back(tex, verdicts),
+)
+
+TABLES = Recognizer(
+    skill=TABLE_SKILL,
+    noun="tables",
+    log=lambda workdir: workdir.reconstruct_table_log,
+    recognizable=table.recognizable,
+    prepare=table.prepare,
+    verify_all=table.verify_all,
+    write_back=table.write_back,
+)
 
 
 def run(paper_workdir: Workdir, *, mode: str, report: Report | None = None) -> ReconstructManifest:
@@ -77,11 +112,20 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
     for region in regions.regions:
         counts[region.kind.value] += 1
     warnings: list[str] = []
-    try:
-        formulas = _recognize_formulas(paper_workdir, tree, regions, mode, report, warnings)
-        tables = _recognize_tables(paper_workdir, tree, regions, mode, report, warnings)
-    except CropError as error:
-        return _failed(str(error))
+    formulas, failure = _recognize(FORMULAS, paper_workdir, tree, regions, mode, report, warnings)
+    tables = None
+    if not failure:
+        tables, failure = _recognize(TABLES, paper_workdir, tree, regions, mode, report, warnings)
+    if failure:
+        return ReconstructManifest(
+            status=ReconstructStatus.RECONSTRUCT_FAILED,
+            message=failure,
+            warnings=warnings,
+            rebuilt=True,
+            regions=counts,
+            formulas=formulas,
+            tables=tables,
+        )
     rule_check, failure = _compile_and_check(tree, original, regions, report, warnings, fixed=False)
     final_check = rule_check
     fix_session = None
@@ -117,48 +161,37 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
     )
 
 
-def _recognize_formulas(
-    paper_workdir: Workdir, tree: Path, regions: RegionsFile, mode: str, report: Report, warnings: list[str]
-) -> RecognitionReport | None:
+def _recognize(
+    recognizer: Recognizer,
+    paper_workdir: Workdir,
+    tree: Path,
+    regions: RegionsFile,
+    mode: str,
+    report: Report,
+    warnings: list[str],
+) -> tuple[RecognitionReport | None, str]:
     main = tree / MAIN_FILENAME
     tex = main.read_text(encoding="utf-8")
-    keys = formula.recognizable(tex, regions)
+    keys = recognizer.recognizable(tex, regions)
     if not keys:
-        return None
-    session_dir = _session_dir(paper_workdir, FORMULA_SKILL)
-    formula.prepare(tree, session_dir, keys)
-    session = _recognition_session(
-        FORMULA_SKILL, session_dir, paper_workdir.reconstruct_formula_log, paper_workdir, mode, report, warnings
-    )
-    transcriptions, problem = recognition.read_transcriptions(session_dir, FORMULA_SKILL)
-    if problem:
-        warnings.append(problem)
-    report("checking", "formulas")
-    tex, passed = formula.write_back(tex, formula.verify_all(tree, transcriptions, keys))
+        return None, ""
+    result = RecognitionReport(total=len(keys), passed=0)
+    try:
+        session_dir = _session_dir(paper_workdir, recognizer.skill)
+        recognizer.prepare(tree, session_dir, keys)
+        session = _recognition_session(
+            recognizer.skill, session_dir, recognizer.log(paper_workdir), paper_workdir, mode, report, warnings
+        )
+        result = result.model_copy(update={"session": session})
+        transcriptions, problem = recognition.read_transcriptions(session_dir, recognizer.skill)
+        if problem:
+            warnings.append(problem)
+        report("checking", recognizer.noun)
+        tex, passed = recognizer.write_back(tex, recognizer.verify_all(tree, transcriptions, keys), tree)
+    except CropError as error:
+        return result, str(error)
     main.write_text(tex, encoding="utf-8")
-    return RecognitionReport(total=len(keys), passed=passed, session=session)
-
-
-def _recognize_tables(
-    paper_workdir: Workdir, tree: Path, regions: RegionsFile, mode: str, report: Report, warnings: list[str]
-) -> RecognitionReport | None:
-    main = tree / MAIN_FILENAME
-    tex = main.read_text(encoding="utf-8")
-    keys = table.recognizable(tex, regions)
-    if not keys:
-        return None
-    session_dir = _session_dir(paper_workdir, TABLE_SKILL)
-    table.prepare(tree, session_dir, keys)
-    session = _recognition_session(
-        TABLE_SKILL, session_dir, paper_workdir.reconstruct_table_log, paper_workdir, mode, report, warnings
-    )
-    transcriptions, problem = recognition.read_transcriptions(session_dir, TABLE_SKILL)
-    if problem:
-        warnings.append(problem)
-    report("checking", "tables")
-    tex, passed = table.write_back(tex, table.verify_all(tree, transcriptions, keys), tree)
-    main.write_text(tex, encoding="utf-8")
-    return RecognitionReport(total=len(keys), passed=passed, session=session)
+    return result.model_copy(update={"passed": passed}), ""
 
 
 def _session_dir(paper_workdir: Workdir, skill: str) -> Path:

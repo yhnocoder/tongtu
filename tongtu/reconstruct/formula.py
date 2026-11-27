@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import difflib
 import re
-import tempfile
-import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,13 +9,12 @@ from pathlib import Path
 import pymupdf
 from pydantic import BaseModel, RootModel
 
-from .. import processes
 from ..artifacts.reconstruct import RegionKind, RegionsFile
-from ..compiling import COMPILE_TIMEOUT_SECONDS
-from ..manifests import describe_error, write_manifest
+from ..manifests import write_manifest
+from . import recognition
 from .checks import INLINE_CROP_RE
 from .crops import CROPS_DIRNAME, crop_path, open_crop
-from .recognition import HINTS_FILENAME, IMAGES_DIRNAME, SKIP, copy_crops, image_path, verify_each, with_packages
+from .recognition import HINTS_FILENAME, IMAGES_DIRNAME, NO_TEXT_LAYER, SKIP, Verdict
 
 FORMULA_KINDS = (RegionKind.DISPLAY, RegionKind.INLINE)
 
@@ -32,12 +29,18 @@ PREAMBLE = (
     r"\pagestyle{empty}\begin{document}"
 )
 
-COMPILE_COMMAND: tuple[str, ...] = ("pdflatex", "-interaction=nonstopmode", "-halt-on-error", "f.tex")
-
-FORBIDDEN_RE = re.compile(
-    r"\\(raisebox|hspace|vspace|kern|mkern|phantom|rlap|llap|mathrlap|mathllap|lower|raise"
-    r"|tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)(?![A-Za-z])"
+COMPILE_COMMAND: tuple[str, ...] = (
+    "pdflatex",
+    "-interaction=nonstopmode",
+    "-halt-on-error",
+    recognition.SNIPPET_FILENAME,
 )
+
+SIZE_COMMAND_RE = re.compile(
+    r"\\(tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)(?![A-Za-z])"
+)
+
+EXTENSION_FONT = "cmex"
 
 CMEX: dict[str, str] = {
     "P": "∑",
@@ -60,11 +63,7 @@ CMEX: dict[str, str] = {
     "a": "∐",
 }
 
-BOLD_RE = re.compile(r"(MIB|CMBX|CMBSY|BSY|bold|-Bd|Semibold|Black(?!board)|txb|pxb)", re.I)
-
 QUOTES = str.maketrans({"’": "'", "′": "'", "‘": "'", "“": '"', "”": '"', "∗": "*", "−": "-", "–": "-"})
-
-SQRT = "√"
 
 BASELINE_TOLERANCE = 0.12
 
@@ -92,13 +91,13 @@ BOLD_SCOPE_RE = re.compile(
     r"\\(bm|boldsymbol)\{((?:\\[A-Za-z]+|[A-Za-z0-9]))(_|\^)(\{(?:[^{}]|\{[^{}]*\})*\}|[A-Za-z0-9])\}"
 )
 
-EQUATION_NUMBER_RE = re.compile(r"(\\q?quad|\\hfill|~|\s)*\(\s*([0-9A-Za-z.]+)\s*\)\s*$")
+EQUATION_NUMBER_RE = re.compile(
+    r"(?:\s|~)*(?:\\q?quad|\\hfill)(?:\\q?quad|\\hfill|~|\s)*\(\s*(?P<number>[0-9A-Za-z.]+)\s*\)\s*$"
+)
 
 PROSE_RE = re.compile(r"\\(?:text|mathrm|textrm|mbox)\{[^{}]*[A-Za-z]{3,}[^{}]*\s[^{}]*\}")
 
 ALLOWED_ENVIRONMENT_RE = re.compile(r"\\begin\{(aligned|split|array|matrix|pmatrix|bmatrix|cases|gathered)")
-
-ERROR_LINE_RE = re.compile(r"^!.*", re.M)
 
 
 @dataclass(frozen=True)
@@ -121,13 +120,6 @@ class Comparison:
     rendered: str
 
 
-@dataclass(frozen=True)
-class FormulaVerdict:
-    passed: bool
-    latex: str
-    problem: str
-
-
 class FormulaHint(BaseModel):
     kind: RegionKind
     spans: list[str]
@@ -137,29 +129,17 @@ class FormulaHints(RootModel[dict[str, FormulaHint]]):
     pass
 
 
-def normalized(char: str) -> str:
-    char = unicodedata.normalize("NFKC", char.translate(QUOTES))
-    return "".join(c for c in char if not c.isspace() and unicodedata.category(c)[0] not in "ZC")
+def glyph_text(char: str, font: str) -> str:
+    text = CMEX.get(char, "") if EXTENSION_FONT in font.lower() else char
+    return recognition.normalized(recognition.without_sqrt(text), QUOTES)
 
 
 def page_glyphs(page: pymupdf.Page) -> list[Glyph]:
-    glyphs = []
-    for block in page.get_text("rawdict")["blocks"]:
-        for line in block.get("lines", []):
-            for span in line["spans"]:
-                font = span["font"]
-                extension = "cmex" in font.lower()
-                bold = bool(BOLD_RE.search(font.replace("BlackboardBold", "").replace("Blackboard", "")))
-                for char in span["chars"]:
-                    if not pymupdf.Rect(char["bbox"]).intersects(page.rect):
-                        continue
-                    text = CMEX.get(char["c"], "") if extension else char["c"]
-                    if text == SQRT:
-                        text = ""
-                    glyphs += [
-                        Glyph(piece, bold, span["color"], char["origin"][1], span["size"]) for piece in normalized(text)
-                    ]
-    return glyphs
+    return [
+        Glyph(piece, recognition.is_bold(char.font), char.color, char.origin[1], char.size)
+        for char in recognition.page_chars(page)
+        for piece in glyph_text(char.text, char.font)
+    ]
 
 
 def relative_positions(glyphs: Sequence[Glyph]) -> list[tuple[float, float]]:
@@ -223,11 +203,13 @@ def variants(body: str, original: Sequence[Glyph]) -> list[tuple[str, str]]:
 
 
 def forbidden_problem(latex: str) -> str:
-    match = FORBIDDEN_RE.search(latex)
-    if match is None:
+    command = recognition.layout_command(latex)
+    match = SIZE_COMMAND_RE.search(latex)
+    command = command or (match.group(0) if match else "")
+    if not command:
         return ""
     return (
-        f"{match.group(0)} is not allowed: layout adjustment and size commands are rejected; "
+        f"{command} is not allowed: layout adjustment and size commands are rejected; "
         "reproduce the formula with ordinary math markup."
     )
 
@@ -268,43 +250,33 @@ def difference_problem(comparison: Comparison) -> str:
 
 def rendered_glyphs(body: str, kind: RegionKind) -> list[Glyph] | str:
     wrapped = rf"\[{body}\]" if kind is RegionKind.DISPLAY else f"${body}$"
-    with tempfile.TemporaryDirectory(prefix="tongtu-formula-") as temporary:
-        folder = Path(temporary)
-        (folder / "f.tex").write_text(PREAMBLE + wrapped + r"\end{document}", encoding="utf-8")
-        try:
-            outcome = processes.run_in_process_group(list(COMPILE_COMMAND), folder, COMPILE_TIMEOUT_SECONDS)
-        except OSError as error:
-            return f"failed to run {COMPILE_COMMAND[0]} ({describe_error(error)})."
-        pdf = folder / "f.pdf"
-        if outcome.returncode or outcome.timed_out or not pdf.is_file():
-            errors = ERROR_LINE_RE.findall(outcome.stdout.decode("utf-8", errors="replace"))
-            return "LaTeX failed to compile." + (f" {errors[0]}" if errors else "")
-        return page_glyphs(pymupdf.open(pdf)[0])
+    rendered = recognition.compile_snippet(PREAMBLE + wrapped + r"\end{document}", COMPILE_COMMAND, page_glyphs)
+    return f"LaTeX failed to compile. {rendered}" if isinstance(rendered, str) else rendered
 
 
-def verify(crop: Path, latex: str, kind: RegionKind) -> FormulaVerdict:
+def verify(crop: Path, latex: str, kind: RegionKind) -> Verdict:
     if latex.strip() == SKIP:
-        return FormulaVerdict(False, latex, SKIP)
+        return Verdict(False, latex, SKIP)
     problem = forbidden_problem(latex)
     if problem:
-        return FormulaVerdict(False, latex, problem)
+        return Verdict(False, latex, problem)
     original = page_glyphs(open_crop(crop)[0])
     if not original:
-        return FormulaVerdict(False, latex, "the crop has no text layer to compare with; it stays an image.")
+        return Verdict(False, latex, NO_TEXT_LAYER)
     body = math_body(latex)
     problem = display_problem(body) if kind is RegionKind.DISPLAY else ""
     if problem:
-        return FormulaVerdict(False, latex, problem)
-    best: tuple[bool, FormulaVerdict] | None = None
+        return Verdict(False, latex, problem)
+    best: tuple[bool, Verdict] | None = None
     for _name, candidate in variants(body, original):
         rendered = rendered_glyphs(candidate, kind)
         if isinstance(rendered, str):
-            text, verdict = False, FormulaVerdict(False, candidate, rendered)
+            text, verdict = False, Verdict(False, candidate, rendered)
         else:
             comparison = compare(original, rendered)
             if comparison.bold and comparison.color:
-                return FormulaVerdict(within_tolerance(comparison), candidate, difference_problem(comparison))
-            text, verdict = comparison.text, FormulaVerdict(False, candidate, difference_problem(comparison))
+                return Verdict(within_tolerance(comparison), candidate, difference_problem(comparison))
+            text, verdict = comparison.text, Verdict(False, candidate, difference_problem(comparison))
         if best is None or (text and not best[0]):
             best = (text, verdict)
     return best[1]
@@ -317,38 +289,25 @@ def recognizable(tex: str, regions: RegionsFile) -> dict[str, RegionKind]:
     return {key: kinds[key] for key in dict.fromkeys(keys) if key in kinds}
 
 
-def span_hints(page: pymupdf.Page) -> list[str]:
-    return [
-        f"{span['font']}#{span['color']:06X}:{text}"
-        for block in page.get_text("rawdict")["blocks"]
-        for line in block.get("lines", [])
-        for span in line["spans"]
-        if (text := "".join(char["c"] for char in span["chars"])).strip()
-    ]
-
-
 def prepare(tree: Path, session_dir: Path, keys: Mapping[str, RegionKind]) -> None:
     (session_dir / IMAGES_DIRNAME).mkdir(parents=True, exist_ok=True)
-    copy_crops(tree, session_dir, list(keys))
+    recognition.copy_crops(tree, session_dir, list(keys))
     hints = {}
     low, high = IMAGE_ZOOM_RANGE
     for key, kind in keys.items():
         page = open_crop(tree / crop_path(key))[0]
         zoom = max(low, min(high, IMAGE_TARGET_HEIGHT / max(1, page.rect.height)))
-        page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).save(image_path(session_dir, key))
-        hints[key] = FormulaHint(kind=kind, spans=span_hints(page))
+        page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).save(recognition.image_path(session_dir, key))
+        hints[key] = FormulaHint(
+            kind=kind, spans=[recognition.span_hint(span, text) for span, text in recognition.page_spans(page)]
+        )
     write_manifest(session_dir / HINTS_FILENAME, FormulaHints(hints))
 
 
-def verify_all(
-    tree: Path, transcriptions: Mapping[str, str], keys: Mapping[str, RegionKind]
-) -> dict[str, FormulaVerdict]:
-    def one(key: str) -> FormulaVerdict:
-        if key not in transcriptions:
-            return FormulaVerdict(False, "", "no transcription in rec.json")
-        return verify(tree / crop_path(key), transcriptions[key], keys[key])
-
-    return verify_each(list(keys), one)
+def verify_all(tree: Path, transcriptions: Mapping[str, str], keys: Mapping[str, RegionKind]) -> dict[str, Verdict]:
+    return recognition.verify_all(
+        list(keys), transcriptions, lambda key, latex: verify(tree / crop_path(key), latex, keys[key])
+    )
 
 
 def display_latex(body: str) -> str:
@@ -357,11 +316,11 @@ def display_latex(body: str) -> str:
     tag = ""
     if number:
         body = body[: number.start()].rstrip()
-        tag = r"\tag*{(" + number.group(2) + ")}"
+        tag = r"\tag*{(" + number.group("number") + ")}"
     return r"\begin{equation*}" + body + tag + r"\end{equation*}"
 
 
-def write_back(tex: str, verdicts: Mapping[str, FormulaVerdict]) -> tuple[str, int]:
+def write_back(tex: str, verdicts: Mapping[str, Verdict]) -> tuple[str, int]:
     accepted = {key: verdict.latex for key, verdict in verdicts.items() if verdict.passed}
     written = 0
 
@@ -385,18 +344,8 @@ def write_back(tex: str, verdicts: Mapping[str, FormulaVerdict]) -> tuple[str, i
 
     tex = DISPLAY_CROP_RE.sub(display, tex)
     tex = INLINE_CROP_RE.sub(inline, tex)
-    return (with_packages(tex) if written else tex), written
+    return (recognition.with_packages(tex) if written else tex), written
 
 
-def failure_lines(verdicts: Mapping[str, FormulaVerdict]) -> list[str]:
-    passed = sum(verdict.passed for verdict in verdicts.values())
-    lines = [f"passed {passed}/{len(verdicts)}"]
-    lines += [
-        f"{key}: {verdict.problem}\n  yours: {verdict.latex}"
-        for key, verdict in verdicts.items()
-        if not verdict.passed and verdict.problem != SKIP
-    ]
-    skipped = [key for key, verdict in verdicts.items() if verdict.problem == SKIP]
-    if skipped:
-        lines.append(f"SKIP {len(skipped)}: {' '.join(skipped)}")
-    return lines
+def failure_lines(verdicts: Mapping[str, Verdict]) -> list[str]:
+    return recognition.failure_lines(verdicts, show_latex=True)

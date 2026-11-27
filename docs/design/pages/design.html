@@ -113,7 +113,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
 <span class="ok">✓</span> mask        ok                183 blocks masked                           0:00:00
 <span class="ok">✓</span> translate   ok                164 paragraphs, 31 new terms                0:09:55
 <span class="ok">✓</span> compile     ok                56 pages, baseline 66                       0:00:47</div>
-  <p>reconstruct 的摘要在有 TeX 源码时是 <code>source input</code>；从 PDF 重建过、阶段为 ok 时写重建结果的页数，有公式或表格截图时加识别通过的个数与总数（公式写作 <code>math</code>），启动过修复会话时在末尾加 <code>fixed</code>，例如 <code>15 pages, math 92/95, tables 4/4 fixed</code>；阶段失败时写页数、单词召回率与阅读顺序，不写识别数，例如 <code>16 pages, recall 0.951, order 0.997 fixed</code>。两种格式在 999 页、公式 999/999、表格 99/99 时都比摘要列的宽度 <code>SUMMARY_WIDTH = 44</code> 短。translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
+  <p>reconstruct 的摘要在有 TeX 源码时是 <code>source input</code>；从 PDF 重建过时写重建结果的页数，有公式或表格截图时加识别通过的个数与总数（公式写作 <code>math</code>），启动过修复会话时在末尾加 <code>fixed</code>，例如 <code>15 pages, math 92/95, tables 4/4 fixed</code>。在 999 页、公式 999/999、表格 99/99 时，它也比摘要列的宽度 <code>SUMMARY_WIDTH = 44</code> 短。摘要只在阶段为 ok 时显示，失败时终端显示 <code>message</code>。translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
   <table>
     <thead><tr><th>情形</th><th>行为</th><th>退出码</th></tr></thead>
     <tbody>
@@ -371,12 +371,12 @@ api_key  = ""</code></pre>
         <p><b>公式的校验</b>：把识别出的 LaTeX 用 pdflatex 单独编译（行间公式放进 <code>\[ \]</code>，行内公式放进 <code>$ $</code>），与截图的文字层逐个字形比较，以下几项全部一致才算通过：</p>
         <ul>
           <li>字符序列。比较前做 NFKC 规范化，CMEX 字体的大号运算符映射成对应的 Unicode，根号不计。</li>
-          <li>粗体：字体名含 MIB、BX、Bold 的算粗体，BlackboardBold 不算。</li>
+          <li>粗体：字体名含 MIB、BX、Bold、Medi 的算粗体（不分大小写），BlackboardBold 不算。参考实现里另外几种粗体字体名（CMBSY、BSY、-Bd、Black、txb、pxb）也算粗体。公式与表格用同一条规则。</li>
           <li>颜色。</li>
           <li>每个字形相对最大字号字形的基线位置与字号：基线位置之差除以最大字号不超过 <code>BASELINE_TOLERANCE = 0.12</code>，字号的相对差不超过 <code>SIZE_TOLERANCE = 0.2</code>。</li>
         </ul>
         <p>粗体或颜色不一致时，校验依次再试去掉粗体、把 <code>\bm</code> 的范围收窄到底数、整条加粗，以及截图全部是同一种非黑颜色时整条加上这个颜色，取第一个粗体与颜色都一致的写法作为结果。</p>
-        <p>输出里出现 <code>\raisebox</code> <code>\hspace</code> <code>\vspace</code> <code>\kern</code> <code>\mkern</code> <code>\phantom</code> <code>\rlap</code> <code>\llap</code> <code>\mathrlap</code> <code>\mathllap</code> <code>\lower</code> <code>\raise</code> 或 <code>\tiny</code> 到 <code>\Huge</code> 的字号命令时，直接判为不通过。行间公式以 <code>\text{…}</code> 里的一行文字为主，或者用了 aligned、split、array、matrix、pmatrix、bmatrix、cases、gathered 以外的环境时，也判为不通过。</p>
+        <p>公式与表格共用一份排版调整命令的名单：<code>\raisebox</code> <code>\hspace</code> <code>\vspace</code> <code>\hskip</code> <code>\vskip</code> <code>\kern</code> <code>\mkern</code> <code>\mskip</code> <code>\phantom</code> <code>\hphantom</code> <code>\vphantom</code> <code>\rlap</code> <code>\llap</code> <code>\mathrlap</code> <code>\mathllap</code> <code>\resizebox</code> <code>\scalebox</code> <code>\lower</code> <code>\raise</code>。命令名之后紧跟的不是字母时就算出现，<code>\raise1pt</code> 这样的写法也算。公式输出里出现名单里的命令，或者 <code>\tiny</code> 到 <code>\Huge</code> 的字号命令时，直接判为不通过。行间公式以 <code>\text{…}</code> 里的一行文字为主，或者用了 aligned、split、array、matrix、pmatrix、bmatrix、cases、gathered 以外的环境时，也判为不通过。</p>
         <p class="why"><b>理由</b>禁用排版调整命令。试验中 agent 会用这些命令把字形挪到对的位置来通过校验，这样得到的源码不能用。</p>
         <p><b>表格的校验</b>：把识别出的 <code>tabular</code> 用 xelatex 单独编译，与截图的文字层比较以下三项，全部一致才算通过：</p>
         <ul>
@@ -384,8 +384,16 @@ api_key  = ""</code></pre>
           <li>行列的相对位置：原文在上的不能到下面，同一行里在左的不能到右边，原文同一行的文字不能相距很远。重复出现的同一个词按位置配对。</li>
           <li>粗体与颜色，逐字比较。</li>
         </ul>
-        <p>输出里出现 <code>\raisebox</code> <code>\hspace</code> <code>\vspace</code> <code>\kern</code> <code>\mkern</code> <code>\phantom</code> <code>\hphantom</code> <code>\vphantom</code> <code>\rlap</code> <code>\llap</code> <code>\mathrlap</code> <code>\mathllap</code> <code>\resizebox</code> <code>\scalebox</code> <code>\lower</code> <code>\raise</code> 时直接判为不通过；单元格里的字号命令可以用。</p>
-        <p><b>写回</b>：通过的行间公式写成 <code>\begin{equation*}…\end{equation*}</code>，末尾的 <code>\quad (n)</code> 编号改成 <code>\tag*{(n)}</code>；通过的行内公式写成 <code>$…$</code>，前后紧挨字母或数字时补一个空格。通过的表格写成 <code>\resizebox{截图宽度}{!}{…}</code>，按截图原宽度缩放。有条目写回时，在 <code>\usepackage{fontspec}</code> 前加一次 mathtools、mathrsfs、upgreek、xcolor（table 选项）、booktabs、multirow、makecell、array、pifont；表格里有中文而导言区没有 xeCJK 时加上 xeCJK。之后的 mask 像对待有源码论文的表格一样，把写回的 <code>tabular</code> 整块换成占位符，不翻译，见<a href="#mask">mask</a>。</p>
+        <p>表格输出里出现上面名单里的命令时直接判为不通过；单元格里的字号命令可以用。</p>
+        <p>表格比较的常量，都以相关文字的字号为单位：</p>
+        <ul>
+          <li><code>SAME_ROW = 0.35</code>：两个字形的基线之差小于这个比例时归入同一行。</li>
+          <li><code>CELL_GAP = 0.18</code>：同一行里相邻字形的间距大于这个比例时切成两个单元格。</li>
+          <li><code>ABOVE_GAP = 0.8</code>：原文里一个单元格比另一个低出这个比例以上，才算「在下面」，用于判断上下次序是否颠倒。</li>
+          <li><code>SAME_LINE = 0.3</code>：两个单元格的基线之差小于这个比例时算在同一行，用于判断左右次序与同行关系。</li>
+          <li><code>FAR_APART = 1.5</code>：原文同一行的两个单元格，在识别结果里基线相差超过这个比例时算「相距很远」。</li>
+        </ul>
+        <p><b>写回</b>：通过的行间公式写成 <code>\begin{equation*}…\end{equation*}</code>，末尾的编号 <code>(n)</code> 前面至少有一个 <code>\quad</code>、<code>\qquad</code> 或 <code>\hfill</code> 时改成 <code>\tag*{(n)}</code>，没有时不当作编号，以免 <code>y = f(x)</code> 被改写；通过的行内公式写成 <code>$…$</code>，前后紧挨字母或数字时补一个空格。通过的表格写成 <code>\resizebox{截图宽度}{!}{…}</code>，按截图原宽度缩放。有条目写回时，在 <code>\usepackage{fontspec}</code> 前加一次 mathtools、mathrsfs、upgreek、xcolor（table 选项）、booktabs、multirow、makecell、array、pifont；表格里有中文而导言区没有 xeCJK 时加上 xeCJK。之后的 mask 像对待有源码论文的表格一样，把写回的 <code>tabular</code> 整块换成占位符，不翻译，见<a href="#mask">mask</a>。</p>
         <p class="why"><b>理由</b>公式与表格写成 LaTeX 后字体与正文一致，可以搜索和复制。写回放在核对之前，核对与修复会话看到的是最终的源码。</p>
         <p>会话以 error 或 timeout 结束、没有写出 <code>rec.json</code> 或 <code>rec.json</code> 格式不对时，记一条 warning，全部截图保留，阶段照常往下做。</p>
       </dd>

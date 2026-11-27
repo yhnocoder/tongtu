@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from tongtu.reconstruct import formula, recognition
 from tongtu.reconstruct.crops import crop_path
 from tongtu.reconstruct.rebuild import MAIN_FILENAME
 
+from ..conftest import run_skill_check
 from .conftest import DISPLAY_LATEX, INLINE_LATEX
 
 pytestmark = pytest.mark.compile
@@ -76,3 +78,25 @@ def test_prepare_writes_images_hints_and_crops(recognition_tree: tuple[Path, Reg
     for key in keys:
         assert recognition.image_path(tmp_path, key).is_file()
         assert (tmp_path / crop_path(key)).is_file()
+
+
+def test_check_script_reports_passed_and_failed_formulas(
+    recognition_tree: tuple[Path, RegionsFile], tmp_path: Path
+) -> None:
+    tree, regions = recognition_tree
+    keys = formula.recognizable((tree / MAIN_FILENAME).read_text(encoding="utf-8"), regions)
+    formula.prepare(tree, tmp_path, keys)
+    display = region_id(regions, RegionKind.DISPLAY)
+    inline = {region_id(regions, RegionKind.INLINE, hint): latex for hint, latex in INLINE_LATEX.items()}
+    rec = tmp_path / recognition.TRANSCRIPTIONS_FILENAME
+    rec.write_text(json.dumps({display: DISPLAY_LATEX, **inline}), encoding="utf-8")
+    passed = run_skill_check(tmp_path, "reconstruct_formula")
+    assert (passed.returncode, passed.stdout.strip()) == (0, "passed 4/4")
+    rec.write_text(json.dumps({display: DISPLAY_LATEX.replace(") V", ") W"), **inline}), encoding="utf-8")
+    failed = run_skill_check(tmp_path, "reconstruct_formula")
+    assert failed.returncode == 1
+    lines = failed.stdout.splitlines()
+    assert lines[0] == "passed 3/4"
+    assert lines[1].startswith(f"{display}: Glyph sequence differs")
+    only = run_skill_check(tmp_path, "reconstruct_formula", *inline)
+    assert (only.returncode, only.stdout.strip()) == (0, "passed 3/3")

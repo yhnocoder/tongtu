@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tongtu.reconstruct import recognition
 
 
@@ -33,6 +35,56 @@ def test_packages_are_added_once_before_fontspec() -> None:
     assert recognition.with_packages(once) == once
 
 
-def test_verify_each_keeps_the_key_order() -> None:
+def test_verify_all_keeps_the_key_order_and_reports_missing_transcriptions() -> None:
     keys = [f"k{index}" for index in range(10)]
-    assert list(recognition.verify_each(keys, str.upper).items()) == [(key, key.upper()) for key in keys]
+    transcriptions = {key: key.upper() for key in keys[1:]}
+    verdicts = recognition.verify_all(keys, transcriptions, lambda key, latex: recognition.Verdict(True, latex, ""))
+    assert list(verdicts) == keys
+    assert verdicts["k0"] == recognition.Verdict(False, "", recognition.MISSING_TRANSCRIPTION)
+    assert verdicts["k5"] == recognition.Verdict(True, "K5", "")
+
+
+@pytest.mark.parametrize(
+    ("font", "bold"),
+    [
+        ("SFBX1000", True),
+        ("CMBX10", True),
+        ("NimbusRomNo9L-Medi", True),
+        ("CMMIB10", True),
+        ("LMRoman10-Bold", True),
+        ("Times-Semibold", True),
+        ("MSBM10", False),
+        ("BlackboardBold", False),
+        ("STIXMath-BlackboardBold", False),
+        ("CMMI10", False),
+        ("NimbusRomNo9L-Regu", False),
+    ],
+)
+def test_bold_fonts_are_judged_by_name(font: str, bold: bool) -> None:
+    assert recognition.is_bold(font) is bold
+
+
+@pytest.mark.parametrize(
+    ("latex", "command"),
+    [
+        (r"\raise1pt x", r"\raise"),
+        (r"\hphantom{x}", r"\hphantom"),
+        (r"\vphantom{x}", r"\vphantom"),
+        (r"a\hskip 2pt b", r"\hskip"),
+        (r"a\mskip2mu b", r"\mskip"),
+        (r"\vskip1pt", r"\vskip"),
+        (r"\resizebox{1cm}{!}{x}", r"\resizebox"),
+    ],
+)
+def test_layout_commands_are_found_even_before_digits(latex: str, command: str) -> None:
+    assert recognition.layout_command(latex) == command
+
+
+def test_ordinary_commands_are_not_layout_commands() -> None:
+    assert recognition.layout_command(r"\lowercase{x}\raised\phantomx") == ""
+
+
+def test_failure_lines_hide_or_show_the_latex() -> None:
+    verdicts = {"a": recognition.Verdict(False, "x", "bad"), "b": recognition.Verdict(True, "y", "")}
+    assert recognition.failure_lines(verdicts, show_latex=False) == ["passed 1/2", "a: bad"]
+    assert recognition.failure_lines(verdicts, show_latex=True) == ["passed 1/2", "a: bad\n  yours: x"]

@@ -5,9 +5,12 @@ from pathlib import Path
 import pytest
 
 from tongtu.artifacts.reconstruct import Region, RegionKind, RegionsFile
+from tongtu.manifests import write_manifest
 from tongtu.reconstruct import formula
-from tongtu.reconstruct.formula import FormulaVerdict, Glyph
-from tongtu.reconstruct.recognition import RECOGNITION_PACKAGES
+from tongtu.reconstruct.formula import Glyph
+from tongtu.reconstruct.recognition import RECOGNITION_PACKAGES, Verdict
+
+from ..conftest import run_skill_check
 
 PREAMBLE = "\\usepackage{bm}\\usepackage{fontspec}\n\\begin{document}\n"
 
@@ -30,6 +33,11 @@ def glyphs(text: str, bold: bool = False, color: int = 0) -> list[Glyph]:
         r"\Huge x",
         r"\mathrlap{x}",
         r"\raise1pt x",
+        r"\hphantom{x}",
+        r"\vphantom{x}",
+        r"x\hskip1pt y",
+        r"x\mskip2mu y",
+        r"\vskip1pt",
     ],
 )
 def test_layout_and_size_commands_are_rejected(latex: str) -> None:
@@ -38,13 +46,13 @@ def test_layout_and_size_commands_are_rejected(latex: str) -> None:
     assert "is not allowed" in verdict.problem
 
 
-@pytest.mark.parametrize("latex", [r"\begin{smallmatrix}a\end{smallmatrix}", r"\hphantom{x}", r"\lambda_{\max}"])
+@pytest.mark.parametrize("latex", [r"\begin{smallmatrix}a\end{smallmatrix}", r"\lowercase{x}", r"\lambda_{\max}"])
 def test_ordinary_markup_is_not_forbidden(latex: str) -> None:
     assert formula.forbidden_problem(latex) == ""
 
 
 def test_skip_is_not_verified() -> None:
-    assert formula.verify(Path("absent.pdf"), " SKIP ", RegionKind.DISPLAY) == FormulaVerdict(False, " SKIP ", "SKIP")
+    assert formula.verify(Path("absent.pdf"), " SKIP ", RegionKind.DISPLAY) == Verdict(False, " SKIP ", "SKIP")
 
 
 def test_identical_glyphs_pass() -> None:
@@ -118,7 +126,32 @@ def test_display_blocks_of_prose_or_other_environments_are_rejected() -> None:
 
 def test_equation_number_becomes_a_tag() -> None:
     assert formula.display_latex(r"a=b \quad (3)") == r"\begin{equation*}a=b\tag*{(3)}\end{equation*}"
+    assert formula.display_latex(r"a=b\qquad(3.1)") == r"\begin{equation*}a=b\tag*{(3.1)}\end{equation*}"
+    assert formula.display_latex(r"a=b \hfill (A1)") == r"\begin{equation*}a=b\tag*{(A1)}\end{equation*}"
     assert formula.display_latex("a=b") == r"\begin{equation*}a=b\end{equation*}"
+
+
+@pytest.mark.parametrize("body", ["y = f(x)", r"\sum_i g(i)", "a = b (1)"])
+def test_parentheses_without_a_quad_are_not_an_equation_number(body: str) -> None:
+    assert formula.display_latex(body) == r"\begin{equation*}" + body + r"\end{equation*}"
+
+
+@pytest.mark.parametrize(
+    ("char", "font", "text"),
+    [
+        ("P", "CMEX10", "∑"),
+        ("X", "CMEX10", "∑"),
+        ("R", "CMEX10", "∫"),
+        ("a", "CMEX10", "∐"),
+        ("0", "CMEX10", ""),
+        ("P", "CMMI10", "P"),
+        ("√", "CMSY10", ""),
+        ("−", "CMSY10", "-"),
+        ("ﬁ", "CMR10", "fi"),
+    ],
+)
+def test_extension_glyphs_map_to_unicode(char: str, font: str, text: str) -> None:
+    assert formula.glyph_text(char, font) == text
 
 
 def test_write_back_replaces_only_the_passed_crops() -> None:
@@ -127,10 +160,10 @@ def test_write_back_replaces_only_the_passed_crops() -> None:
         + f"Let\\im{{m-0001}}{{1.20bp}}{{x}}be and \\im{{m-0004}}{{-0.50bp}}{{y}}.\n{DISPLAY}\n{SHIFTED_DISPLAY}\n"
     )
     verdicts = {
-        "m-0001": FormulaVerdict(True, "x_i", ""),
-        "m-0004": FormulaVerdict(False, "y", "Glyph sequence differs"),
-        "e-0002": FormulaVerdict(True, r"a=b \quad (1)", ""),
-        "e-0003": FormulaVerdict(True, "c", ""),
+        "m-0001": Verdict(True, "x_i", ""),
+        "m-0004": Verdict(False, "y", "Glyph sequence differs"),
+        "e-0002": Verdict(True, r"a=b \quad (1)", ""),
+        "e-0003": Verdict(True, "c", ""),
     }
     written, count = formula.write_back(tex, verdicts)
     assert count == 3
@@ -159,12 +192,37 @@ def test_recognizable_keys_are_display_and_inline_crops_that_can_be_replaced() -
 
 def test_failure_lines_count_the_passed_and_list_the_failures() -> None:
     verdicts = {
-        "e-0001": FormulaVerdict(True, "a", ""),
-        "e-0002": FormulaVerdict(False, "b", "LaTeX failed to compile."),
-        "m-0003": FormulaVerdict(False, "SKIP", "SKIP"),
+        "e-0001": Verdict(True, "a", ""),
+        "e-0002": Verdict(False, "b", "LaTeX failed to compile."),
+        "m-0003": Verdict(False, "SKIP", "SKIP"),
     }
     assert formula.failure_lines(verdicts) == [
         "passed 1/3",
         "e-0002: LaTeX failed to compile.\n  yours: b",
         "SKIP 1: m-0003",
     ]
+
+
+def test_check_script_without_hints_fails(tmp_path: Path) -> None:
+    result = run_skill_check(tmp_path, "reconstruct_formula")
+    assert result.returncode == 1
+    assert result.stdout.strip() == "cannot read hints.json"
+
+
+@pytest.mark.parametrize(
+    ("rec", "problem"),
+    [
+        (None, "the reconstruct_formula session wrote no rec.json; every crop stays an image"),
+        ('{"m-0001": 1}', "cannot read rec.json written by the reconstruct_formula session (ValidationError"),
+    ],
+)
+def test_check_script_with_a_bad_rec_json_fails(tmp_path: Path, rec: str | None, problem: str) -> None:
+    write_manifest(
+        tmp_path / "hints.json",
+        formula.FormulaHints({"m-0001": formula.FormulaHint(kind=RegionKind.INLINE, spans=["CMMI10#000000:x"])}),
+    )
+    if rec is not None:
+        (tmp_path / "rec.json").write_text(rec, encoding="utf-8")
+    result = run_skill_check(tmp_path, "reconstruct_formula")
+    assert result.returncode == 1
+    assert result.stdout.startswith(problem)

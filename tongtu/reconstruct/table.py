@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import collections
 import re
-import tempfile
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -11,22 +10,12 @@ from pathlib import Path
 import pymupdf
 from pydantic import BaseModel, RootModel
 
-from .. import processes
 from ..artifacts.reconstruct import RegionKind, RegionsFile
-from ..compiling import COMPILE_TIMEOUT_SECONDS
-from ..manifests import describe_error, write_manifest
+from ..manifests import write_manifest
+from . import recognition
 from .crops import CROPS_DIRNAME, crop_path, open_crop
 from .latex import CJK_FONT
-from .recognition import (
-    FONTSPEC_PACKAGE,
-    HINTS_FILENAME,
-    IMAGES_DIRNAME,
-    SKIP,
-    copy_crops,
-    image_path,
-    verify_each,
-    with_packages,
-)
+from .recognition import FONTSPEC_PACKAGE, HINTS_FILENAME, IMAGES_DIRNAME, NO_TEXT_LAYER, SKIP, Verdict
 
 TABLE_CROP_RE = re.compile(r"\\includegraphics\{" + CROPS_DIRNAME + r"/(?P<key>r-\d+)\.pdf\}")
 
@@ -40,18 +29,16 @@ PREAMBLE = (
 
 CJK_PACKAGE = r"\usepackage{xeCJK}\setCJKmainfont{" + CJK_FONT + "}"
 
-COMPILE_COMMAND: tuple[str, ...] = ("xelatex", "-interaction=nonstopmode", "-halt-on-error", "f.tex")
-
-FORBIDDEN_RE = re.compile(
-    r"\\(raisebox|hspace|vspace|kern|mkern|phantom|hphantom|vphantom|rlap|llap|mathrlap|mathllap|resizebox"
-    r"|scalebox|lower|raise)(?![A-Za-z])"
+COMPILE_COMMAND: tuple[str, ...] = (
+    "xelatex",
+    "-interaction=nonstopmode",
+    "-halt-on-error",
+    recognition.SNIPPET_FILENAME,
 )
 
 CJK_RE = re.compile(r"[\u2e80-\u9fff]")
 
 QUOTES = str.maketrans({"’": "'", "′": "'", "‘": "'", "“": '"', "”": '"', "∗": "*", "−": "-", "–": "-", "—": "-"})
-
-BOLD_RE = re.compile(r"(MIB|CMBX|CMBSY|BSY|bold|-Bd|Semibold|Medi|Black(?!board)|txb|pxb)", re.I)
 
 EXTENSION_FONT_RE = re.compile(r"cmex|mathex|lmex", re.I)
 
@@ -61,13 +48,9 @@ DINGBATS_FONT = "Dingbats"
 
 DINGBATS_BASE = 0x2700
 
-SQRT = "√"
-
 LIGATURE_RE = re.compile("f[il]")
 
 IGNORED_CHARS = "-\u2010\u00ad"
-
-ERROR_LINE_RE = re.compile(r"^!.*", re.M)
 
 HORIZONTAL = 0.01
 
@@ -137,13 +120,6 @@ class TableComparison:
         return self.text and not self.layout and not self.bold_cells and not self.color_cells
 
 
-@dataclass(frozen=True)
-class TableVerdict:
-    passed: bool
-    latex: str
-    problems: tuple[str, ...]
-
-
 class TableHint(BaseModel):
     width_bp: float
     spans_y_x: list[str]
@@ -153,46 +129,29 @@ class TableHints(RootModel[dict[str, TableHint]]):
     pass
 
 
-def normalized(char: str) -> str:
-    char = unicodedata.normalize("NFKC", char.translate(QUOTES))
-    return "".join(c for c in char if not c.isspace() and unicodedata.category(c)[0] not in "ZC")
+def glyph_text(char: str, font: str) -> str:
+    if EXTENSION_FONT_RE.search(font):
+        char = char if char in CMEX.values() else CMEX.get(char, "")
+    if font == DINGBATS_FONT and char and ord(char[0]) < 0x100:
+        char = chr(DINGBATS_BASE + ord(char[0]))
+    return recognition.normalized(recognition.without_sqrt(char), QUOTES)
 
 
 def page_glyphs(page: pymupdf.Page) -> list[Glyph]:
-    glyphs = []
-    line_number = 0
-    for block in page.get_text("rawdict", clip=page.rect)["blocks"]:
-        for line in block.get("lines", []):
-            line_number += 1
-            rotation = None if abs(line["dir"][1]) < HORIZONTAL else line_number
-            for span in line["spans"]:
-                font = span["font"]
-                extension = bool(EXTENSION_FONT_RE.search(font))
-                bold = bool(BOLD_RE.search(font.replace("BlackboardBold", "").replace("Blackboard", "")))
-                for char in span["chars"]:
-                    if not pymupdf.Rect(char["bbox"]).intersects(page.rect):
-                        continue
-                    text = char["c"]
-                    if extension:
-                        text = text if text in CMEX.values() else CMEX.get(text, "")
-                    if font == DINGBATS_FONT and text and ord(text[0]) < 0x100:
-                        text = chr(DINGBATS_BASE + ord(text[0]))
-                    if text == SQRT:
-                        text = ""
-                    glyphs += [
-                        Glyph(
-                            piece,
-                            bold,
-                            span["color"],
-                            char["origin"][0],
-                            char["bbox"][2],
-                            char["origin"][1],
-                            span["size"],
-                            rotation,
-                        )
-                        for piece in normalized(text)
-                    ]
-    return glyphs
+    return [
+        Glyph(
+            piece,
+            recognition.is_bold(char.font),
+            char.color,
+            char.origin[0],
+            char.bbox[2],
+            char.origin[1],
+            char.size,
+            None if abs(char.direction[1]) < HORIZONTAL else char.line,
+        )
+        for char in recognition.page_chars(page, clip=page.rect)
+        for piece in glyph_text(char.text, char.font)
+    ]
 
 
 def rows(glyphs: Sequence[Glyph]) -> list[list[Glyph]]:
@@ -372,35 +331,25 @@ def comparison_problems(comparison: TableComparison) -> list[str]:
 
 def rendered_glyphs(latex: str) -> list[Glyph] | str:
     cjk = CJK_PACKAGE if CJK_RE.search(latex) else ""
-    with tempfile.TemporaryDirectory(prefix="tongtu-table-") as temporary:
-        folder = Path(temporary)
-        source = PREAMBLE + cjk + r"\begin{document}" + latex + r"\end{document}"
-        (folder / "f.tex").write_text(source, encoding="utf-8")
-        try:
-            outcome = processes.run_in_process_group(list(COMPILE_COMMAND), folder, COMPILE_TIMEOUT_SECONDS)
-        except OSError as error:
-            return f"failed to run {COMPILE_COMMAND[0]} ({describe_error(error)})"
-        pdf = folder / "f.pdf"
-        if outcome.returncode or outcome.timed_out or not pdf.is_file():
-            errors = ERROR_LINE_RE.findall(outcome.stdout.decode("utf-8", errors="replace"))
-            return "compile: " + (errors[0] if errors else "?")
-        return page_glyphs(pymupdf.open(pdf)[0])
+    source = PREAMBLE + cjk + r"\begin{document}" + latex + r"\end{document}"
+    rendered = recognition.compile_snippet(source, COMPILE_COMMAND, page_glyphs)
+    return f"compile: {rendered}" if isinstance(rendered, str) else rendered
 
 
-def verify(crop: Path, latex: str) -> TableVerdict:
+def verify(crop: Path, latex: str) -> Verdict:
     if latex.strip() == SKIP:
-        return TableVerdict(False, latex, (SKIP,))
-    forbidden = FORBIDDEN_RE.search(latex)
-    if forbidden is not None:
-        return TableVerdict(False, latex, (f"Your LaTeX failed: forbidden command: {forbidden.group(0)}",))
+        return Verdict(False, latex, SKIP)
+    command = recognition.layout_command(latex)
+    if command:
+        return Verdict(False, latex, f"Your LaTeX failed: forbidden command: {command}")
     original = page_glyphs(open_crop(crop)[0])
     if not original:
-        return TableVerdict(False, latex, ("the crop has no text layer to compare with; it stays an image.",))
+        return Verdict(False, latex, NO_TEXT_LAYER)
     rendered = rendered_glyphs(latex)
     if isinstance(rendered, str):
-        return TableVerdict(False, latex, (f"Your LaTeX failed: {rendered}",))
+        return Verdict(False, latex, f"Your LaTeX failed: {rendered}")
     comparison = compare(original, rendered)
-    return TableVerdict(comparison.passed, latex, tuple(comparison_problems(comparison)))
+    return Verdict(comparison.passed, latex, " ".join(comparison_problems(comparison)))
 
 
 def recognizable(tex: str, regions: RegionsFile) -> list[str]:
@@ -409,40 +358,31 @@ def recognizable(tex: str, regions: RegionsFile) -> list[str]:
 
 
 def span_hints(page: pymupdf.Page) -> list[str]:
-    found = []
-    for block in page.get_text("rawdict")["blocks"]:
-        for line in block.get("lines", []):
-            for span in line["spans"]:
-                text = "".join(char["c"] for char in span["chars"])
-                if text.strip():
-                    origin_x, origin_y = span["origin"]
-                    found.append((round(origin_y, 1), round(origin_x, 1), f"{span['font']}#{span['color']:06X}:{text}"))
-    return [f"y={y} x={x} {span}" for y, x, span in sorted(found)]
+    found = [
+        (round(span["origin"][1], 1), round(span["origin"][0], 1), recognition.span_hint(span, text))
+        for span, text in recognition.page_spans(page)
+    ]
+    return [f"y={y} x={x} {hint}" for y, x, hint in sorted(found)]
 
 
 def prepare(tree: Path, session_dir: Path, keys: Sequence[str]) -> None:
     (session_dir / IMAGES_DIRNAME).mkdir(parents=True, exist_ok=True)
-    copy_crops(tree, session_dir, keys)
+    recognition.copy_crops(tree, session_dir, keys)
     hints = {}
     low, high = IMAGE_ZOOM_RANGE
     for key in keys:
         page = open_crop(tree / crop_path(key))[0]
         zoom = max(low, min(high, IMAGE_TARGET_WIDTH / page.rect.width))
-        page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).save(image_path(session_dir, key))
+        page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).save(recognition.image_path(session_dir, key))
         hints[key] = TableHint(width_bp=round(page.rect.width, 1), spans_y_x=span_hints(page))
     write_manifest(session_dir / HINTS_FILENAME, TableHints(hints))
 
 
-def verify_all(tree: Path, transcriptions: Mapping[str, str], keys: Sequence[str]) -> dict[str, TableVerdict]:
-    def one(key: str) -> TableVerdict:
-        if key not in transcriptions:
-            return TableVerdict(False, "", ("no transcription in rec.json",))
-        return verify(tree / crop_path(key), transcriptions[key])
-
-    return verify_each(keys, one)
+def verify_all(tree: Path, transcriptions: Mapping[str, str], keys: Sequence[str]) -> dict[str, Verdict]:
+    return recognition.verify_all(keys, transcriptions, lambda key, latex: verify(tree / crop_path(key), latex))
 
 
-def write_back(tex: str, verdicts: Mapping[str, TableVerdict], tree: Path) -> tuple[str, int]:
+def write_back(tex: str, verdicts: Mapping[str, Verdict], tree: Path) -> tuple[str, int]:
     accepted = {key: verdict.latex.strip() for key, verdict in verdicts.items() if verdict.passed}
     written = 0
 
@@ -458,21 +398,11 @@ def write_back(tex: str, verdicts: Mapping[str, TableVerdict], tree: Path) -> tu
     tex = TABLE_CROP_RE.sub(replace, tex)
     if not written:
         return tex, 0
-    tex = with_packages(tex)
+    tex = recognition.with_packages(tex)
     if CJK_RE.search("".join(accepted.values())) and "xeCJK" not in tex:
         tex = tex.replace(FONTSPEC_PACKAGE, FONTSPEC_PACKAGE + CJK_PACKAGE, 1)
     return tex, written
 
 
-def failure_lines(verdicts: Mapping[str, TableVerdict]) -> list[str]:
-    passed = sum(verdict.passed for verdict in verdicts.values())
-    lines = [f"passed {passed}/{len(verdicts)}"]
-    lines += [
-        f"{key}: " + " ".join(verdict.problems)
-        for key, verdict in verdicts.items()
-        if not verdict.passed and verdict.problems != (SKIP,)
-    ]
-    skipped = [key for key, verdict in verdicts.items() if verdict.problems == (SKIP,)]
-    if skipped:
-        lines.append(f"SKIP {len(skipped)}: {' '.join(skipped)}")
-    return lines
+def failure_lines(verdicts: Mapping[str, Verdict]) -> list[str]:
+    return recognition.failure_lines(verdicts, show_latex=False)
