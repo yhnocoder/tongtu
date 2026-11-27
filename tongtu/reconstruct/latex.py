@@ -3,12 +3,12 @@ from __future__ import annotations
 import collections
 import re
 import statistics
-import subprocess
 import unicodedata
 from pathlib import Path
 
 import pymupdf
 
+from .. import processes
 from ..artifacts.reconstruct import RegionKind
 from .crops import Cropper, crop_path
 from .layout import PROSE_RE, Char, Item, Layout, Line, family
@@ -65,18 +65,34 @@ TWOCOLUMN_FIGURE_RE = re.compile(r"\\begin\{figure\*\}\[htbp\]\n\\centering(.*)\
 
 Piece = str | list[Char] | None
 
+TOOL_TIMEOUT_SECONDS = 30
+
 
 def is_cjk(code: int) -> bool:
     return 0x2E80 <= code <= 0x9FFF or 0xAC00 <= code <= 0xD7AF or 0xFF00 <= code <= 0xFFEF
 
 
+class ToolError(Exception):
+    pass
+
+
+def tool_output(command: list[str]) -> str:
+    try:
+        outcome = processes.run_in_process_group(command, Path.cwd(), TOOL_TIMEOUT_SECONDS)
+    except FileNotFoundError as error:
+        raise ToolError(f"the command {command[0]} was not found") from error
+    if outcome.timed_out:
+        raise ToolError(f"{' '.join(command)} did not finish within {TOOL_TIMEOUT_SECONDS} seconds")
+    return outcome.stdout.decode("utf-8", errors="replace")
+
+
 def font_list(code: int) -> list[str]:
-    listed = subprocess.run(["fc-list", f":charset={code:x}", "file"], capture_output=True, text=True).stdout.split()
+    listed = tool_output(["fc-list", f":charset={code:x}", "file"]).split()
     return sorted(listed, key=lambda path: "unifont" in path)
 
 
 def kpsewhich(name: str) -> str:
-    return subprocess.run(["kpsewhich", name], capture_output=True, text=True).stdout.strip()
+    return tool_output(["kpsewhich", name]).strip()
 
 
 def is_mono(font: str) -> bool:

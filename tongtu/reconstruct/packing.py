@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pymupdf
 
-from .crops import CROPS_DIRNAME, crop_path
+from .crops import CROPS_DIRNAME, crop_path, open_crop
 from .latex import INLINE_CROP_MACRO
 from .rebuild import MAIN_FILENAME
 
@@ -59,7 +59,7 @@ def pack(tree: Path, out: Path) -> None:
     if names:
         packed = pymupdf.open()
         for name in names:
-            packed.insert_pdf(pymupdf.open(tree / crop_path(name)))
+            packed.insert_pdf(open_crop(tree / crop_path(name)))
         packed.save(out / PACKED_CROPS_FILENAME, garbage=4, deflate=True, deflate_images=True)
     pages = {name: index for index, name in enumerate(names, start=1)}
     (out / MAIN_FILENAME).write_text(packed_source(tex, pages), encoding="utf-8")

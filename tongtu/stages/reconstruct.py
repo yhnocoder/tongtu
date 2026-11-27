@@ -9,7 +9,9 @@ from .. import compiling, pipeline
 from ..artifacts.common import Session
 from ..artifacts.reconstruct import CheckReport, ReconstructManifest, ReconstructStatus, RegionKind, RegionsFile
 from ..manifests import describe_error, write_manifest
-from ..reconstruct import checks, packing
+from ..reconstruct import checks, packing, review
+from ..reconstruct.crops import CropError
+from ..reconstruct.latex import ToolError
 from ..reconstruct.rebuild import MAIN_FILENAME, rebuild
 from ..workdir import Workdir
 
@@ -54,6 +56,8 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
     report("rebuilding", ORIGINAL_FILENAME)
     try:
         regions = rebuild(original, tree)
+    except ToolError as error:
+        return _failed(f"the rule rebuild could not run an external command: {error}")
     except Exception as error:
         return _failed(f"the rule rebuild raised {describe_error(error)} at {_location(error)}")
     counts = {kind.value: 0 for kind in RegionKind}
@@ -71,11 +75,15 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
         failure = f"{stage} the rebuilt PDF still fails the checks: {'; '.join(checks.failed_items(final_check))}"
     lost: list[tuple[str, str]] = []
     if not failure:
-        lost = checks.lost_glyphs(tree)
-        if lost:
-            examples = ", ".join(f"{name} lacks {glyphs}" for name, glyphs in lost[:LOST_GLYPH_EXAMPLES])
-            warnings.append(f"{len(lost)} inline crops lack glyphs of their text-layer hints: {examples}")
-        failure = _pack(paper_workdir, tree, final_check.pages, report, warnings)
+        try:
+            lost = checks.lost_glyphs(tree)
+            if lost:
+                examples = ", ".join(f"{name} lacks {glyphs}" for name, glyphs in lost[:LOST_GLYPH_EXAMPLES])
+                warnings.append(f"{len(lost)} inline crops lack glyphs of their text-layer hints: {examples}")
+            failure = _pack(paper_workdir, tree, final_check.pages, report, warnings)
+        except CropError as error:
+            lost = []
+            failure = str(error)
     return ReconstructManifest(
         status=ReconstructStatus.RECONSTRUCT_FAILED if failure else ReconstructStatus.OK,
         message=failure,
@@ -110,7 +118,10 @@ def _compile_and_check(
             "distribution; run tongtu doctor to see how to install it."
         )
     report("checking", MAIN_FILENAME)
-    return checks.check(original, tree, attempt.report, regions).report, ""
+    detail = checks.check(original, tree, attempt.report, regions)
+    if detail.draft_failed:
+        warnings.append(review.DRAFT_FAILED_LINE)
+    return detail.report, ""
 
 
 def _fix(paper_workdir: Workdir, tree: Path, mode: str, report: Report, warnings: list[str]) -> Session:

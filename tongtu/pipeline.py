@@ -12,10 +12,19 @@ from .workdir import Workdir, raw_log_path
 
 STAGES: tuple[str, ...] = ("fetch", "reconstruct", "precompile", "mask", "translate", "compile")
 
+RECONSTRUCT_STAGE = "reconstruct"
+
 
 def fetched_route(workdir: Workdir) -> FetchRoute:
     fetched = load_manifest(workdir.manifest_path(STAGES[0]), FetchManifest)
     return fetched.route if fetched is not None else "tex"
+
+
+def implied_complete(workdir: Workdir, stage: str) -> bool:
+    if stage != RECONSTRUCT_STAGE or workdir.manifest_path(stage).exists():
+        return False
+    fetched = load_manifest(workdir.manifest_path(STAGES[0]), FetchManifest)
+    return fetched is not None and fetched.ok and fetched.route == "tex"
 
 
 def _rebuilt(workdir: Workdir) -> bool:
@@ -83,6 +92,8 @@ def _present(path: Path) -> bool:
 
 
 def completed(workdir: Workdir, stage: str) -> bool:
+    if implied_complete(workdir, stage):
+        return True
     manifest = load_manifest(workdir.manifest_path(stage), Manifest)
     return manifest is not None and manifest.ok
 

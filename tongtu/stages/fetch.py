@@ -142,15 +142,16 @@ def _fetch_local(source_dir: Path, paper_workdir: Workdir) -> FetchManifest:
 def _fetch_local_pdf(source_pdf: Path, paper_workdir: Workdir) -> FetchManifest:
     source = Path(source_pdf).expanduser().absolute()
     identity = {"source": str(source), "kind": "local_pdf", "route": "pdf"}
-    _reset_outputs(paper_workdir)
     try:
         payload = source.read_bytes()
     except OSError as error:
+        _reset_outputs(paper_workdir)
         return FetchManifest(
             status=FetchStatus.SOURCE_MISSING,
             message=f"cannot read the source PDF {source} ({describe_error(error)})",
             **identity,
         )
+    _reset_outputs(paper_workdir)
     if payload[: len(PDF_MAGIC)] != PDF_MAGIC:
         return FetchManifest(
             status=FetchStatus.SOURCE_MISSING,

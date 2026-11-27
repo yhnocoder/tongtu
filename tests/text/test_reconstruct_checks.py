@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import collections
+from pathlib import Path
 
 import pytest
 
 from tongtu.artifacts.reconstruct import CheckReport
 from tongtu.reconstruct import checks
+from tongtu.reconstruct.crops import CropError
 
 WORDS = [f"word{chr(97 + index // 26)}{chr(97 + index % 26)}" for index in range(40)]
 
@@ -107,3 +109,11 @@ def test_draft_source_switches_graphicx_to_draft() -> None:
     draft = checks.draft_source(tex)
     assert "\\usepackage[draft]{graphicx}" in draft
     assert draft.index(checks.FLOATING_REMOVED) < draft.index("\\begin{document}")
+
+
+def test_lost_glyphs_of_an_unreadable_crop_names_the_crop(tmp_path: Path) -> None:
+    (tmp_path / "main.tex").write_text("text \\im{m-0002}{1.5bp}{x}\n", encoding="utf-8")
+    (tmp_path / "crops").mkdir()
+    (tmp_path / "crops" / "m-0002.pdf").write_bytes(b"not a pdf")
+    with pytest.raises(CropError, match="cannot open the crop m-0002.pdf"):
+        checks.lost_glyphs(tmp_path)

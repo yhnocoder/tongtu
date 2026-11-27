@@ -75,7 +75,7 @@ from .model.config import (
     write_config,
 )
 from .model.work import AGENTRUN_EXECUTABLE, agentrun_executable
-from .pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
+from .pipeline import STAGES, clean, clean_from, downstream, first_pending, implied_complete, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
 from .stages import compile, fetch, mask, precompile, reconstruct, translate
 from .workdir import ENCODING, Workdir, WorkdirError, normalize_arxiv_id, resolve
@@ -657,10 +657,14 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
     for name in STAGES:
         manifest_path = paper_workdir.manifest_path(name)
         manifest = load_manifest(manifest_path, Manifest)
+        if manifest is not None:
+            status = manifest.status
+        else:
+            status = "ok" if implied_complete(paper_workdir, name) else ABSENT_STATUS
         stages.append(
             StageState(
                 name=name,
-                status=manifest.status if manifest is not None else ABSENT_STATUS,
+                status=status,
                 outputs_present=outputs_present(paper_workdir, name),
                 message=manifest.message if manifest is not None else "",
                 warnings=manifest.warnings if manifest is not None else [],

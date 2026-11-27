@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tongtu.reconstruct import packing
+from tongtu.reconstruct.crops import CropError
 from tongtu.reconstruct.latex import INLINE_CROP_MACRO
 
 SOURCE = (
@@ -36,3 +39,12 @@ def test_missing_crops_names_crops_without_a_file(tmp_path: Path) -> None:
     (tmp_path / "crops").mkdir()
     (tmp_path / "crops" / "m-0002.pdf").write_bytes(b"%PDF-1.5")
     assert packing.missing_crops(tmp_path) == ["r-0001", "e-0003"]
+
+
+def test_pack_of_an_unreadable_crop_names_the_crop(tmp_path: Path) -> None:
+    (tmp_path / "main.tex").write_text(SOURCE, encoding="utf-8")
+    (tmp_path / "crops").mkdir()
+    for name in ("r-0001", "m-0002", "e-0003"):
+        (tmp_path / "crops" / f"{name}.pdf").write_bytes(b"not a pdf")
+    with pytest.raises(CropError, match="cannot open the crop r-0001.pdf"):
+        packing.pack(tmp_path, tmp_path / "packed")

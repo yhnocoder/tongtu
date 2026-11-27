@@ -253,6 +253,16 @@ def test_local_pdf_file_takes_the_pdf_route(tmp_path: Path, monkeypatch: pytest.
     assert list(workdir.src.iterdir()) == []
 
 
+def test_local_pdf_file_inside_the_workdir_is_kept(tmp_path: Path) -> None:
+    workdir = make_workdir(tmp_path)
+    workdir.create()
+    workdir.original_pdf.parent.mkdir(parents=True, exist_ok=True)
+    workdir.original_pdf.write_bytes(b"%PDF-1.4 local")
+    manifest = fetch.run(PaperInput(source_pdf=workdir.original_pdf), workdir)
+    assert (manifest.status, manifest.route) == (FetchStatus.OK, "pdf")
+    assert workdir.original_pdf.read_bytes() == b"%PDF-1.4 local"
+
+
 def test_local_pdf_file_that_vanished_is_source_missing(tmp_path: Path) -> None:
     workdir = make_workdir(tmp_path)
     manifest = fetch.run(PaperInput(source_pdf=tmp_path / "gone.pdf"), workdir)

@@ -6,7 +6,7 @@ import pytest
 
 from tongtu.artifacts.common import Note, NotesFile
 from tongtu.manifests import load_manifest, write_manifest
-from tongtu.pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
+from tongtu.pipeline import STAGES, clean, clean_from, completed, downstream, first_pending, outputs_present
 from tongtu.workdir import Workdir, raw_log_path
 
 OUTPUT_FILES: dict[str, tuple[str, ...]] = {
@@ -224,3 +224,33 @@ def test_clean_fetch_removes_the_original_pdf(tmp_path: Path) -> None:
     clean_from(workdir, "fetch")
     assert not workdir.original_pdf.exists()
     assert not workdir.src.exists()
+
+
+def write_pre_reconstruct_manifests(workdir: Workdir, route: str) -> None:
+    workdir.create()
+    route_field = "" if route == "tex" else f', "route": "{route}"'
+    fetched = '{"status": "ok", "source": "2002.05202v1", "kind": "tar.gz"' + route_field + "}"
+    workdir.manifest_path("fetch").write_text(fetched, encoding="utf-8")
+    for name in ("precompile", "mask", "translate", "compile"):
+        write_manifest_status(workdir, name)
+
+
+def test_workdir_from_before_reconstruct_has_nothing_pending(tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "paper")
+    write_pre_reconstruct_manifests(workdir, "tex")
+    assert completed(workdir, "reconstruct")
+    assert first_pending(workdir) is None
+
+
+def test_missing_reconstruct_manifest_of_a_pdf_route_is_pending(tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "paper")
+    write_pre_reconstruct_manifests(workdir, "pdf")
+    assert not completed(workdir, "reconstruct")
+    assert first_pending(workdir) == "reconstruct"
+
+
+def test_failed_fetch_does_not_imply_reconstruct(tmp_path: Path) -> None:
+    workdir = Workdir(tmp_path / "paper")
+    write_pre_reconstruct_manifests(workdir, "tex")
+    workdir.manifest_path("fetch").write_text('{"status": "empty", "source": "x"}', encoding="utf-8")
+    assert not completed(workdir, "reconstruct")

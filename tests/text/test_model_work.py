@@ -4,6 +4,7 @@ import contextlib
 import importlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -221,7 +222,7 @@ def test_tongtu_python_session_runs_python3_with_the_tongtu_interpreter(
     record_run(monkeypatch, recorded, exited())
     run_work(configured, tongtu_python=True)
     assert recorded["python_bin_entries"] == ["python3"]
-    assert recorded["python3_wrapper"] == f'#!/bin/sh\nexec {sys.executable} "$@"\n'
+    assert recorded["python3_wrapper"] == f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n'
     assert recorded["python3_executable"]
 
 

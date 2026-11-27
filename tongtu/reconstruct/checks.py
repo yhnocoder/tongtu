@@ -17,7 +17,7 @@ from .. import fonts, processes
 from ..artifacts.common import CompileReport
 from ..artifacts.reconstruct import CheckReport, RegionsFile
 from ..compiling import COMPILE_TIMEOUT_SECONDS
-from .crops import crop_path
+from .crops import crop_path, open_crop
 from .rebuild import MAIN_FILENAME
 
 RECALL_MIN = 0.98
@@ -83,6 +83,7 @@ class CheckDetail:
     missing: list[tuple[str, int]]
     extra: list[tuple[str, int]]
     out_of_order: list[str]
+    draft_failed: bool = False
 
 
 def text_words(text: str) -> collections.Counter[str]:
@@ -185,7 +186,7 @@ def draft_source(tex: str) -> str:
     return tex.replace(BEGIN_DOCUMENT, FLOATING_REMOVED + BEGIN_DOCUMENT, 1)
 
 
-def rebuilt_words(tree: Path) -> list[Word]:
+def rebuilt_words(tree: Path) -> list[Word] | None:
     with tempfile.TemporaryDirectory(prefix="tongtu-order-") as temporary:
         draft = Path(temporary) / "tree"
         shutil.copytree(tree, draft)
@@ -200,7 +201,7 @@ def rebuilt_words(tree: Path) -> list[Word]:
             env=fonts.environment(fonts.configured(), os.environ),
         )
         if not pdf.is_file():
-            return []
+            return None
         words: list[Word] = []
         for page_number, page in enumerate(pymupdf.open(pdf)):
             for word in page.get_text("words"):
@@ -229,7 +230,7 @@ def lost_glyphs(tree: Path) -> list[tuple[str, str]]:
         name = match.group(1)
         expected = glyph_counts(hint_text(match.group(2)))
         path = tree / crop_path(name)
-        found = glyph_counts(pymupdf.open(path)[0].get_text()) if path.is_file() else collections.Counter()
+        found = glyph_counts(open_crop(path)[0].get_text()) if path.is_file() else collections.Counter()
         missing = expected - found
         if missing:
             lost.append((name, "".join(missing.elements())))
@@ -276,10 +277,11 @@ def check(original: Path, tree: Path, compiled: CompileReport | None, regions: R
     rebuilt_counts, pages = pdf_words(pdf)
     recall, precision = recall_precision(source_counts, rebuilt_counts)
     masked = original_words(original, regions, masked=True)
+    drafted = rebuilt_words(tree)
     order = order_score(
         [word for word, _ in masked],
         [word for word, _ in original_words(original, regions, masked=False)],
-        [word for word, _ in rebuilt_words(tree)],
+        [word for word, _ in drafted or []],
     )
     low, high = PAGE_RATIO_RANGE
     passed = (
@@ -304,4 +306,5 @@ def check(original: Path, tree: Path, compiled: CompileReport | None, regions: R
         missing=(source_counts - rebuilt_counts).most_common(DIFFERENCE_WORDS),
         extra=(rebuilt_counts - source_counts).most_common(DIFFERENCE_WORDS),
         out_of_order=order_runs(masked, order.out_of_order),
+        draft_failed=drafted is None,
     )

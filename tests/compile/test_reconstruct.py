@@ -16,6 +16,7 @@ from tongtu.artifacts.reconstruct import ReconstructStatus
 from tongtu.manifests import write_manifest
 from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
+from tongtu.reconstruct import review
 from tongtu.stages import reconstruct
 from tongtu.workdir import Workdir
 
@@ -170,3 +171,64 @@ def test_crop_missing_after_the_fix_session_is_reconstruct_failed(
     manifest = reconstruct.run(workdir, mode="fast")
     assert manifest.status is ReconstructStatus.RECONSTRUCT_FAILED
     assert "r-9999" in manifest.message
+
+
+def append_before_end(session_dir: Path, lines: str) -> None:
+    main = session_dir / "main.tex"
+    text = main.read_text(encoding="utf-8")
+    main.write_text(text.replace("\\end{document}", lines + "\n\\end{document}"), encoding="utf-8")
+
+
+def test_packed_page_count_differing_from_the_unpacked_one_is_reconstruct_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+
+    def widen_and_add_a_page_only_when_packed(session_dir: Path) -> None:
+        widen_text(session_dir)
+        append_before_end(session_dir, "\\IfFileExists{regions.json}{}{\\clearpage\\null\\clearpage}")
+
+    monkeypatch.setattr(tongtu.model, "work", fake_fix([], widen_and_add_a_page_only_when_packed))
+    workdir = pdf_workdir(tmp_path, small_print_pdf(tmp_path))
+    manifest = reconstruct.run(workdir, mode="fast")
+    assert manifest.status is ReconstructStatus.RECONSTRUCT_FAILED
+    assert "the packed source compiles to 2 pages, the unpacked one to 1" in manifest.message
+    assert manifest.final_check is not None and manifest.final_check.passed
+    assert not (workdir.src / "main.tex").exists()
+
+
+def test_unreadable_crop_is_reconstruct_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+
+    def widen_and_reference_a_broken_crop(session_dir: Path) -> None:
+        widen_text(session_dir)
+        (session_dir / "crops").mkdir(exist_ok=True)
+        (session_dir / "crops" / "r-9998.pdf").write_bytes(b"not a pdf")
+        append_before_end(session_dir, "\\IfFileExists{regions.json}{}{\\includegraphics{crops/r-9998.pdf}}")
+
+    monkeypatch.setattr(tongtu.model, "work", fake_fix([], widen_and_reference_a_broken_crop))
+    workdir = pdf_workdir(tmp_path, small_print_pdf(tmp_path))
+    manifest = reconstruct.run(workdir, mode="fast")
+    assert manifest.status is ReconstructStatus.RECONSTRUCT_FAILED
+    assert "cannot open the crop r-9998.pdf" in manifest.message
+    assert not (workdir.src / "main.tex").exists()
+
+
+def test_draft_compile_without_a_pdf_counts_the_order_as_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+
+    def widen_and_stop_the_draft_compile(session_dir: Path) -> None:
+        widen_text(session_dir)
+        main = session_dir / "main.tex"
+        stop = "\\makeatletter\\AtBeginDocument{\\@ifpackagewith{graphicx}{draft}{\\@@end}{}}\\makeatother\n"
+        main.write_text(
+            main.read_text(encoding="utf-8").replace("\\begin{document}", stop + "\\begin{document}", 1),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(tongtu.model, "work", fake_fix([], widen_and_stop_the_draft_compile))
+    workdir = pdf_workdir(tmp_path, small_print_pdf(tmp_path))
+    manifest = reconstruct.run(workdir, mode="fast")
+    assert manifest.status is ReconstructStatus.OK, manifest.message
+    assert manifest.final_check is not None and manifest.final_check.order == 1.0
+    assert review.DRAFT_FAILED_LINE in manifest.warnings

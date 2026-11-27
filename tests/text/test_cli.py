@@ -783,6 +783,38 @@ def test_run_with_all_outputs_runs_nothing(tmp_path: Path, monkeypatch: pytest.M
     assert "--from" in result.stdout
 
 
+def write_pre_reconstruct_workdir(root: Path) -> cli.Workdir:
+    workdir = cli.Workdir(root / "2002.05202v1")
+    workdir.create()
+    old_fetch = '{"status": "ok", "source": "2002.05202v1", "arxiv_id": "2002.05202", "version": 1, "kind": "tar.gz"}'
+    workdir.manifest_path("fetch").write_text(old_fetch, encoding="utf-8")
+    (workdir.src / "main.tex").write_text("\\documentclass{article}", encoding="utf-8")
+    for name in ("precompile", "mask", "translate", "compile"):
+        write_manifest(workdir.manifest_path(name), Manifest(status="ok"))
+    return workdir
+
+
+def test_run_of_a_workdir_from_before_reconstruct_runs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = write_pre_reconstruct_workdir(tmp_path)
+    assert cli.first_pending(workdir) is None
+    calls: list[str] = []
+    wire_entries(monkeypatch, calls)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert calls == []
+    assert "allsixstageshavefinishedok" in squeeze(result.stdout)
+    assert not workdir.manifest_path("reconstruct").exists()
+
+
+def test_status_of_a_workdir_from_before_reconstruct_is_ok(tmp_path: Path) -> None:
+    workdir = write_pre_reconstruct_workdir(tmp_path)
+    snapshot = status_json("2002.05202v1", "--workdir", str(workdir.path))
+    assert (snapshot.state, snapshot.stage) == (PaperState.OK, None)
+    reconstruct_state = snapshot.stages[STAGES.index("reconstruct")]
+    assert (reconstruct_state.status, reconstruct_state.manifest) == ("ok", None)
+    assert reconstruct_state.outputs_present
+
+
 def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir = write_outputs(tmp_path, *STAGES)
     calls: list[str] = []

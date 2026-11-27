@@ -6,6 +6,7 @@ from pathlib import Path
 import pymupdf
 
 from ..artifacts.reconstruct import Region, RegionKind
+from ..manifests import describe_error
 from .layout import TEXT_FLAGS, Box
 
 CROPS_DIRNAME = "crops"
@@ -19,8 +20,22 @@ SYMBOL_FONT_RE = re.compile(r"cmsy|lmsy|msy|txsy|pxsy|sy\d|symbol", re.I)
 GlyphPair = tuple[Box, Box]
 
 
+class CropError(Exception):
+    pass
+
+
 def crop_path(name: str) -> str:
     return f"{CROPS_DIRNAME}/{name}.pdf"
+
+
+def open_crop(path: Path) -> pymupdf.Document:
+    try:
+        doc = pymupdf.open(path)
+    except (RuntimeError, ValueError, OSError) as error:
+        raise CropError(f"cannot open the crop {path.name} ({describe_error(error)})") from error
+    if len(doc) == 0:
+        raise CropError(f"the crop {path.name} has no page")
+    return doc
 
 
 def ink_box(char: dict, span: dict) -> Box:

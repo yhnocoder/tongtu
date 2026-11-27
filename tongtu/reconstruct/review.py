@@ -19,6 +19,8 @@ COMPARISON_NAME = "cmp-{page}.png"
 
 LOST_EXAMPLES = 8
 
+DRAFT_FAILED_LINE = "the draft compile for the reading-order check produced no PDF; order counted as 1"
+
 
 def render_comparison(original: Path, rebuilt: Path, page: int, out: Path) -> Path | None:
     pixmaps = [
@@ -60,4 +62,5 @@ def summary_lines(detail: CheckDetail, lost: Sequence[tuple[str, str]]) -> list[
         f"extra {detail.extra}",
         *(f"out of order {run}" for run in detail.out_of_order),
         f"inline crops lacking hint glyphs {len(lost)} {list(lost[:LOST_EXAMPLES])}",
+        *([DRAFT_FAILED_LINE] if detail.draft_failed else []),
     ]
