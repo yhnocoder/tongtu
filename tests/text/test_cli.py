@@ -35,7 +35,7 @@ from tongtu.artifacts.status import (
     RunMarker,
     RunRecord,
 )
-from tongtu.artifacts.translate import GlossaryCounts, TranslateManifest, TranslateStatus
+from tongtu.artifacts.translate import GlossaryCounts, KeptParagraph, TranslateManifest, TranslateStatus
 from tongtu.cli import RunOptions, app, main
 from tongtu.manifests import load_manifest, write_manifest
 from tongtu.model import chat
@@ -1568,6 +1568,18 @@ def test_translate_summary_counts_paragraphs_and_new_terms() -> None:
     assert cli.stage_summary(manifest) == "164 paragraphs, 31 new terms"
     reused = manifest.model_copy(update={"session": None})
     assert cli.stage_summary(reused) == "164 paragraphs, 31 new terms, reused existing translation"
+
+
+def test_translate_summary_counts_paragraphs_kept_in_english() -> None:
+    manifest = TranslateManifest(
+        status=TranslateStatus.OK,
+        mode="smart",
+        session=Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0),
+        paragraphs_translated=77,
+        kept=[KeptParagraph(line=line, preview="Output: ...", reason="模型的原始输出") for line in (12, 40)],
+        glossary=GlossaryCounts(added=16),
+    )
+    assert cli.stage_summary(manifest) == "77 paragraphs, 2 kept in English, 16 new terms"
 
 
 @pytest.mark.parametrize(("name", "module"), [("precompile", "precompile"), ("compile", "compile")])

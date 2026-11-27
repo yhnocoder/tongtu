@@ -85,6 +85,10 @@ TU_FONT_SUBSTITUTES: dict[str, str] = {
 
 XECJK_HEAD = (
     rb"""% ---- injected by tongtu (precompile) ----
+\providecommand\pdfglyphtounicode[2]{}
+\ifdefined\pdfsuppressptexinfo\else\newcount\pdfsuppressptexinfo\fi
+\providecommand\DeclareUnicodeCharacter[2]{%
+  \begingroup\lccode`\~="#1\relax\lowercase{\endgroup\gdef~}{#2}\catcode"#1=\active}
 \PassOptionsToPackage{no-math}{fontspec}
 \makeatletter
 \edef\tongtu@author@rm{\rmdefault}\edef\tongtu@author@sf{\sfdefault}\edef\tongtu@author@tt{\ttdefault}
@@ -628,9 +632,14 @@ def _resolve_font(slot: str, value: str, warnings: list[str]) -> str | None:
 
 
 def _font_command(command: bytes, name: str, bold: str | None) -> bytes:
+    regular = Path(name)
+    options = [f"Extension={regular.suffix}"]
     if bold is not None:
-        return command + b"[BoldFont=" + bold.encode("utf-8") + b"]{" + name.encode("utf-8") + b"}"
-    return command + b"{" + name.encode("utf-8") + b"}"
+        bold_file = Path(bold)
+        options.append(f"BoldFont={bold_file.stem}")
+        if bold_file.suffix != regular.suffix:
+            options.append(f"BoldFeatures={{Extension={bold_file.suffix}}}")
+    return command + f"{{{regular.stem}}}[{','.join(options)}]".encode()
 
 
 def _line_index_of(lines: list[bytes], marker: bytes) -> int | None:

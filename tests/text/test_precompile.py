@@ -12,7 +12,7 @@ from tongtu.artifacts.common import Note, NotesFile, Session, StopReason
 from tongtu.artifacts.precompile import PrecompileStatus
 from tongtu.manifests import load_manifest, write_manifest
 from tongtu.masking import TableEntry
-from tongtu.model.config import FontsConfig, load_config
+from tongtu.model.config import FontFamily, FontsConfig, load_config
 from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
 from tongtu.processes import ProcessOutcome
@@ -247,7 +247,7 @@ def test_injects_xecjk_after_documentclass(tmp_path: Path, monkeypatch: pytest.M
         < output.index("\\begin{document}")
     )
     assert "% ---- injected by tongtu (precompile) ----" in output
-    assert "LXGWWenKai-Light.ttf" in output
+    assert "\\setCJKmainfont{LXGWWenKai-Light}[Extension=.ttf," in output
 
 
 def test_tu_font_substitutes_cover_the_psnfss_families() -> None:
@@ -300,15 +300,27 @@ def test_acmart_keeps_the_line_spread_past_its_baselinestretch_check() -> None:
     assert guard < output.index(b"\\begin{document}")
 
 
+def test_the_injected_block_starts_with_stand_ins_for_pdftex_commands() -> None:
+    output = precompile._inject_cjk(PLAIN_PAPER.encode("utf-8"), [], FontsConfig())
+    head = output.index(b"% ---- injected by tongtu (precompile) ----\n")
+    stand_ins = (
+        b"\\providecommand\\pdfglyphtounicode[2]{}\n",
+        b"\\ifdefined\\pdfsuppressptexinfo\\else\\newcount\\pdfsuppressptexinfo\\fi\n",
+        b"\\providecommand\\DeclareUnicodeCharacter[2]{",
+    )
+    positions = [output.index(stand_in) for stand_in in stand_ins]
+    assert head < positions[0] < positions[1] < positions[2] < output.index(b"{xeCJK}")
+
+
 def test_other_classes_do_not_touch_the_acmart_baselinestretch() -> None:
     output = precompile._inject_cjk(PLAIN_PAPER.encode("utf-8"), [], FontsConfig())
     assert b"\\linespread{1.4}\n% ---- end tongtu (precompile) ----\n" in output
     assert b"ACM@origbaselinestretch" not in output
 
 
-DEFAULT_MAIN_LINE = "\\setCJKmainfont[BoldFont=LXGWWenKai-Medium.ttf]{LXGWWenKai-Light.ttf}"
+DEFAULT_MAIN_LINE = "\\setCJKmainfont{LXGWWenKai-Light}[Extension=.ttf,BoldFont=LXGWWenKai-Medium]"
 
-DEFAULT_SANS_LINE = "\\setCJKsansfont[BoldFont=SourceHanSansSC-Bold.otf]{SourceHanSansSC-Regular.otf}"
+DEFAULT_SANS_LINE = "\\setCJKsansfont{SourceHanSansSC-Regular}[Extension=.otf,BoldFont=SourceHanSansSC-Bold]"
 
 
 def injected_output(workdir: Workdir) -> str:
@@ -324,7 +336,7 @@ def test_injects_default_fonts_without_config_toml(tmp_path: Path, monkeypatch: 
     manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert "\\usepackage[AutoFakeBold=2]{xeCJK}\n" in output
-    assert f"{DEFAULT_MAIN_LINE}\n{DEFAULT_SANS_LINE}\n\\setCJKmonofont{{LXGWWenKai-Light.ttf}}\n" in output
+    assert f"{DEFAULT_MAIN_LINE}\n{DEFAULT_SANS_LINE}\n\\setCJKmonofont{{LXGWWenKai-Light}}[Extension=.ttf]\n" in output
     for leftover in ("Path=", "IfFontExistsTF", "Hiragino"):
         assert leftover not in output
     assert not any("config.toml" in line for line in manifest.warnings)
@@ -352,8 +364,8 @@ def test_fonts_config_string_family_has_no_bold_font(tmp_path: Path, monkeypatch
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
-    assert "\\setCJKmainfont{LXGWWenKai-Medium.ttf}\n" in output
-    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert "\\setCJKmainfont{LXGWWenKai-Medium}[Extension=.ttf]\n" in output
+    assert "\\setCJKmonofont{LXGWWenKai-Medium}[Extension=.ttf]\n" in output
     assert DEFAULT_SANS_LINE in output
     assert not any("config.toml" in line for line in manifest.warnings)
 
@@ -365,9 +377,18 @@ def test_fonts_config_family_table_sets_bold_font(tmp_path: Path, monkeypatch: p
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
-    assert "\\setCJKmainfont[BoldFont=LXGWWenKai-Light.ttf]{LXGWWenKai-Medium.ttf}\n" in output
-    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert "\\setCJKmainfont{LXGWWenKai-Medium}[Extension=.ttf,BoldFont=LXGWWenKai-Light]\n" in output
+    assert "\\setCJKmonofont{LXGWWenKai-Medium}[Extension=.ttf]\n" in output
     assert not any("config.toml" in line for line in manifest.warnings)
+
+
+def test_a_bold_font_with_another_extension_gets_its_own_extension() -> None:
+    fonts = FontsConfig(main=FontFamily(regular="LXGWWenKai-Medium.ttf", bold="SourceHanSansSC-Bold.otf"))
+    output = precompile._inject_cjk(PLAIN_PAPER.encode("utf-8"), [], fonts)
+    assert (
+        b"\\setCJKmainfont{LXGWWenKai-Medium}"
+        b"[Extension=.ttf,BoldFont=SourceHanSansSC-Bold,BoldFeatures={Extension=.otf}]\n"
+    ) in output
 
 
 def test_fonts_config_external_file_is_referenced_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -379,7 +400,7 @@ def test_fonts_config_external_file_is_referenced_by_name(tmp_path: Path, monkey
     manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
-    assert "\\setCJKmainfont{MyFont.otf}\n" in output
+    assert "\\setCJKmainfont{MyFont}[Extension=.otf]\n" in output
     assert str(font_path.parent) not in output
     assert not (workdir.build / "sandbox" / "tex" / "fonts").exists()
 
@@ -393,7 +414,7 @@ def test_fonts_config_family_with_missing_regular_falls_back_as_a_whole(
     output = injected_output(workdir)
     assert manifest.status is PrecompileStatus.OK
     assert DEFAULT_MAIN_LINE in output
-    assert output.count("LXGWWenKai-Medium.ttf") == 1
+    assert output.count("LXGWWenKai-Medium") == 1
     assert any("main.regular font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
     assert len(fallback_warnings(manifest.warnings, "main")) == 1
 
@@ -406,8 +427,8 @@ def test_fonts_config_family_with_missing_bold_falls_back_as_a_whole(
     manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
     assert DEFAULT_MAIN_LINE in output
-    assert "\\setCJKmainfont{LXGWWenKai-Medium.ttf}" not in output
-    assert "\\setCJKmonofont{LXGWWenKai-Light.ttf}\n" in output
+    assert "\\setCJKmainfont{LXGWWenKai-Medium}" not in output
+    assert "\\setCJKmonofont{LXGWWenKai-Light}[Extension=.ttf]\n" in output
     assert any("main.bold font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
     assert len(fallback_warnings(manifest.warnings, "main")) == 1
 
@@ -474,8 +495,8 @@ def test_fonts_config_overrides_sans_and_mono(tmp_path: Path, monkeypatch: pytes
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
-    assert "\\setCJKsansfont{LXGWWenKai-Medium.ttf}\n" in output
-    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert "\\setCJKsansfont{LXGWWenKai-Medium}[Extension=.ttf]\n" in output
+    assert "\\setCJKmonofont{LXGWWenKai-Medium}[Extension=.ttf]\n" in output
     assert DEFAULT_MAIN_LINE in output
     assert "SourceHanSansSC" not in output
 
@@ -485,7 +506,7 @@ def test_fonts_config_missing_mono_falls_back_to_main_regular(tmp_path: Path, mo
     workdir, _ = run_ok_setup(tmp_path, monkeypatch, {"main.tex": PLAIN_PAPER})
     manifest = precompile.run(workdir, mode="fast")
     output = injected_output(workdir)
-    assert "\\setCJKmonofont{LXGWWenKai-Medium.ttf}\n" in output
+    assert "\\setCJKmonofont{LXGWWenKai-Medium}[Extension=.ttf]\n" in output
     assert any("mono font file Ghost.ttf" in line and "skipped" in line for line in manifest.warnings)
     assert fallback_warnings(manifest.warnings, "main") == []
 

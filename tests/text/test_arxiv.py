@@ -429,6 +429,7 @@ def wire_statuses(
 
     monkeypatch.setattr(arxiv.httpx, "get", get)
     monkeypatch.setattr(arxiv.time, "sleep", waits.append)
+    monkeypatch.setattr(arxiv.random, "uniform", lambda low, high: high)
     return urls, waits
 
 
@@ -437,36 +438,65 @@ def test_query_waits_and_retries_after_a_rate_limit(monkeypatch: pytest.MonkeyPa
     meta = arxiv.query("1412.6980", 8)
     assert (meta.arxiv_id, meta.version) == ("1412.6980", 8)
     assert len(urls) == 2
-    assert waits == [5]
+    assert waits == [15]
 
 
-def test_query_waits_for_the_retry_after_header(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_query_waits_for_the_retry_after_header_plus_random_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
     urls, waits = wire_statuses(monkeypatch, [429, 200], {"Retry-After": "2"})
     arxiv.query("1412.6980", 8)
     assert len(urls) == 2
-    assert waits == [2]
+    assert waits == [7]
 
 
 def test_query_ignores_a_retry_after_header_that_is_not_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
     urls, waits = wire_statuses(monkeypatch, [429, 200], {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
     arxiv.query("1412.6980", 8)
     assert len(urls) == 2
-    assert waits == [5]
+    assert waits == [15]
 
 
 def test_query_retries_when_arxiv_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     urls, waits = wire_statuses(monkeypatch, [503, 503, 200])
     arxiv.query("1412.6980", 8)
     assert len(urls) == 3
-    assert waits == [5, 15]
+    assert waits == [15, 45]
 
 
 def test_query_raises_once_the_retries_run_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    urls, waits = wire_statuses(monkeypatch, [429, 429, 429, 429])
-    with pytest.raises(arxiv.ArxivError, match="after 3 retries"):
+    urls, waits = wire_statuses(monkeypatch, [429, 429, 429, 429, 429])
+    with pytest.raises(arxiv.ArxivError, match="after 4 retries"):
         arxiv.query("1412.6980", 8)
-    assert len(urls) == 4
-    assert waits == [5, 15, 45]
+    assert len(urls) == 5
+    assert waits == [15, 45, 90, 180]
+
+
+@pytest.mark.parametrize(
+    ("headers", "draws", "expected_range", "expected_waits"),
+    [
+        (None, [0.5, 1.0, 1.5, 0.75], (0.5, 1.5), [5, 30, 90, 90]),
+        ({"Retry-After": "3"}, [0.0, 2.5, 5.0, 1.25], (0, 5), [3, 5.5, 8, 4.25]),
+    ],
+)
+def test_every_retry_wait_draws_its_own_random_part(
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str] | None,
+    draws: list[float],
+    expected_range: tuple[float, float],
+    expected_waits: list[float],
+) -> None:
+    _urls, waits = wire_statuses(monkeypatch, [429] * 5, headers)
+    ranges: list[tuple[float, float]] = []
+    pending = iter(draws)
+
+    def uniform(low: float, high: float) -> float:
+        ranges.append((low, high))
+        return next(pending)
+
+    monkeypatch.setattr(arxiv.random, "uniform", uniform)
+    with pytest.raises(arxiv.ArxivError, match="after 4 retries"):
+        arxiv.query("1412.6980", 8)
+    assert ranges == [expected_range] * 4
+    assert waits == expected_waits
 
 
 def test_query_counts_a_single_retry_in_the_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -474,7 +504,7 @@ def test_query_counts_a_single_retry_in_the_error(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(arxiv.ArxivError, match="after 1 retry:"):
         arxiv.query("1412.6980", 8)
     assert len(urls) == 2
-    assert waits == [5]
+    assert waits == [15]
 
 
 def test_query_does_not_retry_a_missing_page(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -385,6 +385,70 @@ def test_an_english_paragraph_is_reported_as_untranslated() -> None:
     assert (report.paragraphs_total, report.paragraphs_translated) == (3, 2)
 
 
+ENGLISH_LAST = EN.splitlines()[-1]
+
+KEEP_REASON = "模型的原始输出，作为实验数据展示"
+
+
+def kept_last_paragraph(marker: str = f"% tongtu: keep-english: {KEEP_REASON}") -> str:
+    return ZH.replace(
+        "\\paragraph{优化器} 整个训练中我们使用 Adafactor，dropout 率为 $0.1$。", f"{marker}\n{ENGLISH_LAST}"
+    )
+
+
+def test_a_marked_english_paragraph_is_kept_instead_of_untranslated() -> None:
+    report = validation.check(EN, kept_last_paragraph())
+    assert report.ok
+    assert report.kept == (
+        validation.KeptParagraph(
+            line=8, preview=ENGLISH_LAST[: validation.PARAGRAPH_PREVIEW_LENGTH], reason=KEEP_REASON
+        ),
+    )
+    assert (report.paragraphs_total, report.paragraphs_translated) == (3, 2)
+
+
+def test_the_marker_may_sit_inside_the_paragraph_with_leading_whitespace() -> None:
+    translation = ZH.replace(
+        "\\paragraph{优化器} 整个训练中我们使用 Adafactor，dropout 率为 $0.1$。",
+        f"\\paragraph{{Optimizer}} We use Adafactor\n  % tongtu: keep-english: {KEEP_REASON}\n"
+        "with a dropout rate of $0.1$ for the whole run.",
+    )
+    report = validation.check(EN, translation)
+    assert report.ok
+    assert [(kept.line, kept.reason) for kept in report.kept] == [(8, KEEP_REASON)]
+    assert "%" not in report.kept[0].preview
+
+
+def test_a_marker_without_a_reason_is_a_structure_problem() -> None:
+    report = validation.check(EN, kept_last_paragraph("% tongtu: keep-english:   "))
+    assert categories(report) == [validation.Category.STRUCTURE]
+    assert report.problems[0].message == (
+        "paragraph starting at line 8 of the translation has a keep-english marker without a reason"
+    )
+    assert report.kept == ()
+
+
+def test_the_marker_line_does_not_count_as_an_extra_percent() -> None:
+    assert "%" not in EN
+    assert located(EN, kept_last_paragraph()) == []
+
+
+def test_a_marked_paragraph_still_gets_the_formula_and_heading_checks() -> None:
+    formula = validation.check(EN, kept_last_paragraph().replace("$0.1$", "$0.2$"))
+    assert categories(formula) == [validation.Category.FORMULA]
+    heading = kept_last_paragraph().replace("\\paragraph{Optimizer}", "\\section{Optimizer}")
+    assert validation.Category.HEADING in categories(validation.check(EN, heading))
+
+
+def test_a_marked_paragraph_that_needs_no_translation_is_accepted_and_kept() -> None:
+    names = "Alice Zhang, Bob Li, Carol Wang"
+    marked = f"% tongtu: keep-english: 作者姓名\n{names}"
+    report = validation.check(f"{names}\n\n{EN}", f"{marked}\n\n{ZH}")
+    assert report.ok
+    assert [(kept.line, kept.preview, kept.reason) for kept in report.kept] == [(1, names, "作者姓名")]
+    assert (report.paragraphs_total, report.paragraphs_translated) == (3, 3)
+
+
 def test_a_paragraph_of_names_needs_no_translation() -> None:
     names = "Alice Zhang, Bob Li, Carol Wang, Dave Chen\nTsinghua University, Peking University, DeepSeek-AI"
     report = validation.check(f"{names}\n\n{EN}", f"{names}\n\n{ZH}")
@@ -604,6 +668,15 @@ def write(path: Path, content: str) -> str:
 def test_main_prints_the_count_and_check_passed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert validation.main([write(tmp_path / "en.tex", EN), write(tmp_path / "zh.tex", ZH)]) == 0
     assert capsys.readouterr().out.splitlines() == ["translated paragraphs 3/3", "check passed"]
+
+
+def test_main_lists_the_paragraphs_kept_in_english(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert validation.main([write(tmp_path / "en.tex", EN), write(tmp_path / "zh.tex", kept_last_paragraph())]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "translated paragraphs 2/3, kept in English 1",
+        f"kept in English: paragraph starting at line 8: {KEEP_REASON}",
+        "check passed",
+    ]
 
 
 def test_main_lists_each_problem_and_exits_one(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
