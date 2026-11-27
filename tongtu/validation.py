@@ -247,6 +247,19 @@ COMMAND_NAME_RE = re.compile(r"\\[A-Za-z@]+")
 
 SECTION_HEADING_RE = re.compile(r"\\(?:sub){0,2}section\*?\s*(?:\[[^\]]*\])?\s*\{")
 
+DEFINITION_HEAD_RE = re.compile(
+    r"\\(?:"
+    r"(?:(?:new|renew|provide)command|DeclareRobustCommand|DeclareMathOperator)\*?\s*"
+    r"(?:\{\s*\\(?:[A-Za-z@]+|.)\s*\}|\\(?:[A-Za-z@]+|.))"
+    r"|(?P<environment>(?:new|renew)environment)\*?\s*\{[^{}]*\}"
+    r"|newcolumntype\s*\{[^{}]*\}"
+    r"|[gex]?def\s*\\(?:[A-Za-z@]+|.)[^{\n]*+"
+    r")\s*(?:\[[^\]]*\]\s*)*\{",
+    re.DOTALL,
+)
+
+GROUP_OPEN_RE = re.compile(r"\s*\{")
+
 PLURAL_SUFFIXES: tuple[str, ...] = ("s", "es")
 
 COMPOUND_HYPHEN_BEFORE = r"(?<!(?<!-)-)"
@@ -454,27 +467,40 @@ def _needs_translation(paragraph: str) -> bool:
 
 
 def _english_words(paragraph: str) -> int:
-    stripped = TOKEN_RE.sub("", paragraph)
+    stripped = TOKEN_RE.sub("", _without_definitions(paragraph))
     stripped = INLINE_MATH_RE.sub("", stripped)
     stripped = NON_TEXT_COMMAND_RE.sub("", stripped)
     stripped = CONTROL_SEQUENCE_NAME_RE.sub("", stripped)
     return len(ENGLISH_WORD_RE.findall(stripped))
 
 
+def _without_definitions(paragraph: str) -> str:
+    kept: list[str] = []
+    position = 0
+    while match := DEFINITION_HEAD_RE.search(paragraph, position):
+        kept.append(paragraph[position : match.start()])
+        position = _group_end(paragraph, match.end())
+        if match["environment"] and (second := GROUP_OPEN_RE.match(paragraph, position)):
+            position = _group_end(paragraph, second.end())
+        kept.append(" ")
+    kept.append(paragraph[position:])
+    return "".join(kept)
+
+
+def _group_end(text: str, position: int) -> int:
+    depth = 1
+    while position < len(text) and depth:
+        character = text[position]
+        if character == "\\":
+            position += 2
+            continue
+        depth += (character == OPEN_BRACE) - (character == CLOSE_BRACE)
+        position += 1
+    return min(position, len(text))
+
+
 def _heading_spans(paragraph: str) -> list[tuple[int, int]]:
-    spans = []
-    for match in SECTION_HEADING_RE.finditer(paragraph):
-        depth = 1
-        position = match.end()
-        while position < len(paragraph) and depth:
-            character = paragraph[position]
-            if character == "\\":
-                position += 2
-                continue
-            depth += (character == OPEN_BRACE) - (character == CLOSE_BRACE)
-            position += 1
-        spans.append((match.start(), position))
-    return spans
+    return [(match.start(), _group_end(paragraph, match.end())) for match in SECTION_HEADING_RE.finditer(paragraph)]
 
 
 def heading_texts(paragraph: str) -> list[str]:

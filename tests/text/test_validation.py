@@ -413,6 +413,59 @@ def test_heading_words_do_not_count_as_untranslated_text() -> None:
     assert report.paragraphs_total == 0
 
 
+APPENDIX_DEFINITIONS = r"""\clearpage
+\appendix
+\definecolor{roleR}{HTML}{2A78D6}\definecolor{roleD}{HTML}{EB6834}\definecolor{roleQ}{HTML}{1BAF7A}
+\definecolor{roleA}{HTML}{EDA100}\definecolor{roleE}{HTML}{C9C8C2}
+\definecolor{roleRt}{HTML}{1F5FB0}\definecolor{roleDt}{HTML}{B4420F}\definecolor{roleQt}{HTML}{0E7A54}
+\definecolor{roleAt}{HTML}{8A5A00}\definecolor{roleEt}{HTML}{5F5E5A}
+\newcommand{\chip}[3]{{\setlength{\fboxsep}{1.2pt}\colorbox{#1}{\textcolor{#2}{\textsf{\bfseries\scriptsize #3}}}}}
+\newcommand{\spR}[1]{\chip{roleR}{white}{R}\,\textcolor{roleRt}{#1}}
+\newcommand{\spD}[1]{\chip{roleD}{white}{D}\,\textcolor{roleDt}{#1}}
+\newcommand{\spQ}[1]{\chip{roleQ}{black}{Q}\,\textcolor{roleQt}{#1}}
+\newcommand{\spA}[1]{\chip{roleA}{black}{A}\,\textcolor{roleAt}{#1}}
+\newcommand{\spE}[1]{\chip{roleE}{black}{env}\,\textcolor{roleEt}{\emph{#1}}}"""
+
+
+def test_a_paragraph_of_macro_definitions_needs_no_translation() -> None:
+    report = validation.check(APPENDIX_DEFINITIONS, APPENDIX_DEFINITIONS)
+    assert report.ok
+    assert report.paragraphs_total == 0
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        r"\def\foo#1{\textbf{some words here} and more words there}",
+        r"\gdef\foo[#1]#2{some words here and more words there}",
+        r"\newenvironment{boxed}[1][plain]{\begin{center}some words here}{and more words there\end{center}}",
+        r"\renewenvironment*{boxed}{some {nested words {here}} and}{more words there}",
+        r"\providecommand*\foo[2][x]{some {nested {words}} here \{ and more words there}",
+        r"\DeclareRobustCommand{\foo}{some words here and more words there}",
+        r"\DeclareMathOperator*{\argmax}{some words here and more words there}",
+        r"\newcolumntype{L}[1]{>{\raggedright some words here}p{#1} more words there}",
+    ],
+)
+def test_macro_definitions_do_not_count_as_english_words(definition: str) -> None:
+    assert validation.paragraphs_to_translate(definition) == 0
+
+
+def test_english_text_next_to_a_macro_definition_is_still_untranslated() -> None:
+    paragraph = (
+        r"\newcommand{\foo}[1]{\textbf{some words here}} We train the model on a large corpus of text for many steps."
+    )
+    report = validation.check(f"{paragraph}\n\n{EN}", f"{paragraph}\n\n{ZH}")
+    assert categories(report) == [validation.Category.UNTRANSLATED]
+    assert (report.paragraphs_total, report.paragraphs_translated) == (4, 3)
+
+
+def test_a_def_without_a_body_on_its_line_keeps_the_next_line_counted() -> None:
+    paragraph = "\\def\\foo\nWe train the model on a large corpus of text for \\textbf{many} steps."
+    report = validation.check(f"{paragraph}\n\n{EN}", f"{paragraph}\n\n{ZH}")
+    assert categories(report) == [validation.Category.UNTRANSLATED]
+    assert (report.paragraphs_total, report.paragraphs_translated) == (4, 3)
+
+
 def test_a_term_must_appear_in_its_translation() -> None:
     terms = {"large language model": "大语言模型", "forward chunk": "前向块"}
     assert validation.check(EN, ZH, terms).ok
