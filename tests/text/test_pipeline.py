@@ -22,6 +22,12 @@ SIDE_FILES: dict[str, tuple[str, ...]] = {
     "fetch": ("build/e-print.bin", "out/paper.meta.json"),
     "reconstruct": (
         "build/sandbox/reconstruct/main.tex",
+        "build/sandbox/reconstruct_formula/rec.json",
+        "build/sandbox/reconstruct_table/rec.json",
+        "logs/reconstruct-formula.jsonl",
+        "logs/reconstruct-formula.raw.jsonl",
+        "logs/reconstruct-table.jsonl",
+        "logs/reconstruct-table.raw.jsonl",
         "logs/reconstruct-fix.jsonl",
         "logs/reconstruct-fix.raw.jsonl",
     ),
@@ -45,7 +51,16 @@ SIDE_FILES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-NOTE_SESSIONS = ("reconstruct_fix", "precompile_fix", "translate", "compile_fix")
+NOTE_SESSIONS = (
+    "reconstruct_formula",
+    "reconstruct_table",
+    "reconstruct_fix",
+    "precompile_fix",
+    "translate",
+    "compile_fix",
+)
+
+RECONSTRUCT_SESSIONS = ["reconstruct_formula", "reconstruct_table", "reconstruct_fix"]
 
 
 def note(session: str) -> Note:
@@ -135,7 +150,7 @@ def test_clean_from_removes_stage_and_downstream(tmp_path: Path) -> None:
         for relative in (*OUTPUT_FILES[name], *SIDE_FILES[name]):
             assert not (workdir.path / relative).exists()
     assert not workdir.sandbox("translate").exists()
-    assert noted_sessions(workdir) == ["reconstruct_fix", "precompile_fix"]
+    assert noted_sessions(workdir) == [*RECONSTRUCT_SESSIONS, "precompile_fix"]
     assert first_pending(workdir) == "translate"
 
 
@@ -143,9 +158,9 @@ def test_clean_from_removes_stage_and_downstream(tmp_path: Path) -> None:
     ("stage", "kept"),
     [
         ("reconstruct", ["precompile_fix", "translate", "compile_fix"]),
-        ("precompile", ["reconstruct_fix", "translate", "compile_fix"]),
-        ("translate", ["reconstruct_fix", "precompile_fix", "compile_fix"]),
-        ("compile", ["reconstruct_fix", "precompile_fix", "translate"]),
+        ("precompile", [*RECONSTRUCT_SESSIONS, "translate", "compile_fix"]),
+        ("translate", [*RECONSTRUCT_SESSIONS, "precompile_fix", "compile_fix"]),
+        ("compile", [*RECONSTRUCT_SESSIONS, "precompile_fix", "translate"]),
         ("mask", list(NOTE_SESSIONS)),
     ],
 )

@@ -5,11 +5,18 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from .. import compiling, pipeline
-from ..artifacts.common import Session
-from ..artifacts.reconstruct import CheckReport, ReconstructManifest, ReconstructStatus, RegionKind, RegionsFile
-from ..manifests import describe_error, write_manifest
-from ..reconstruct import checks, packing, review
+from .. import compiling, model, notes, pipeline
+from ..artifacts.common import NoteSession, Session, StopReason
+from ..artifacts.reconstruct import (
+    CheckReport,
+    RecognitionReport,
+    ReconstructManifest,
+    ReconstructStatus,
+    RegionKind,
+    RegionsFile,
+)
+from ..manifests import describe_error, timeout_warning, write_manifest
+from ..reconstruct import checks, formula, packing, recognition, review, table
 from ..reconstruct.crops import CropError
 from ..reconstruct.latex import ToolError
 from ..reconstruct.rebuild import MAIN_FILENAME, rebuild
@@ -19,11 +26,17 @@ STAGE_NAME = "reconstruct"
 
 SKILL = "reconstruct_fix"
 
+FORMULA_SKILL: NoteSession = "reconstruct_formula"
+
+TABLE_SKILL: NoteSession = "reconstruct_table"
+
 ORIGINAL_FILENAME = "original.pdf"
 
 PACKED_DIRNAME = "packed"
 
 LOST_GLYPH_EXAMPLES = 8
+
+SESSION_STATUS = "{skill} session"
 
 Report = Callable[[str, str], None]
 
@@ -64,6 +77,11 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
     for region in regions.regions:
         counts[region.kind.value] += 1
     warnings: list[str] = []
+    try:
+        formulas = _recognize_formulas(paper_workdir, tree, regions, mode, report, warnings)
+        tables = _recognize_tables(paper_workdir, tree, regions, mode, report, warnings)
+    except CropError as error:
+        return _failed(str(error))
     rule_check, failure = _compile_and_check(tree, original, regions, report, warnings, fixed=False)
     final_check = rule_check
     fix_session = None
@@ -94,7 +112,89 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
         final_check=final_check,
         crop_lost_glyphs=len(lost),
         fix_session=fix_session,
+        formulas=formulas,
+        tables=tables,
     )
+
+
+def _recognize_formulas(
+    paper_workdir: Workdir, tree: Path, regions: RegionsFile, mode: str, report: Report, warnings: list[str]
+) -> RecognitionReport | None:
+    main = tree / MAIN_FILENAME
+    tex = main.read_text(encoding="utf-8")
+    keys = formula.recognizable(tex, regions)
+    if not keys:
+        return None
+    session_dir = _session_dir(paper_workdir, FORMULA_SKILL)
+    formula.prepare(tree, session_dir, keys)
+    session = _recognition_session(
+        FORMULA_SKILL, session_dir, paper_workdir.reconstruct_formula_log, paper_workdir, mode, report, warnings
+    )
+    transcriptions, problem = recognition.read_transcriptions(session_dir, FORMULA_SKILL)
+    if problem:
+        warnings.append(problem)
+    report("checking", "formulas")
+    tex, passed = formula.write_back(tex, formula.verify_all(tree, transcriptions, keys))
+    main.write_text(tex, encoding="utf-8")
+    return RecognitionReport(total=len(keys), passed=passed, session=session)
+
+
+def _recognize_tables(
+    paper_workdir: Workdir, tree: Path, regions: RegionsFile, mode: str, report: Report, warnings: list[str]
+) -> RecognitionReport | None:
+    main = tree / MAIN_FILENAME
+    tex = main.read_text(encoding="utf-8")
+    keys = table.recognizable(tex, regions)
+    if not keys:
+        return None
+    session_dir = _session_dir(paper_workdir, TABLE_SKILL)
+    table.prepare(tree, session_dir, keys)
+    session = _recognition_session(
+        TABLE_SKILL, session_dir, paper_workdir.reconstruct_table_log, paper_workdir, mode, report, warnings
+    )
+    transcriptions, problem = recognition.read_transcriptions(session_dir, TABLE_SKILL)
+    if problem:
+        warnings.append(problem)
+    report("checking", "tables")
+    tex, passed = table.write_back(tex, table.verify_all(tree, transcriptions, keys), tree)
+    main.write_text(tex, encoding="utf-8")
+    return RecognitionReport(total=len(keys), passed=passed, session=session)
+
+
+def _session_dir(paper_workdir: Workdir, skill: str) -> Path:
+    session_dir = paper_workdir.sandbox(skill)
+    shutil.rmtree(session_dir, ignore_errors=True)
+    session_dir.mkdir(parents=True)
+    return session_dir
+
+
+def _recognition_session(
+    skill: NoteSession,
+    session_dir: Path,
+    log_path: Path,
+    paper_workdir: Workdir,
+    mode: str,
+    report: Report,
+    warnings: list[str],
+) -> Session:
+    status = SESSION_STATUS.format(skill=skill)
+    report(status, "running")
+    outcome = model.work(
+        skill,
+        session_dir,
+        mode=mode,
+        log_path=log_path,
+        report=lambda action: report(status, action),
+        tongtu_python=True,
+    )
+    if outcome.session.stop_reason is StopReason.TIMEOUT:
+        warnings.append(timeout_warning(skill))
+    if outcome.session.stop_reason is StopReason.ERROR:
+        warnings.append(
+            f"the {skill} session ended with error ({outcome.detail}); the verdict still comes from the scripted checks"
+        )
+    warnings.extend(notes.collect(session_dir, skill, paper_workdir.notes))
+    return outcome.session
 
 
 def _compile_and_check(

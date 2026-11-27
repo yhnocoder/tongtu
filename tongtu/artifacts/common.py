@@ -50,7 +50,9 @@ class Session(BaseModel):
     usage: Usage | None = None
 
 
-NoteSession = Literal["translate", "precompile_fix", "reconstruct_fix", "compile_fix"]
+NoteSession = Literal[
+    "translate", "precompile_fix", "reconstruct_formula", "reconstruct_table", "reconstruct_fix", "compile_fix"
+]
 
 
 class Note(BaseModel):

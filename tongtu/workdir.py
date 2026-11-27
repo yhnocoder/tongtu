@@ -98,6 +98,14 @@ class Workdir:
         return self.build / "original.pdf"
 
     @property
+    def reconstruct_formula_log(self) -> Path:
+        return self.logs / "reconstruct-formula.jsonl"
+
+    @property
+    def reconstruct_table_log(self) -> Path:
+        return self.logs / "reconstruct-table.jsonl"
+
+    @property
     def reconstruct_fix_log(self) -> Path:
         return self.logs / "reconstruct-fix.jsonl"
 
