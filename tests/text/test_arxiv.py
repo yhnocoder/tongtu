@@ -469,6 +469,14 @@ def test_query_raises_once_the_retries_run_out(monkeypatch: pytest.MonkeyPatch) 
     assert waits == [5, 15, 45]
 
 
+def test_query_counts_a_single_retry_in_the_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls, waits = wire_statuses(monkeypatch, [429, 404])
+    with pytest.raises(arxiv.ArxivError, match="after 1 retry:"):
+        arxiv.query("1412.6980", 8)
+    assert len(urls) == 2
+    assert waits == [5]
+
+
 def test_query_does_not_retry_a_missing_page(monkeypatch: pytest.MonkeyPatch) -> None:
     urls, waits = wire_statuses(monkeypatch, [404])
     with pytest.raises(arxiv.ArxivError, match="HTTPStatusError"):

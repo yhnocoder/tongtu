@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from . import __version__
 from .artifacts.fetch import CachedMeta, PaperMeta
 from .config import arxiv_cache_dir, papers_dir
+from .console import error_console
 from .manifests import load_manifest, write_manifest
 from .workdir import Workdir, normalize_arxiv_id
 
@@ -205,12 +206,17 @@ def query(arxiv_id: str, version: int | None = None) -> PaperMeta:
                 follow_redirects=True,
             )
             if response.status_code in RETRYABLE_STATUS_CODES and retries < ARXIV_RETRIES:
-                time.sleep(retry_wait_seconds(response.headers.get("Retry-After"), retries))
+                seconds = retry_wait_seconds(response.headers.get("Retry-After"), retries)
                 retries += 1
+                error_console.print(
+                    f"arXiv rate limit (HTTP {response.status_code}), "
+                    f"retrying in {seconds} s ({retries}/{ARXIV_RETRIES})"
+                )
+                time.sleep(seconds)
                 continue
             response.raise_for_status()
         except httpx.HTTPError as error:
-            retried = f" after {retries} retries" if retries else ""
+            retried = f" after {retries} {'retry' if retries == 1 else 'retries'}" if retries else ""
             raise ArxivError(
                 f"arXiv API request for {paper_id} failed{retried}: {type(error).__name__}: {error}"
             ) from error
