@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,3 +89,19 @@ def test_failure_lines_hide_or_show_the_latex() -> None:
     verdicts = {"a": recognition.Verdict(False, "x", "bad"), "b": recognition.Verdict(True, "y", "")}
     assert recognition.failure_lines(verdicts, show_latex=False) == ["passed 1/2", "a: bad"]
     assert recognition.failure_lines(verdicts, show_latex=True) == ["passed 1/2", "a: bad\n  yours: x"]
+
+
+@pytest.mark.parametrize(
+    ("command", "problem"),
+    [
+        ([sys.executable, "-c", "raise SystemExit(1)"], recognition.COMPILE_FAILED),
+        (
+            [sys.executable, "-c", "print('! Undefined control sequence.'); raise SystemExit(1)"],
+            "! Undefined control sequence.",
+        ),
+        (["tongtu-no-such-engine"], "failed to run tongtu-no-such-engine (FileNotFoundError"),
+    ],
+)
+def test_snippet_compile_failures_name_the_cause(command: list[str], problem: str) -> None:
+    result = recognition.compile_snippet("x", command, lambda page: page)
+    assert isinstance(result, str) and result.startswith(problem)

@@ -61,7 +61,7 @@ def test_swapped_rows_are_a_layout_difference(recognition_tree: tuple[Path, Regi
 def test_latex_that_does_not_compile_fails(recognition_tree: tuple[Path, RegionsFile]) -> None:
     verdict = table.verify(table_crop(recognition_tree), TABLE_LATEX.replace(r"\end{tabular}", ""))
     assert not verdict.passed
-    assert verdict.problem.startswith("Your LaTeX failed: compile: !")
+    assert verdict.problem.startswith("Your LaTeX failed: !")
 
 
 def test_prepare_writes_images_hints_and_crops(recognition_tree: tuple[Path, RegionsFile], tmp_path: Path) -> None:

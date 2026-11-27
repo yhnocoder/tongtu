@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import shutil
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sized
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .. import compiling, model, notes, pipeline
 from ..artifacts.common import NoteSession, Session, StopReason
@@ -45,17 +44,17 @@ Report = Callable[[str, str], None]
 
 
 @dataclass(frozen=True)
-class Recognizer:
+class Recognizer[KeysT: Sized]:
     skill: NoteSession
     noun: str
     log: Callable[[Workdir], Path]
-    recognizable: Callable[[str, RegionsFile], Any]
-    prepare: Callable[[Path, Path, Any], None]
-    verify_all: Callable[[Path, Mapping[str, str], Any], dict[str, Verdict]]
+    recognizable: Callable[[str, RegionsFile], KeysT]
+    prepare: Callable[[Path, Path, KeysT], None]
+    verify_all: Callable[[Path, Mapping[str, str], KeysT], dict[str, Verdict]]
     write_back: Callable[[str, Mapping[str, Verdict], Path], tuple[str, int]]
 
 
-FORMULAS = Recognizer(
+FORMULAS = Recognizer[dict[str, RegionKind]](
     skill=FORMULA_SKILL,
     noun="formulas",
     log=lambda workdir: workdir.reconstruct_formula_log,
@@ -65,7 +64,7 @@ FORMULAS = Recognizer(
     write_back=lambda tex, verdicts, tree: formula.write_back(tex, verdicts),
 )
 
-TABLES = Recognizer(
+TABLES = Recognizer[list[str]](
     skill=TABLE_SKILL,
     noun="tables",
     log=lambda workdir: workdir.reconstruct_table_log,
@@ -161,8 +160,8 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
     )
 
 
-def _recognize(
-    recognizer: Recognizer,
+def _recognize[KeysT: Sized](
+    recognizer: Recognizer[KeysT],
     paper_workdir: Workdir,
     tree: Path,
     regions: RegionsFile,

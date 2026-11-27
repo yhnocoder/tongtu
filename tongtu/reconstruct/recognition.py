@@ -70,7 +70,7 @@ LAYOUT_COMMAND_RE = re.compile(r"\\(" + "|".join(LAYOUT_COMMANDS) + r")(?![A-Za-
 
 ERROR_LINE_RE = re.compile(r"^!.*", re.M)
 
-UNKNOWN_ERROR = "?"
+COMPILE_FAILED = "LaTeX failed to compile."
 
 
 @dataclass(frozen=True)
@@ -159,7 +159,7 @@ def compile_snippet[T](source: str, command: Sequence[str], read: Callable[[pymu
         pdf = (folder / SNIPPET_FILENAME).with_suffix(".pdf")
         if outcome.returncode or outcome.timed_out or not pdf.is_file():
             errors = ERROR_LINE_RE.findall(outcome.stdout.decode("utf-8", errors="replace"))
-            return errors[0] if errors else UNKNOWN_ERROR
+            return errors[0] if errors else COMPILE_FAILED
         return read(pymupdf.open(pdf)[0])
 
 

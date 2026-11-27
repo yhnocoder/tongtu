@@ -332,8 +332,7 @@ def comparison_problems(comparison: TableComparison) -> list[str]:
 def rendered_glyphs(latex: str) -> list[Glyph] | str:
     cjk = CJK_PACKAGE if CJK_RE.search(latex) else ""
     source = PREAMBLE + cjk + r"\begin{document}" + latex + r"\end{document}"
-    rendered = recognition.compile_snippet(source, COMPILE_COMMAND, page_glyphs)
-    return f"compile: {rendered}" if isinstance(rendered, str) else rendered
+    return recognition.compile_snippet(source, COMPILE_COMMAND, page_glyphs)
 
 
 def verify(crop: Path, latex: str) -> Verdict:

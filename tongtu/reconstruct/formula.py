@@ -251,7 +251,9 @@ def difference_problem(comparison: Comparison) -> str:
 def rendered_glyphs(body: str, kind: RegionKind) -> list[Glyph] | str:
     wrapped = rf"\[{body}\]" if kind is RegionKind.DISPLAY else f"${body}$"
     rendered = recognition.compile_snippet(PREAMBLE + wrapped + r"\end{document}", COMPILE_COMMAND, page_glyphs)
-    return f"LaTeX failed to compile. {rendered}" if isinstance(rendered, str) else rendered
+    if isinstance(rendered, str) and rendered.startswith("!"):
+        return f"{recognition.COMPILE_FAILED} {rendered}"
+    return rendered
 
 
 def verify(crop: Path, latex: str, kind: RegionKind) -> Verdict:
