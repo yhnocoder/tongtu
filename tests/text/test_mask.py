@@ -283,6 +283,40 @@ def test_inline_crop_is_one_math_block_with_its_three_arguments(environments_tab
     assert "m-0003" not in outcome.masked
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Text\\footnote{Rate CROP here.} more.",
+        "\\section{Rate CROP}\nText.",
+        "\\begin{figure}\\includegraphics{x}\\caption{Rate CROP here.}\\end{figure}",
+        "\\begin{table}\\caption[Short CROP]{Rate CROP here.}\\begin{tabular}{c}1\\end{tabular}\\end{table}",
+        "\\twocolumn[\\begin{center}Title CROP\\end{center}]",
+    ],
+    ids=["footnote", "section", "caption", "caption-twice", "twocolumn"],
+)
+def test_inline_crop_inside_translated_arguments_is_masked(body: str, environments_table) -> None:
+    crop = r"\im{m-0003}{2.1bp}{\alpha_{t}}"
+    outcome = assert_roundtrip(wrap_in_skeleton(body.replace("CROP", crop)), environments_table)
+    assert "m-0003" not in outcome.masked
+    assert all("m-0003" not in caption.masked_text for caption in outcome.captions)
+    crops = [block for block in outcome.blocks if block.tex == crop]
+    assert crops and all(block.category is BlockCategory.MATH for block in crops)
+
+
+def test_translated_caption_restores_its_inline_crop(environments_table) -> None:
+    crop = r"\im{m-0003}{2.1bp}{\alpha_{t}}"
+    source = wrap_in_skeleton(f"\\begin{{figure}}\\includegraphics{{x}}\\caption{{Rate {crop} here.}}\\end{{figure}}")
+    outcome = masking.mask_document(source, environments_table)
+    [caption] = outcome.captions
+    [inner] = [block for block in outcome.blocks if block.tex == crop]
+    assert caption.masked_text == f"Rate {masking.block_token(inner.id)} here."
+    translated = outcome.masked.replace(caption.masked_text, f"速率 {masking.block_token(inner.id)} 在此。")
+    unmasked = masking.unmask(translated, outcome.blocks, outcome.captions)
+    assert f"\\caption{{速率 {crop} 在此。}}" in unmasked.text
+    placements = {place.token_id: place for place in unmasked.placements}
+    assert unmasked.text[placements[inner.id].start : placements[inner.id].end] == crop
+
+
 def test_inline_crop_without_its_arguments_stays_text(environments_table) -> None:
     source = wrap_in_skeleton(r"text \im{m-0001} more")
     outcome = assert_roundtrip(source, environments_table)

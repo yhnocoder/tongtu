@@ -434,7 +434,7 @@ def reconstruct_summary(manifest: ReconstructManifest) -> str:
     check = manifest.final_check
     if not manifest.rebuilt or check is None:
         return "source input"
-    summary = f"pages {check.source_pages}→{check.pages}  recall {check.recall:.3f}  order {check.order:.3f}"
+    summary = f"{check.pages} pages, recall {check.recall:.3f}, order {check.order:.3f}"
     return f"{summary}, fixed" if manifest.fix_session is not None else summary
 
 

@@ -287,15 +287,27 @@ def test_text_before_a_caption_token_is_a_structure_problem() -> None:
     ]
 
 
-def test_a_placeholder_on_a_caption_line_is_a_structure_problem() -> None:
+def test_a_placeholder_moved_onto_a_caption_line_is_a_structure_problem() -> None:
+    translation = ZH.replace("⟦BLK-12⟧\n⟦CAP-3⟧ 全部实验所用流程的概览。", "⟦CAP-3⟧ 全部实验所用流程的概览。⟦BLK-12⟧")
+    messages = [message for message in caption_line_problems(translation) if "also holds" in message]
+    assert messages == [
+        "line 4 of the translation, caption_lines: the line of ⟦CAP-3⟧ also holds ⟦BLK-12⟧; "
+        "a caption line may hold no placeholder other than those on its source line"
+    ]
+
+
+def test_a_placeholder_of_the_source_caption_line_may_stay_on_it() -> None:
     source = EN.replace("⟦BLK-12⟧\n⟦CAP-3⟧", "⟦CAP-3⟧ ⟦BLK-12⟧")
     translation = ZH.replace("⟦BLK-12⟧\n⟦CAP-3⟧ 全部实验所用流程的概览。", "⟦CAP-3⟧ 全部实验所用流程的概览。⟦BLK-12⟧")
-    report = validation.check(source, translation)
-    assert [problem.category for problem in report.problems] == [validation.Category.STRUCTURE]
-    assert report.problems[0].message == (
-        "line 4 of the translation, caption_lines: the line of ⟦CAP-3⟧ also holds ⟦BLK-12⟧; "
-        "a caption line may hold no other placeholder"
-    )
+    assert caption_line_problems_of(source, translation) == []
+
+
+def caption_line_problems_of(source: str, translation: str) -> list[str]:
+    return [
+        problem.message
+        for problem in validation.check(source, translation).problems
+        if validation.CHECK_CAPTION_LINES in problem.message
+    ]
 
 
 CAPTION_PARAGRAPHS: list[tuple[str, str, str]] = [

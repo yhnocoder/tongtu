@@ -108,11 +108,12 @@ workdir ~/.tongtu/papers/2412.19437v2
 mode    smart  claude-code/claude-opus-5-5  medium
   stage       status            summary                                     elapsed
 <span class="ok">✓</span> fetch       ok                v2, tar.gz, 14 tex files                    0:00:03
+<span class="ok">✓</span> reconstruct ok                source input                                0:00:00
 <span class="ok">✓</span> precompile  ok                66 pages                                    0:00:41
 <span class="ok">✓</span> mask        ok                183 blocks masked                           0:00:00
 <span class="ok">✓</span> translate   ok                164 paragraphs, 31 new terms                0:09:55
 <span class="ok">✓</span> compile     ok                56 pages, baseline 66                       0:00:47</div>
-  <p>translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
+  <p>reconstruct 的摘要在有 TeX 源码时是 <code>source input</code>；从 PDF 重建过时写重建结果的页数、单词召回率与阅读顺序，启动过修复会话时加 <code>fixed</code>，例如 <code>16 pages, recall 0.999, order 0.997, fixed</code>。translate 的摘要在有保留英文的段落时写出段数，例如 <code>77 paragraphs, 2 kept in English, 16 new terms</code>；没有时不写这一项。</p>
   <table>
     <thead><tr><th>情形</th><th>行为</th><th>退出码</th></tr></thead>
     <tbody>
@@ -481,7 +482,7 @@ class CompileReport(BaseModel):
         <ol>
           <li>判定每个 LaTeX 环境是否翻译：文内用 <code>\newtheorem</code> 一类命令定义的环境算正文，其余查 <code>tongtu/data/environments.json</code>，查不到的不翻译。</li>
           <li>把不翻译的部分逐块换成 <code>⟦BLK-n⟧</code>，原文存进 <code>blocks.json</code>。</li>
-          <li>把块里需要翻译的文字抽出来：图表的 caption 与写在前导区里的摘要，各换成 <code>⟦CAP-n⟧</code>，压成单行放在正文里，和正文一起翻译。代码块的 caption 不抽。</li>
+          <li>把块里需要翻译的文字抽出来：图表的 caption 与写在前导区里的摘要，各换成 <code>⟦CAP-n⟧</code>，压成单行放在正文里，和正文一起翻译。代码块的 caption 不抽。抽出的文字里的行内公式截图 <code>\im{编号}{下沉量}{提示}</code> 整体换成一个 <code>⟦BLK-n⟧</code>（类别 math），留在 CAP 行里；正文、脚注与章节标题里的 <code>\im</code> 同样整体遮盖。<p class="why"><b>理由</b><code>\im</code> 的提示是截图在原文文字层里的字符，不排版，只供重建与识别参考；翻译它没有用处，还会让它与截图对不上，并可能破坏其中的花括号与命令。</p></li>
           <li>往返自检：用 <code>blocks.json</code> 把 <code>masked.tex</code> 还原，结果必须与 <code>precompile.tex</code> 逐字符相同。</li>
         </ol>
         <table>
@@ -607,7 +608,7 @@ dropout 率为 $0.1$。</code></pre></div>
         <table>
           <thead><tr><th>类别</th><th>检查什么</th></tr></thead>
           <tbody>
-            <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。每个 <code>⟦CAP-n⟧</code> 位于行首，所在行没有其他占位符，含 CAP 的段落行数与原文相同：compile 换回图表标题时取走 CAP 所在的整行。不含 CAP 的段落不检查行数。</td></tr>
+            <tr><td>结构</td><td class="wrap">段落数相同；每段的占位符、控制序列的数量、花括号与 <code>$</code> 的配对与原文一致。每个 <code>⟦CAP-n⟧</code> 位于行首，所在行除原文这一行已有的占位符外没有其他占位符，含 CAP 的段落行数与原文相同：compile 换回图表标题时取走 CAP 所在的整行。不含 CAP 的段落不检查行数。</td></tr>
             <tr><td>公式</td><td class="wrap">每段的行内公式与原文逐个相同。</td></tr>
             <tr><td>章节名</td><td class="wrap">三级章节命令的标题与原文逐字相同。</td></tr>
             <tr><td>未译</td><td class="wrap">一段译文不含中文，却有 6 个以上小写字母开头的英文单词。只含人名、机构名的段落因此不算未译。带保留英文标记的段落不做这项检查。</td></tr>

@@ -36,10 +36,14 @@ test("a run without a working directory reports the reason from the log", () => 
   assert.equal(failureReason(""), "");
 });
 
-test("fetch states without usable source are reported as untranslatable", () => {
-  assert.deepEqual(notification("2611.15404", 1, status(["pdf_only"]), "A Title", ""), {
+test("fetch and reconstruct states without usable source are reported as untranslatable", () => {
+  assert.deepEqual(notification("2611.15404", 1, status(["ok", "no_text_layer"]), "A Title", ""), {
     title: "无法翻译",
-    body: "A Title：这个版本没有 TeX 源码",
+    body: "A Title：PDF 没有文字层，可能是扫描版",
+  });
+  assert.deepEqual(notification("2611.15404", 1, status(["pdf_only"]), "A Title", ""), {
+    title: "翻译失败",
+    body: "A Title 在 fetch 阶段失败",
   });
   assert.deepEqual(notification("2611.15404", 1, status(["empty"]), "", ""), {
     title: "无法翻译",
@@ -47,7 +51,7 @@ test("fetch states without usable source are reported as untranslatable", () => 
   });
   assert.deepEqual(notification("draft", 1, status(["source_missing"]), "", ""), {
     title: "无法翻译",
-    body: "2611.15404v1：本地源码目录不存在",
+    body: "2611.15404v1：本地源码目录或 PDF 文件不存在",
   });
 });
 
@@ -64,6 +68,10 @@ test("other outcomes name the first stage that is not ok", () => {
   assert.deepEqual(notification("2611.15404", 1, status(["ok", "ok", "ok", "ok", "ok"]), "", ""), {
     title: "翻译失败",
     body: "2611.15404v1 在 compile 阶段失败",
+  });
+  assert.deepEqual(notification("2611.15404", 1, status(["ok", "reconstruct_failed"]), "A Title", ""), {
+    title: "翻译失败",
+    body: "A Title 在 reconstruct 阶段失败：从 PDF 重建的源码没有通过核对",
   });
   assert.deepEqual(notification("2611.15404", 1, status(["download_failed"]), "", ""), {
     title: "翻译失败",

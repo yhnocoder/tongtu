@@ -1563,9 +1563,11 @@ def test_reconstruct_summary_shows_the_final_check_and_the_fix_session() -> None
     session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
     assert cli.stage_summary(ReconstructManifest(status=ReconstructStatus.OK)) == "source input"
     rebuilt = ReconstructManifest(status=ReconstructStatus.OK, rebuilt=True, final_check=check)
-    assert cli.stage_summary(rebuilt) == "pages 9→10  recall 0.991  order 0.995"
+    assert cli.stage_summary(rebuilt) == "10 pages, recall 0.991, order 0.995"
     fixed = rebuilt.model_copy(update={"fix_session": session})
-    assert cli.stage_summary(fixed) == "pages 9→10  recall 0.991  order 0.995, fixed"
+    assert cli.stage_summary(fixed) == "10 pages, recall 0.991, order 0.995, fixed"
+    widest = fixed.model_copy(update={"final_check": check.model_copy(update={"pages": 999})})
+    assert len(cli.stage_summary(widest)) < cli.SUMMARY_WIDTH
 
 
 def test_translate_summary_counts_paragraphs_and_new_terms() -> None:

@@ -339,7 +339,7 @@ def check(
             "the paragraph-by-paragraph checks run only after that",
         )
         return Report(problems=(problem,), paragraphs_total=total, paragraphs_translated=0)
-    problems = _caption_line_problems(translation)
+    problems = _caption_line_problems(source, translation)
     translated = 0
     kept: list[KeptParagraph] = []
     for (_line, source_paragraph), (line, marked_paragraph) in zip(
@@ -390,8 +390,19 @@ def split_keep_english_markers(paragraph: str) -> tuple[str, tuple[str, ...]]:
     return "\n".join(lines).strip(), tuple(reasons)
 
 
-def _caption_line_problems(translation: str) -> list[Problem]:
+def _caption_line_tokens(text: str) -> dict[str, Counter[str]]:
+    held: dict[str, Counter[str]] = {}
+    for line in text.split("\n"):
+        tokens = [match.group(0) for match in TOKEN_RE.finditer(line)]
+        for match in TOKEN_RE.finditer(line):
+            if match.group(1) == CAPTION_ID_PREFIX:
+                held[match.group(0)] = Counter(token for token in tokens if token != match.group(0))
+    return held
+
+
+def _caption_line_problems(source: str, translation: str) -> list[Problem]:
     problems: list[Problem] = []
+    allowed = _caption_line_tokens(source)
     for number, line in enumerate(translation.split("\n"), start=1):
         tokens = list(TOKEN_RE.finditer(line))
         for match in tokens:
@@ -407,13 +418,13 @@ def _caption_line_problems(translation: str) -> list[Problem]:
                         "so the text before it would be lost",
                     )
                 )
-            others = [other.group(0) for other in tokens if other is not match]
+            others = Counter(other.group(0) for other in tokens if other is not match) - allowed.get(token, Counter())
             if others:
                 problems.append(
                     Problem(
                         Category.STRUCTURE,
-                        f"{where}: the line of {token} also holds {', '.join(others)}; "
-                        "a caption line may hold no other placeholder",
+                        f"{where}: the line of {token} also holds {', '.join(others.elements())}; "
+                        "a caption line may hold no placeholder other than those on its source line",
                     )
                 )
     return problems
