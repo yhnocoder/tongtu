@@ -81,8 +81,8 @@ import {
 import type { Config, Lookup, PaperDetail, PaperMeta, PaperState, PaperStatus, PaperSummary } from "../src/core.ts";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
-const STAGE_NAMES = ["fetch", "precompile", "mask", "translate", "compile"];
-const ALL_OK = ["ok", "ok", "ok", "ok", "ok"];
+const STAGE_NAMES = ["fetch", "reconstruct", "precompile", "mask", "translate", "compile"];
+const ALL_OK = ["ok", "ok", "ok", "ok", "ok", "ok"];
 
 function status(state: PaperState, statuses: string[], overrides: Partial<PaperStatus> = {}): PaperStatus {
   return {
@@ -605,7 +605,7 @@ test("completedRows leaves out what is not available", () => {
 test("running detail marks the current stage and keeps the time in the metadata", () => {
   const started = new Date(2026, 10, 26, 9, 5).toISOString();
   const now = Date.parse(started) + 201_000;
-  const running = detail("running", ["ok", "ok", "ok"], {
+  const running = detail("running", ["ok", "ok", "ok", "ok"], {
     started_at: started,
     mode: "fast",
     source_pages: 12,
@@ -615,7 +615,7 @@ test("running detail marks the current stage and keeps the time in the metadata"
     runningMarkdown(running),
     [
       "# Full Title",
-      "fetch ✓ → precompile ✓ → mask ✓ → **translate** → compile",
+      "fetch ✓ → reconstruct ✓ → precompile ✓ → mask ✓ → **translate** → compile",
       "## 会话最近的动作",
       "- Read en.tex\n- Write parts/01.tex",
     ].join("\n\n"),
@@ -635,13 +635,13 @@ test("running detail marks the current stage and keeps the time in the metadata"
 });
 
 test("unfinished detail gives the reason and the next steps", () => {
-  const failed = detail("failed", ["ok", "ok", "ok", "ok", "compile_failed"], { stage: "compile", mode: "smart", source_pages: 12 });
-  failed.status.stages[4].message = "latexmk exited\nwith 12";
+  const failed = detail("failed", ["ok", "ok", "ok", "ok", "ok", "compile_failed"], { stage: "compile", mode: "smart", source_pages: 12 });
+  failed.status.stages[5].message = "latexmk exited\nwith 12";
   assert.equal(
     unfinishedMarkdown(failed),
     [
       "# Full Title",
-      "fetch ✓ → precompile ✓ → mask ✓ → translate ✓ → **compile ✗**",
+      "fetch ✓ → reconstruct ✓ → precompile ✓ → mask ✓ → translate ✓ → **compile ✗**",
       "## 原因",
       "`compile` 失败：compile_failed latexmk exited with 12",
       "## 下一步",
@@ -656,15 +656,15 @@ test("unfinished detail gives the reason and the next steps", () => {
     { title: "页数", text: "原文 12 页" },
     { title: "模式", text: "smart" },
     { title: "失败的阶段", text: "compile" },
-    { title: "已完成的阶段数", text: "4 / 5" },
+    { title: "已完成的阶段数", text: "5 / 6" },
   ]);
-  const interrupted = { ...detail("interrupted", ["ok", "ok", "ok"], {}, null), addedAt: null };
-  assert.ok(unfinishedMarkdown(interrupted).includes("fetch ✓ → precompile ✓ → mask ✓ → translate → compile"));
+  const interrupted = { ...detail("interrupted", ["ok", "ok", "ok", "ok"], {}, null), addedAt: null };
+  assert.ok(unfinishedMarkdown(interrupted).includes("fetch ✓ → reconstruct ✓ → precompile ✓ → mask ✓ → translate → compile"));
   assert.ok(unfinishedMarkdown(interrupted).includes("在 `translate` 阶段中断"));
   assert.ok(unfinishedMarkdown(interrupted).includes("- 重试\n- 用 fast 重试\n- 用 smart 重试\n- 查看日志"));
   assert.deepEqual(unfinishedRows(interrupted).slice(1), [
     { title: "中断的阶段", text: "translate" },
-    { title: "已完成的阶段数", text: "3 / 5" },
+    { title: "已完成的阶段数", text: "4 / 6" },
   ]);
 });
 

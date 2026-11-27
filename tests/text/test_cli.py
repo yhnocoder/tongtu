@@ -25,6 +25,7 @@ from tongtu.artifacts.common import CompileReport, Manifest, NotesFile, Session,
 from tongtu.artifacts.compile import CompileManifest, CompileStatus
 from tongtu.artifacts.fetch import CachedMeta, FetchManifest, FetchStatus, PaperMeta
 from tongtu.artifacts.precompile import PrecompileManifest, PrecompileStatus
+from tongtu.artifacts.reconstruct import CheckReport, ReconstructManifest, ReconstructStatus
 from tongtu.artifacts.status import (
     ABSENT_STATUS,
     PaperListing,
@@ -750,7 +751,7 @@ def test_run_from_scratch_runs_all_stages(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_run_resumes_from_the_first_absent_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
     result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
@@ -778,8 +779,40 @@ def test_run_with_all_outputs_runs_nothing(tmp_path: Path, monkeypatch: pytest.M
     result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
     assert result.exit_code == 0
     assert calls == []
-    assert "allfivestageshavefinishedok" in squeeze(result.stdout)
+    assert "allsixstageshavefinishedok" in squeeze(result.stdout)
     assert "--from" in result.stdout
+
+
+def write_pre_reconstruct_workdir(root: Path) -> cli.Workdir:
+    workdir = cli.Workdir(root / "2002.05202v1")
+    workdir.create()
+    old_fetch = '{"status": "ok", "source": "2002.05202v1", "arxiv_id": "2002.05202", "version": 1, "kind": "tar.gz"}'
+    workdir.manifest_path("fetch").write_text(old_fetch, encoding="utf-8")
+    (workdir.src / "main.tex").write_text("\\documentclass{article}", encoding="utf-8")
+    for name in ("precompile", "mask", "translate", "compile"):
+        write_manifest(workdir.manifest_path(name), Manifest(status="ok"))
+    return workdir
+
+
+def test_run_of_a_workdir_from_before_reconstruct_runs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir = write_pre_reconstruct_workdir(tmp_path)
+    assert cli.first_pending(workdir) is None
+    calls: list[str] = []
+    wire_entries(monkeypatch, calls)
+    result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(workdir.path)])
+    assert result.exit_code == 0
+    assert calls == []
+    assert "allsixstageshavefinishedok" in squeeze(result.stdout)
+    assert not workdir.manifest_path("reconstruct").exists()
+
+
+def test_status_of_a_workdir_from_before_reconstruct_is_ok(tmp_path: Path) -> None:
+    workdir = write_pre_reconstruct_workdir(tmp_path)
+    snapshot = status_json("2002.05202v1", "--workdir", str(workdir.path))
+    assert (snapshot.state, snapshot.stage) == (PaperState.OK, None)
+    reconstruct_state = snapshot.stages[STAGES.index("reconstruct")]
+    assert (reconstruct_state.status, reconstruct_state.manifest) == ("ok", None)
+    assert reconstruct_state.outputs_present
 
 
 def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -798,7 +831,7 @@ def test_run_from_cleans_downstream_before_rerunning(tmp_path: Path, monkeypatch
     assert not workdir.manifest_path("compile").exists()
     notes_file = load_manifest(workdir.notes, NotesFile)
     assert notes_file is not None
-    assert [note.session for note in notes_file.notes] == ["precompile_fix"]
+    assert [note.session for note in notes_file.notes] == ["reconstruct_fix", "precompile_fix"]
 
 
 def test_run_stops_at_the_first_failed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -806,7 +839,7 @@ def test_run_stops_at_the_first_failed_stage(tmp_path: Path, monkeypatch: pytest
     wire_entries(monkeypatch, calls, statuses={"mask": "mask_failed"})
     result = runner.invoke(app, ["run", "2002.05202v1", "--workdir", str(tmp_path / "paper")])
     assert result.exit_code == 1
-    assert calls == ["fetch", "precompile", "mask"]
+    assert calls == ["fetch", "reconstruct", "precompile", "mask"]
     assert "mask_failed" in result.stdout
     assert "失败原因一句话" in result.stdout
     assert str(Path(tmp_path, "paper", "build", "manifests", "mask.json")) in squeeze(result.stdout)
@@ -918,7 +951,7 @@ def test_run_rejects_the_removed_options(tmp_path: Path, monkeypatch: pytest.Mon
 
 @pytest.mark.parametrize("option", [["--ask-model", "a/b"], ["--jobs", "4"], ["--no-terms"]])
 def test_stage_rejects_the_removed_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: list[str]) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
     result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path), *option])
@@ -939,7 +972,7 @@ def test_run_rejects_an_unknown_from_stage(tmp_path: Path) -> None:
 def test_stage_without_arguments_lists_the_stage_order() -> None:
     result = runner.invoke(app, ["stage"])
     assert result.exit_code == 0
-    assert "fetch → precompile → mask → translate → compile" in result.stdout
+    assert "fetch → reconstruct → precompile → mask → translate → compile" in result.stdout
 
 
 def test_stage_requires_the_paper_argument() -> None:
@@ -957,7 +990,7 @@ def test_stage_refuses_to_run_with_absent_upstream(tmp_path: Path, monkeypatch: 
 
 
 def test_stage_runs_only_the_named_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     calls: list[str] = []
     wire_entries(monkeypatch, calls)
     result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path)])
@@ -987,11 +1020,11 @@ def test_stage_cleans_its_own_outputs_before_running(tmp_path: Path, monkeypatch
     assert workdir.manifest_path("compile").is_file()
     notes_file = load_manifest(workdir.notes, NotesFile)
     assert notes_file is not None
-    assert [note.session for note in notes_file.notes] == ["precompile_fix", "compile_fix"]
+    assert [note.session for note in notes_file.notes] == ["reconstruct_fix", "precompile_fix", "compile_fix"]
 
 
 def test_stage_exits_one_when_the_stage_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     calls: list[str] = []
     wire_entries(monkeypatch, calls, statuses={"mask": "mask_failed"})
     result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path)])
@@ -1041,7 +1074,7 @@ def test_run_overwrites_the_run_record_and_from_keeps_it(tmp_path: Path, monkeyp
 
 
 def test_stage_keeps_the_run_marker_while_the_stage_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     seen: list[RunMarker | None] = []
     wire_marker_probe(monkeypatch, seen)
     result = runner.invoke(app, ["stage", "mask", "2002.05202", "--workdir", str(workdir.path)])
@@ -1287,7 +1320,7 @@ def test_status_json_of_an_absent_workdir_marks_every_stage_absent(tmp_path: Pat
 
 
 def test_status_json_reports_each_stage_from_its_manifest(tmp_path: Path) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     workdir.manifest_path("mask").write_text(
         Manifest(status="mask_failed", warnings=["警告一条"], message="哨兵已存在").model_dump_json(),
         encoding="utf-8",
@@ -1310,12 +1343,12 @@ def test_status_json_reports_each_stage_from_its_manifest(tmp_path: Path) -> Non
     assert states["translate"].status == ABSENT_STATUS
     assert states["translate"].manifest == workdir.manifest_path("translate")
     assert (states["compile"].status, states["compile"].manifest) == (ABSENT_STATUS, None)
-    assert [name for name, state in states.items() if state.outputs_present] == ["fetch", "compile"]
+    assert [name for name, state in states.items() if state.outputs_present] == ["fetch", "reconstruct", "compile"]
     assert snapshot.pdf == workdir.zh_pdf
 
 
 def test_status_json_takes_the_mode_of_the_translate_manifest(tmp_path: Path) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile", "mask")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile", "mask")
     write_manifest(
         workdir.manifest_path("translate"), TranslateManifest(status=TranslateStatus.TRANSLATE_FAILED, mode="fast")
     )
@@ -1329,7 +1362,7 @@ def write_run_record(workdir: cli.Workdir, mode: str) -> None:
 
 
 def test_status_json_takes_the_mode_of_the_run_record_last(tmp_path: Path) -> None:
-    workdir = write_outputs(tmp_path, "fetch", "precompile")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile")
     write_run_record(workdir, "smart")
     assert status_json("2002.05202", "--workdir", str(workdir.path)).mode == "smart"
     write_manifest(workdir.manifest_path("translate"), TranslateManifest(status=TranslateStatus.OK, mode="fast"))
@@ -1555,6 +1588,20 @@ def test_compile_summary_lists_pages_baseline_and_fix_session() -> None:
     )
 
 
+def test_reconstruct_summary_shows_the_final_check_and_the_fix_session() -> None:
+    check = CheckReport(
+        source_pages=9, pages=10, recall=0.9912, precision=0.99, missing_characters=0, order=0.9954, passed=True
+    )
+    session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
+    assert cli.stage_summary(ReconstructManifest(status=ReconstructStatus.OK)) == "source input"
+    rebuilt = ReconstructManifest(status=ReconstructStatus.OK, rebuilt=True, final_check=check)
+    assert cli.stage_summary(rebuilt) == "10 pages, recall 0.991, order 0.995"
+    fixed = rebuilt.model_copy(update={"fix_session": session})
+    assert cli.stage_summary(fixed) == "10 pages, recall 0.991, order 0.995, fixed"
+    widest = fixed.model_copy(update={"final_check": check.model_copy(update={"pages": 999})})
+    assert len(cli.stage_summary(widest)) < cli.SUMMARY_WIDTH
+
+
 def test_translate_summary_counts_paragraphs_and_new_terms() -> None:
     session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=1.0)
     manifest = TranslateManifest(
@@ -1609,7 +1656,7 @@ def test_translate_entry_passes_the_mode_glossaries_and_report(tmp_path: Path, m
         return TranslateManifest(status=TranslateStatus.OK, mode=mode)
 
     monkeypatch.setattr(cli.translate, "run", fake_run)
-    workdir = write_outputs(tmp_path, "fetch", "precompile", "mask")
+    workdir = write_outputs(tmp_path, "fetch", "reconstruct", "precompile", "mask")
     result = runner.invoke(
         app, ["stage", "translate", "2002.05202", "--workdir", str(workdir.path), "--glossary", "a.json"]
     )
@@ -1805,7 +1852,9 @@ def test_run_of_a_local_source_has_no_version(tmp_path: Path, monkeypatch: pytes
 
 def test_stage_resolves_only_local_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     urls = wire_api(monkeypatch)
-    write_outputs(tmp_path / "papers", "fetch", "precompile").path.rename(tmp_path / "papers" / "2106.04426v2")
+    write_outputs(tmp_path / "papers", "fetch", "reconstruct", "precompile").path.rename(
+        tmp_path / "papers" / "2106.04426v2"
+    )
     result, captured, calls = run_with_home(tmp_path, monkeypatch, "stage", "mask", "2106.04426")
     assert result.exit_code == 0
     assert urls == []
@@ -1998,7 +2047,7 @@ def test_run_and_stage_with_workdir_of_a_local_source_accept_its_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head: list[str]
 ) -> None:
     urls = wire_api(monkeypatch)
-    source, workdir = local_source_workdir(tmp_path, "fetch", "precompile")
+    source, workdir = local_source_workdir(tmp_path, "fetch", "reconstruct", "precompile")
     result, captured, _ = run_with_home(tmp_path / "home", monkeypatch, *head, "article", "--workdir", str(workdir))
     assert result.exit_code == 0
     assert urls == []
@@ -2087,7 +2136,7 @@ def write_paper(
     workdir = cli.Workdir(papers / name)
     workdir.path.mkdir(parents=True)
     write_manifest(workdir.manifest_path("fetch"), fetched)
-    for stage_name, stage_status in statuses.items():
+    for stage_name, stage_status in {"reconstruct": "ok", **statuses}.items():
         write_manifest(workdir.manifest_path(stage_name), Manifest(status=stage_status))
     for path in workdir.manifests.iterdir():
         os.utime(path, (mtime, mtime))
@@ -2125,7 +2174,7 @@ def test_list_json_of_an_empty_papers_directory_is_empty(tmp_path: Path, monkeyp
 
 def write_finished_paper(papers: Path) -> cli.Workdir:
     workdir = write_paper(papers, "2412.19437v2", arxiv_fetch_manifest("2412.19437", 2), {})
-    for name in ("precompile", "mask"):
+    for name in ("reconstruct", "precompile", "mask"):
         write_manifest(workdir.manifest_path(name), Manifest(status="ok"))
     usage = Usage(turns=3, input_tokens=1, output_tokens=1, cache_read_tokens=0, cache_write_tokens=0, cost_usd=4.25)
     session = Session(stop_reason=StopReason.FINISHED, model="rt/m", duration_seconds=595.5, usage=usage)

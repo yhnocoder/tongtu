@@ -8,12 +8,13 @@ from pydantic import AwareDatetime, BaseModel
 
 from .common import Manifest
 
-FetchKind = Literal["tar.gz", "tar", "gz", "tex", "pdf", "local"]
+FetchKind = Literal["tar.gz", "tar", "gz", "tex", "pdf", "local", "local_pdf"]
+
+FetchRoute = Literal["tex", "pdf"]
 
 
 class FetchStatus(StrEnum):
     OK = "ok"
-    PDF_ONLY = "pdf_only"
     EMPTY = "empty"
     DOWNLOAD_FAILED = "download_failed"
     UNPACK_FAILED = "unpack_failed"
@@ -26,6 +27,7 @@ class FetchManifest(Manifest):
     arxiv_id: str | None = None
     version: int | None = None
     kind: FetchKind | None = None
+    route: FetchRoute = "tex"
     url: str = ""
     payload_bytes: int = 0
     tex_files: list[str] = []

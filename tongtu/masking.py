@@ -35,6 +35,12 @@ ABSTRACT_ENVIRONMENT = "abstract"
 
 METADATA_COMMANDS: frozenset[str] = frozenset({"title", "author", "date", "affiliation", "email"})
 
+INLINE_CROP_COMMAND = "im"
+
+INLINE_CROP_ARGUMENTS = 3
+
+INLINE_CROP_RE = re.compile(r"(?<!\\)\\" + INLINE_CROP_COMMAND + r"(?![A-Za-z@])")
+
 CAPTION_COMMAND = "caption"
 CAPTION_OF_COMMAND = "captionof"
 
@@ -361,6 +367,9 @@ class _MaskRun:
             if name in METADATA_COMMANDS:
                 position = self._mask_metadata(position, after_name)
                 continue
+            if name == INLINE_CROP_COMMAND:
+                position = self._mask_inline_crop(position, after_name)
+                continue
             position = after_name
         if not seen_end_document:
             self.warnings.append("no \\end{document} met in the stream; no postamble block emitted")
@@ -420,6 +429,13 @@ class _MaskRun:
             return after_name
         end = match_group(self.text, position)
         self._emit_block(start, end, BlockCategory.METADATA, environment="", slots=[])
+        return end
+
+    def _mask_inline_crop(self, start: int, after_name: int) -> int:
+        end = inline_crop_end(self.text, after_name, self.length)
+        if end is None:
+            return after_name
+        self._emit_block(start, end, BlockCategory.MATH, environment="", slots=[])
         return end
 
     def _scan_environment_body(
@@ -496,32 +512,59 @@ class _MaskRun:
         slots: list[_CaptionSlot],
     ) -> None:
         block_id = f"{BLOCK_ID_PREFIX}-{len(self.blocks)}"
-        captions = [self._emit_caption(block_id, slot) for slot in slots]
+        caption_ids = [f"{CAPTION_ID_PREFIX}-{len(self.captions) + index}" for index in range(len(slots))]
         self.blocks.append(
             BlockRecord(
                 id=block_id,
                 category=category,
                 environment=environment,
-                tex=_apply_slots(self.text, start, end, slots, [caption.id for caption in captions]),
+                tex=_apply_slots(self.text, start, end, slots, caption_ids),
             )
         )
+        captions = [
+            self._emit_caption(caption_id, block_id, slot) for caption_id, slot in zip(caption_ids, slots, strict=True)
+        ]
         self.output.append(self.text[self.cursor : start])
         self.output.append(block_token(block_id))
         for caption in captions:
             self.output.append(f"\n{block_token(caption.id)} {caption.masked_text}\n")
         self.cursor = end
 
-    def _emit_caption(self, block_id: str, slot: _CaptionSlot) -> CaptionRecord:
-        raw = self.text[slot.start : slot.end]
+    def _emit_caption(self, caption_id: str, block_id: str, slot: _CaptionSlot) -> CaptionRecord:
+        tex = self._mask_caption_crops(slot.start, slot.end)
         caption = CaptionRecord(
-            id=f"{CAPTION_ID_PREFIX}-{len(self.captions)}",
+            id=caption_id,
             block_id=block_id,
             kind=slot.kind,
-            tex=raw,
-            masked_text=_single_line_text(raw),
+            tex=tex,
+            masked_text=_single_line_text(tex),
         )
         self.captions.append(caption)
         return caption
+
+    def _mask_caption_crops(self, start: int, end: int) -> str:
+        parts: list[str] = []
+        cursor = start
+        for match in INLINE_CROP_RE.finditer(self.text, start, end):
+            if match.start() < cursor:
+                continue
+            crop_end = inline_crop_end(self.text, match.end(), end)
+            if crop_end is None:
+                continue
+            block_id = f"{BLOCK_ID_PREFIX}-{len(self.blocks)}"
+            self.blocks.append(
+                BlockRecord(
+                    id=block_id,
+                    category=BlockCategory.MATH,
+                    environment="",
+                    tex=self.text[match.start() : crop_end],
+                )
+            )
+            parts.append(self.text[cursor : match.start()])
+            parts.append(block_token(block_id))
+            cursor = crop_end
+        parts.append(self.text[cursor:end])
+        return "".join(parts)
 
     def _line_of(self, position: int) -> int:
         return bisect_right(self.line_starts, position)
@@ -607,6 +650,15 @@ def skip_optional_arguments(text: str, position: int) -> int:
         if cursor >= len(text) or text[cursor] != "[":
             return cursor
         cursor = _match_bracket(text, cursor)
+
+
+def inline_crop_end(text: str, after_name: int, limit: int) -> int | None:
+    end = after_name
+    for _ in range(INLINE_CROP_ARGUMENTS):
+        if end >= limit or text[end] != "{":
+            return None
+        end = match_group(text, end)
+    return end if end <= limit else None
 
 
 def match_group(text: str, position: int) -> int:
@@ -773,6 +825,7 @@ def _restore_blocks(
 ) -> tuple[str, list[Placement]]:
     block_by_id = {block.id: block for block in blocks}
     used: dict[str, int] = {}
+    filled, inner = _expand_caption_blocks(filled, block_by_id, used)
     parts: list[str] = []
     placements: list[Placement] = []
     length = 0
@@ -790,6 +843,11 @@ def _restore_blocks(
             body += "\n"
         placements.append(Placement(token_id, length, length + len(body)))
         placements.extend(Placement(slot.token_id, length + slot.start, length + slot.end) for slot in slots)
+        placements.extend(
+            Placement(nested.token_id, length + slot.start + nested.start, length + slot.start + nested.end)
+            for slot in slots
+            for nested in inner.get(slot.token_id, [])
+        )
         parts.append(body)
         length += len(body)
         cursor = match.end()
@@ -801,6 +859,34 @@ def _restore_blocks(
                 f"{block_token(block.id)} is used {count} times in the stream; each block token must be used exactly once"
             )
     return "".join(parts), placements
+
+
+def _expand_caption_blocks(
+    filled: Mapping[str, str], block_by_id: Mapping[str, BlockRecord], used: dict[str, int]
+) -> tuple[dict[str, str], dict[str, list[Placement]]]:
+    expanded: dict[str, str] = {}
+    inner: dict[str, list[Placement]] = {}
+    for caption_id, text in filled.items():
+        parts: list[str] = []
+        placements: list[Placement] = []
+        length = 0
+        cursor = 0
+        for match in TOKEN_RE.finditer(text):
+            token_id = f"{match.group(1)}-{match.group(2)}"
+            block = block_by_id.get(token_id)
+            if block is None:
+                raise MaskError(f"{match.group(0)} inside caption {caption_id} has no entry in the blocks records")
+            used[token_id] = used.get(token_id, 0) + 1
+            parts.append(text[cursor : match.start()])
+            length += match.start() - cursor
+            placements.append(Placement(token_id, length, length + len(block.tex)))
+            parts.append(block.tex)
+            length += len(block.tex)
+            cursor = match.end()
+        parts.append(text[cursor:])
+        expanded[caption_id] = "".join(parts)
+        inner[caption_id] = placements
+    return expanded, inner
 
 
 def _text_follows_on_line(stream: str, position: int) -> bool:

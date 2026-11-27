@@ -142,6 +142,7 @@ def wire_work(
         log_path: Path,
         report=None,
         extra_prompt: str = "",
+        tongtu_python: bool = False,
     ):
         calls.append(
             {

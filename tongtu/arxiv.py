@@ -42,6 +42,10 @@ ARXIV = "{http://arxiv.org/schemas/atom}"
 
 PATH_NAVIGATION_LITERALS = frozenset({"", ".", "..", "~"})
 
+PDF_FILE_MAGIC = b"%PDF-"
+
+PDF_SUFFIX = ".pdf"
+
 LATEST_CACHE_SECONDS = 86400
 
 ARXIV_RETRIES = 4
@@ -81,6 +85,7 @@ class PaperInput:
     arxiv_id: str | None = None
     version: int | None = None
     source_dir: Path | None = None
+    source_pdf: Path | None = None
 
 
 def split_version(paper_id: str) -> tuple[str, int | None]:
@@ -118,10 +123,32 @@ def _as_source_directory(paper: str) -> Path | None:
     return path if path.is_dir() else None
 
 
+def _as_source_pdf(paper: str) -> Path | None:
+    if paper in PATH_NAVIGATION_LITERALS:
+        return None
+    try:
+        path = Path(paper).expanduser()
+        if not path.is_file():
+            return None
+        with path.open("rb") as file:
+            head = file.read(len(PDF_FILE_MAGIC))
+    except (OSError, RuntimeError):
+        return None
+    return path if head == PDF_FILE_MAGIC else None
+
+
+def pdf_workdir_name(path: Path) -> str:
+    name = path.name
+    return name[: -len(PDF_SUFFIX)] if name.lower().endswith(PDF_SUFFIX) else name
+
+
 def parse_paper_argument(paper: str) -> PaperInput:
     source_dir = _as_source_directory(paper)
     if source_dir is not None:
         return PaperInput(source_dir=source_dir)
+    source_pdf = _as_source_pdf(paper)
+    if source_pdf is not None:
+        return PaperInput(source_pdf=source_pdf)
     paper_id = parse_arxiv_url(paper) if paper.startswith(("http://", "https://")) else paper
     arxiv_id, version = split_version(paper_id)
     normalize_arxiv_id(arxiv_id)

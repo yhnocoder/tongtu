@@ -40,6 +40,7 @@ from .artifacts.compile import CompileManifest
 from .artifacts.fetch import FetchManifest, PaperMeta
 from .artifacts.mask import MaskManifest
 from .artifacts.precompile import PrecompileManifest
+from .artifacts.reconstruct import ReconstructManifest
 from .artifacts.status import (
     ABSENT_STATUS,
     PaperListing,
@@ -74,9 +75,9 @@ from .model.config import (
     write_config,
 )
 from .model.work import AGENTRUN_EXECUTABLE, agentrun_executable
-from .pipeline import STAGES, clean, clean_from, downstream, first_pending, outputs_present
+from .pipeline import STAGES, clean, clean_from, downstream, first_pending, implied_complete, outputs_present
 from .processes import OUTPUT_EXCERPT_CHARS
-from .stages import compile, fetch, mask, precompile, translate
+from .stages import compile, fetch, mask, precompile, reconstruct, translate
 from .workdir import ENCODING, Workdir, WorkdirError, normalize_arxiv_id, resolve
 
 EXIT_FAILURE = 1
@@ -173,6 +174,10 @@ def _fetch_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return fetch.run(options.paper, options.workdir, options.meta)
 
 
+def _reconstruct_entry(options: RunOptions, display: StageDisplay) -> Manifest:
+    return reconstruct.run(options.workdir, mode=options.mode, report=display.action)
+
+
 def _precompile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
     return precompile.run(options.workdir, mode=options.mode, report=display.action)
 
@@ -196,6 +201,7 @@ def _compile_entry(options: RunOptions, display: StageDisplay) -> Manifest:
 
 STAGE_ENTRIES: dict[str, Callable[[RunOptions, StageDisplay], Manifest]] = {
     "fetch": _fetch_entry,
+    "reconstruct": _reconstruct_entry,
     "precompile": _precompile_entry,
     "mask": _mask_entry,
     "translate": _translate_entry,
@@ -203,7 +209,9 @@ STAGE_ENTRIES: dict[str, Callable[[RunOptions, StageDisplay], Manifest]] = {
 }
 
 
-PaperArg = Annotated[str, typer.Argument(metavar="PAPER", help="arXiv id / arXiv URL / local source directory")]
+PaperArg = Annotated[
+    str, typer.Argument(metavar="PAPER", help="arXiv id / arXiv URL / local source directory / local PDF file")
+]
 FromOpt = Annotated[
     StageName | None,
     typer.Option(
@@ -257,6 +265,8 @@ def _apply_dev(dev: bool) -> None:
 
 
 def _workdir_name(paper_input: PaperInput) -> str:
+    if paper_input.source_pdf is not None:
+        return arxiv.pdf_workdir_name(paper_input.source_pdf)
     if paper_input.source_dir is not None:
         return paper_input.source_dir.name
     if paper_input.arxiv_id is not None and paper_input.version is not None:
@@ -264,9 +274,9 @@ def _workdir_name(paper_input: PaperInput) -> str:
     return paper_input.arxiv_id or ""
 
 
-def _describe_paper(arxiv_id: str | None, version: int | None) -> str:
+def _describe_paper(arxiv_id: str | None, version: int | None, pdf: bool = False) -> str:
     if arxiv_id is None:
-        return "a local source directory"
+        return "a local PDF file" if pdf else "a local source directory"
     if version is None:
         return arxiv_id
     return arxiv.versioned_id(arxiv_id, version)
@@ -283,16 +293,17 @@ def _check_fetched(paper_input: PaperInput, workdir: Path | None, fetched: Fetch
     if fetched is None:
         return
     if fetched.arxiv_id is None:
-        source_dir = paper_input.source_dir
-        same_paper = source_dir is not None and source_dir.resolve() == Path(fetched.source).resolve()
+        local = paper_input.source_pdf or paper_input.source_dir
+        same_paper = local is not None and local.resolve() == Path(fetched.source).resolve()
     else:
         same_paper = paper_input.arxiv_id is not None and _same_arxiv_id(paper_input.arxiv_id, fetched.arxiv_id)
     same_version = paper_input.version is None or fetched.version is None or paper_input.version == fetched.version
     if same_paper and same_version:
         return
     raise typer.BadParameter(
-        f"--workdir {workdir} holds {_describe_paper(fetched.arxiv_id, fetched.version)}, "
-        f"but the command asks for {_describe_paper(paper_input.arxiv_id, paper_input.version)}; "
+        f"--workdir {workdir} holds {_describe_paper(fetched.arxiv_id, fetched.version, fetched.kind == 'local_pdf')}, "
+        f"but the command asks for "
+        f"{_describe_paper(paper_input.arxiv_id, paper_input.version, paper_input.source_pdf is not None)}; "
         "name the paper that this directory holds, or choose another --workdir"
     )
 
@@ -319,7 +330,8 @@ def _paper_workdir(
     if workdir is not None:
         fetched = load_manifest(Workdir(resolve(workdir=workdir)).manifest_path(fetch.STAGE_NAME), FetchManifest)
         if fetched is not None and fetched.arxiv_id is None and paper == Path(fetched.source).name:
-            paper_input = PaperInput(source_dir=Path(fetched.source))
+            local = Path(fetched.source)
+            paper_input = PaperInput(source_pdf=local) if fetched.kind == "local_pdf" else PaperInput(source_dir=local)
         _check_fetched(paper_input, workdir, fetched)
         if fetched is not None and fetched.arxiv_id is not None:
             paper_input = replace(paper_input, arxiv_id=fetched.arxiv_id)
@@ -392,6 +404,8 @@ def stage_summary(manifest: Manifest) -> str:
             parts.append(manifest.kind)
         parts.append(f"{len(manifest.tex_files)} tex files")
         return ", ".join(parts)
+    if isinstance(manifest, ReconstructManifest):
+        return reconstruct_summary(manifest)
     if isinstance(manifest, PrecompileManifest):
         parts = [f"{manifest.report.pages} pages"] if manifest.report else []
         if manifest.fix_session is not None:
@@ -414,6 +428,14 @@ def stage_summary(manifest: Manifest) -> str:
             parts.append("1 fix session")
         return ", ".join(parts)
     return ""
+
+
+def reconstruct_summary(manifest: ReconstructManifest) -> str:
+    check = manifest.final_check
+    if not manifest.rebuilt or check is None:
+        return "source input"
+    summary = f"{check.pages} pages, recall {check.recall:.3f}, order {check.order:.3f}"
+    return f"{summary}, fixed" if manifest.fix_session is not None else summary
 
 
 def _print_stage_header() -> None:
@@ -487,7 +509,7 @@ def run(
         else:
             pending = first_pending(options.workdir)
             if pending is None:
-                console.print("all five stages have finished ok; nothing to run. Use --from STAGE to redo.")
+                console.print("all six stages have finished ok; nothing to run. Use --from STAGE to redo.")
                 return
             start = pending
             if start != STAGES[0]:
@@ -503,7 +525,8 @@ def stage(
         StageName | None, typer.Argument(metavar="STAGE", help=f"stage name, in order: {', '.join(STAGES)}")
     ] = None,
     paper: Annotated[
-        str | None, typer.Argument(metavar="PAPER", help="arXiv id / arXiv URL / local source directory")
+        str | None,
+        typer.Argument(metavar="PAPER", help="arXiv id / arXiv URL / local source directory / local PDF file"),
     ] = None,
     glossary: GlossaryOpt = None,
     workdir: WorkdirOpt = None,
@@ -515,7 +538,9 @@ def stage(
         console.print(" → ".join(STAGES))
         return
     if paper is None:
-        raise typer.BadParameter("missing argument PAPER (arXiv id / arXiv URL / local source directory)")
+        raise typer.BadParameter(
+            "missing argument PAPER (arXiv id / arXiv URL / local source directory / local PDF file)"
+        )
     options = _options(paper, workdir, glossary, _mode(mode)[0], may_query=name.value == "fetch")
     missing = [
         upstream for upstream in STAGES[: STAGES.index(name.value)] if not outputs_present(options.workdir, upstream)
@@ -632,10 +657,14 @@ def _status_snapshot(paper_workdir: Workdir, arxiv_id: str | None, version: int 
     for name in STAGES:
         manifest_path = paper_workdir.manifest_path(name)
         manifest = load_manifest(manifest_path, Manifest)
+        if manifest is not None:
+            status = manifest.status
+        else:
+            status = "ok" if implied_complete(paper_workdir, name) else ABSENT_STATUS
         stages.append(
             StageState(
                 name=name,
-                status=manifest.status if manifest is not None else ABSENT_STATUS,
+                status=status,
                 outputs_present=outputs_present(paper_workdir, name),
                 message=manifest.message if manifest is not None else "",
                 warnings=manifest.warnings if manifest is not None else [],
@@ -698,6 +727,7 @@ def _existing(path: Path) -> Path | None:
 
 
 SESSION_LOGS: dict[str, Callable[[Workdir], Path]] = {
+    "reconstruct": lambda w: w.reconstruct_fix_log,
     "precompile": lambda w: w.precompile_fix_log,
     "translate": lambda w: w.translate_log,
     "compile": lambda w: w.compile_fix_log,
@@ -833,7 +863,7 @@ def info(
     except (PaperArgumentError, WorkdirError) as error:
         raise typer.BadParameter(str(error)) from error
     if paper_input.arxiv_id is None:
-        raise typer.BadParameter(f"{paper} is a local source directory, which has no arXiv info")
+        raise typer.BadParameter(f"{paper} is a local source directory or PDF file, which has no arXiv info")
     try:
         found = arxiv.find_meta(paper_input.arxiv_id, paper_input.version, refresh=refresh)
     except arxiv.ArxivError as error:

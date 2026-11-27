@@ -1,4 +1,4 @@
-const STAGES = ["fetch", "precompile", "mask", "translate", "compile"];
+const STAGES = ["fetch", "reconstruct", "precompile", "mask", "translate", "compile"];
 export const NOT_INSTALLED = "没有找到 tongtu 命令，安装方法见 README";
 export const DEFAULT_RECENT_DAYS = 7;
 const ACTIVE_REFRESH_SECONDS = 5;

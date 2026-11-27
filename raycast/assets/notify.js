@@ -1,10 +1,19 @@
-const STAGES = ["fetch", "precompile", "mask", "translate", "compile"];
+const STAGES = ["fetch", "reconstruct", "precompile", "mask", "translate", "compile"];
 const STOPPED_EXIT_CODE = 143;
 const TOOL_DIRECTORIES = ["~/.local/bin", "~/.cargo/bin", "/opt/homebrew/bin", "/Library/TeX/texbin", "/usr/bin", "/bin"];
 const UNTRANSLATABLE = {
-  pdf_only: "这个版本没有 TeX 源码",
-  empty: "源码包里没有 TeX 文件",
-  source_missing: "本地源码目录不存在",
+  fetch: {
+    empty: "源码包里没有 TeX 文件",
+    source_missing: "本地源码目录或 PDF 文件不存在",
+  },
+  reconstruct: {
+    no_text_layer: "PDF 没有文字层，可能是扫描版",
+  },
+};
+const FAILURES = {
+  reconstruct: {
+    reconstruct_failed: "从 PDF 重建的源码没有通过核对",
+  },
 };
 
 function shellQuote(text) {
@@ -46,10 +55,12 @@ function notification(paper, runExitCode, status, title, log) {
   if (!status) return { title: "翻译失败", body: paper + "：" + failureReason(log) };
   const name = title || workdirName(status.workdir) || paper;
   const stageStatus = (stage) => (status.stages.find((state) => state.name === stage) || { status: "absent" }).status;
-  const untranslatable = UNTRANSLATABLE[stageStatus("fetch")];
-  if (untranslatable) return { title: "无法翻译", body: name + "：" + untranslatable };
   const unfinished = STAGES.find((stage) => stageStatus(stage) !== "ok");
   if (!unfinished) return { title: "翻译完成", body: name };
+  const untranslatable = (UNTRANSLATABLE[unfinished] || {})[stageStatus(unfinished)];
+  if (untranslatable) return { title: "无法翻译", body: name + "：" + untranslatable };
+  const failure = (FAILURES[unfinished] || {})[stageStatus(unfinished)];
+  if (failure) return { title: "翻译失败", body: name + " 在 " + unfinished + " 阶段失败：" + failure };
   return { title: "翻译失败", body: name + " 在 " + unfinished + " 阶段失败" };
 }
 

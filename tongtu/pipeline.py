@@ -6,21 +6,48 @@ from pathlib import Path
 
 from . import notes
 from .artifacts.common import Manifest, NoteSession
+from .artifacts.fetch import FetchManifest, FetchRoute
 from .manifests import load_manifest
 from .workdir import Workdir, raw_log_path
 
-STAGES: tuple[str, ...] = ("fetch", "precompile", "mask", "translate", "compile")
+STAGES: tuple[str, ...] = ("fetch", "reconstruct", "precompile", "mask", "translate", "compile")
+
+RECONSTRUCT_STAGE = "reconstruct"
+
+
+def fetched_route(workdir: Workdir) -> FetchRoute:
+    fetched = load_manifest(workdir.manifest_path(STAGES[0]), FetchManifest)
+    return fetched.route if fetched is not None else "tex"
+
+
+def implied_complete(workdir: Workdir, stage: str) -> bool:
+    if stage != RECONSTRUCT_STAGE or workdir.manifest_path(stage).exists():
+        return False
+    fetched = load_manifest(workdir.manifest_path(STAGES[0]), FetchManifest)
+    return fetched is not None and fetched.ok and fetched.route == "tex"
+
+
+def _rebuilt(workdir: Workdir) -> bool:
+    return fetched_route(workdir) == "pdf"
+
 
 STAGE_OUTPUTS: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
-    "fetch": (lambda w: w.src,),
+    "fetch": (lambda w: w.original_pdf if _rebuilt(w) else w.src,),
+    "reconstruct": (lambda w: w.src / "main.tex" if _rebuilt(w) else w.src,),
     "precompile": (lambda w: w.precompile_tex, lambda w: w.precompile_pdf),
     "mask": (lambda w: w.masked, lambda w: w.blocks),
     "translate": (lambda w: w.translated,),
     "compile": (lambda w: w.zh_tex, lambda w: w.zh_pdf),
 }
 
-STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
-    "fetch": (lambda w: w.src, lambda w: w.eprint, lambda w: w.meta),
+STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path | None], ...]] = {
+    "fetch": (lambda w: w.src, lambda w: w.eprint, lambda w: w.original_pdf, lambda w: w.meta),
+    "reconstruct": (
+        lambda w: w.sandbox("reconstruct"),
+        lambda w: w.reconstruct_fix_log,
+        lambda w: raw_log_path(w.reconstruct_fix_log),
+        lambda w: w.src if _rebuilt(w) else None,
+    ),
     "precompile": (
         lambda w: w.sandbox("tex"),
         lambda w: w.precompile_tex,
@@ -47,6 +74,7 @@ STAGE_REMOVES: dict[str, tuple[Callable[[Workdir], Path], ...]] = {
 }
 
 STAGE_SESSIONS: dict[str, NoteSession] = {
+    "reconstruct": "reconstruct_fix",
     "precompile": "precompile_fix",
     "translate": "translate",
     "compile": "compile_fix",
@@ -64,6 +92,8 @@ def _present(path: Path) -> bool:
 
 
 def completed(workdir: Workdir, stage: str) -> bool:
+    if implied_complete(workdir, stage):
+        return True
     manifest = load_manifest(workdir.manifest_path(stage), Manifest)
     return manifest is not None and manifest.ok
 
@@ -93,7 +123,9 @@ def clean_from(workdir: Workdir, stage: str) -> None:
         clean(workdir, name)
 
 
-def _remove(path: Path) -> None:
+def _remove(path: Path | None) -> None:
+    if path is None:
+        return
     if path.is_dir():
         shutil.rmtree(path)
     else:

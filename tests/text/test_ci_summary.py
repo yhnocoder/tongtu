@@ -57,7 +57,7 @@ def test_rows_and_render(tmp_path: Path) -> None:
     assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/12)" in text
     assert "[artifact](https://github.com/yhnocoder/tongtu/actions/runs/99/artifacts/13)" in text
     assert "| 2002.05202 |" in text
-    assert "| ok | — | — | ok | — | local, 1 tex files; 12 paragraphs, 3 new terms |" in text
+    assert "| ok | — | — | — | ok | — | local, 1 tex files; 12 paragraphs, 3 new terms |" in text
     assert "| 38m12s |" in text
     assert "| compile_failed |" in text
     assert "- **2002.05202 / compile**: xelatex exited 1" in text

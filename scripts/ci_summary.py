@@ -12,6 +12,7 @@ from tongtu.artifacts.compile import CompileManifest
 from tongtu.artifacts.fetch import FetchManifest
 from tongtu.artifacts.mask import MaskManifest
 from tongtu.artifacts.precompile import PrecompileManifest
+from tongtu.artifacts.reconstruct import ReconstructManifest
 from tongtu.artifacts.translate import TranslateManifest
 from tongtu.cli import stage_summary
 from tongtu.manifests import load_manifest
@@ -20,6 +21,7 @@ from tongtu.workdir import Workdir
 
 MANIFEST_CLASSES: dict[str, type[Manifest]] = {
     "fetch": FetchManifest,
+    "reconstruct": ReconstructManifest,
     "precompile": PrecompileManifest,
     "mask": MaskManifest,
     "translate": TranslateManifest,
