@@ -59,7 +59,16 @@ for pd in map(Path, papers):
 with bar() as progress:
     for pd, out, res, todo in jobs:
         task = progress.add_task(f"{label} {pd.name}", total=len(todo))
-        start = time.time()
-        with ThreadPoolExecutor(concurrency) as pool:
-            list(pool.map(lambda it: run(pd, it, res, out), todo))
-        print(pd.name, len(todo), "items", round(time.time() - start, 1), "s wall", file=sys.stderr, flush=True)
+        groups = {}
+        for it in todo:
+            groups.setdefault(it.get("kind") or it["type"], []).append(it)
+        for group in groups.values():
+            start = time.time()
+            with ThreadPoolExecutor(concurrency) as pool:
+                list(pool.map(lambda it: run(pd, it, res, out), group))
+            share = round((time.time() - start) / len(group), 3)
+            with lock:
+                for it in group:
+                    res[it["key"]]["wall"] = share
+                out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
+            print(pd.name, it.get("kind") or it["type"], len(group), "items", round(time.time() - start, 1), "s wall", file=sys.stderr, flush=True)

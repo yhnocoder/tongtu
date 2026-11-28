@@ -78,7 +78,7 @@ for pd in map(Path, paper_dirs):
 with bar() as progress:
     tasks = [progress.add_task(f"{name} {pd.name}", total=len(todo)) for pd, _, _, _, todo in jobs]
     for task, (pd, hints, out, res, todo) in zip(tasks, jobs):
-        formulas = sorted((it for it in todo if it["type"] == "formula"), key=lambda it: Image.open(pd/os.environ.get("IMG_DIR", "images")/f"{it['key']}.png").size[0])
+        formulas = sorted((it for it in todo if it["type"] == "formula"), key=lambda it: (it.get("kind", ""), Image.open(pd/os.environ.get("IMG_DIR", "images")/f"{it['key']}.png").size[0]))
         groups = [formulas[i:i+BATCH] for i in range(0, len(formulas), BATCH)] + [[it] for it in todo if it["type"] != "formula"]
         for group in groups:
             t = time.time()
@@ -90,7 +90,7 @@ with bar() as progress:
                 outputs = [generate(pd, [it], hints)[0] for it in group]
             seconds = round((time.time()-t) / len(group), 2)
             for it, (text, raw, tokens) in zip(group, outputs):
-                res[it["key"]] = {"text": text, "raw": raw, "seconds": seconds, "tokens": tokens}
+                res[it["key"]] = {"text": text, "raw": raw, "seconds": seconds, "wall": seconds, "tokens": tokens}
                 print(pd.name, it["key"], seconds, repr(text[:120]), file=sys.stderr, flush=True)
             out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
             progress.advance(task, len(group))

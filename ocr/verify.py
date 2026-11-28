@@ -1,4 +1,4 @@
-import json, os, sys, collections, re
+import json, os, sys, time, collections, re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,6 +17,13 @@ def category(problem):
     return "other:" + p[:40]
 
 def judge(pd, it, r):
+    t = time.time()
+    k, verdict = check(pd, it, r)
+    verdict["verify_seconds"] = time.time() - t
+    return k, verdict
+
+
+def check(pd, it, r):
     k = it["key"]
     if it["type"] == "formula":
         base = normalize.formula(r["raw"] if "raw" in r else r["text"])
@@ -53,7 +60,7 @@ def judge(pd, it, r):
             latex = base; v = table.verify(pd / "tree" / crop_path(k), base) if len(cands) > 1 else v
         group = "table"
     return k, {"group": group, "passed": v.passed, "category": "" if v.passed else category(v.problem),
-               "problem": v.problem[:300], "latex": latex, "seconds": r["seconds"]}
+               "problem": v.problem[:300], "latex": latex, "seconds": r["seconds"], "wall": r.get("wall", r["seconds"])}
 
 
 if __name__ == "__main__":
@@ -68,6 +75,7 @@ if __name__ == "__main__":
             res = json.loads(out.read_text())
             items = [it for it in json.loads((pd / "items.json").read_text()) if it["key"] in res]
             task = progress.add_task(f"verify {model} {pd.name}", total=len(items))
+            start = time.time()
             futures = [pool.submit(judge, pd, it, res[it["key"]]) for it in items]
             verdicts = {}
             for f in as_completed(futures):
@@ -75,6 +83,9 @@ if __name__ == "__main__":
                 verdicts[k] = v
                 progress.advance(task)
             verdicts = {it["key"]: verdicts[it["key"]] for it in items}
+            scale = (time.time() - start) / (sum(v["verify_seconds"] for v in verdicts.values()) or 1)
+            for v in verdicts.values():
+                v["verify_wall"] = round(v["verify_seconds"] * scale, 3)
             (pd / f"verdict_{model}.json").write_text(json.dumps(verdicts, ensure_ascii=False, indent=1))
             for k, v in verdicts.items():
                 s = summary.setdefault((pd.name, v["group"]), {"n": 0, "pass": 0, "sec": 0.0, "cats": collections.Counter()})
