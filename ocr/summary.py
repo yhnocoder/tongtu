@@ -3,6 +3,8 @@ from pathlib import Path
 work = Path(sys.argv[1]); papers = ["transformer", "kimi", "kimi15"]
 labels = sorted({f.stem[len("verdict_"):] for f in (work / papers[0]).glob("verdict_*.json")})
 ms = [m for m in labels if all((work / p / f"verdict_{m}.json").exists() for p in papers)]
+if not ms:
+    sys.exit("no results to summarize; see work/log_<model>.txt")
 V = {p: {m: json.loads((work / p / f"verdict_{m}.json").read_text()) for m in ms} for p in papers}
 def ref(p, k): return sum(bool(re.search(r"http|arxiv|url|\.org", V[p][m][k]["latex"], re.I)) for m in ms) >= min(3, len(ms))
 print("model\tgroup\tpassed/total\tavg s\tmax s")
