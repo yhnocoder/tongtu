@@ -69,14 +69,15 @@ for pd in map(Path, papers):
 with bar() as progress:
     for job in jobs:
         job.append(progress.add_task(f"{label} {job[0].name}", total=len(job[3])))
-    queue = sorted(((job, it) for job in jobs for it in job[3]), key=lambda pair: -cost(pair[0][0], pair[1]))
-    start = time.time()
-    with ThreadPoolExecutor(concurrency) as pool:
-        list(pool.map(lambda pair: run(*pair), queue))
-    wall = time.time() - start
-    scale = wall / (sum(job[2][it["key"]]["seconds"] for job, it in queue) or 1)
-    for job, it in queue:
-        job[2][it["key"]]["wall"] = round(job[2][it["key"]]["seconds"] * scale, 3)
     for job in jobs:
-        job[1].write_text(json.dumps(job[2], ensure_ascii=False, indent=1))
-    print(len(queue), "items", round(wall, 1), "s wall", file=sys.stderr, flush=True)
+        queue = sorted(job[3], key=lambda it: -cost(job[0], it))
+        start = time.time()
+        with ThreadPoolExecutor(concurrency) as pool:
+            list(pool.map(lambda it: run(job, it), queue))
+        wall = time.time() - start
+        res = job[2]
+        scale = wall / (sum(res[it["key"]]["seconds"] for it in queue) or 1)
+        for it in queue:
+            res[it["key"]]["wall"] = round(res[it["key"]]["seconds"] * scale, 3)
+        job[1].write_text(json.dumps(res, ensure_ascii=False, indent=1))
+        print(job[0].name, len(queue), "items", round(wall, 1), "s wall", file=sys.stderr, flush=True)
