@@ -16,4 +16,6 @@
 
 默认同时发 4 个请求，用 `CONCURRENCY=8` 修改；服务端要能并行处理，例如 llama-server 加 `-np 4`（与并发数一致）。llama-server 还要加 `--special`，否则表格的结构记号会被去掉。
 
+本地模型在 MPS 或 CUDA 上默认一次送 8 张公式截图，用 `BATCH=1` 改回逐张；表格总是逐张。
+
 结果汇总在 `work/summary.tsv`，每个截图的输出与判定在 `work/<论文>/verdict_<模型>.json`。已跑过的截图会跳过。
