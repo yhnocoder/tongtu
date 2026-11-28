@@ -10,10 +10,26 @@ CAPTION_RE = re.compile(r"\\caption\[\]\{(.*)")
 CROP_RE = re.compile(r"crops/(r-\d+)\.pdf")
 
 
-def download(arxiv_id, pdf):
+def complete(pdf):
     if not pdf.exists():
-        with urllib.request.urlopen(f"https://arxiv.org/pdf/{arxiv_id}", timeout=120) as response:
-            pdf.write_bytes(response.read())
+        return False
+    try:
+        return pdf.read_bytes().rstrip().endswith(b"%%EOF") and len(pymupdf.open(pdf)) > 0
+    except Exception:
+        return False
+
+
+def download(arxiv_id, pdf):
+    if complete(pdf):
+        return
+    request = urllib.request.Request(f"https://arxiv.org/pdf/{arxiv_id}", headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=300) as response:
+        data = response.read()
+    partial = pdf.with_suffix(".part")
+    partial.write_bytes(data)
+    partial.replace(pdf)
+    if not complete(pdf):
+        raise SystemExit(f"{arxiv_id}: the download is not a complete PDF ({len(data)} bytes, starts with {data[:20]!r})")
 
 
 def extract(pdf, out):
