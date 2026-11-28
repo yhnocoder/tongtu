@@ -53,7 +53,7 @@ jobs = []
 for pd in map(Path, papers):
     items = json.loads((pd / "items.json").read_text())
     out = pd / f"out_{label}.json"
-    res = json.loads(out.read_text()) if out.exists() else {}
+    res = json.loads(out.read_text()) if out.exists() and os.environ.get("RERUN") != "1" else {}
     jobs.append((pd, out, res, [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]))
 
 with bar() as progress:

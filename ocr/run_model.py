@@ -71,7 +71,7 @@ for pd in map(Path, paper_dirs):
     items = json.loads((pd/("items_h.json" if HINTS else "items.json")).read_text())
     hints = json.loads((pd/"hints.json").read_text()) if HINTS else {}
     out = pd/(f"out_{name}_h.json" if HINTS else f"out_{name}.json")
-    res = json.loads(out.read_text()) if out.exists() else {}
+    res = json.loads(out.read_text()) if out.exists() and os.environ.get("RERUN") != "1" else {}
     todo = [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]
     jobs.append((pd, hints, out, res, todo))
 

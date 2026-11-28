@@ -18,4 +18,4 @@
 
 本地模型在 MPS 或 CUDA 上默认一次送 8 张公式截图，用 `BATCH=1` 改回逐张；表格总是逐张。
 
-结果汇总在 `work/summary.tsv`，每个截图的输出与判定在 `work/<论文>/verdict_<模型>.json`。已跑过的截图会跳过。
+结果汇总在 `work/summary.tsv`，每个截图的输出与判定在 `work/<论文>/verdict_<模型>.json`。已跑过的截图会跳过，加 `RERUN=1` 全部重跑。
