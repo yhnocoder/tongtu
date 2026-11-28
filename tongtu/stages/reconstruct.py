@@ -39,7 +39,7 @@ PACKED_DIRNAME = "packed"
 
 LOST_GLYPH_EXAMPLES = 8
 
-SESSION_STATUS = "{skill} session"
+SESSION_STATUS = "{name} session"
 
 OMLX_STATUS = "omlx"
 
@@ -255,7 +255,7 @@ def _recognition_session(
     report: Report,
     warnings: list[str],
 ) -> Session:
-    status = SESSION_STATUS.format(skill=skill)
+    status = SESSION_STATUS.format(name=skill.removeprefix("reconstruct_"))
     report(status, "running")
     outcome = model.work(
         skill,

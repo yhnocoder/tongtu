@@ -642,6 +642,14 @@ export const ABSTRACT_FIELDS: [string, string][] = [
 export const API_KEY_KEY = "abstract.api_key";
 export const CLEAR_API_KEY_PAIR = [API_KEY_KEY, ""];
 
+export const OMLX_ENABLED_KEY = "omlx.enabled";
+export const OMLX_FIELDS: [string, string][] = [
+  ["omlx.base_url", "接口地址"],
+  ["omlx.model", "模型"],
+];
+export const OMLX_API_KEY_KEY = "omlx.api_key";
+export const CLEAR_OMLX_API_KEY_PAIR = [OMLX_API_KEY_KEY, ""];
+
 export const modelKey = (mode: string) => `modes.${mode}.model`;
 export const customModelKey = (mode: string) => `modes.${mode}.model.custom`;
 export const effortKey = (mode: string) => `modes.${mode}.effort`;
@@ -667,16 +675,20 @@ export function effortChoices(current: string): string[] {
   return EFFORTS.includes(current) ? EFFORTS : [...EFFORTS, current];
 }
 
-export function apiKeySet(config: Config): boolean {
-  return text(config[API_KEY_KEY]) !== "";
+export function apiKeySet(config: Config, key: string = API_KEY_KEY): boolean {
+  return text(config[key]) !== "";
 }
 
-export function apiKeyPlaceholder(config: Config): string {
-  return apiKeySet(config) ? "已设置，留空表示不修改" : "未设置";
+export function apiKeyPlaceholder(config: Config, key: string = API_KEY_KEY): string {
+  return apiKeySet(config, key) ? "已设置，留空表示不修改" : "未设置";
 }
 
 export function formValues(config: Config): FormValues {
-  const values: FormValues = { [DEFAULT_MODE_KEY]: text(config[DEFAULT_MODE_KEY]), [CROP_KEY]: config[CROP_KEY] === true };
+  const values: FormValues = {
+    [DEFAULT_MODE_KEY]: text(config[DEFAULT_MODE_KEY]),
+    [CROP_KEY]: config[CROP_KEY] === true,
+    [OMLX_ENABLED_KEY]: config[OMLX_ENABLED_KEY] === true,
+  };
   for (const mode of MODES) {
     values[modelKey(mode)] = text(config[modelKey(mode)]);
     values[customModelKey(mode)] = "";
@@ -686,6 +698,8 @@ export function formValues(config: Config): FormValues {
   for (const [key] of FONT_FIELDS) values[key] = text(config[key]);
   for (const [key] of ABSTRACT_FIELDS) values[key] = text(config[key]);
   values[API_KEY_KEY] = "";
+  for (const [key] of OMLX_FIELDS) values[key] = text(config[key]);
+  values[OMLX_API_KEY_KEY] = "";
   return values;
 }
 
@@ -706,9 +720,14 @@ export function configChanges(config: Config, form: FormValues): { pairs: string
   }
   for (const [key] of FONT_FIELDS) set(key, String(form[key]).trim());
   for (const [key] of ABSTRACT_FIELDS) set(key, String(form[key]).trim());
-  const apiKey = String(form[API_KEY_KEY] ?? "").trim();
-  if (apiKey !== "") pairs.push(API_KEY_KEY, apiKey);
-  if (form[CROP_KEY] !== (config[CROP_KEY] === true)) pairs.push(CROP_KEY, form[CROP_KEY] ? "true" : "false");
+  for (const [key] of OMLX_FIELDS) set(key, String(form[key]).trim());
+  for (const key of [API_KEY_KEY, OMLX_API_KEY_KEY]) {
+    const apiKey = String(form[key] ?? "").trim();
+    if (apiKey !== "") pairs.push(key, apiKey);
+  }
+  for (const key of [CROP_KEY, OMLX_ENABLED_KEY]) {
+    if (form[key] !== (config[key] === true)) pairs.push(key, form[key] ? "true" : "false");
+  }
   return { pairs, errors };
 }
 
