@@ -1,0 +1,25 @@
+[project]
+name = "ocr-trial"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "tongtu @ git+https://github.com/yhnocoder/tongtu@cd50322ecfce46f31d965c5e527668e22b699de8",
+    "torch",
+    "torchvision",
+    "transformers==5.24.1",
+    "accelerate",
+    "pillow",
+    "huggingface_hub",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]

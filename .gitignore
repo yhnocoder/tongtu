@@ -1,0 +1,6 @@
+.venv/
+tele/.venv/
+models/
+work/
+uv.lock
+tele/uv.lock
