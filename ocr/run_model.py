@@ -76,8 +76,9 @@ for pd in map(Path, paper_dirs):
     jobs.append((pd, hints, out, res, todo))
 
 with bar() as progress:
-    tasks = [progress.add_task(f"{name} {pd.name}", total=len(todo)) for pd, _, _, _, todo in jobs]
+    tasks = [progress.add_task(f"{name} {pd.name}", total=len(todo), start=False) for pd, _, _, _, todo in jobs]
     for task, (pd, hints, out, res, todo) in zip(tasks, jobs):
+        progress.start_task(task)
         formulas = sorted((it for it in todo if it["type"] == "formula"), key=lambda it: (it.get("kind", ""), Image.open(pd/os.environ.get("IMG_DIR", "images")/f"{it['key']}.png").size[0]))
         groups = [formulas[i:i+BATCH] for i in range(0, len(formulas), BATCH)] + [[it] for it in todo if it["type"] != "formula"]
         for group in groups:

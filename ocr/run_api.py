@@ -68,9 +68,10 @@ for pd in map(Path, papers):
 
 with bar() as progress:
     for job in jobs:
-        job.append(progress.add_task(f"{label} {job[0].name}", total=len(job[3])))
+        job.append(progress.add_task(f"{label} {job[0].name}", total=len(job[3]), start=False))
     for job in jobs:
         queue = sorted(job[3], key=lambda it: -cost(job[0], it))
+        progress.start_task(job[4])
         start = time.time()
         with ThreadPoolExecutor(concurrency) as pool:
             list(pool.map(lambda it: run(job, it), queue))
