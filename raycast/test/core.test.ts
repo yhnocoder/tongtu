@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   API_KEY_KEY,
   CLEAR_API_KEY_PAIR,
+  CLEAR_OMLX_API_KEY_PAIR,
+  OMLX_API_KEY_KEY,
   FILTER_ALL,
   ENTRY_ACTION_TITLES,
   FILTER_UNREAD,
@@ -163,6 +165,10 @@ const CONFIG: Config = {
   "abstract.base_url": "https://api.deepseek.com",
   "abstract.model": "deepseek-flash",
   "abstract.api_key": "",
+  "omlx.enabled": false,
+  "omlx.base_url": "http://127.0.0.1:8000/v1",
+  "omlx.model": "groxaxo/TeleOCR-oQ8-MLX",
+  "omlx.api_key": "",
 };
 
 test("arxivId takes new-style and old-style ids out of text", () => {
@@ -802,6 +808,32 @@ test("configChanges writes the key only when it is filled in", () => {
   assert.deepEqual(configChanges(withKey, { ...formValues(withKey), [API_KEY_KEY]: "********" }).pairs, [API_KEY_KEY, "********"]);
   assert.deepEqual(configChanges(CONFIG, { ...formValues(CONFIG), [API_KEY_KEY]: "123456" }).pairs, [API_KEY_KEY, "123456"]);
   assert.deepEqual(CLEAR_API_KEY_PAIR, [API_KEY_KEY, ""]);
+});
+
+test("configChanges handles the oMLX switch, fields and key", () => {
+  assert.equal(formValues(CONFIG)["omlx.enabled"], false);
+  assert.equal(formValues({ ...CONFIG, "omlx.enabled": true })["omlx.enabled"], true);
+  const form = {
+    ...formValues(CONFIG),
+    "omlx.enabled": true,
+    "omlx.base_url": " http://127.0.0.1:11000/v1 ",
+    [OMLX_API_KEY_KEY]: " local-key ",
+  };
+  assert.deepEqual(configChanges(CONFIG, form).pairs, [
+    "omlx.base_url",
+    "http://127.0.0.1:11000/v1",
+    OMLX_API_KEY_KEY,
+    "local-key",
+    "omlx.enabled",
+    "true",
+  ]);
+  const withKey = { ...CONFIG, [OMLX_API_KEY_KEY]: "********" };
+  assert.equal(apiKeySet(withKey), false);
+  assert.equal(apiKeySet(withKey, OMLX_API_KEY_KEY), true);
+  assert.equal(apiKeyPlaceholder(withKey, OMLX_API_KEY_KEY), "已设置，留空表示不修改");
+  assert.equal(formValues(withKey)[OMLX_API_KEY_KEY], "");
+  assert.deepEqual(configChanges(withKey, formValues(withKey)).pairs, []);
+  assert.deepEqual(CLEAR_OMLX_API_KEY_PAIR, [OMLX_API_KEY_KEY, ""]);
 });
 
 test("configChanges lists the changed abstract translation fields", () => {

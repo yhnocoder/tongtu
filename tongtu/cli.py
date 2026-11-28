@@ -1370,8 +1370,8 @@ def config_set(
             metavar="KEY VALUE [KEY VALUE ...]",
             help=(
                 "dotted keys as tongtu config list prints them, each followed by a TOML value, or plain text taken "
-                "as a string; an empty string clears the field; abstract.api_key always takes the text as it is, "
-                "without surrounding whitespace"
+                "as a string; an empty string clears the field; the API keys (abstract.api_key, omlx.api_key) always "
+                "take the text as it is, without surrounding whitespace"
             ),
         ),
     ],

@@ -315,6 +315,10 @@ DEFAULT_KEYS = [
     "fonts.sans.bold",
     "fonts.mono",
     "pdf.crop_margins",
+    "omlx.enabled",
+    "omlx.base_url",
+    "omlx.model",
+    "omlx.api_key",
     "abstract.base_url",
     "abstract.model",
     "abstract.api_key",
@@ -331,6 +335,34 @@ def test_config_entries_of_the_defaults() -> None:
     assert values["abstract.base_url"] == "https://api.deepseek.com"
     assert values["abstract.model"] == "deepseek-flash"
     assert values["abstract.api_key"] == ""
+    assert values["omlx.enabled"] is False
+    assert values["omlx.base_url"] == "http://127.0.0.1:8000/v1"
+    assert values["omlx.model"] == "groxaxo/TeleOCR-oQ8-MLX"
+    assert values["omlx.api_key"] == ""
+
+
+def test_shown_entries_mask_a_set_omlx_key() -> None:
+    config = updated_config(ModelsConfig(), "omlx.api_key", "sk-secret")
+    assert dict(shown_entries(config))["omlx.api_key"] == SECRET_MASK
+    assert dict(config_entries(config))["omlx.api_key"] == "sk-secret"
+    assert dict(shown_entries(ModelsConfig()))["omlx.api_key"] == ""
+
+
+def test_the_omlx_table_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = loaded(
+        tmp_path,
+        monkeypatch,
+        '[omlx]\nenabled = true\nbase_url = "http://127.0.0.1:11000/v1"\napi_key = "  sk-FAKE-SECRET-1\\n"\n',
+    )
+    assert config.omlx.enabled is True
+    assert config.omlx.base_url == "http://127.0.0.1:11000/v1"
+    assert config.omlx.model == "groxaxo/TeleOCR-oQ8-MLX"
+    assert config.omlx.api_key == "sk-FAKE-SECRET-1"
+
+
+@pytest.mark.parametrize("text", ['[omlx]\nenabled = "yes"\n', "[omlx]\nport = 8000\n"])
+def test_an_invalid_omlx_table_fails_the_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    assert "omlx." in failed(tmp_path, monkeypatch, text)
 
 
 def test_shown_entries_mask_a_set_api_key() -> None:

@@ -15,9 +15,10 @@ from tongtu.artifacts.common import NotesFile, Session, StopReason
 from tongtu.artifacts.fetch import FetchManifest, FetchStatus
 from tongtu.artifacts.reconstruct import ReconstructStatus, RegionsFile
 from tongtu.manifests import load_manifest, timeout_warning, write_manifest
+from tongtu.model.config import OmlxConfig
 from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
-from tongtu.reconstruct import review
+from tongtu.reconstruct import omlx, review
 from tongtu.reconstruct.crops import crop_path
 from tongtu.stages import reconstruct
 from tongtu.workdir import Workdir
@@ -386,3 +387,114 @@ def test_crop_broken_during_recognition_is_reconstruct_failed(
     assert (manifest.formulas.total, manifest.formulas.passed) == (4, 0)
     assert manifest.tables is None
     assert not outputs_present(workdir, "reconstruct")
+
+
+def local_omlx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workdir: Workdir, replies: dict[str, str]) -> list[str]:
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text('[omlx]\nenabled = true\nmodel = "groxaxo/TeleOCR-oQ8-MLX"\n')
+    monkeypatch.setenv("TONGTU_HOME", str(home))
+
+    def check(config: OmlxConfig) -> tuple[str, str]:
+        assert config.enabled
+        return "TeleOCR-oQ8-MLX", ""
+
+    sent: list[str] = []
+
+    def transcribe(config: OmlxConfig, model_id: str, png: bytes) -> tuple[str, str]:
+        assert model_id == "TeleOCR-oQ8-MLX"
+        session_dir = workdir.sandbox("reconstruct_formula")
+        keys = {path.read_bytes(): path.stem for path in (session_dir / "img").glob("*.png")}
+        name = region_names(workdir)[keys[png]]
+        sent.append(name)
+        reply = replies[name]
+        return ("", "ReadTimeout") if reply == "ReadTimeout" else (reply, "")
+
+    monkeypatch.setattr(omlx, "check", check)
+    monkeypatch.setattr(omlx, "transcribe", transcribe)
+    return sent
+
+
+def region_names(workdir: Workdir) -> dict[str, str]:
+    regions = RegionsFile.model_validate_json(
+        (workdir.sandbox(reconstruct.STAGE_NAME) / "regions.json").read_text(encoding="utf-8")
+    )
+    return {region.id: "display" if region.id.startswith("e-") else region.hint for region in regions.regions}
+
+
+def recording_hints(calls: list[tuple[str, Path, Path]], hints: list[list[str]]) -> Callable[..., WorkOutcome]:
+    recognize = fake_recognition(calls, StopReason.FINISHED)
+
+    def work(skill: str, session_dir: Path, **kwargs: object) -> WorkOutcome:
+        hints.append(sorted(json.loads((session_dir / "hints.json").read_text(encoding="utf-8"))))
+        return recognize(skill, session_dir, **kwargs)
+
+    return work
+
+
+def test_omlx_passes_some_formulas_and_the_session_gets_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recognition_pdf: Path
+) -> None:
+    workdir = pdf_workdir(tmp_path, recognition_pdf)
+    display = DISPLAY_LATEX.removesuffix(" \\quad (1)")
+    replies = {
+        "display": "\\begin{equation}" + display + "\\tag{1}\\end{equation}<|im_end|>",
+        "/√dk": "ReadTimeout",
+        "xi2": "$x_i^3$",
+        "yi": "y_i \\right.",
+    }
+    sent = local_omlx(tmp_path, monkeypatch, workdir, replies)
+    calls: list[tuple[str, Path, Path]] = []
+    hints: list[list[str]] = []
+    monkeypatch.setattr(tongtu.model, "work", recording_hints(calls, hints))
+    manifest = reconstruct.run(workdir, mode="fast")
+    assert manifest.status is ReconstructStatus.OK, manifest.message
+    assert sorted(sent) == sorted(replies)
+    assert [skill for skill, _dir, _log in calls] == ["reconstruct_formula", "reconstruct_table"]
+    key_of = {name: key for key, name in region_names(workdir).items()}
+    assert hints[0] == sorted([key_of["/√dk"], key_of["xi2"]])
+    assert manifest.formulas is not None
+    assert (manifest.formulas.total, manifest.formulas.local_passed, manifest.formulas.passed) == (4, 2, 4)
+    assert manifest.formulas.session is not None
+    assert manifest.tables is not None and manifest.tables.local_passed is None
+    assert manifest.warnings == [
+        f"oMLX could not transcribe 1 of 4 formulas (first: {key_of['/√dk']}, ReadTimeout); "
+        "they go to the reconstruct_formula session"
+    ]
+    tex = (workdir.src / "main.tex").read_text(encoding="utf-8")
+    assert "\\begin{equation*}\\mathrm{Attention}" in tex and "\\tag*{(1)}\\end{equation*}" in tex
+    assert "$y_i$" in tex and "$x_i^2$" in tex and "\\im{" not in tex
+
+
+def test_omlx_passing_every_formula_starts_no_formula_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recognition_pdf: Path
+) -> None:
+    workdir = pdf_workdir(tmp_path, recognition_pdf)
+    replies = {"display": f"$${DISPLAY_LATEX}$$", **{hint: f"\\({latex}\\)" for hint, latex in INLINE_LATEX.items()}}
+    local_omlx(tmp_path, monkeypatch, workdir, replies)
+    calls: list[tuple[str, Path, Path]] = []
+    monkeypatch.setattr(tongtu.model, "work", fake_recognition(calls, StopReason.FINISHED))
+    manifest = reconstruct.run(workdir, mode="fast")
+    assert manifest.status is ReconstructStatus.OK, manifest.message
+    assert [skill for skill, _dir, _log in calls] == ["reconstruct_table"]
+    assert manifest.formulas is not None
+    assert (manifest.formulas.total, manifest.formulas.local_passed, manifest.formulas.passed) == (4, 4, 4)
+    assert manifest.formulas.session is None
+    assert manifest.warnings == []
+    assert not workdir.reconstruct_formula_log.exists()
+    tex = (workdir.src / "main.tex").read_text(encoding="utf-8")
+    assert "\\im{" not in tex and "$/\\sqrt{d_k}$ to" in tex
+
+
+def test_omlx_disabled_leaves_local_passed_null(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recognition_pdf: Path
+) -> None:
+    monkeypatch.setenv("TONGTU_HOME", str(tmp_path / "home"))
+
+    def check(config: OmlxConfig) -> tuple[str, str]:
+        raise AssertionError("reconstruct checked oMLX while it is disabled")
+
+    monkeypatch.setattr(omlx, "check", check)
+    monkeypatch.setattr(tongtu.model, "work", fake_recognition([], StopReason.FINISHED))
+    manifest = reconstruct.run(pdf_workdir(tmp_path, recognition_pdf), mode="fast")
+    assert manifest.formulas is not None and manifest.formulas.local_passed is None

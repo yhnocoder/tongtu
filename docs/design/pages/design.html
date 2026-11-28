@@ -131,6 +131,7 @@ mode    smart  claude-code/claude-opus-5-5  medium
       <tr><td class="wrap"><code>src/</code> 里的源码，或 <code>config.toml</code> 的 <code>[fonts]</code></td><td><code>--from precompile</code></td></tr>
       <tr><td class="wrap"><code>tongtu/data/environments.json</code></td><td><code>--from mask</code></td></tr>
       <tr><td class="wrap">任何一层术语表、<code>skill/translate/</code>，或者想换一个模式重译</td><td><code>--from translate</code></td></tr>
+      <tr><td class="wrap"><code>config.toml</code> 的 <code>[omlx]</code>（只影响 PDF 输入）</td><td><code>--from reconstruct</code></td></tr>
       <tr><td class="wrap"><code>config.toml</code> 的 <code>[pdf]</code></td><td><code>--from compile</code></td></tr>
     </tbody>
   </table>
@@ -148,9 +149,9 @@ mode    smart  claude-code/claude-opus-5-5  medium
     <li>agentrun 由通途自动安装。doctor 检查运行时之前，以及每次启动 agent 会话之前，通途先在 <code>PATH</code> 里找 <code>agentrun</code>，再找 <code>~/.local/bin/agentrun</code>，找到就使用，不比较版本。都没有时，从 agentrun 的 GitHub release 下载 1.0.1 版本里与当前系统、架构对应的可执行文件，保存为 <code>~/.local/bin/agentrun</code>。下载失败或没有对应的文件时，会话以 error 结束，doctor 把 agentrun 记为缺失并退出 3。</li>
     <li><code>config</code> 查看和修改 <code>$TONGTU_HOME/config.toml</code>，有四种用法：
       <ul>
-        <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。<code>abstract.api_key</code> 例外：提示里不显示旧值，输入不回显，直接回车或只输入空白表示不改；选单不能清除密钥，清除用 <code>tongtu config set abstract.api_key ''</code>。标准输入不是终端时退出 2。</li>
+        <li><code>tongtu config</code> 打开选单，每行是一个配置项及其当前值，最后一行是 <code>exit</code>。选单只处理上、下方向键与回车。在布尔项或模式名（<code>modes.default</code>）上按回车，列出可选的值供选择；在其余项上按回车，提示输入新值，提示里显示旧值，直接回车表示不改。输入框里没有旧值的文本，不能在旧值上原地修改，只能输入完整的新值。密钥项 <code>abstract.api_key</code> 与 <code>omlx.api_key</code> 例外：提示里不显示旧值，输入不回显，直接回车或只输入空白表示不改；选单不能清除密钥，清除用 <code>tongtu config set &lt;密钥项&gt; ''</code>。标准输入不是终端时退出 2。</li>
         <li><code>tongtu config list</code> 每行列出一个配置项及其当前值。配置文件不存在时列出默认值，不写文件。<code>--json</code> 改为输出一个 JSON 对象，格式见<a href="#config-json">tongtu config list --json</a>。</li>
-        <li><code>tongtu config set KEY VALUE [KEY VALUE ...]</code> 修改一项或多项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。<code>abstract.api_key</code> 的值不经过 TOML 解析，一律按原文当作字符串，空字符串清除密钥。各组按顺序应用到同一份配置上，全部通过后写一次文件，每个改动的键输出一行「键 = 新值」。参数个数为 0 或奇数、任何一组的键不存在或值不合法时退出 2，不写文件。</li>
+        <li><code>tongtu config set KEY VALUE [KEY VALUE ...]</code> 修改一项或多项。<code>KEY</code> 是 <code>list</code> 列出的键，例如 <code>modes.fast.model</code>。<code>VALUE</code> 先按 TOML 的值解析，解析失败时当作字符串；空字符串表示清除这个可选字段。两个密钥项的值不经过 TOML 解析，一律按原文当作字符串，空字符串清除密钥。各组按顺序应用到同一份配置上，全部通过后写一次文件，每个改动的键输出一行「键 = 新值」。参数个数为 0 或奇数、任何一组的键不存在或值不合法时退出 2，不写文件。</li>
         <li><code>tongtu config open</code> 输出配置文件的路径并打开它。环境变量 <code>EDITOR</code> 非空时用它打开，否则用系统默认的程序。</li>
       </ul>
       <p>配置文件不存在时，<code>tongtu config</code> 与 <code>open</code> 先写出一份包含全部默认值的文件；<code>set</code> 在默认值上修改，修改成功时写出文件。校验失败时每条错误输出一行，格式是「键: 原因」。配置文件存在但加载失败时，<code>config</code>、<code>list</code>、<code>set</code> 输出错误并退出 1。<code>config</code> 与 <code>set</code> 每次修改都整份重写文件，文件里原有的注释不保留。</p>
@@ -253,12 +254,20 @@ sans = { regular = "SourceHanSansSC-Regular.otf", bold = "SourceHanSansSC-Bold.o
 [pdf]
 crop_margins = false
 
+[omlx]
+enabled  = false
+base_url = "http://127.0.0.1:8000/v1"
+model    = "groxaxo/TeleOCR-oQ8-MLX"
+api_key  = ""
+
 [abstract]
 base_url = "https://api.deepseek.com"
 model    = "deepseek-flash"
 api_key  = ""</code></pre>
   <p><code>model</code> 的写法是「运行时/模型」，只在第一个 <code>/</code> 处切分。运行时是 agentrun 支持的名字，目前只使用 <code>claude-code</code>。每个模式可以另写 <code>timeout_seconds</code>，不写时为 3600 秒。配置里出现未知字段时，加载配置报错。文件可以不存在，这时使用本节列出的值；文件里没写的字段也取本节的值。文件由 <code>tongtu config</code> 写出和修改。</p>
-  <p><code>[abstract]</code> 是摘要翻译用的聊天接口，见<a href="#abstract-chat">摘要翻译</a>。<code>api_key</code> 为空表示不翻译摘要。<code>tongtu config</code> 的选单、<code>config list</code>（含 <code>--json</code>）以及 <code>config set</code> 输出的「键 = 新值」里，<code>abstract.api_key</code> 不为空时一律显示成固定的掩码 <code>********</code>，不输出原值，因为这些输出会出现在终端与启动器插件里，选单里输入密钥时也不回显；<code>config set abstract.api_key &lt;值&gt;</code> 照常写入原值，<code>config set abstract.api_key ''</code> 清除它。读入的密钥去掉首尾空白。配置文件的字段校验失败时，错误只写「带点的位置: 说明」，不写字段的值，因为写错的表名或类型会让密钥出现在校验错误里。</p>
+  <p><code>[omlx]</code> 是 PDF 输入识别公式截图用的本地 oMLX 服务（OpenAI 兼容接口），见 reconstruct 的<a href="#reconstruct">本地 oMLX 首轮识别</a>。<code>enabled</code> 是布尔值，为 false 时 reconstruct 不访问 oMLX。<code>base_url</code> 的默认值取 oMLX 的默认端口 8000；oMLX 改过端口时要一起改。<code>model</code> 是 Hugging Face 上的模型名。<code>api_key</code> 为空时请求不带 <code>Authorization</code> 头。</p>
+  <p><code>[abstract]</code> 是摘要翻译用的聊天接口，见<a href="#abstract-chat">摘要翻译</a>。<code>api_key</code> 为空表示不翻译摘要。</p>
+  <p><code>abstract.api_key</code> 与 <code>omlx.api_key</code> 是密钥项。<code>tongtu config</code> 的选单、<code>config list</code>（含 <code>--json</code>）以及 <code>config set</code> 输出的「键 = 新值」里，密钥项不为空时一律显示成固定的掩码 <code>********</code>，不输出原值，因为这些输出会出现在终端与启动器插件里，选单里输入密钥时也不回显；<code>config set &lt;密钥项&gt; &lt;值&gt;</code> 照常写入原值，<code>config set &lt;密钥项&gt; ''</code> 清除它。读入的密钥去掉首尾空白。配置文件的字段校验失败时，错误只写「带点的位置: 说明」，不写字段的值，因为写错的表名或类型会让密钥出现在校验错误里。</p>
 
   <h3>manifest</h3>
   <p>每个阶段结束时写 <code>build/manifests/&lt;阶段&gt;.json</code>。各阶段的 manifest 继承同一个基类，<code>status</code> 在 JSON 里排第一。<code>run</code> 与 <code>status</code> 只读 manifest 判断一个阶段是否完成。</p>
@@ -331,10 +340,11 @@ api_key  = ""</code></pre>
       <dd>
         <p>fetch 的 <code>route</code> 是 <code>"tex"</code> 时不做任何事，写 <code>ok</code>，<code>rebuilt</code> 为 false。<code>route</code> 是 <code>"pdf"</code> 时，在重建目录 <code>build/sandbox/reconstruct/</code> 里依次做：</p>
         <ol>
+          <li>原文 PDF 能打开、文字层里有英文词之后，如果开启了 oMLX（<code>[omlx] enabled = true</code>），检查 oMLX 服务与模型，见下文。检查不通过时阶段以 <code>omlx_unavailable</code> 结束，不做后面的步骤。</li>
           <li>规则重建：把 <code>build/original.pdf</code> 拷进重建目录，写出 <code>main.tex</code>、<code>crops/&lt;编号&gt;.pdf</code>（每个截图一个文件）与 <code>regions.json</code>。正文文字、标题、列表、脚注、目录、图注写成 LaTeX；图、表、算法、行间公式、参考文献、作者区从原 PDF 截取矢量区域插入，截取时用两遍 redaction 去掉区域外的内容，区域内的大号数学字形保留；行内公式截成小图，写成 <code>\im{编号}{下沉量}{提示}</code>。提示是这段截图在原文文字层里的字符，只给修复会话与识别会话参考，不排版。版心上边界取正文长行（超过 25 个字符）的最高位置，下边缘比它高出 2 bp 以上的行判为页眉。例外是第 1 页上字号大于正文字号加 <code>TITLE_SIZE_MARGIN = 0.6</code> bp 的行，它们不判为页眉，与版心内的行一样参与后续的分类。会议模板把论文标题与作者行排在版心之上，没有这条例外时它们会被当作页眉丢掉。导言区不使用含 <code>@</code> 的命令，正文字号用 <code>\fontsize{…}{…}\selectfont</code> 设定，避免 precompile 的 latexpand 报 warning。</li>
-          <li>公式与表格识别，见下文：有行间或行内公式截图时启动一次公式识别会话，有表格截图时再启动一次表格识别会话。每个会话结束后，阶段在会话外重跑校验，把通过的条目写回 <code>main.tex</code> 替换截图，没通过的保留截图。</li>
+          <li>公式与表格识别，见下文：有行间或行内公式截图时启动一次公式识别会话（开启了 oMLX 时先由本地模型识别，会话只处理本地没有通过的条目，全部通过时不启动），有表格截图时再启动一次表格识别会话。每个会话结束后，阶段在会话外重跑校验，把通过的条目写回 <code>main.tex</code> 替换截图，没通过的保留截图。</li>
           <li>编译：与 precompile 用同一条 latexmk 命令。</li>
-          <li>核对，见下文。全部通过时跳到第 6 步。</li>
+          <li>核对，见下文。全部通过时跳到第 7 步。</li>
           <li>编译或核对不通过时，在重建目录里启动一次修复会话（skill <code>reconstruct_fix</code>），会话结束后重新编译、重新核对，以这次结果为准。整个阶段只启动一次修复会话。</li>
           <li>打包：所有截图合进一个 <code>crops.pdf</code>，<code>\includegraphics{crops/x.pdf}</code> 改成 <code>{\includegraphics[page=N]{crops.pdf}}</code>，<code>\im</code> 改为按编号取页。保存时去掉重复资源并压缩（<code>garbage=4</code>、<code>deflate</code>，图片重新编码）。打包后再编译一次，页数必须与打包前相同。</li>
           <li>交付：清空 <code>src/</code>，把 <code>main.tex</code> 与 <code>crops.pdf</code> 拷进去。之后的 precompile 把它当普通源码处理。</li>
@@ -400,20 +410,38 @@ api_key  = ""</code></pre>
         <p class="why"><b>理由</b>公式与表格写成 LaTeX 后字体与正文一致，可以搜索和复制。写回放在核对之前，核对与修复会话看到的是最终的源码。</p>
         <p>会话以 error 或 timeout 结束、没有写出 <code>rec.json</code> 或 <code>rec.json</code> 格式不对时，记一条 warning，全部截图保留，阶段照常往下做。</p>
       </dd>
+      <dt>本地 oMLX 首轮识别</dt>
+      <dd>
+        <p><code>[omlx] enabled = true</code> 时，公式截图先交给本地 oMLX 服务上的 TeleOCR 模型识别，没有通过校验的再交给公式识别会话。表格不用本地模型。</p>
+        <p class="why"><b>理由</b>试验中 TeleOCR 在三篇论文上行内公式通过 194/216、行间公式通过 23/40，每篇 14 到 67 秒，比启动一次识别会话快得多。表格只通过 4/12，几乎每篇有表格的论文仍然要启动表格识别会话，节省不了时间。</p>
+        <p><b>检查</b>：<code>route</code> 是 <code>"pdf"</code> 时，在取到原文文字层之后、规则重建之前请求 <code>GET &lt;base_url&gt;/models</code>，超时 <code>OMLX_CHECK_TIMEOUT_SECONDS = 10</code>。以下情况阶段以 <code>omlx_unavailable</code> 结束，<code>message</code> 写原因和可以复制的命令：</p>
+        <ul>
+          <li>连接失败或超时：写异常类型名，给出 <code>omlx start</code>，以及源码安装时的 <code>omlx serve --port &lt;base_url 的端口&gt;</code>。</li>
+          <li>HTTP 401 或 403：给出 <code>tongtu config set omlx.api_key &lt;key&gt;</code>，设置与 oMLX 一致的密钥。</li>
+          <li>其他非 2xx：写 HTTP 状态。响应不是 <code>{"data": [{"id": ...}]}</code>：写 <code>not an OpenAI-compatible model list</code>。</li>
+          <li>列表里没有这个模型：写出 oMLX 列出的模型 id，给出 <code>uvx --from huggingface_hub hf download &lt;model&gt; --local-dir ~/.omlx/models/&lt;model&gt;</code> 与 <code>omlx restart</code>。</li>
+          <li><code>api_key</code> 含空白、控制字符或非 ASCII 字符：不发请求，写明密钥不能放进请求头。</li>
+        </ul>
+        <p>oMLX 的模型 id 是模型目录名，两级目录 <code>groxaxo/TeleOCR-oQ8-MLX/</code> 的 id 是 <code>TeleOCR-oQ8-MLX</code>。列表里的 id 等于 <code>model</code>，或等于 <code>model</code> 最后一个 <code>/</code> 之后的部分，都算有这个模型，两者都有时取前者；识别请求用列表里的那个 id。错误信息里的地址只写协议、主机、端口与路径，网络错误只写异常的类型名，理由与<a href="#abstract-chat">摘要翻译</a>相同。<code>route</code> 是 <code>"tex"</code> 时不检查。</p>
+        <p><b>识别</b>：有可识别的公式截图时，先照公式识别会话的方式把全部截图渲染成 PNG（写在 <code>build/sandbox/reconstruct_formula/</code>），按 PNG 面积从大到小，以 <code>OMLX_CONCURRENCY = 4</code> 路并发请求 <code>POST &lt;base_url&gt;/chat/completions</code>：system 消息是 <code>You are a helpful assistant.</code>，user 消息是图片（PNG 的 data URL）与 TeleOCR 的公式识别提示词 <code>\nPlease write out the expression of the formula in the image using LaTeX format.</code>，<code>temperature</code> 为 0，<code>max_tokens</code> 为 768，单次超时 <code>OMLX_TIMEOUT_SECONDS = 120</code>。终端的进度显示 <code>omlx</code> 与「已完成数/总数」。</p>
+        <p>回复先规范化：去掉模型的结束标记、代码围栏与外层的 <code>$$</code>、<code>\[ \]</code>、<code>\( \)</code>、<code>$</code>，把 <code>\tag{n}</code> 改成 <code>\quad (n)</code>，align 与 eqnarray 环境改成 aligned，去掉 equation 环境。然后用与会话相同的公式校验判定；不通过时再试一次去掉 <code>\left</code>、<code>\right</code>、<code>\big</code> 类定界符大小命令的写法。通过的条目直接采用。单条请求失败（网络错误、非 2xx、响应里没有文本）算这一条没通过，记一条 warning，写失败的条数与第一条的原因。</p>
+        <p>没有通过的条目交给公式识别会话：重建会话目录，只放这些条目的截图、PNG 与提示。全部通过时不启动会话。两部分的结果合并后写回 <code>main.tex</code>。</p>
+      </dd>
       <dt>状态</dt>
       <dd>
         <table>
           <tbody>
             <tr><td><span class="st ok">ok</span></td><td class="wrap">有 TeX 源码（<code>rebuilt</code> 为 false），或者重建结果核对通过并已交付到 <code>src/</code>。</td></tr>
             <tr><td><span class="st bad">no_text_layer</span></td><td class="wrap">原文 PDF 打不开，或者全文取不到一个英文词。扫描版 PDF 不支持。</td></tr>
+            <tr><td><span class="st bad">omlx_unavailable</span></td><td class="wrap">开启了 oMLX，而服务连不上、拒绝密钥、返回的不是模型列表，或者列表里没有配置的模型。<code>message</code> 写原因与要执行的命令。</td></tr>
             <tr><td><span class="st bad">reconstruct_failed</span></td><td class="wrap">修复会话之后编译或核对仍不通过；规则重建抛出异常，<code>message</code> 写异常类型与位置；规则重建调用的 <code>fc-list</code> 或 <code>kpsewhich</code> 不存在，或没有在 <code>TOOL_TIMEOUT_SECONDS = 30</code> 秒内结束，<code>message</code> 写出这条命令；截图文件无法打开或没有页，<code>message</code> 写出文件名；latexmk 无法运行；打包后缺截图或页数与打包前不同。</td></tr>
           </tbody>
         </table>
       </dd>
       <dt>读</dt>
-      <dd><p><code>build/manifests/fetch.json</code> 的 <code>route</code>、<code>build/original.pdf</code>、<code>config.toml</code> 的 <code>[fonts]</code> 与模式、<code>skill/reconstruct_formula/</code>、<code>skill/reconstruct_table/</code>、<code>skill/reconstruct_fix/</code>。</p></dd>
+      <dd><p><code>build/manifests/fetch.json</code> 的 <code>route</code>、<code>build/original.pdf</code>、<code>config.toml</code> 的 <code>[fonts]</code>、<code>[omlx]</code> 与模式、<code>skill/reconstruct_formula/</code>、<code>skill/reconstruct_table/</code>、<code>skill/reconstruct_fix/</code>。</p></dd>
       <dt>写</dt>
-      <dd><p><code>build/sandbox/reconstruct/</code>、<code>src/main.tex</code> 与 <code>src/crops.pdf</code>（重建过时）、<code>build/manifests/reconstruct.json</code>；启动过识别会话时另有 <code>build/sandbox/reconstruct_formula/</code>、<code>build/sandbox/reconstruct_table/</code>、<code>logs/reconstruct-formula.jsonl</code>、<code>logs/reconstruct-table.jsonl</code>，启动过修复会话时另有 <code>logs/reconstruct-fix.jsonl</code>，以及各会话在 <code>out/&lt;ID&gt;.notes.json</code> 里的条目。阶段的产物是 <code>src/main.tex</code>。重跑 reconstruct 时删掉重建目录、两个识别会话的目录、三个会话的日志、三个会话的条目与 manifest；只在 <code>route</code> 是 <code>"pdf"</code> 时清空 <code>src/</code>，因为 <code>route</code> 是 <code>"tex"</code> 时 <code>src/</code> 属于 fetch。</p></dd>
+      <dd><p><code>build/sandbox/reconstruct/</code>、<code>src/main.tex</code> 与 <code>src/crops.pdf</code>（重建过时）、<code>build/manifests/reconstruct.json</code>；启动过识别会话或用 oMLX 识别过公式时另有 <code>build/sandbox/reconstruct_formula/</code>、<code>build/sandbox/reconstruct_table/</code>、<code>logs/reconstruct-formula.jsonl</code>、<code>logs/reconstruct-table.jsonl</code>，启动过修复会话时另有 <code>logs/reconstruct-fix.jsonl</code>，以及各会话在 <code>out/&lt;ID&gt;.notes.json</code> 里的条目。阶段的产物是 <code>src/main.tex</code>。重跑 reconstruct 时删掉重建目录、两个识别会话的目录、三个会话的日志、三个会话的条目与 manifest；只在 <code>route</code> 是 <code>"pdf"</code> 时清空 <code>src/</code>，因为 <code>route</code> 是 <code>"tex"</code> 时 <code>src/</code> 属于 fetch。</p></dd>
       <dt>常量</dt>
       <dd>
         <p>核对的阈值与公式校验的容差见上文。编译命令与超时与 precompile 相同，识别校验里单条公式与单张表格的编译也用这个超时。</p>
@@ -434,7 +462,8 @@ api_key  = ""</code></pre>
 
 class RecognitionReport(BaseModel):
     total: int                       # 可识别的截图个数
-    passed: int                      # 通过校验并写回 main.tex 的个数
+    passed: int                      # 通过校验并写回 main.tex 的个数，含本地模型通过的
+    local_passed: int | None         # 本地 oMLX 模型通过的个数；未开启 oMLX 与表格为 null
     session: Session | None
 
 class CheckReport(BaseModel):
@@ -856,7 +885,7 @@ class Usage(BaseModel):
     thinking_tokens: int | None      # output_tokens 当中用于思考的部分，只有 claude-code 有值</code></pre>
   <p><code>thinking_tokens</code> 包含在 <code>output_tokens</code> 之内，不另外计费。它与 <code>cost_usd</code> 一样只有 claude-code 有值，取自 claude-code 原始输出的 result 行。agentrun 的结束事件没有这两项数据，所以暂时从原始输出读取。</p>
   <h3 id="abstract-chat">摘要翻译</h3>
-  <p><code>tongtu info --zh</code> 的摘要翻译是 agent 会话之外唯一的模型调用：它直接请求 <code>config.toml</code> 的 <code>[abstract]</code> 指定的 OpenAI 兼容聊天接口（<code>POST &lt;base_url&gt;/chat/completions</code>），一条 system 消息是写在 <code>tongtu/model/chat.py</code> 里的提示词，一条 user 消息是英文摘要。理由是启动一次 agent 会话对一段摘要来说太慢。请求关闭 DeepSeek 的思考模式（<code>"thinking": {"type": "disabled"}</code>）以缩短耗时，这个参数对其他兼容服务是否有效不作保证。超时 <code>ABSTRACT_TIMEOUT_SECONDS = 60</code>，<code>ABSTRACT_TEMPERATURE = 0.2</code>。没有密钥、密钥含空白、控制字符或非 ASCII 字符（不发请求）、网络错误、非 2xx 与响应里取不到文本都是预期内的失败，由 <code>info</code> 报告；其他异常同样只让翻译失败，原因只写异常的类型名。密钥不写进任何日志、错误信息或输出：错误信息里的接口只写主机名，网络错误只写异常的类型名，因为 httpx 的异常文本可能带请求头，<code>base_url</code> 也可能带用户信息。标题不翻译。</p>
+  <p><code>tongtu info --zh</code> 的摘要翻译与 reconstruct 的<a href="#reconstruct">本地 oMLX 首轮识别</a>是 agent 会话之外仅有的两处模型调用。摘要翻译直接请求 <code>config.toml</code> 的 <code>[abstract]</code> 指定的 OpenAI 兼容聊天接口（<code>POST &lt;base_url&gt;/chat/completions</code>），一条 system 消息是写在 <code>tongtu/model/chat.py</code> 里的提示词，一条 user 消息是英文摘要。理由是启动一次 agent 会话对一段摘要来说太慢。请求关闭 DeepSeek 的思考模式（<code>"thinking": {"type": "disabled"}</code>）以缩短耗时，这个参数对其他兼容服务是否有效不作保证。超时 <code>ABSTRACT_TIMEOUT_SECONDS = 60</code>，<code>ABSTRACT_TEMPERATURE = 0.2</code>。没有密钥、密钥含空白、控制字符或非 ASCII 字符（不发请求）、网络错误、非 2xx 与响应里取不到文本都是预期内的失败，由 <code>info</code> 报告；其他异常同样只让翻译失败，原因只写异常的类型名。密钥不写进任何日志、错误信息或输出：错误信息里的接口只写主机名，网络错误只写异常的类型名，因为 httpx 的异常文本可能带请求头，<code>base_url</code> 也可能带用户信息。标题不翻译。</p>
   <h3>会话记下的问题</h3>
   <p>每次 agent 会话结束前，按 skill 的要求在会话目录写一个 <code>notes.json</code>，逐条记下这次遇到的问题、当时的处理办法和预期的解决方法。没有遇到问题时写空列表。会话结束后，通途读这个文件，给每条加上会话的名字，写进 <code>out/&lt;ID&gt;.notes.json</code>，然后删掉会话目录里的那一份。一个会话的条目与它的工作成果同存亡：reconstruct、precompile 与 compile 每次运行都从头做，开始时先去掉自己的会话以前写进去的条目；translate 的条目在会话目录被清空时（<code>--from</code> 或 <code>stage translate</code>）去掉，直接采用已有译文时保留，接着已有译文再启动会话时新条目追加在已有条目之后。</p>
   <p>通途只收集这些条目。<code>notes.json</code> 读不出来或格式不对时记一条 warning，阶段的状态不受影响。条目不参加判定，也不触发后续动作；之后由人或别的工具读这个文件，决定怎样补充 skill、规则或校验脚本。</p>
@@ -974,7 +1003,7 @@ class PaperSummary(BaseModel):
   <p>向 stdout 输出一个 <code>PaperMeta</code> 的 JSON 对象，格式与 <code>out/&lt;ID&gt;.meta.json</code> 完全相同，写法与 <code>status --json</code> 相同。论文信息的来源与退出码与不带 <code>--json</code> 时相同，见<a href="#cli">命令行</a>；失败时不输出 JSON。没有中文摘要时 <code>abstract_zh</code> 为 null。带 <code>--zh</code> 而翻译没有成功时照常输出 JSON。</p>
 
   <h3 id="config-json">tongtu config list --json</h3>
-  <p>向 stdout 输出一个 JSON 对象。键是 <code>tongtu config list</code> 列出的带点的键，顺序相同；值是字符串、数字或布尔，模式名取它的字符串值，未设置的可选字段为 null，<code>abstract.api_key</code> 按上文显示成掩码或空串。配置文件不存在时输出默认值；配置文件加载失败时不输出 JSON，错误写到 stderr，退出 1。</p>
+  <p>向 stdout 输出一个 JSON 对象。键是 <code>tongtu config list</code> 列出的带点的键，顺序相同；值是字符串、数字或布尔，模式名取它的字符串值，未设置的可选字段为 null，密钥项按上文显示成掩码或空串。配置文件不存在时输出默认值；配置文件加载失败时不输出 JSON，错误写到 stderr，退出 1。</p>
 
   <h3 id="run-marker">运行标记</h3>
   <p><code>run</code> 与 <code>stage</code> 开始运行阶段前写 <code>&lt;工作目录&gt;/running.json</code>，结束时删除。正常结束、阶段失败、程序异常、Ctrl-C 与 SIGTERM 都在退出前删除它。<code>status</code>、<code>list</code> 与 <code>stop</code> 读这个文件，再检查其中的进程是否还在，并用 <code>ps -o lstart=</code>（<code>LC_ALL=C</code>）取这个进程的启动时间。运行标记有效要求两条：进程存在，且启动时间不晚于 <code>started_at</code> 加 <code>MARKER_CLOCK_SLACK_SECONDS = 2</code> 秒。文件不存在、读不出、进程已经不在、取不到启动时间或启动时间晚于这个界限时，运行标记无效，<code>running</code> 为 false。</p>

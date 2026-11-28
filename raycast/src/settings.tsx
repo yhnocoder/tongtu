@@ -5,6 +5,7 @@ import {
   ABSTRACT_FIELDS,
   API_KEY_KEY,
   CLEAR_API_KEY_PAIR,
+  CLEAR_OMLX_API_KEY_PAIR,
   CROP_KEY,
   Config,
   DEFAULT_MODE_KEY,
@@ -12,6 +13,9 @@ import {
   FormValues,
   MODES,
   NOT_INSTALLED,
+  OMLX_API_KEY_KEY,
+  OMLX_ENABLED_KEY,
+  OMLX_FIELDS,
   OTHER_MODEL,
   apiKeyPlaceholder,
   apiKeySet,
@@ -90,7 +94,11 @@ export default function Settings() {
       }
     }
     setLoaded({ config, recentDays: daysChanged && days !== null ? days : loaded.recentDays });
-    if (!rejected && pairs.includes(API_KEY_KEY)) setValues((current) => ({ ...current, [API_KEY_KEY]: "" }));
+    if (!rejected) {
+      for (const key of [API_KEY_KEY, OMLX_API_KEY_KEY]) {
+        if (pairs.includes(key)) setValues((current) => ({ ...current, [key]: "" }));
+      }
+    }
     setErrors(found);
     if (rejected) {
       await showToast({ style: Toast.Style.Failure, title: rejected });
@@ -103,17 +111,17 @@ export default function Settings() {
     }
   }
 
-  async function clearApiKey(): Promise<void> {
+  async function clearApiKey(pair: string[], done: string): Promise<void> {
     if (!loaded) return;
-    const result = await tongtu(["config", "set", "--", ...CLEAR_API_KEY_PAIR]);
+    const result = await tongtu(["config", "set", "--", ...pair]);
     if (result.code !== 0) {
       await showToast({ style: Toast.Style.Failure, title: result.stderr.trim() || "tongtu config set 失败" });
       return;
     }
     const config = (await readConfig()) ?? loaded.config;
     setLoaded({ ...loaded, config });
-    setValues((current) => ({ ...current, [API_KEY_KEY]: "" }));
-    await showToast({ style: Toast.Style.Success, title: "已清除摘要翻译的密钥" });
+    setValues((current) => ({ ...current, [pair[0]]: "" }));
+    await showToast({ style: Toast.Style.Success, title: done });
   }
 
   async function openConfig(): Promise<void> {
@@ -140,7 +148,22 @@ export default function Settings() {
         <ActionPanel>
           <Action.SubmitForm title="保存" icon={Icon.Check} onSubmit={save} />
           <Action title="关闭" icon={Icon.XMarkCircle} onAction={() => popToRoot()} />
-          {apiKeySet(loaded.config) && <Action title="清除摘要翻译的密钥" icon={Icon.Key} style={Action.Style.Destructive} onAction={clearApiKey} />}
+          {apiKeySet(loaded.config) && (
+            <Action
+              title="清除摘要翻译的密钥"
+              icon={Icon.Key}
+              style={Action.Style.Destructive}
+              onAction={() => clearApiKey(CLEAR_API_KEY_PAIR, "已清除摘要翻译的密钥")}
+            />
+          )}
+          {apiKeySet(loaded.config, OMLX_API_KEY_KEY) && (
+            <Action
+              title="清除 oMLX 的密钥"
+              icon={Icon.Key}
+              style={Action.Style.Destructive}
+              onAction={() => clearApiKey(CLEAR_OMLX_API_KEY_PAIR, "已清除 oMLX 的密钥")}
+            />
+          )}
           <Action title="打开 config.toml" icon={Icon.Document} onAction={openConfig} />
           <Action title="恢复默认值" icon={Icon.Trash} style={Action.Style.Destructive} onAction={reset} />
         </ActionPanel>
@@ -208,6 +231,26 @@ export default function Settings() {
         value={text(API_KEY_KEY)}
         onChange={change(API_KEY_KEY)}
         error={error(API_KEY_KEY)}
+      />
+      <Form.Separator />
+      <Form.Description text="本地公式识别（oMLX）" />
+      <Form.Checkbox
+        id={OMLX_ENABLED_KEY}
+        label="PDF 重建时先用本地模型识别公式"
+        value={values[OMLX_ENABLED_KEY] === true}
+        onChange={change(OMLX_ENABLED_KEY)}
+        error={error(OMLX_ENABLED_KEY)}
+      />
+      {OMLX_FIELDS.map(([key, title]) => (
+        <Form.TextField key={key} id={key} title={title} value={text(key)} onChange={change(key)} error={error(key)} />
+      ))}
+      <Form.TextField
+        id={OMLX_API_KEY_KEY}
+        title="密钥"
+        placeholder={apiKeyPlaceholder(loaded.config, OMLX_API_KEY_KEY)}
+        value={text(OMLX_API_KEY_KEY)}
+        onChange={change(OMLX_API_KEY_KEY)}
+        error={error(OMLX_API_KEY_KEY)}
       />
       <Form.Separator />
       <Form.Description text="插件" />
