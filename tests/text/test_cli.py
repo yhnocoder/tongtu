@@ -605,7 +605,7 @@ def test_config_menu_exits_from_the_last_line(tmp_path: Path, monkeypatch: pytes
 
 def test_config_menu_toggles_a_boolean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path(tmp_path, monkeypatch)
-    queue = menu_keys(monkeypatch, [*[UP] * 5, ENTER, UP, ENTER, *[DOWN] * 4, ENTER])
+    queue = menu_keys(monkeypatch, [*[UP] * 9, ENTER, UP, ENTER, *[DOWN] * 8, ENTER])
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert queue == []
@@ -613,10 +613,20 @@ def test_config_menu_toggles_a_boolean(tmp_path: Path, monkeypatch: pytest.Monke
     assert "pdf.crop_margins = true" in result.stdout
 
 
+def test_config_menu_toggles_omlx_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    queue = menu_keys(monkeypatch, [*[UP] * 8, ENTER, UP, ENTER, *[DOWN] * 7, ENTER])
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert queue == []
+    assert loaded_config().omlx.enabled is True
+    assert "omlx.enabled = true" in result.stdout
+
+
 def test_config_menu_keeps_an_unchanged_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = config_path(tmp_path, monkeypatch)
     path.write_text(TABLE, encoding="utf-8")
-    queue = menu_keys(monkeypatch, [*[UP] * 5, ENTER, DOWN, DOWN, ENTER, *[DOWN] * 4, ENTER])
+    queue = menu_keys(monkeypatch, [*[UP] * 9, ENTER, DOWN, DOWN, ENTER, *[DOWN] * 8, ENTER])
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert queue == []
@@ -2825,6 +2835,21 @@ def test_config_set_takes_the_key_as_text(
     assert loaded_config().abstract.api_key == stored
 
 
+@pytest.mark.parametrize(("value", "stored"), [("123456", "123456"), (" sk-FAKE-SECRET-1\n", "sk-FAKE-SECRET-1")])
+def test_config_set_takes_the_omlx_key_as_text_and_masks_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, stored: str
+) -> None:
+    path = config_path(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["config", "set", "omlx.api_key", value])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"omlx.api_key = {SECRET_MASK}\n"
+    assert loaded_config().omlx.api_key == stored
+    assert f'api_key = "{stored}"' in path.read_text(encoding="utf-8")
+    listed = runner.invoke(app, ["config", "list", "--json"])
+    assert json.loads(listed.stdout)["omlx.api_key"] == SECRET_MASK
+    assert stored not in listed.output
+
+
 def fake_translation(monkeypatch: pytest.MonkeyPatch, reply: str | chat.ChatError) -> list[str]:
     calls: list[str] = []
 
@@ -3141,3 +3166,14 @@ def test_config_menu_takes_a_new_key_without_echoing_it(tmp_path: Path, monkeypa
     assert loaded_config().abstract.api_key == FAKE_KEY
     assert FAKE_KEY not in result.output
     assert f"abstract.api_key = {SECRET_MASK}" in result.stdout
+
+
+def test_config_menu_takes_the_omlx_key_without_echoing_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path(tmp_path, monkeypatch)
+    queue = menu_keys(monkeypatch, [*[UP] * 5, ENTER, *[DOWN] * 4, ENTER])
+    result = runner.invoke(app, ["config"], input=f" {FAKE_KEY} \n")
+    assert result.exit_code == 0, result.output
+    assert queue == []
+    assert loaded_config().omlx.api_key == FAKE_KEY
+    assert FAKE_KEY not in result.output
+    assert f"omlx.api_key = {SECRET_MASK}" in result.stdout

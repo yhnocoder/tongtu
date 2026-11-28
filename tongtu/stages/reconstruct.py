@@ -17,7 +17,8 @@ from ..artifacts.reconstruct import (
     RegionsFile,
 )
 from ..manifests import describe_error, timeout_warning, write_manifest
-from ..reconstruct import checks, formula, packing, recognition, review, table
+from ..model.config import OmlxConfig, load_config
+from ..reconstruct import checks, formula, omlx, packing, recognition, review, table
 from ..reconstruct.crops import CropError
 from ..reconstruct.latex import ToolError
 from ..reconstruct.rebuild import MAIN_FILENAME, rebuild
@@ -40,7 +41,11 @@ LOST_GLYPH_EXAMPLES = 8
 
 SESSION_STATUS = "{skill} session"
 
+OMLX_STATUS = "omlx"
+
 Report = Callable[[str, str], None]
+
+Local = Callable[[Path, dict[str, RegionKind], Report, list[str]], tuple[dict[str, Verdict], dict[str, RegionKind]]]
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,14 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
         return _no_text_layer(
             f"{paper_workdir.original_pdf} has no English word in its text layer; scanned PDFs are not supported."
         )
+    omlx_config = _omlx_config()
+    local: Local | None = None
+    if omlx_config.enabled:
+        report("checking", "oMLX")
+        model_id, problem = omlx.check(omlx_config)
+        if problem:
+            return ReconstructManifest(status=ReconstructStatus.OMLX_UNAVAILABLE, rebuilt=True, message=problem)
+        local = _local_formulas(paper_workdir, omlx_config, model_id)
     report("rebuilding", ORIGINAL_FILENAME)
     try:
         regions = rebuild(original, tree)
@@ -111,10 +124,10 @@ def _rebuild(paper_workdir: Workdir, mode: str, report: Report) -> ReconstructMa
     for region in regions.regions:
         counts[region.kind.value] += 1
     warnings: list[str] = []
-    formulas, failure = _recognize(FORMULAS, paper_workdir, tree, regions, mode, report, warnings)
+    formulas, failure = _recognize(FORMULAS, paper_workdir, tree, regions, mode, report, warnings, local)
     tables = None
     if not failure:
-        tables, failure = _recognize(TABLES, paper_workdir, tree, regions, mode, report, warnings)
+        tables, failure = _recognize(TABLES, paper_workdir, tree, regions, mode, report, warnings, None)
     if failure:
         return ReconstructManifest(
             status=ReconstructStatus.RECONSTRUCT_FAILED,
@@ -168,6 +181,7 @@ def _recognize[KeysT: Sized](
     mode: str,
     report: Report,
     warnings: list[str],
+    local: Callable[[Path, KeysT, Report, list[str]], tuple[dict[str, Verdict], KeysT]] | None,
 ) -> tuple[RecognitionReport | None, str]:
     main = tree / MAIN_FILENAME
     tex = main.read_text(encoding="utf-8")
@@ -176,21 +190,53 @@ def _recognize[KeysT: Sized](
         return None, ""
     result = RecognitionReport(total=len(keys), passed=0)
     try:
-        session_dir = _session_dir(paper_workdir, recognizer.skill)
-        recognizer.prepare(tree, session_dir, keys)
-        session = _recognition_session(
-            recognizer.skill, session_dir, recognizer.log(paper_workdir), paper_workdir, mode, report, warnings
-        )
-        result = result.model_copy(update={"session": session})
-        transcriptions, problem = recognition.read_transcriptions(session_dir, recognizer.skill)
-        if problem:
-            warnings.append(problem)
-        report("checking", recognizer.noun)
-        tex, passed = recognizer.write_back(tex, recognizer.verify_all(tree, transcriptions, keys), tree)
+        verdicts: dict[str, Verdict] = {}
+        remaining = keys
+        if local is not None:
+            verdicts, remaining = local(tree, keys, report, warnings)
+            result = result.model_copy(update={"local_passed": len(verdicts)})
+        if remaining:
+            session_dir = _session_dir(paper_workdir, recognizer.skill)
+            recognizer.prepare(tree, session_dir, remaining)
+            session = _recognition_session(
+                recognizer.skill, session_dir, recognizer.log(paper_workdir), paper_workdir, mode, report, warnings
+            )
+            result = result.model_copy(update={"session": session})
+            transcriptions, problem = recognition.read_transcriptions(session_dir, recognizer.skill)
+            if problem:
+                warnings.append(problem)
+            report("checking", recognizer.noun)
+            verdicts |= recognizer.verify_all(tree, transcriptions, remaining)
+        tex, passed = recognizer.write_back(tex, verdicts, tree)
     except CropError as error:
         return result, str(error)
     main.write_text(tex, encoding="utf-8")
     return result.model_copy(update={"passed": passed}), ""
+
+
+def _omlx_config() -> OmlxConfig:
+    config, _detail = load_config()
+    return config.omlx if config is not None else OmlxConfig()
+
+
+def _local_formulas(paper_workdir: Workdir, config: OmlxConfig, model_id: str) -> Local:
+    def recognize(
+        tree: Path, keys: dict[str, RegionKind], report: Report, warnings: list[str]
+    ) -> tuple[dict[str, Verdict], dict[str, RegionKind]]:
+        session_dir = _session_dir(paper_workdir, FORMULA_SKILL)
+        formula.prepare(tree, session_dir, keys)
+        images = {key: recognition.image_path(session_dir, key) for key in keys}
+        report(OMLX_STATUS, f"0/{len(keys)}")
+        replies, failures = omlx.transcribe_all(
+            config, model_id, images, lambda done: report(OMLX_STATUS, f"{done}/{len(keys)}")
+        )
+        if failures:
+            warnings.append(omlx.failure_warning(failures, len(keys)))
+        report("checking", FORMULAS.noun)
+        passed = {key: verdict for key, verdict in omlx.verify_replies(tree, replies, keys).items() if verdict.passed}
+        return passed, {key: kind for key, kind in keys.items() if key not in passed}
+
+    return recognize
 
 
 def _session_dir(paper_workdir: Workdir, skill: str) -> Path:

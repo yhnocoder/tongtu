@@ -34,11 +34,15 @@ class _Choice(BaseModel):
     message: _Message
 
 
-class _Completion(BaseModel):
+class Completion(BaseModel):
     choices: list[_Choice]
 
 
-def _sendable_in_header(value: str) -> bool:
+def reply_text(completion: Completion) -> str:
+    return (completion.choices[0].message.content or "").strip() if completion.choices else ""
+
+
+def sendable_in_header(value: str) -> bool:
     return value.isascii() and all(char.isprintable() and not char.isspace() for char in value)
 
 
@@ -53,7 +57,7 @@ def _host(url: str) -> str:
 def translate_abstract(config: AbstractConfig, text: str) -> str:
     if not config.api_key:
         raise ChatError("abstract.api_key is not set; set it with tongtu config set abstract.api_key KEY")
-    if not _sendable_in_header(config.api_key):
+    if not sendable_in_header(config.api_key):
         raise ChatError("abstract.api_key has characters that cannot be sent in a request header")
     url = f"{config.base_url.rstrip('/')}/chat/completions"
     host = _host(url)
@@ -75,10 +79,10 @@ def translate_abstract(config: AbstractConfig, text: str) -> str:
     if not response.is_success:
         raise ChatError(f"{host} answered HTTP {response.status_code}")
     try:
-        completion = _Completion.model_validate_json(response.content)
+        completion = Completion.model_validate_json(response.content)
     except ValidationError as error:
         raise ChatError(f"the answer from {host} is not a chat completion") from error
-    reply = (completion.choices[0].message.content or "").strip() if completion.choices else ""
+    reply = reply_text(completion)
     if not reply:
         raise ChatError(f"the answer from {host} has no text")
     return reply

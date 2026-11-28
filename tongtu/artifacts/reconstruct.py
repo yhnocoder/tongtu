@@ -13,6 +13,7 @@ class ReconstructStatus(StrEnum):
     OK = "ok"
     NO_TEXT_LAYER = "no_text_layer"
     RECONSTRUCT_FAILED = "reconstruct_failed"
+    OMLX_UNAVAILABLE = "omlx_unavailable"
 
 
 class RegionKind(StrEnum):
@@ -57,6 +58,7 @@ class CheckReport(BaseModel):
 class RecognitionReport(BaseModel):
     total: int
     passed: int
+    local_passed: int | None = None
     session: Session | None = None
 
 

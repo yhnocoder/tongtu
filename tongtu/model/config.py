@@ -4,9 +4,10 @@ import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Annotated
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ..config import config_path
 
@@ -61,9 +62,21 @@ class PdfConfig(BaseModel):
     crop_margins: bool = Field(default=False, strict=True)
 
 
+ApiKey = Annotated[str, AfterValidator(str.strip)]
+
+
+class OmlxConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, strict=True)
+    base_url: str = "http://127.0.0.1:8000/v1"
+    model: str = "groxaxo/TeleOCR-oQ8-MLX"
+    api_key: ApiKey = ""
+
+
 DEFAULT_TIMEOUT_SECONDS = 3600
 
-SECRET_KEYS = frozenset({"abstract.api_key"})
+SECRET_KEYS = frozenset({"abstract.api_key", "omlx.api_key"})
 
 SECRET_MASK = "********"
 
@@ -109,12 +122,7 @@ class AbstractConfig(BaseModel):
 
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-flash"
-    api_key: str = ""
-
-    @field_validator("api_key")
-    @classmethod
-    def stripped_api_key(cls, value: str) -> str:
-        return value.strip()
+    api_key: ApiKey = ""
 
 
 class ModelsConfig(BaseModel):
@@ -123,6 +131,7 @@ class ModelsConfig(BaseModel):
     modes: ModesConfig = ModesConfig()
     fonts: FontsConfig = FontsConfig()
     pdf: PdfConfig = PdfConfig()
+    omlx: OmlxConfig = OmlxConfig()
     abstract: AbstractConfig = AbstractConfig()
 
 
