@@ -65,9 +65,10 @@ with bar() as progress:
     task = progress.add_task("下载并重建论文", total=len(todo))
     for paper in todo:
         name, arxiv_id = paper.split(":", 1)
-        progress.update(task, description=f"下载并重建 {name}")
         pdf = work / "pdfs" / f"{name}.pdf"
+        progress.update(task, description=f"下载 {name}")
         download(arxiv_id, pdf)
+        progress.update(task, description=f"重建 {name}（{len(pymupdf.open(pdf))} 页）")
         items = extract(pdf, work / name)
         progress.console.print(f"{name}: {sum(it['kind'] == 'algorithm' for it in items)} 个算法块，"
                                f"{sum(it['kind'] == 'listing' for it in items)} 个代码块")
