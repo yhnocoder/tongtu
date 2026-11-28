@@ -7,7 +7,8 @@ from pathlib import Path
 import pymupdf
 
 from tongtu.artifacts.reconstruct import RegionKind, RegionsFile
-from tongtu.reconstruct.layout import MONO_FONT_RE
+from tongtu.reconstruct.latex import code_font
+from tongtu.reconstruct.layout import MONO_FONT_RE, Char, Line
 from tongtu.reconstruct.rebuild import MAIN_FILENAME, rebuild
 
 WORDS = (
@@ -265,3 +266,30 @@ def test_monospace_font_names() -> None:
     proportional = ["Montserrat-Regular", "HarmoniaSans-Bold", "MonotypeCorsiva", "Barcode39", "NimbusRomNo9L-Regu"]
     assert [name for name in mono if MONO_FONT_RE.search(name)] == mono
     assert [name for name in proportional if MONO_FONT_RE.search(name)] == []
+
+
+def code_line(fonts: list[str]) -> Line:
+    chars = [
+        Char("x", (10.0 * index, 0, 10.0 * index + 5, 9), (10.0 * index, 8), font, 9, False, False, mono=True)
+        for index, font in enumerate(fonts)
+    ]
+    return Line(0, pymupdf.Rect(0, 0, 10 * len(fonts), 9), chars)
+
+
+def test_courier_code_in_a_times_paper_uses_tex_gyre_cursor(tmp_path: Path) -> None:
+    tex, kinds = rebuilt(tmp_path, captioned_layer)
+    assert kinds == []
+    assert "\\setmonofont{texgyrecursor}" in tex
+    assert "\\newfontfamily\\codefontCursor{texgyrecursor}" in tex
+    assert "formatcom=\\codefontCursor," in tex
+    assert "codefontLatinModern" not in tex
+
+
+def test_code_font_follows_the_majority_of_the_code_characters() -> None:
+    typewriter = [code_line(["SFTT0900"] * 8 + ["NimbusMonL-Regu"] * 2), code_line(["CMTT10"] * 6)]
+    assert code_font(typewriter).command == "codefontLatinModern"
+    assert code_font(typewriter).advance == 0.525
+    assert code_font([code_line(["NimbusMonL-Regu"] * 5 + ["CMTT10"])]).command == "codefontCursor"
+    assert code_font([code_line(["Courier-Bold"] * 3)]).advance == 0.6
+    assert code_font([code_line(["Inconsolatazi4-Regular"] * 3)]).command == "codefontInconsolata"
+    assert code_font([code_line(["Menlo-Regular"] * 3)]).command == "codefontLatinModern"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import functools
 import re
 import statistics
 import unicodedata
@@ -12,7 +13,7 @@ from .. import processes
 from ..artifacts.reconstruct import RegionKind
 from . import code
 from .crops import Cropper, crop_path
-from .layout import CAPTION_RE, PROSE_RE, Char, Item, Layout, Line, family
+from .layout import CAPTION_RE, PROSE_RE, Char, Item, Layout, Line, family, visible
 
 INLINE_CROP_MACRO = r"\newcommand\im[3]{\raisebox{-#2}{\includegraphics{crops/#1}}}"
 
@@ -42,11 +43,6 @@ CJK_FONT = "FandolSong-Regular.otf"
 
 FALLBACK_FONT = "DejaVuSans.ttf"
 
-MONO_FONTS: dict[bool, tuple[str, float]] = {
-    True: ("texgyrecursor-regular.otf", 0.6),
-    False: ("lmmono10-regular.otf", 0.525),
-}
-
 FALLBACK_COMMAND_RE = re.compile(r"\\(fallback[A-Z]) ")
 
 MATH_PACKAGES: tuple[tuple[str, str], ...] = (
@@ -64,6 +60,37 @@ FLOAT_PLACEMENT = (
 )
 
 GYRE_SHAPES = "[Extension=.otf,UprightFont=*-regular,BoldFont=*-bold,ItalicFont=*-italic,BoldItalicFont=*-bolditalic]"
+
+LATIN_MODERN_MONO = code.CodeFont(
+    "codefontLatinModern",
+    "lmmono10-regular.otf",
+    "[BoldFont=lmmonolt10-bold.otf,ItalicFont=lmmono10-italic.otf]",
+    "lmmono10-regular.otf",
+    0.525,
+)
+
+CODE_FONTS: tuple[tuple[re.Pattern[str], code.CodeFont], ...] = (
+    (
+        re.compile(r"Courier|NimbusMon"),
+        code.CodeFont(
+            "codefontCursor",
+            "texgyrecursor",
+            GYRE_SHAPES,
+            "texgyrecursor-regular.otf",
+            0.6,
+        ),
+    ),
+    (
+        re.compile(r"Inconsolata"),
+        code.CodeFont(
+            "codefontInconsolata",
+            "Inconsolatazi4",
+            "[Extension=.otf,UprightFont=*-Regular,BoldFont=*-Bold]",
+            "Inconsolatazi4-Regular.otf",
+            0.5,
+        ),
+    ),
+)
 
 FLOATING_KINDS = ("caption", "caption+", "footnote", "header", "footer", "title")
 
@@ -107,6 +134,16 @@ def is_mono(font: str) -> bool:
     return "Mon" in font or "CMTT" in font
 
 
+def code_font(lines: list[Line]) -> code.CodeFont:
+    fonts = collections.Counter(
+        char.font for line in lines for char in visible(line.chars) if char.mono and not char.c.isspace()
+    )
+    if not fonts:
+        return LATIN_MODERN_MONO
+    name = fonts.most_common(1)[0][0]
+    return next((font for pattern, font in CODE_FONTS if pattern.search(name)), LATIN_MODERN_MONO)
+
+
 def is_math(piece: Piece) -> bool:
     return isinstance(piece, Char) and piece.math
 
@@ -148,7 +185,7 @@ class LatexWriter:
         self.cjk = False
         self.cjk_fallback: str | None = None
         self.uses_strip = False
-        self.uses_code = False
+        self.code_fonts: dict[str, code.CodeFont] = {}
         self.heads: list[tuple[int, int]] = []
         self.floating_code: list[tuple[int, pymupdf.Rect, str]] = []
         self.uses_color = False
@@ -763,8 +800,9 @@ class LatexWriter:
             for is_code, segment in code.segments(column):
                 top, bottom = min(line.bbox.y0 for line in segment), max(line.bbox.y1 for line in segment)
                 if is_code:
-                    verbatim = code.verbatim(segment, self.code_glyph, self.mono()[1])
-                    self.uses_code = True
+                    font = code_font(segment)
+                    verbatim = code.verbatim(segment, functools.partial(self.code_glyph, font), font)
+                    self.code_fonts[font.command] = font
                     self.uses_color = self.uses_color or verbatim.colored
                     parts.append(
                         (top, bottom, f"\\noindent\\hspace*{{{verbatim.left - low:.1f}bp}}{verbatim.tex}\\par")
@@ -810,18 +848,11 @@ class LatexWriter:
         )
         return block, pymupdf.Rect(left, item.rect.y0, right, item.rect.y1)
 
-    def code_glyph(self, char: str) -> str | None:
-        if ord(char) < 128 or self.mono_font().has_glyph(ord(char)):
+    def code_glyph(self, font: code.CodeFont, char: str) -> str | None:
+        if ord(char) < 128 or self.font_file(font.file).has_glyph(ord(char)):
             return None
         fallback = self.fallback_glyph(char)
         return None if fallback == char else FALLBACK_COMMAND_RE.sub(r"\\\1{}", fallback)
-
-    def mono(self) -> tuple[str, float]:
-        body_family = self.layout.body_family
-        return MONO_FONTS["Nimbus" in body_family or "Times" in body_family]
-
-    def mono_font(self) -> pymupdf.Font:
-        return self.font_file(self.mono()[0])
 
     def figure(self, item: Item, graphic: str, out: list[str]) -> str:
         caption, notes = self.split_footnotes(self.inline(item.caption))
@@ -898,7 +929,7 @@ class LatexWriter:
             "\\documentclass[" + ("twocolumn" if layout.twocol else "") + "]{article}",
             f"\\usepackage[{options}]{{geometry}}",
             "\\usepackage{graphicx}\\usepackage{wrapfig}" + ("\\usepackage{cuted}" if self.uses_strip else ""),
-            "\\usepackage{fancyvrb}\\newsavebox\\codebox" if self.uses_code else "",
+            "\\usepackage{fancyvrb}\\newsavebox\\codebox" if self.code_fonts else "",
             "\\usepackage{xcolor}" if self.uses_color else "",
             "\\usepackage[labelformat=empty]{caption}" + self.caption_font(),
             "\\usepackage{amsmath}"
@@ -920,6 +951,9 @@ class LatexWriter:
             if "Libertine" in body_family
             else "",
             f"\\setmonofont{{texgyrecursor}}{GYRE_SHAPES}" if times else "",
+            "".join(
+                f"\\newfontfamily\\{font.command}{{{font.name}}}{font.options}" for font in self.code_fonts.values()
+            ),
             f"\\renewcommand\\normalsize{{\\fontsize{{{layout.body_size:.2f}bp}}"
             f"{{{layout.leading:.2f}bp}}\\selectfont}}",
             INLINE_CROP_MACRO,

@@ -45,6 +45,15 @@ Fallback = Callable[[str], str | None]
 
 
 @dataclass(frozen=True)
+class CodeFont:
+    command: str
+    name: str
+    options: str
+    file: str
+    advance: float
+
+
+@dataclass(frozen=True)
 class Token:
     spaces: int
     text: str
@@ -257,7 +266,7 @@ def styled_text(tokens: list[Token]) -> str:
     return "".join(out)
 
 
-def verbatim(lines: list[Line], fallback: Fallback, advance: float) -> Verbatim:
+def verbatim(lines: list[Line], fallback: Fallback, font: CodeFont) -> Verbatim:
     splits = [split_number(line.chars) for line in lines]
     numbers = [int("".join(char.c for char in number).rstrip(":")) if number else None for number, _ in splits]
     first = numbers[0]
@@ -291,8 +300,12 @@ def verbatim(lines: list[Line], fallback: Fallback, advance: float) -> Verbatim:
     width = max(
         1, *(sum(token.spaces + (1 if token.command else len(token.text)) for token in tokens) for tokens in table)
     )
-    options = [f"fontsize=\\fontsize{{{size:.2f}bp}}{{{size:.2f}bp}}", "baseline=t"]
-    scale = unit / (advance * size)
+    options = [
+        f"fontsize=\\fontsize{{{size:.2f}bp}}{{{size:.2f}bp}}",
+        f"formatcom=\\{font.command}",
+        "baseline=t",
+    ]
+    scale = unit / (font.advance * size)
     if gap > 0:
         options.append(f"baselinestretch={gap / size / scale:.3f}")
     colored = any(token.color for tokens in table for token in tokens)
