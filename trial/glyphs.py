@@ -5,6 +5,7 @@ import pymupdf
 from tongtu.reconstruct import table
 
 table.EXTENSION_FONT_RE = re.compile(r"cmex|mathex|lmex|txex|pxex|stixex", re.I)
+table.CMEX = {}
 
 NUMBER_RE = re.compile(r"^\d+:?")
 NUMBER_GAP = 0.4
