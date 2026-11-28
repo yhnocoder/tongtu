@@ -13,13 +13,15 @@ PROMPTS = {
  "glm": ("GLM-OCR", "Formula Recognition:", "Table Recognition:"),
  "mineru": ("MinerU2.5-Pro-2605-1.2B", "\nFormula Recognition:", "\nTable Recognition:"),
  "minicpm": ("MiniCPM-OCR-1.0", "Formula Recognition:", "Table Recognition:"),
- "ovis": ("OvisOCR3", (M/"OvisOCR3/prompts/formula_recognition.txt").read_text(), (M/"OvisOCR3/prompts/document_markdown.txt").read_text()),
+ "ovis": ("OvisOCR3", "prompts/formula_recognition.txt", "prompts/document_markdown.txt"),
  "minicpm2": ("MiniCPM-OCR-1.0", "Formula Recognition:", "Table Recognition:"),
  "tele": ("TeleOCR", "\nPlease write out the expression of the formula in the image using LaTeX format.", "\nThis is the image of a table. Please output the table in OTSL format."),
 }
 name, paper_dirs = sys.argv[1], sys.argv[2:]
 limit = None
 d, fp, tp = PROMPTS[name]
+if name == "ovis":
+    fp, tp = (M / d / fp).read_text(), (M / d / tp).read_text()
 t0 = time.time()
 kw = {"trust_remote_code": True} if name in ("tele",) else {}
 proc = AutoProcessor.from_pretrained(M/d, **kw)
