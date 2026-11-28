@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import functools
 import re
 import statistics
 import unicodedata
@@ -10,8 +11,9 @@ import pymupdf
 
 from .. import processes
 from ..artifacts.reconstruct import RegionKind
+from . import code
 from .crops import Cropper, crop_path
-from .layout import PROSE_RE, Char, Item, Layout, Line, family
+from .layout import CAPTION_RE, PROSE_RE, Char, Item, Layout, Line, family, visible
 
 INLINE_CROP_MACRO = r"\newcommand\im[3]{\raisebox{-#2}{\includegraphics{crops/#1}}}"
 
@@ -41,6 +43,8 @@ CJK_FONT = "FandolSong-Regular.otf"
 
 FALLBACK_FONT = "DejaVuSans.ttf"
 
+FALLBACK_COMMAND_RE = re.compile(r"\\(fallback[A-Z]) ")
+
 MATH_PACKAGES: tuple[tuple[str, str], ...] = (
     (r"XCharter", "[xcharter]{newtxmath}"),
     (r"Libertin", "[libertine]{newtxmath}"),
@@ -56,6 +60,37 @@ FLOAT_PLACEMENT = (
 )
 
 GYRE_SHAPES = "[Extension=.otf,UprightFont=*-regular,BoldFont=*-bold,ItalicFont=*-italic,BoldItalicFont=*-bolditalic]"
+
+LATIN_MODERN_MONO = code.CodeFont(
+    "codefontLatinModern",
+    "lmmono10-regular.otf",
+    "[BoldFont=lmmonolt10-bold.otf,ItalicFont=lmmono10-italic.otf]",
+    "lmmono10-regular.otf",
+    0.525,
+)
+
+CODE_FONTS: tuple[tuple[re.Pattern[str], code.CodeFont], ...] = (
+    (
+        re.compile(r"Courier|NimbusMon"),
+        code.CodeFont(
+            "codefontCursor",
+            "texgyrecursor",
+            GYRE_SHAPES,
+            "texgyrecursor-regular.otf",
+            0.6,
+        ),
+    ),
+    (
+        re.compile(r"Inconsolata"),
+        code.CodeFont(
+            "codefontInconsolata",
+            "Inconsolatazi4",
+            "[Extension=.otf,UprightFont=*-Regular,BoldFont=*-Bold]",
+            "Inconsolatazi4-Regular.otf",
+            0.5,
+        ),
+    ),
+)
 
 FLOATING_KINDS = ("caption", "caption+", "footnote", "header", "footer", "title")
 
@@ -99,6 +134,16 @@ def is_mono(font: str) -> bool:
     return "Mon" in font or "CMTT" in font
 
 
+def code_font(lines: list[Line]) -> code.CodeFont:
+    fonts = collections.Counter(
+        char.font for line in lines for char in visible(line.chars) if char.mono and not char.c.isspace()
+    )
+    if not fonts:
+        return LATIN_MODERN_MONO
+    name = fonts.most_common(1)[0][0]
+    return next((font for pattern, font in CODE_FONTS if pattern.search(name)), LATIN_MODERN_MONO)
+
+
 def is_math(piece: Piece) -> bool:
     return isinstance(piece, Char) and piece.math
 
@@ -140,6 +185,10 @@ class LatexWriter:
         self.cjk = False
         self.cjk_fallback: str | None = None
         self.uses_strip = False
+        self.code_fonts: dict[str, code.CodeFont] = {}
+        self.heads: list[tuple[int, int]] = []
+        self.floating_code: list[tuple[int, pymupdf.Rect, str]] = []
+        self.uses_color = False
         self.math_package_name: str | None = None
         self.heading_styles: dict[str, list[Line]] = collections.defaultdict(list)
         self.footnotes: list[list[Line]] = []
@@ -148,6 +197,7 @@ class LatexWriter:
 
     def document(self) -> str:
         layout = self.layout
+        self.heads = self.head_spans() if layout.twocol else []
         body = self.emit()
         if layout.twocol:
             body = self.twocolumn_heads(body)
@@ -159,20 +209,16 @@ class LatexWriter:
         )
 
     def floating(self) -> list[tuple[int, pymupdf.Rect, str]]:
-        return [(line.page, line.bbox, line.kind) for line in self.layout.lines if line.kind in FLOATING_KINDS]
+        lines = [(line.page, line.bbox, line.kind) for line in self.layout.lines if line.kind in FLOATING_KINDS]
+        return lines + self.floating_code
 
-    def twocolumn_heads(self, body: list[str]) -> list[str]:
+    def head_spans(self) -> list[tuple[int, int]]:
         layout = self.layout
         items = layout.items
-
-        def flatten(head: str) -> str:
-            head = re.sub(r"^\\twocolumn\n*", "", head)
-            return TWOCOLUMN_FIGURE_RE.sub(r"\\begin{center}\1\\end{center}", head)
-
         starts: dict[int, int] = {}
         for index, item in enumerate(items):
             starts.setdefault(item.page, index)
-        new_body = list(body)
+        spans = []
         for page_number, first in sorted(starts.items(), reverse=True):
             end = first
             while (
@@ -187,6 +233,22 @@ class LatexWriter:
                 continue
             if page_number > 0 and not any(items[index].kind in ("heading", "title") for index in range(first, end)):
                 continue
+            spans.append((first, end))
+        return spans
+
+    def in_head(self, item: Item) -> bool:
+        items = self.layout.items
+        return any(any(items[index] is item for index in range(first, end)) for first, end in self.heads)
+
+    def twocolumn_heads(self, body: list[str]) -> list[str]:
+        layout = self.layout
+
+        def flatten(head: str) -> str:
+            head = re.sub(r"^\\twocolumn\n*", "", head)
+            return TWOCOLUMN_FIGURE_RE.sub(r"\\begin{center}\1\\end{center}", head)
+
+        new_body = list(body)
+        for first, end in self.heads:
             head = [flatten(part) for part in new_body[first:end]]
             joined = "\n\n".join(part for part in head if part)
             new_body[first:end] = [f"\\twocolumn[{joined}\n\\vspace{{{layout.leading:.1f}bp}}]"] + [""] * (
@@ -692,7 +754,17 @@ class LatexWriter:
             )
         )
         prefix, kind = region_kind(item, bool(equation))
-        graphic = crop_path(self.cropper.crop(item.page, rect, prefix, kind))
+        lines = code.region_lines(layout, item, rect)
+        if not self.in_head(item) and code.is_code(layout, item, kind, lines, rect):
+            graphic, rect = self.code_block(item, lines)
+            equation = False
+            if item.caption or (item.wide and layout.twocol):
+                self.floating_code += [
+                    (line.page, line.bbox, "caption" if any(line is other for other in item.caption) else "code")
+                    for line in lines
+                ]
+        else:
+            graphic = f"\\includegraphics{{{crop_path(self.cropper.crop(item.page, rect, prefix, kind))}}}"
         if item.caption:
             out.append(self.figure(item, graphic, out))
             return
@@ -707,25 +779,85 @@ class LatexWriter:
                 None,
             )
             gap = max(0.0, item.rect.y0 - previous.rect.y1 - 4) if previous else layout.leading * 0.5
-            out.append(
-                f"{{\\parskip={gap:.1f}bp\\par\\noindent\\hspace*{{{offset:.1f}bp}}\\includegraphics{{{graphic}}}\\par}}"
-            )
+            out.append(f"{{\\parskip={gap:.1f}bp\\par\\noindent\\hspace*{{{offset:.1f}bp}}{graphic}\\par}}")
         elif item.wide and layout.twocol and equation:
-            out.append(f"\\begin{{strip}}\\centering\\includegraphics{{{graphic}}}\\end{{strip}}")
+            out.append(f"\\begin{{strip}}\\centering{graphic}\\end{{strip}}")
             self.uses_strip = True
         elif item.wide and layout.twocol:
-            out.append(f"\\begin{{figure*}}[htbp]\n\\centering\\includegraphics{{{graphic}}}\n\\end{{figure*}}")
+            out.append(f"\\begin{{figure*}}[htbp]\n\\centering{graphic}\n\\end{{figure*}}")
         elif abs((rect.x0 + rect.x1) / 2 - (low + high) / 2) < 8 and rect.width < high - low:
-            out.append(f"\\par\\smallskip\\noindent\\hfil\\includegraphics{{{graphic}}}\\hfil\\par\\smallskip")
+            out.append(f"\\par\\smallskip\\noindent\\hfil{graphic}\\hfil\\par\\smallskip")
         else:
-            out.append(
-                f"\\par\\smallskip\\noindent\\hspace*{{{offset:.1f}bp}}\\includegraphics{{{graphic}}}\\par\\smallskip"
+            out.append(f"\\par\\smallskip\\noindent\\hspace*{{{offset:.1f}bp}}{graphic}\\par\\smallskip")
+
+    def code_block(self, item: Item, lines: list[Line]) -> tuple[str, pymupdf.Rect]:
+        layout = self.layout
+        captions: list[Line] = []
+        columns: list[tuple[float, float, list[tuple[float, float, str]]]] = []
+        for column in code.split_columns(lines, code.char_unit(lines)):
+            low = min(line.bbox.x0 for line in column)
+            parts: list[tuple[float, float, str]] = []
+            for is_code, segment in code.segments(column):
+                top, bottom = min(line.bbox.y0 for line in segment), max(line.bbox.y1 for line in segment)
+                if is_code:
+                    font = code_font(segment)
+                    verbatim = code.verbatim(segment, functools.partial(self.code_glyph, font), font)
+                    self.code_fonts[font.command] = font
+                    self.uses_color = self.uses_color or verbatim.colored
+                    parts.append(
+                        (top, bottom, f"\\noindent\\hspace*{{{verbatim.left - low:.1f}bp}}{verbatim.tex}\\par")
+                    )
+                    continue
+                caption = [
+                    line
+                    for index, line in enumerate(segment)
+                    if not item.caption and any(CAPTION_RE.match(earlier.text) for earlier in segment[: index + 1])
+                ]
+                captions += caption
+                text = [line for line in segment if all(line is not other for other in caption)]
+                if not text:
+                    continue
+                size = statistics.median(line.size for line in text)
+                setup = f"\\fontsize{{{size:.2f}bp}}{{{size * layout.leading / layout.body_size:.2f}bp}}\\selectfont"
+                offset = text[0].bbox.x0 - low
+                parts.append(
+                    (
+                        min(line.bbox.y0 for line in text),
+                        max(line.bbox.y1 for line in text),
+                        f"{setup}\\noindent\\hspace*{{{offset:.1f}bp}}{self.inline(text)}\\par",
+                    )
+                )
+            columns.append((low, max(line.bbox.x1 for line in column), parts))
+        top = min(part[0] for _, _, parts in columns for part in parts)
+        bottom = max(part[1] for _, _, parts in columns for part in parts)
+        left, right = columns[0][0], max(high for _, high, _ in columns)
+        placed = [
+            f"\\begin{{minipage}}[t]{{{high - low:.1f}bp}}\n"
+            + "".join(
+                f"\\nointerlineskip\\vbox to 0pt{{\\vskip{start - top:.1f}bp\\hsize={high - low:.1f}bp\n{tex}\n\\vss}}\n"
+                for start, _, tex in parts
             )
+            + f"\\nointerlineskip\\vbox to {bottom - top:.1f}bp{{}}\n\\end{{minipage}}"
+            for low, high, parts in columns
+        ]
+        if captions:
+            item.caption = captions
+            item.caption_above = captions[0].bbox.y0 < top
+        block = (
+            f"\\begin{{minipage}}[t]{{{right - left:.1f}bp}}\n\\noindent" + "\\hfill".join(placed) + "\n\\end{minipage}"
+        )
+        return block, pymupdf.Rect(left, item.rect.y0, right, item.rect.y1)
+
+    def code_glyph(self, font: code.CodeFont, char: str) -> str | None:
+        if ord(char) < 128 or self.font_file(font.file).has_glyph(ord(char)):
+            return None
+        fallback = self.fallback_glyph(char)
+        return None if fallback == char else FALLBACK_COMMAND_RE.sub(r"\\\1{}", fallback)
 
     def figure(self, item: Item, graphic: str, out: list[str]) -> str:
         caption, notes = self.split_footnotes(self.inline(item.caption))
         environment = "figure*" if item.wide else "figure"
-        include = f"\\centering\\includegraphics{{{graphic}}}"
+        include = f"\\centering{graphic}"
         caption_command = f"\\caption[]{{{caption}}}"
         body = f"{caption_command}\n{include}" if item.caption_above else f"{include}\n{caption_command}"
         if item.caption_above and item.caption[0].text.startswith("Algorithm"):
@@ -797,6 +929,8 @@ class LatexWriter:
             "\\documentclass[" + ("twocolumn" if layout.twocol else "") + "]{article}",
             f"\\usepackage[{options}]{{geometry}}",
             "\\usepackage{graphicx}\\usepackage{wrapfig}" + ("\\usepackage{cuted}" if self.uses_strip else ""),
+            "\\usepackage{fancyvrb}\\newsavebox\\codebox" if self.code_fonts else "",
+            "\\usepackage{xcolor}" if self.uses_color else "",
             "\\usepackage[labelformat=empty]{caption}" + self.caption_font(),
             "\\usepackage{amsmath}"
             + (f"\\usepackage{math_package}" if math_package else "\\usepackage{amssymb}")
@@ -817,6 +951,9 @@ class LatexWriter:
             if "Libertine" in body_family
             else "",
             f"\\setmonofont{{texgyrecursor}}{GYRE_SHAPES}" if times else "",
+            "".join(
+                f"\\newfontfamily\\{font.command}{{{font.name}}}{font.options}" for font in self.code_fonts.values()
+            ),
             f"\\renewcommand\\normalsize{{\\fontsize{{{layout.body_size:.2f}bp}}"
             f"{{{layout.leading:.2f}bp}}\\selectfont}}",
             INLINE_CROP_MACRO,

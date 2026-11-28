@@ -11,6 +11,7 @@ import pymupdf
 import pytest
 
 import tongtu.model
+from tongtu import compiling
 from tongtu.artifacts.common import NotesFile, Session, StopReason
 from tongtu.artifacts.fetch import FetchManifest, FetchStatus
 from tongtu.artifacts.reconstruct import ReconstructStatus, RegionsFile
@@ -18,11 +19,13 @@ from tongtu.manifests import load_manifest, timeout_warning, write_manifest
 from tongtu.model.config import OmlxConfig
 from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
-from tongtu.reconstruct import omlx, review
+from tongtu.reconstruct import checks, omlx, review
 from tongtu.reconstruct.crops import crop_path
+from tongtu.reconstruct.rebuild import MAIN_FILENAME, rebuild
 from tongtu.stages import reconstruct
 from tongtu.workdir import Workdir
 
+from ..text.test_reconstruct_code import CODE_LEADING, CODE_SIZE, LAYER, MONO, captioned_layer, code_paper, put
 from .conftest import DISPLAY_LATEX, INLINE_LATEX, TABLE_LATEX
 
 pytestmark = pytest.mark.compile
@@ -498,3 +501,52 @@ def test_omlx_disabled_leaves_local_passed_null(
     monkeypatch.setattr(tongtu.model, "work", fake_recognition([], StopReason.FINISHED))
     manifest = reconstruct.run(pdf_workdir(tmp_path, recognition_pdf), mode="fast")
     assert manifest.formulas is not None and manifest.formulas.local_passed is None
+
+
+def test_monospace_code_compiles_to_copyable_text(tmp_path: Path) -> None:
+    original = code_paper(tmp_path, captioned_layer)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    regions = rebuild(original, tree)
+    attempt = compiling.attempt_compile(tree, MAIN_FILENAME)
+    assert attempt.report.pages == 1
+    assert regions.regions == []
+    assert not any((tree / "crops").iterdir())
+    text = pymupdf.open(tree / "main.pdf")[0].get_text()
+    for line in LAYER:
+        assert line.strip() in text
+    report = checks.check(original, tree, attempt.report, regions).report
+    assert report.passed, report
+
+
+def code_spans(page: pymupdf.Page) -> list[tuple[str, pymupdf.Rect]]:
+    return [
+        (line["spans"][0]["font"], pymupdf.Rect(line["bbox"]))
+        for block in page.get_text("dict")["blocks"]
+        for line in block.get("lines", [])
+        if " ".join("".join(span["text"] for span in line["spans"]).split()) == LAYER[0]
+    ]
+
+
+@pytest.mark.parametrize(("font_file", "expected"), [("lmmono10-regular.otf", "LMMono10"), ("", "TeXGyreCursor")])
+def test_code_is_set_in_the_font_of_the_original_code(tmp_path: Path, font_file: str, expected: str) -> None:
+    path = subprocess.run(["kpsewhich", font_file], capture_output=True, text=True).stdout.strip() if font_file else ""
+    mono = pymupdf.Font(fontfile=path) if path else MONO
+
+    def layer(page: pymupdf.Page, y: float) -> float:
+        for line in LAYER:
+            if line:
+                put(page, 90, y, line, mono, CODE_SIZE)
+            y += CODE_LEADING
+        return y
+
+    original = code_paper(tmp_path, layer)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    rebuild(original, tree)
+    assert "\\setmonofont{texgyrecursor}" in (tree / MAIN_FILENAME).read_text(encoding="utf-8")
+    assert compiling.attempt_compile(tree, MAIN_FILENAME).report.pages == 1
+    [(_, source)] = code_spans(pymupdf.open(original)[0])
+    [(font, rebuilt)] = code_spans(pymupdf.open(tree / "main.pdf")[0])
+    assert expected in font
+    assert abs(rebuilt.width - source.width) < 0.02 * source.width
