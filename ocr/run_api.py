@@ -1,4 +1,4 @@
-import base64, json, os, sys, threading, time, urllib.request
+import base64, json, os, struct, sys, threading, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from progress import bar
@@ -33,13 +33,22 @@ def ask(png, prompt, max_tokens):
         reply = json.load(response)
     return reply["choices"][0]["message"]["content"] or "", reply.get("usage", {}).get("completion_tokens", 0)
 
-def run(pd, it, res, out):
+def image(pd, it):
+    return (pd / os.environ.get("IMG_DIR", "images") / f"{it['key']}.png").read_bytes()
+
+
+def cost(pd, it):
+    width, height = struct.unpack(">II", image(pd, it)[16:24])
+    return width * height * (20 if it["type"] == "table" else 1)
+
+
+def run(job, it):
+    pd, out, res, todo, task = job
     k = it["key"]
-    png = (pd / os.environ.get("IMG_DIR", "images") / f"{k}.png").read_bytes()
     formula = it["type"] == "formula"
     t = time.time()
     try:
-        text, tokens = ask(png, formula_prompt if formula else table_prompt, 768 if formula else 4096)
+        text, tokens = ask(image(pd, it), formula_prompt if formula else table_prompt, 768 if formula else 4096)
     except Exception as error:
         text, tokens = "", 0
         print(pd.name, k, "error", error, file=sys.stderr, flush=True)
@@ -49,26 +58,25 @@ def run(pd, it, res, out):
         progress.advance(task)
         out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
 
+
 jobs = []
 for pd in map(Path, papers):
     items = json.loads((pd / "items.json").read_text())
     out = pd / f"out_{label}.json"
     res = json.loads(out.read_text()) if out.exists() and os.environ.get("RERUN") != "1" else {}
-    jobs.append((pd, out, res, [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]))
+    jobs.append([pd, out, res, [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]])
 
 with bar() as progress:
-    for pd, out, res, todo in jobs:
-        task = progress.add_task(f"{label} {pd.name}", total=len(todo))
-        groups = {}
-        for it in todo:
-            groups.setdefault(it.get("kind") or it["type"], []).append(it)
-        for group in groups.values():
-            start = time.time()
-            with ThreadPoolExecutor(concurrency) as pool:
-                list(pool.map(lambda it: run(pd, it, res, out), group))
-            share = round((time.time() - start) / len(group), 3)
-            with lock:
-                for it in group:
-                    res[it["key"]]["wall"] = share
-                out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
-            print(pd.name, it.get("kind") or it["type"], len(group), "items", round(time.time() - start, 1), "s wall", file=sys.stderr, flush=True)
+    for job in jobs:
+        job.append(progress.add_task(f"{label} {job[0].name}", total=len(job[3])))
+    queue = sorted(((job, it) for job in jobs for it in job[3]), key=lambda pair: -cost(pair[0][0], pair[1]))
+    start = time.time()
+    with ThreadPoolExecutor(concurrency) as pool:
+        list(pool.map(lambda pair: run(*pair), queue))
+    wall = time.time() - start
+    scale = wall / (sum(job[2][it["key"]]["seconds"] for job, it in queue) or 1)
+    for job, it in queue:
+        job[2][it["key"]]["wall"] = round(job[2][it["key"]]["seconds"] * scale, 3)
+    for job in jobs:
+        job[1].write_text(json.dumps(job[2], ensure_ascii=False, indent=1))
+    print(len(queue), "items", round(wall, 1), "s wall", file=sys.stderr, flush=True)
