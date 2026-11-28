@@ -36,8 +36,7 @@ for m in $MODELS; do
     *:*) .venv/bin/python ocr/run_api.py "${m%%:*}" "${m#*:}" $PAPERS ;;
     tele) tele/.venv/bin/python ocr/run_model.py tele $PAPERS ;;
     *) .venv/bin/python ocr/run_model.py "$m" $PAPERS ;;
-  esac > "$WORK/log_${m%%:*}.txt" 2>&1 || { echo "$m failed, last lines of $WORK/log_${m%%:*}.txt:"; tail -25 "$WORK/log_${m%%:*}.txt"; continue; }
-  grep -E "^load" "$WORK/log_${m%%:*}.txt" || true
+  esac 2> "$WORK/log_${m%%:*}.txt" || { echo "$m failed, last lines of $WORK/log_${m%%:*}.txt:"; tail -25 "$WORK/log_${m%%:*}.txt"; continue; }
   .venv/bin/python ocr/verify.py "${m%%:*}" $PAPERS > /dev/null
 done
 .venv/bin/python ocr/summary.py "$WORK" | tee "$WORK/summary.tsv"

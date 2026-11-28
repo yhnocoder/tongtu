@@ -8,6 +8,7 @@ dependencies = [
     "transformers==4.57.1",
     "accelerate",
     "pillow",
+    "rich",
 ]
 
 [tool.uv]

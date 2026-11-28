@@ -9,6 +9,7 @@ dependencies = [
     "transformers==5.24.1",
     "accelerate",
     "pillow",
+    "rich",
     "huggingface_hub",
 ]
 

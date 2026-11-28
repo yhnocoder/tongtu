@@ -1,5 +1,6 @@
 import json, sys, time, torch
 from pathlib import Path
+from progress import bar
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForImageTextToText
 import os
@@ -30,6 +31,7 @@ model = AutoModelForImageTextToText.from_pretrained(M/d, dtype=torch.bfloat16, *
 tok = getattr(proc, "tokenizer", proc)
 tok.padding_side = "left"
 print("load", round(time.time()-t0,1), DEVICE, flush=True)
+print("load", round(time.time()-t0,1), DEVICE, file=sys.stderr, flush=True)
 def load(pd, it):
     img = Image.open(pd/os.environ.get("IMG_DIR", "images")/f"{it['key']}.png").convert("RGB")
     scale = min(1.0, (MAX_PIXELS / (img.width * img.height)) ** 0.5)
@@ -63,25 +65,32 @@ def generate(pd, group, hints):
         result.append((proc.decode(gen, skip_special_tokens=True), proc.decode(gen, skip_special_tokens=False), int(gen.shape[-1])))
     return result
 
+HINTS = os.environ.get("HINTS") == "1"
+jobs = []
 for pd in map(Path, paper_dirs):
-    HINTS = os.environ.get("HINTS") == "1"
     items = json.loads((pd/("items_h.json" if HINTS else "items.json")).read_text())
     hints = json.loads((pd/"hints.json").read_text()) if HINTS else {}
     out = pd/(f"out_{name}_h.json" if HINTS else f"out_{name}.json")
     res = json.loads(out.read_text()) if out.exists() else {}
     todo = [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]
-    formulas = sorted((it for it in todo if it["type"] == "formula"), key=lambda it: Image.open(pd/os.environ.get("IMG_DIR", "images")/f"{it['key']}.png").size[0])
-    groups = [formulas[i:i+BATCH] for i in range(0, len(formulas), BATCH)] + [[it] for it in todo if it["type"] != "formula"]
-    for group in groups:
-        t = time.time()
-        try:
-            outputs = generate(pd, group, hints)
-        except Exception as error:
-            if len(group) == 1: raise
-            print(pd.name, "batch failed, falling back to one at a time:", error, flush=True)
-            outputs = [generate(pd, [it], hints)[0] for it in group]
-        seconds = round((time.time()-t) / len(group), 2)
-        for it, (text, raw, tokens) in zip(group, outputs):
-            res[it["key"]] = {"text": text, "raw": raw, "seconds": seconds, "tokens": tokens}
-            print(pd.name, it["key"], seconds, repr(text[:120]), flush=True)
-        out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
+    jobs.append((pd, hints, out, res, todo))
+
+with bar() as progress:
+    tasks = [progress.add_task(f"{name} {pd.name}", total=len(todo)) for pd, _, _, _, todo in jobs]
+    for task, (pd, hints, out, res, todo) in zip(tasks, jobs):
+        formulas = sorted((it for it in todo if it["type"] == "formula"), key=lambda it: Image.open(pd/os.environ.get("IMG_DIR", "images")/f"{it['key']}.png").size[0])
+        groups = [formulas[i:i+BATCH] for i in range(0, len(formulas), BATCH)] + [[it] for it in todo if it["type"] != "formula"]
+        for group in groups:
+            t = time.time()
+            try:
+                outputs = generate(pd, group, hints)
+            except Exception as error:
+                if len(group) == 1: raise
+                print(pd.name, "batch failed, falling back to one at a time:", error, file=sys.stderr, flush=True)
+                outputs = [generate(pd, [it], hints)[0] for it in group]
+            seconds = round((time.time()-t) / len(group), 2)
+            for it, (text, raw, tokens) in zip(group, outputs):
+                res[it["key"]] = {"text": text, "raw": raw, "seconds": seconds, "tokens": tokens}
+                print(pd.name, it["key"], seconds, repr(text[:120]), file=sys.stderr, flush=True)
+            out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
+            progress.advance(task, len(group))

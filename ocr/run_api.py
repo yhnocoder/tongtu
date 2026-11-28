@@ -1,6 +1,7 @@
 import base64, json, os, sys, threading, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from progress import bar
 
 PROMPTS = {
     "mineru": ("\nFormula Recognition:", "\nTable Recognition:", "You are a helpful assistant."),
@@ -41,18 +42,24 @@ def run(pd, it, res, out):
         text, tokens = ask(png, formula_prompt if formula else table_prompt, 768 if formula else 4096)
     except Exception as error:
         text, tokens = "", 0
-        print(pd.name, k, "error", error, flush=True)
+        print(pd.name, k, "error", error, file=sys.stderr, flush=True)
     with lock:
         res[k] = {"text": text, "raw": text, "seconds": round(time.time() - t, 2), "tokens": tokens}
-        print(pd.name, k, res[k]["seconds"], repr(text[:100]), flush=True)
+        print(pd.name, k, res[k]["seconds"], repr(text[:100]), file=sys.stderr, flush=True)
+        progress.advance(task)
         out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
 
+jobs = []
 for pd in map(Path, papers):
     items = json.loads((pd / "items.json").read_text())
     out = pd / f"out_{label}.json"
     res = json.loads(out.read_text()) if out.exists() else {}
-    todo = [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]
-    start = time.time()
-    with ThreadPoolExecutor(concurrency) as pool:
-        list(pool.map(lambda it: run(pd, it, res, out), todo))
-    print(pd.name, len(todo), "items", round(time.time() - start, 1), "s wall", flush=True)
+    jobs.append((pd, out, res, [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]))
+
+with bar() as progress:
+    for pd, out, res, todo in jobs:
+        task = progress.add_task(f"{label} {pd.name}", total=len(todo))
+        start = time.time()
+        with ThreadPoolExecutor(concurrency) as pool:
+            list(pool.map(lambda it: run(pd, it, res, out), todo))
+        print(pd.name, len(todo), "items", round(time.time() - start, 1), "s wall", file=sys.stderr, flush=True)
