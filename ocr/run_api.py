@@ -1,4 +1,5 @@
-import base64, json, os, sys, time, urllib.request
+import base64, json, os, sys, threading, time, urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 PROMPTS = {
@@ -15,6 +16,8 @@ model = os.environ.get("API_MODEL", "")
 key = os.environ.get("API_KEY", "none")
 max_time = float(os.environ.get("MAX_TIME", "600"))
 formula_prompt, table_prompt, system = PROMPTS[family]
+concurrency = int(os.environ.get("CONCURRENCY", "4"))
+lock = threading.Lock()
 
 def ask(png, prompt, max_tokens):
     url = "data:image/png;base64," + base64.b64encode(png).decode()
@@ -29,22 +32,27 @@ def ask(png, prompt, max_tokens):
         reply = json.load(response)
     return reply["choices"][0]["message"]["content"] or "", reply.get("usage", {}).get("completion_tokens", 0)
 
+def run(pd, it, res, out):
+    k = it["key"]
+    png = (pd / os.environ.get("IMG_DIR", "images") / f"{k}.png").read_bytes()
+    formula = it["type"] == "formula"
+    t = time.time()
+    try:
+        text, tokens = ask(png, formula_prompt if formula else table_prompt, 768 if formula else 4096)
+    except Exception as error:
+        text, tokens = "", 0
+        print(pd.name, k, "error", error, flush=True)
+    with lock:
+        res[k] = {"text": text, "raw": text, "seconds": round(time.time() - t, 2), "tokens": tokens}
+        print(pd.name, k, res[k]["seconds"], repr(text[:100]), flush=True)
+        out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
+
 for pd in map(Path, papers):
     items = json.loads((pd / "items.json").read_text())
     out = pd / f"out_{label}.json"
     res = json.loads(out.read_text()) if out.exists() else {}
-    for it in items:
-        k = it["key"]
-        if k in res or (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"]):
-            continue
-        png = (pd / os.environ.get("IMG_DIR", "images") / f"{k}.png").read_bytes()
-        formula = it["type"] == "formula"
-        t = time.time()
-        try:
-            text, tokens = ask(png, formula_prompt if formula else table_prompt, 768 if formula else 4096)
-        except Exception as error:
-            text, tokens = "", 0
-            print(pd.name, k, "error", error, flush=True)
-        res[k] = {"text": text, "raw": text, "seconds": round(time.time() - t, 2), "tokens": tokens}
-        print(pd.name, k, res[k]["seconds"], repr(text[:100]), flush=True)
-        out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
+    todo = [it for it in items if it["key"] not in res and not (os.environ.get("ONLY") and it["type"] != os.environ["ONLY"])]
+    start = time.time()
+    with ThreadPoolExecutor(concurrency) as pool:
+        list(pool.map(lambda it: run(pd, it, res, out), todo))
+    print(pd.name, len(todo), "items", round(time.time() - start, 1), "s wall", flush=True)
