@@ -120,7 +120,7 @@ def judge(paper, item, text):
 
 if __name__ == "__main__":
     label = sys.argv[1]
-    progress = bar(stderr=True)
+    progress = bar()
     progress.start()
     with ProcessPoolExecutor(int(os.environ.get("VERIFY_JOBS") or os.cpu_count())) as pool:
         for paper in map(Path, sys.argv[2:]):

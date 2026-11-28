@@ -6,18 +6,16 @@ RUNS=${*:-textlayer:textlayer tele_mlx:tele}
 PAPERS=${PAPERS:-"flashattn:2205.14135 adam:1412.6980 ddpm:2006.11239 ppo:1707.06347 grpo:2402.03300 specdec:2211.17192 sglang:2312.07104 outlines:2307.09702 pytorch:1912.01703 drb:2308.07505 awkward:2303.02205 autosp:2604.27089 pyprompt:2408.09134 pastalean:2610.34205"}
 export API_BASE=${API_BASE:-http://127.0.0.1:11000/v1}
 export API_MODEL=${API_MODEL:-TeleOCR-oQ8-MLX}
-mkdir -p "$WORK/pdfs"
+mkdir -p "$WORK"
 uv sync -q
+.venv/bin/python trial/extract.py "$WORK" $PAPERS 2> "$WORK/log_extract.txt" || { echo "extract failed, last lines of $WORK/log_extract.txt:"; tail -25 "$WORK/log_extract.txt"; exit 1; }
 
 NAMES=""
-for p in $PAPERS; do
-  n=${p%%:*}
-  NAMES="$NAMES $n"
-  [ -f "$WORK/pdfs/$n.pdf" ] || curl -sfL -o "$WORK/pdfs/$n.pdf" "https://arxiv.org/pdf/${p#*:}"
-  [ -f "$WORK/$n/items.json" ] || .venv/bin/python trial/extract.py "$WORK/pdfs/$n.pdf" "$WORK/$n" 2> "$WORK/log_extract_$n.txt"
-done
 DIRS=""
-for n in $NAMES; do DIRS="$DIRS $WORK/$n"; done
+for p in $PAPERS; do
+  NAMES="$NAMES ${p%%:*}"
+  DIRS="$DIRS $WORK/${p%%:*}"
+done
 
 START=$(date +%s)
 for r in $RUNS; do
