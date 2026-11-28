@@ -11,6 +11,7 @@ import pymupdf
 import pytest
 
 import tongtu.model
+from tongtu import compiling
 from tongtu.artifacts.common import NotesFile, Session, StopReason
 from tongtu.artifacts.fetch import FetchManifest, FetchStatus
 from tongtu.artifacts.reconstruct import ReconstructStatus, RegionsFile
@@ -18,11 +19,13 @@ from tongtu.manifests import load_manifest, timeout_warning, write_manifest
 from tongtu.model.config import OmlxConfig
 from tongtu.model.work import WorkOutcome
 from tongtu.pipeline import outputs_present
-from tongtu.reconstruct import omlx, review
+from tongtu.reconstruct import checks, omlx, review
 from tongtu.reconstruct.crops import crop_path
+from tongtu.reconstruct.rebuild import MAIN_FILENAME, rebuild
 from tongtu.stages import reconstruct
 from tongtu.workdir import Workdir
 
+from ..text.test_reconstruct_code import LAYER, captioned_layer, code_paper
 from .conftest import DISPLAY_LATEX, INLINE_LATEX, TABLE_LATEX
 
 pytestmark = pytest.mark.compile
@@ -498,3 +501,19 @@ def test_omlx_disabled_leaves_local_passed_null(
     monkeypatch.setattr(tongtu.model, "work", fake_recognition([], StopReason.FINISHED))
     manifest = reconstruct.run(pdf_workdir(tmp_path, recognition_pdf), mode="fast")
     assert manifest.formulas is not None and manifest.formulas.local_passed is None
+
+
+def test_monospace_code_compiles_to_copyable_text(tmp_path: Path) -> None:
+    original = code_paper(tmp_path, captioned_layer)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    regions = rebuild(original, tree)
+    attempt = compiling.attempt_compile(tree, MAIN_FILENAME)
+    assert attempt.report.pages == 1
+    assert regions.regions == []
+    assert not any((tree / "crops").iterdir())
+    text = pymupdf.open(tree / "main.pdf")[0].get_text()
+    for line in LAYER:
+        assert line.strip() in text
+    report = checks.check(original, tree, attempt.report, regions).report
+    assert report.passed, report

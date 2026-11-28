@@ -10,8 +10,9 @@ import pymupdf
 
 from .. import processes
 from ..artifacts.reconstruct import RegionKind
+from . import code
 from .crops import Cropper, crop_path
-from .layout import PROSE_RE, Char, Item, Layout, Line, family
+from .layout import CAPTION_RE, PROSE_RE, Char, Item, Layout, Line, family
 
 INLINE_CROP_MACRO = r"\newcommand\im[3]{\raisebox{-#2}{\includegraphics{crops/#1}}}"
 
@@ -40,6 +41,13 @@ ESCAPES: dict[str, str] = {
 CJK_FONT = "FandolSong-Regular.otf"
 
 FALLBACK_FONT = "DejaVuSans.ttf"
+
+MONO_FONTS: dict[bool, tuple[str, float]] = {
+    True: ("texgyrecursor-regular.otf", 0.6),
+    False: ("lmmono10-regular.otf", 0.525),
+}
+
+FALLBACK_COMMAND_RE = re.compile(r"\\(fallback[A-Z]) ")
 
 MATH_PACKAGES: tuple[tuple[str, str], ...] = (
     (r"XCharter", "[xcharter]{newtxmath}"),
@@ -140,6 +148,8 @@ class LatexWriter:
         self.cjk = False
         self.cjk_fallback: str | None = None
         self.uses_strip = False
+        self.uses_code = False
+        self.uses_color = False
         self.math_package_name: str | None = None
         self.heading_styles: dict[str, list[Line]] = collections.defaultdict(list)
         self.footnotes: list[list[Line]] = []
@@ -692,7 +702,12 @@ class LatexWriter:
             )
         )
         prefix, kind = region_kind(item, bool(equation))
-        graphic = crop_path(self.cropper.crop(item.page, rect, prefix, kind))
+        lines = code.region_lines(layout, item, rect)
+        if code.is_code(layout, item, kind, lines, rect):
+            graphic, rect = self.code_block(item, lines)
+            equation = False
+        else:
+            graphic = f"\\includegraphics{{{crop_path(self.cropper.crop(item.page, rect, prefix, kind))}}}"
         if item.caption:
             out.append(self.figure(item, graphic, out))
             return
@@ -707,25 +722,91 @@ class LatexWriter:
                 None,
             )
             gap = max(0.0, item.rect.y0 - previous.rect.y1 - 4) if previous else layout.leading * 0.5
-            out.append(
-                f"{{\\parskip={gap:.1f}bp\\par\\noindent\\hspace*{{{offset:.1f}bp}}\\includegraphics{{{graphic}}}\\par}}"
-            )
+            out.append(f"{{\\parskip={gap:.1f}bp\\par\\noindent\\hspace*{{{offset:.1f}bp}}{graphic}\\par}}")
         elif item.wide and layout.twocol and equation:
-            out.append(f"\\begin{{strip}}\\centering\\includegraphics{{{graphic}}}\\end{{strip}}")
+            out.append(f"\\begin{{strip}}\\centering{graphic}\\end{{strip}}")
             self.uses_strip = True
         elif item.wide and layout.twocol:
-            out.append(f"\\begin{{figure*}}[htbp]\n\\centering\\includegraphics{{{graphic}}}\n\\end{{figure*}}")
+            out.append(f"\\begin{{figure*}}[htbp]\n\\centering{graphic}\n\\end{{figure*}}")
         elif abs((rect.x0 + rect.x1) / 2 - (low + high) / 2) < 8 and rect.width < high - low:
-            out.append(f"\\par\\smallskip\\noindent\\hfil\\includegraphics{{{graphic}}}\\hfil\\par\\smallskip")
+            out.append(f"\\par\\smallskip\\noindent\\hfil{graphic}\\hfil\\par\\smallskip")
         else:
-            out.append(
-                f"\\par\\smallskip\\noindent\\hspace*{{{offset:.1f}bp}}\\includegraphics{{{graphic}}}\\par\\smallskip"
+            out.append(f"\\par\\smallskip\\noindent\\hspace*{{{offset:.1f}bp}}{graphic}\\par\\smallskip")
+
+    def code_block(self, item: Item, lines: list[Line]) -> tuple[str, pymupdf.Rect]:
+        layout = self.layout
+        captions: list[Line] = []
+        columns: list[tuple[float, float, list[tuple[float, float, str]]]] = []
+        for column in code.split_columns(lines, code.char_unit(lines)):
+            low = min(line.bbox.x0 for line in column)
+            parts: list[tuple[float, float, str]] = []
+            for is_code, segment in code.segments(column):
+                top, bottom = min(line.bbox.y0 for line in segment), max(line.bbox.y1 for line in segment)
+                if is_code:
+                    verbatim = code.verbatim(segment, self.code_glyph, self.mono()[1])
+                    self.uses_code = True
+                    self.uses_color = self.uses_color or verbatim.colored
+                    parts.append(
+                        (top, bottom, f"\\noindent\\hspace*{{{verbatim.left - low:.1f}bp}}{verbatim.tex}\\par")
+                    )
+                    continue
+                caption = [
+                    line
+                    for index, line in enumerate(segment)
+                    if not item.caption and any(CAPTION_RE.match(earlier.text) for earlier in segment[: index + 1])
+                ]
+                captions += caption
+                text = [line for line in segment if all(line is not other for other in caption)]
+                if not text:
+                    continue
+                size = statistics.median(line.size for line in text)
+                setup = f"\\fontsize{{{size:.2f}bp}}{{{size * layout.leading / layout.body_size:.2f}bp}}\\selectfont"
+                offset = text[0].bbox.x0 - low
+                parts.append(
+                    (
+                        min(line.bbox.y0 for line in text),
+                        max(line.bbox.y1 for line in text),
+                        f"{setup}\\noindent\\hspace*{{{offset:.1f}bp}}{self.inline(text)}\\par",
+                    )
+                )
+            columns.append((low, max(line.bbox.x1 for line in column), parts))
+        top = min(part[0] for _, _, parts in columns for part in parts)
+        bottom = max(part[1] for _, _, parts in columns for part in parts)
+        left, right = columns[0][0], max(high for _, high, _ in columns)
+        placed = [
+            f"\\begin{{minipage}}[t]{{{high - low:.1f}bp}}\n"
+            + "".join(
+                f"\\nointerlineskip\\vbox to 0pt{{\\vskip{start - top:.1f}bp\\hsize={high - low:.1f}bp\n{tex}\n\\vss}}\n"
+                for start, _, tex in parts
             )
+            + f"\\nointerlineskip\\vbox to {bottom - top:.1f}bp{{}}\n\\end{{minipage}}"
+            for low, high, parts in columns
+        ]
+        if captions:
+            item.caption = captions
+            item.caption_above = captions[0].bbox.y0 < top
+        block = (
+            f"\\begin{{minipage}}[t]{{{right - left:.1f}bp}}\n\\noindent" + "\\hfill".join(placed) + "\n\\end{minipage}"
+        )
+        return block, pymupdf.Rect(left, item.rect.y0, right, item.rect.y1)
+
+    def code_glyph(self, char: str) -> str | None:
+        if ord(char) < 128 or self.mono_font().has_glyph(ord(char)):
+            return None
+        fallback = self.fallback_glyph(char)
+        return None if fallback == char else FALLBACK_COMMAND_RE.sub(r"\\\1{}", fallback)
+
+    def mono(self) -> tuple[str, float]:
+        body_family = self.layout.body_family
+        return MONO_FONTS["Nimbus" in body_family or "Times" in body_family]
+
+    def mono_font(self) -> pymupdf.Font:
+        return self.font_file(self.mono()[0])
 
     def figure(self, item: Item, graphic: str, out: list[str]) -> str:
         caption, notes = self.split_footnotes(self.inline(item.caption))
         environment = "figure*" if item.wide else "figure"
-        include = f"\\centering\\includegraphics{{{graphic}}}"
+        include = f"\\centering{graphic}"
         caption_command = f"\\caption[]{{{caption}}}"
         body = f"{caption_command}\n{include}" if item.caption_above else f"{include}\n{caption_command}"
         if item.caption_above and item.caption[0].text.startswith("Algorithm"):
@@ -797,6 +878,8 @@ class LatexWriter:
             "\\documentclass[" + ("twocolumn" if layout.twocol else "") + "]{article}",
             f"\\usepackage[{options}]{{geometry}}",
             "\\usepackage{graphicx}\\usepackage{wrapfig}" + ("\\usepackage{cuted}" if self.uses_strip else ""),
+            "\\usepackage{fancyvrb}\\newsavebox\\codebox" if self.uses_code else "",
+            "\\usepackage{xcolor}" if self.uses_color else "",
             "\\usepackage[labelformat=empty]{caption}" + self.caption_font(),
             "\\usepackage{amsmath}"
             + (f"\\usepackage{math_package}" if math_package else "\\usepackage{amssymb}")

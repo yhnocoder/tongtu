@@ -26,7 +26,7 @@ LONG_PROSE_RE = re.compile(r"[a-z]{3,} [a-z]{3,} [a-z]{3,}")
 
 DELIMITER_FONT_RE = re.compile(r"CMEX|Extension|-EX$|txex|pxex", re.I)
 
-MONO_FONT_RE = re.compile(r"Mono|Courier|Typewriter|Code|CMTT|SFTT")
+MONO_FONT_RE = re.compile(r"Mono|Mon[A-Z]|Courier|Typewriter|Code|CMTT|SFTT|Inconsolata|Consolas|txtt|Menlo", re.I)
 
 FOOTNOTE_MONO_FONT_RE = re.compile(r"Mono|Courier|Typewriter|CMTT|SFTT")
 
@@ -53,6 +53,8 @@ class Char:
     bold: bool
     italic: bool
     math: bool = False
+    mono: bool = False
+    color: int = 0
     line: Line | None = field(default=None, compare=False, repr=False)
 
 
@@ -181,13 +183,26 @@ class Layout:
             size = span["size"]
             bold = bool(span["flags"] & 16) or "Bold" in font or "Medi" in font or "BX" in font
             italic = bool(span["flags"] & 2) or "Ital" in font or "TI" in font
+            mono = bool(span["flags"] & 8) or bool(MONO_FONT_RE.search(font))
             for raw_char in span["chars"]:
                 box = list(raw_char["bbox"])
                 origin_y = raw_char["origin"][1]
                 box[1] = max(box[1], origin_y - 1.05 * size)
                 box[3] = min(box[3], origin_y + 0.4 * size)
-                chars.append(Char(raw_char["c"], tuple(box), tuple(raw_char["origin"]), font, size, bold, italic))
-                if not raw_char["c"].isspace() and not MONO_FONT_RE.search(font):
+                chars.append(
+                    Char(
+                        raw_char["c"],
+                        tuple(box),
+                        tuple(raw_char["origin"]),
+                        font,
+                        size,
+                        bold,
+                        italic,
+                        mono=mono,
+                        color=span["color"],
+                    )
+                )
+                if not raw_char["c"].isspace() and not mono:
                     counts[(family(font), round(size * 2) / 2)] += 1
         return chars
 

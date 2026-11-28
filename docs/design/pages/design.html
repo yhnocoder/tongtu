@@ -341,7 +341,7 @@ api_key  = ""</code></pre>
         <p>fetch 的 <code>route</code> 是 <code>"tex"</code> 时不做任何事，写 <code>ok</code>，<code>rebuilt</code> 为 false。<code>route</code> 是 <code>"pdf"</code> 时，在重建目录 <code>build/sandbox/reconstruct/</code> 里依次做：</p>
         <ol>
           <li>原文 PDF 能打开、文字层里有英文词之后，如果开启了 oMLX（<code>[omlx] enabled = true</code>），检查 oMLX 服务与模型，见下文。检查不通过时阶段以 <code>omlx_unavailable</code> 结束，不做后面的步骤。</li>
-          <li>规则重建：把 <code>build/original.pdf</code> 拷进重建目录，写出 <code>main.tex</code>、<code>crops/&lt;编号&gt;.pdf</code>（每个截图一个文件）与 <code>regions.json</code>。正文文字、标题、列表、脚注、目录、图注写成 LaTeX；图、表、算法、行间公式、参考文献、作者区从原 PDF 截取矢量区域插入，截取时用两遍 redaction 去掉区域外的内容，区域内的大号数学字形保留；行内公式截成小图，写成 <code>\im{编号}{下沉量}{提示}</code>。提示是这段截图在原文文字层里的字符，只给修复会话与识别会话参考，不排版。版心上边界取正文长行（超过 25 个字符）的最高位置，下边缘比它高出 2 bp 以上的行判为页眉。例外是第 1 页上字号大于正文字号加 <code>TITLE_SIZE_MARGIN = 0.6</code> bp 的行，它们不判为页眉，与版心内的行一样参与后续的分类。会议模板把论文标题与作者行排在版心之上，没有这条例外时它们会被当作页眉丢掉。导言区不使用含 <code>@</code> 的命令，正文字号用 <code>\fontsize{…}{…}\selectfont</code> 设定，避免 precompile 的 latexpand 报 warning。</li>
+          <li>规则重建：把 <code>build/original.pdf</code> 拷进重建目录，写出 <code>main.tex</code>、<code>crops/&lt;编号&gt;.pdf</code>（每个截图一个文件）与 <code>regions.json</code>。正文文字、标题、列表、脚注、目录、图注写成 LaTeX；图、表、算法、行间公式、参考文献、作者区从原 PDF 截取矢量区域插入，截取时用两遍 redaction 去掉区域外的内容，区域内的大号数学字形保留；行内公式截成小图，写成 <code>\im{编号}{下沉量}{提示}</code>。提示是这段截图在原文文字层里的字符，只给修复会话与识别会话参考，不排版。以等宽字体为主的区域（不含图注以 Algorithm 开头的算法块）不截图：区域内去掉行号后等宽字符的比例不低于 <code>CODE_MONO_MIN = 0.85</code>、可见字符不少于 <code>CODE_MIN_CHARS = 10</code>、区域内没有图片和大面积的非背景矢量图形时，用原文文字层的字符、坐标与颜色写成 fancyvrb 的 <code>BVerbatim</code>，缩放到原文宽度；左右并排的代码各写成一个 <code>minipage</code>，区域内的图注行写成 <code>\caption</code>。这类区域不进 <code>regions.json</code>，它们的词参与核对。版心上边界取正文长行（超过 25 个字符）的最高位置，下边缘比它高出 2 bp 以上的行判为页眉。例外是第 1 页上字号大于正文字号加 <code>TITLE_SIZE_MARGIN = 0.6</code> bp 的行，它们不判为页眉，与版心内的行一样参与后续的分类。会议模板把论文标题与作者行排在版心之上，没有这条例外时它们会被当作页眉丢掉。导言区不使用含 <code>@</code> 的命令，正文字号用 <code>\fontsize{…}{…}\selectfont</code> 设定，避免 precompile 的 latexpand 报 warning。</li>
           <li>公式与表格识别，见下文：有行间或行内公式截图时启动一次公式识别会话（开启了 oMLX 时先由本地模型识别，会话只处理本地没有通过的条目，全部通过时不启动），有表格截图时再启动一次表格识别会话。每个会话结束后，阶段在会话外重跑校验，把通过的条目写回 <code>main.tex</code> 替换截图，没通过的保留截图。</li>
           <li>编译：与 precompile 用同一条 latexmk 命令。</li>
           <li>核对，见下文。全部通过时跳到第 7 步。</li>
@@ -349,6 +349,7 @@ api_key  = ""</code></pre>
           <li>打包：所有截图合进一个 <code>crops.pdf</code>，<code>\includegraphics{crops/x.pdf}</code> 改成 <code>{\includegraphics[page=N]{crops.pdf}}</code>，<code>\im</code> 改为按编号取页。保存时去掉重复资源并压缩（<code>garbage=4</code>、<code>deflate</code>，图片重新编码）。打包后再编译一次，页数必须与打包前相同。</li>
           <li>交付：清空 <code>src/</code>，把 <code>main.tex</code> 与 <code>crops.pdf</code> 拷进去。之后的 precompile 把它当普通源码处理。</li>
         </ol>
+        <p class="why"><b>理由</b>代码写成文字后可以从中文 PDF 里复制。算法块混排公式与粗体关键字，文字层还原不了，继续截图。</p>
         <p>fetch 的 manifest 是 <code>ok</code>、<code>route</code> 是 <code>"tex"</code>，而 reconstruct 的 manifest 不存在时，<code>run</code>、<code>status</code> 与 <code>list</code> 都把 reconstruct 当作已完成，<code>status</code> 里它的状态是 <code>ok</code>、<code>manifest</code> 为 null。</p>
         <p class="why"><b>理由</b>加入 reconstruct 之前跑完的工作目录没有这份 manifest。不这样判定，<code>run</code> 会从 reconstruct 起重跑下游各阶段，整篇重译。</p>
         <p class="why"><b>理由</b>PDF 先变成 LaTeX，翻译流程就不区分源码来自 e-print 还是重建，PDF 论文得到同一套校验，不需要第二套翻译流程。</p>
