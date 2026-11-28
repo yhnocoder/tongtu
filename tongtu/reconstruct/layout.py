@@ -26,7 +26,7 @@ LONG_PROSE_RE = re.compile(r"[a-z]{3,} [a-z]{3,} [a-z]{3,}")
 
 DELIMITER_FONT_RE = re.compile(r"CMEX|Extension|-EX$|txex|pxex", re.I)
 
-MONO_FONT_RE = re.compile(r"Mono|Mon[A-Z]|Courier|Typewriter|Code|CMTT|SFTT|Inconsolata|Consolas|txtt|Menlo", re.I)
+MONO_FONT_RE = re.compile(r"Mono(?!type)|Mon[A-Z]|Courier|Typewriter|Code|CMTT|SFTT|Inconsolata|Consolas|txtt|Menlo")
 
 FOOTNOTE_MONO_FONT_RE = re.compile(r"Mono|Courier|Typewriter|CMTT|SFTT")
 

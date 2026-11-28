@@ -149,6 +149,8 @@ class LatexWriter:
         self.cjk_fallback: str | None = None
         self.uses_strip = False
         self.uses_code = False
+        self.heads: list[tuple[int, int]] = []
+        self.floating_code: list[tuple[int, pymupdf.Rect, str]] = []
         self.uses_color = False
         self.math_package_name: str | None = None
         self.heading_styles: dict[str, list[Line]] = collections.defaultdict(list)
@@ -158,6 +160,7 @@ class LatexWriter:
 
     def document(self) -> str:
         layout = self.layout
+        self.heads = self.head_spans() if layout.twocol else []
         body = self.emit()
         if layout.twocol:
             body = self.twocolumn_heads(body)
@@ -169,20 +172,16 @@ class LatexWriter:
         )
 
     def floating(self) -> list[tuple[int, pymupdf.Rect, str]]:
-        return [(line.page, line.bbox, line.kind) for line in self.layout.lines if line.kind in FLOATING_KINDS]
+        lines = [(line.page, line.bbox, line.kind) for line in self.layout.lines if line.kind in FLOATING_KINDS]
+        return lines + self.floating_code
 
-    def twocolumn_heads(self, body: list[str]) -> list[str]:
+    def head_spans(self) -> list[tuple[int, int]]:
         layout = self.layout
         items = layout.items
-
-        def flatten(head: str) -> str:
-            head = re.sub(r"^\\twocolumn\n*", "", head)
-            return TWOCOLUMN_FIGURE_RE.sub(r"\\begin{center}\1\\end{center}", head)
-
         starts: dict[int, int] = {}
         for index, item in enumerate(items):
             starts.setdefault(item.page, index)
-        new_body = list(body)
+        spans = []
         for page_number, first in sorted(starts.items(), reverse=True):
             end = first
             while (
@@ -197,6 +196,22 @@ class LatexWriter:
                 continue
             if page_number > 0 and not any(items[index].kind in ("heading", "title") for index in range(first, end)):
                 continue
+            spans.append((first, end))
+        return spans
+
+    def in_head(self, item: Item) -> bool:
+        items = self.layout.items
+        return any(any(items[index] is item for index in range(first, end)) for first, end in self.heads)
+
+    def twocolumn_heads(self, body: list[str]) -> list[str]:
+        layout = self.layout
+
+        def flatten(head: str) -> str:
+            head = re.sub(r"^\\twocolumn\n*", "", head)
+            return TWOCOLUMN_FIGURE_RE.sub(r"\\begin{center}\1\\end{center}", head)
+
+        new_body = list(body)
+        for first, end in self.heads:
             head = [flatten(part) for part in new_body[first:end]]
             joined = "\n\n".join(part for part in head if part)
             new_body[first:end] = [f"\\twocolumn[{joined}\n\\vspace{{{layout.leading:.1f}bp}}]"] + [""] * (
@@ -703,9 +718,14 @@ class LatexWriter:
         )
         prefix, kind = region_kind(item, bool(equation))
         lines = code.region_lines(layout, item, rect)
-        if code.is_code(layout, item, kind, lines, rect):
+        if not self.in_head(item) and code.is_code(layout, item, kind, lines, rect):
             graphic, rect = self.code_block(item, lines)
             equation = False
+            if item.caption or (item.wide and layout.twocol):
+                self.floating_code += [
+                    (line.page, line.bbox, "caption" if any(line is other for other in item.caption) else "code")
+                    for line in lines
+                ]
         else:
             graphic = f"\\includegraphics{{{crop_path(self.cropper.crop(item.page, rect, prefix, kind))}}}"
         if item.caption:

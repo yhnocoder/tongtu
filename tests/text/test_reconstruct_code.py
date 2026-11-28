@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pymupdf
 
-from tongtu.artifacts.reconstruct import RegionKind
+from tongtu.artifacts.reconstruct import RegionKind, RegionsFile
+from tongtu.reconstruct.layout import MONO_FONT_RE
 from tongtu.reconstruct.rebuild import MAIN_FILENAME, rebuild
 
 WORDS = (
@@ -15,6 +16,8 @@ WORDS = (
 ).split()
 
 SERIF = pymupdf.Font("tiro")
+
+BOLD_SERIF = pymupdf.Font("tibo")
 
 MONO = pymupdf.Font("cour")
 
@@ -69,10 +72,15 @@ def code_paper(folder: Path, draw: Draw) -> Path:
 
 
 def rebuilt(tmp_path: Path, draw: Draw) -> tuple[str, list[RegionKind]]:
+    tex, regions = rebuilt_tree(tmp_path, code_paper(tmp_path, draw))
+    return tex, [region.kind for region in regions.regions]
+
+
+def rebuilt_tree(tmp_path: Path, pdf: Path) -> tuple[str, RegionsFile]:
     tree = tmp_path / "tree"
     tree.mkdir()
-    regions = rebuild(code_paper(tmp_path, draw), tree)
-    return (tree / MAIN_FILENAME).read_text(encoding="utf-8"), [region.kind for region in regions.regions]
+    regions = rebuild(pdf, tree)
+    return (tree / MAIN_FILENAME).read_text(encoding="utf-8"), regions
 
 
 def verbatim_lines(tex: str) -> list[str]:
@@ -203,3 +211,57 @@ def test_algorithm_caption_stays_a_crop(tmp_path: Path) -> None:
     tex, kinds = rebuilt(tmp_path, algorithm)
     assert "BVerbatim" not in tex
     assert kinds == [RegionKind.ALGORITHM]
+
+
+def test_special_characters_stay_literal_without_commandchars(tmp_path: Path) -> None:
+    lines = ['printf("%d\\n", a[0]); # $x & y_z', "if (~m ^ n) { return {}; }"]
+
+    def special(page: pymupdf.Page, y: float) -> float:
+        return code(page, 90, y, lines)
+
+    tex, kinds = rebuilt(tmp_path, special)
+    assert kinds == []
+    assert "commandchars" not in tex
+    assert verbatim_lines(tex) == lines
+
+
+def test_code_with_a_caption_is_masked_in_the_order_check(tmp_path: Path) -> None:
+    def captioned_box(page: pymupdf.Page, y: float) -> float:
+        page.draw_rect(pymupdf.Rect(85, y - 12, 460, y + 75), color=None, fill=(0.95, 0.95, 0.95))
+        y = code(page, 90, y, LAYER) + 6
+        put(page, 200, y, "Listing 3: A layer.", SERIF, 10)
+        return y + 10
+
+    _, regions = rebuilt_tree(tmp_path, code_paper(tmp_path, captioned_box))
+    kinds = sorted(line.kind for line in regions.floating)
+    assert kinds == ["caption"] + ["code"] * len([line for line in LAYER if line])
+
+
+def two_columns(page: pymupdf.Page, y: float) -> None:
+    for column in (72, 320):
+        line_y = y
+        for index in range(40):
+            put(page, column, line_y, " ".join(WORDS[(index * 3 + k) % len(WORDS)] for k in range(7)), SERIF, 10)
+            line_y += 12
+
+
+def test_code_at_the_top_of_a_two_column_page_stays_a_crop(tmp_path: Path) -> None:
+    doc = pymupdf.open()
+    two_columns(doc.new_page(width=612, height=792), 80)
+    page = doc.new_page(width=612, height=792)
+    put(page, 230, 80, "2 Implementation Details", BOLD_SERIF, 12)
+    wide = ["result = compute_the_attention_scores(query_vectors, key_vectors, value_vectors)", *LAYER]
+    two_columns(page, code(page, 90, 104, wide) + 14)
+    path = tmp_path / "twocolumn.pdf"
+    doc.save(path)
+    tex, regions = rebuilt_tree(tmp_path, path)
+    assert "\\twocolumn[" in tex
+    assert "BVerbatim" not in tex
+    assert [region.kind for region in regions.regions] == [RegionKind.DISPLAY]
+
+
+def test_monospace_font_names() -> None:
+    mono = ["SFTT0900", "Inconsolatazi4-Regular", "NimbusMonoPS-Regular", "Courier-Bold", "CMTT10", "txtt", "LMMono10"]
+    proportional = ["Montserrat-Regular", "HarmoniaSans-Bold", "MonotypeCorsiva", "Barcode39", "NimbusRomNo9L-Regu"]
+    assert [name for name in mono if MONO_FONT_RE.search(name)] == mono
+    assert [name for name in proportional if MONO_FONT_RE.search(name)] == []

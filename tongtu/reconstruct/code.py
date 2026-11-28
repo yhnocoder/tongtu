@@ -267,6 +267,7 @@ def verbatim(lines: list[Line], fallback: Fallback, advance: float) -> Verbatim:
     unit = char_unit(lines)
     left = min(x0(char) for char in shown) if shown else min(line.bbox.x0 for line in lines)
     size = statistics.median(char.size for line in lines for char in visible(line.chars))
+    right = max((char.bbox[2] for char in shown), default=left + unit)
     baselines = [baseline(visible(line.chars)) for line in lines]
     steps = [lower - upper for upper, lower in itertools.pairwise(baselines)]
     gap = statistics.median(steps) if steps else 0.0
@@ -307,7 +308,7 @@ def verbatim(lines: list[Line], fallback: Fallback, advance: float) -> Verbatim:
         + "]\n"
         + "\n".join(texts)
         + "\n\\end{BVerbatim}\n\\end{lrbox}"
-        + f"\\resizebox{{{width * unit:.1f}bp}}{{!}}{{\\usebox{{\\codebox}}}}"
+        + f"\\resizebox{{{min(width * unit, right - left):.1f}bp}}{{!}}{{\\usebox{{\\codebox}}}}"
     )
     return Verbatim(tex, colored, left)
 
